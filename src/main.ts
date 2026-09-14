@@ -276,13 +276,29 @@ async function boot(): Promise<void> {
   followButton.addEventListener("click", () => {
     follow = !follow;
     followButton.setAttribute("aria-pressed", String(follow));
-    if (!follow) viewer.flyOverview();
+    if (!flight || !trim) return;
+    const sample = sampleAt(flight, cursorMs);
+    if (follow) {
+      viewer.captureFollowFromCamera(sample);
+      viewer.setSample(sample, true);
+    } else {
+      viewer.unlockFollow();
+    }
   });
 
   overviewButton.addEventListener("click", () => {
     follow = false;
     followButton.setAttribute("aria-pressed", "false");
+    viewer.unlockFollow();
     viewer.flyOverview();
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-follow-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const mode = button.dataset.followMode as "fixed" | "relative";
+      viewer.setFollowMode(mode);
+      document.querySelectorAll("[data-follow-mode]").forEach((el) => el.classList.toggle("active", el === button));
+    });
   });
 
   speedSelect.addEventListener("change", () => {

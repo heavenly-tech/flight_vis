@@ -32,8 +32,11 @@ import {
   createWorldTerrainAsync,
 } from "cesium";
 import type { ColorMode, Flight, FlightTag, Sample, TrimRange } from "../track/types";
+import { headingRadians } from "../track/geo";
+import { sampleAt } from "../track/parse";
 import { fullRange, pointsInTrim } from "../track/trim";
 import { colorForUnit, normalizeValue, valueForMode } from "./colors";
+import { lerpAngle, wrapAngle, type FollowMode } from "./follow";
 
 const ESRI_IMAGERY =
   "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
@@ -46,9 +49,14 @@ export type FlightViewer = {
   setTrim: (trim: TrimRange, fly?: boolean) => Promise<void>;
   setTags: (tags: FlightTag[]) => void;
   setSample: (sample: Sample, follow: boolean) => void;
+  setFollowMode: (mode: FollowMode) => void;
+  captureFollowFromCamera: (sample: Sample) => void;
+  unlockFollow: () => void;
   flyOverview: () => void;
   destroy: () => void;
 };
+
+export type { FollowMode };
 
 export async function createFlightViewer(container: HTMLElement): Promise<FlightViewer> {
   const ionToken = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
@@ -103,6 +111,68 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   let craft: Entity | undefined;
   let tagEntities: Entity[] = [];
   let trackPositions: Cartesian3[] = [];
+  let followMode: FollowMode = "relative";
+  let following = false;
+  let captured = false;
+  let worldHeading = 0;
+  let relativeOffset = 0;
+  let followPitch = CesiumMath.toRadians(-28);
+  let followRange = 4200;
+  let lastAppliedHeading = 0;
+  let lastFollowMs = 0;
+  let lastTrackHeading = 0;
+  let smoothHeading: number | null = null;
+  let smoothPitch: number | null = null;
+  let smoothRange: number | null = null;
+  const smoothTarget = new Cartesian3();
+  let hasSmoothTarget = false;
+
+  function trackHeading(sample: Sample): number {
+    if (!flight) return 0;
+    const later = sampleAt(flight, sample.t + 12_000);
+    const moved = headingRadians(
+      sample.point.lat,
+      sample.point.lon,
+      later.point.lat,
+      later.point.lon,
+    );
+    const dist = Cartesian3.distance(
+      Cartesian3.fromDegrees(sample.point.lon, sample.point.lat, sample.point.alt),
+      Cartesian3.fromDegrees(later.point.lon, later.point.lat, later.point.alt),
+    );
+    if (dist < 40) return lastTrackHeading;
+    lastTrackHeading = moved;
+    return moved;
+  }
+
+  function desiredHeading(sample: Sample): number {
+    if (followMode === "fixed") return worldHeading;
+    return wrapAngle(trackHeading(sample) + relativeOffset);
+  }
+
+  function captureFromCamera(sample: Sample): void {
+    const target = Cartesian3.fromDegrees(sample.point.lon, sample.point.lat, sample.point.alt);
+    worldHeading = viewer.camera.heading;
+    relativeOffset = wrapAngle(worldHeading - trackHeading(sample));
+    followPitch = viewer.camera.pitch;
+    followRange = Math.max(600, Math.min(40_000, Cartesian3.distance(viewer.camera.positionWC, target)));
+    lastAppliedHeading = worldHeading;
+    captured = true;
+    smoothHeading = worldHeading;
+    smoothPitch = followPitch;
+    smoothRange = followRange;
+  }
+
+  function applyFollowDefaults(): void {
+    worldHeading = 0;
+    relativeOffset = 0;
+    followPitch = CesiumMath.toRadians(-28);
+    followRange = 4200;
+    captured = true;
+    smoothHeading = null;
+    smoothPitch = null;
+    smoothRange = null;
+  }
 
   function unlockCamera(): void {
     viewer.camera.lookAtTransform(Matrix4.IDENTITY);
@@ -211,25 +281,48 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     const position = Cartesian3.fromDegrees(sample.point.lon, sample.point.lat, sample.point.alt);
     craft.position = new ConstantPositionProperty(position);
     viewer.clock.currentTime = JulianDate.fromDate(new Date(sample.t));
+    const hpr = new HeadingPitchRoll(sample.point.headingRad, 0, 0);
+    craft.orientation = new ConstantProperty(Transforms.headingPitchRollQuaternion(position, hpr));
 
     if (!followCam) {
-      unlockCamera();
+      if (following) unlockCamera();
+      following = false;
+      lastFollowMs = 0;
       return;
     }
 
-    const hpr = new HeadingPitchRoll(sample.point.headingRad, 0, 0);
-    craft.orientation = new ConstantProperty(Transforms.headingPitchRollQuaternion(position, hpr));
-    const range = Math.max(
-      1800,
-      Math.min(14000, 2400 + sample.point.speedMps * 28 + sample.point.alt * 1.1),
-    );
+    if (!following) {
+      if (!captured) applyFollowDefaults();
+      following = true;
+      lastFollowMs = 0;
+      hasSmoothTarget = false;
+      smoothHeading = null;
+    }
+
+    const now = performance.now();
+    const dt = lastFollowMs ? Math.min(0.08, (now - lastFollowMs) / 1000) : 1 / 60;
+    lastFollowMs = now;
+    const ease = 1 - Math.exp(-dt / 0.32);
+
+    const headingTarget = desiredHeading(sample);
+    if (smoothHeading == null) smoothHeading = headingTarget;
+    else smoothHeading = lerpAngle(smoothHeading, headingTarget, ease);
+    if (smoothPitch == null) smoothPitch = followPitch;
+    else smoothPitch += (followPitch - smoothPitch) * ease;
+    if (smoothRange == null) smoothRange = followRange;
+    else smoothRange += (followRange - smoothRange) * ease;
+
+    if (!hasSmoothTarget) {
+      Cartesian3.clone(position, smoothTarget);
+      hasSmoothTarget = true;
+    } else {
+      Cartesian3.lerp(smoothTarget, position, ease, smoothTarget);
+    }
+
+    lastAppliedHeading = smoothHeading;
     viewer.camera.lookAt(
-      position,
-      new HeadingPitchRange(
-        sample.point.headingRad - CesiumMath.PI_OVER_TWO,
-        CesiumMath.toRadians(-32),
-        range,
-      ),
+      smoothTarget,
+      new HeadingPitchRange(smoothHeading, smoothPitch, smoothRange),
     );
   }
 
@@ -245,6 +338,9 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
 
   return {
     setFlight: async (next, mode, nextTrim) => {
+      following = false;
+      captured = false;
+      hasSmoothTarget = false;
       await rebuildTrack(next, mode, nextTrim ?? fullRange(next));
       flyOverview();
     },
@@ -262,6 +358,22 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       drawTags();
     },
     setSample,
+    setFollowMode: (mode) => {
+      if (mode === followMode) return;
+      followMode = mode;
+      if (mode === "fixed") worldHeading = lastAppliedHeading;
+      else relativeOffset = wrapAngle(lastAppliedHeading - lastTrackHeading);
+    },
+    captureFollowFromCamera: (sample) => {
+      captureFromCamera(sample);
+      following = false;
+    },
+    unlockFollow: () => {
+      following = false;
+      captured = false;
+      lastFollowMs = 0;
+      unlockCamera();
+    },
     flyOverview,
     destroy: () => viewer.destroy(),
   };
