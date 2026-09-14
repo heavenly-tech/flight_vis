@@ -78,6 +78,7 @@ select,
 .menu,
 .menu-panel,
 .more-panel,
+.tags-panel,
 .tags,
 .toast {
   pointer-events: auto;
@@ -118,6 +119,18 @@ select,
   gap: 8px;
   align-items: center;
   flex-wrap: wrap;
+}
+
+.top-actions {
+  align-items: flex-start;
+}
+
+.readout-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  min-width: min(280px, calc(100vw - 32px));
 }
 
 .menu {
@@ -242,13 +255,19 @@ select,
 }
 
 .hud {
-  position: absolute;
-  top: 96px;
-  right: 16px;
   display: grid;
   grid-template-columns: repeat(2, minmax(110px, 1fr));
   gap: 8px;
-  width: min(280px, calc(100vw - 32px));
+  width: 100%;
+}
+
+.hud-toggle {
+  align-self: flex-end;
+}
+
+body.hud-clipped:not(.hud-open).hud-rows-2 .hud-stat:nth-child(n + 5),
+body.hud-clipped:not(.hud-open).hud-rows-1 .hud-stat:nth-child(n + 3) {
+  display: none;
 }
 
 .hud div {
@@ -307,7 +326,8 @@ select,
   backdrop-filter: blur(18px);
 }
 
-.more-panel {
+.more-panel,
+.tags-panel {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -328,8 +348,9 @@ select,
   border-radius: 12px;
 }
 
-.more-panel .tag-list {
+.tags-panel .tag-list {
   margin-top: 0;
+  flex: 1 1 auto;
 }
 
 .tag-list {
@@ -395,7 +416,7 @@ dialog input {
     left: 10px;
     right: 10px;
     gap: 8px;
-    align-items: center;
+    align-items: flex-start;
   }
 
   .brand {
@@ -420,26 +441,16 @@ dialog input {
     left: auto;
   }
 
+  .readout-stack {
+    min-width: min(220px, calc(100vw - 24px));
+  }
+
   .hud {
-    top: auto;
-    left: 10px;
-    right: auto;
-    width: auto;
-    bottom: calc(72px + env(safe-area-inset-bottom));
-    grid-template-columns: repeat(3, minmax(64px, 1fr));
-    gap: 4px;
+    grid-template-columns: repeat(2, minmax(90px, 1fr));
+    gap: 6px;
   }
 
-  .hud-extra {
-    display: none;
-  }
-
-  body.file-open .hud,
-  body.more-open .hud {
-    display: none;
-  }
-
-  .hud div {
+  .hud-stat {
     padding: 6px 8px;
     border-radius: 10px;
   }
@@ -460,7 +471,8 @@ dialog input {
     border-radius: 14px;
   }
 
-  body.more-open .more-panel {
+  body.more-open .more-panel,
+  body.tags-open .tags-panel {
     max-height: 42vh;
     overflow: auto;
   }

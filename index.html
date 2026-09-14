@@ -39,23 +39,27 @@
               <button type="button" id="btn-share" class="chip">Save & copy link</button>
             </div>
           </div>
-          <div class="modes color-modes" role="group" aria-label="Track color">
-            <span class="group-label">Color</span>
-            <button type="button" data-mode="altitude" class="chip active">Alt</button>
-            <button type="button" data-mode="speed" class="chip">Speed</button>
-            <button type="button" data-mode="vario" class="chip">Vario</button>
+          <div class="readout-stack">
+            <div class="modes color-modes" role="group" aria-label="Track color">
+              <span class="group-label">Color</span>
+              <button type="button" data-mode="altitude" class="chip active">Alt</button>
+              <button type="button" data-mode="speed" class="chip">Speed</button>
+              <button type="button" data-mode="vario" class="chip">Vario</button>
+            </div>
+            <aside id="hud" class="hud" hidden>
+              <div class="hud-stat"><span>ALT</span><strong id="stat-alt">—</strong></div>
+              <div class="hud-stat"><span>SPD</span><strong id="stat-spd">—</strong></div>
+              <div class="hud-stat"><span>VARIO</span><strong id="stat-vario">—</strong></div>
+              <div class="hud-stat"><span>DIST</span><strong id="stat-dist">—</strong></div>
+              <div class="hud-stat"><span>TIME</span><strong id="stat-time">—</strong></div>
+              <div class="hud-stat"><span>UTC</span><strong id="stat-utc">—</strong></div>
+            </aside>
+            <button type="button" id="btn-hud" class="chip disclosure hud-toggle" hidden aria-expanded="false">
+              Stats <span class="caret" aria-hidden="true">^</span>
+            </button>
           </div>
         </div>
       </header>
-
-      <aside id="hud" class="hud" hidden>
-        <div><span>ALT</span><strong id="stat-alt">—</strong></div>
-        <div><span>SPD</span><strong id="stat-spd">—</strong></div>
-        <div class="hud-extra"><span>VARIO</span><strong id="stat-vario">—</strong></div>
-        <div class="hud-extra"><span>DIST</span><strong id="stat-dist">—</strong></div>
-        <div><span>TIME</span><strong id="stat-time">—</strong></div>
-        <div class="hud-extra"><span>UTC</span><strong id="stat-utc">—</strong></div>
-      </aside>
 
       <p id="status" class="status">Preparing 3D globe…</p>
 
@@ -68,10 +72,17 @@
             <button type="button" data-follow-mode="relative" class="chip active">Relative</button>
           </div>
           <button type="button" id="btn-overview" class="chip">Overview</button>
+          <button type="button" id="btn-tags" class="chip disclosure" aria-expanded="false" aria-controls="tags-panel">
+            Tags <span class="caret" aria-hidden="true">^</span>
+          </button>
           <button type="button" id="btn-more" class="chip disclosure" aria-expanded="false" aria-controls="more-panel">
             More <span class="caret" aria-hidden="true">^</span>
           </button>
           <p id="summary" class="summary"></p>
+        </div>
+        <div id="tags-panel" class="tags-panel" hidden>
+          <button type="button" id="btn-tag" class="chip">Tag</button>
+          <div id="tag-list" class="tag-list" hidden></div>
         </div>
         <div id="more-panel" class="more-panel" hidden>
           <div class="transport-row">
@@ -89,9 +100,7 @@
             <button type="button" id="btn-skip-ground" class="chip">Skip ground</button>
             <button type="button" id="btn-start-here" class="chip">Start here</button>
             <button type="button" id="btn-end-here" class="chip">End here</button>
-            <button type="button" id="btn-tag" class="chip">Tag</button>
           </div>
-          <div id="tag-list" class="tag-list" hidden></div>
           <canvas id="profile" height="100" aria-label="Altitude profile and trim"></canvas>
         </div>
       </footer>

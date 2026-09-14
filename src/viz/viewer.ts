@@ -28,6 +28,8 @@ import {
   Transforms,
   UrlTemplateImageryProvider,
   VerticalOrigin,
+  ScreenSpaceEventHandler,
+  ScreenSpaceEventType,
   Viewer,
   createWorldTerrainAsync,
 } from "cesium";
@@ -49,9 +51,11 @@ export type FlightViewer = {
   setTrim: (trim: TrimRange, fly?: boolean) => Promise<void>;
   setTags: (tags: FlightTag[]) => void;
   setSample: (sample: Sample, follow: boolean) => void;
+  seekSample: (sample: Sample, follow: boolean) => void;
   setFollowMode: (mode: FollowMode) => void;
   captureFollowFromCamera: (sample: Sample) => void;
   unlockFollow: () => void;
+  setOnTagPick: (handler: (timeMs: number) => void) => void;
   flyOverview: () => void;
   destroy: () => void;
 };
@@ -118,6 +122,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   let relativeOffset = 0;
   let followPitch = CesiumMath.toRadians(-28);
   let followRange = 4200;
+  let onTagPick: ((timeMs: number) => void) | undefined;
   let lastAppliedHeading = 0;
   let lastFollowMs = 0;
   let lastTrackHeading = 0;
@@ -192,6 +197,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       );
       tagEntities.push(
         viewer.entities.add({
+          id: `flight-tag:${tag.id}`,
           position: Cartesian3.fromDegrees(point.lon, point.lat, point.alt + 40),
           point: new PointGraphics({
             pixelSize: 10,
@@ -326,6 +332,37 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     );
   }
 
+  function seekSample(sample: Sample, followCam: boolean): void {
+    hasSmoothTarget = false;
+    lastFollowMs = 0;
+    smoothHeading = null;
+    smoothPitch = null;
+    smoothRange = null;
+    if (followCam) {
+      setSample(sample, true);
+      return;
+    }
+    setSample(sample, false);
+    const position = Cartesian3.fromDegrees(sample.point.lon, sample.point.lat, sample.point.alt);
+    unlockCamera();
+    viewer.camera.flyToBoundingSphere(new BoundingSphere(position, 400), {
+      offset: new HeadingPitchRange(sample.point.headingRad, CesiumMath.toRadians(-28), 3500),
+      duration: 0.85,
+    });
+  }
+
+  const pickHandler = new ScreenSpaceEventHandler(viewer.scene.canvas);
+  pickHandler.setInputAction((movement: { position: Cartesian2 }) => {
+    const picked = viewer.scene.pick(movement.position);
+    const entity = picked?.id;
+    if (!(entity instanceof Entity)) return;
+    const id = String(entity.id);
+    if (!id.startsWith("flight-tag:")) return;
+    const tagId = id.slice("flight-tag:".length);
+    const tag = tags.find((item) => item.id === tagId);
+    if (tag) onTagPick?.(tag.timeMs);
+  }, ScreenSpaceEventType.LEFT_CLICK);
+
   function flyOverview(): void {
     if (!flight || trackPositions.length === 0) return;
     unlockCamera();
@@ -358,6 +395,10 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       drawTags();
     },
     setSample,
+    seekSample,
+    setOnTagPick: (handler) => {
+      onTagPick = handler;
+    },
     setFollowMode: (mode) => {
       if (mode === followMode) return;
       followMode = mode;
@@ -375,6 +416,9 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       unlockCamera();
     },
     flyOverview,
-    destroy: () => viewer.destroy(),
+    destroy: () => {
+      pickHandler.destroy();
+      viewer.destroy();
+    },
   };
 }

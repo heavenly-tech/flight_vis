@@ -26,6 +26,8 @@ const speedSelect = document.querySelector<HTMLSelectElement>("#play-speed")!;
 const profile = document.querySelector<HTMLCanvasElement>("#profile")!;
 const statusEl = document.querySelector<HTMLParagraphElement>("#status")!;
 const hud = document.querySelector<HTMLElement>("#hud")!;
+const hudToggle = document.querySelector<HTMLButtonElement>("#btn-hud")!;
+const transport = document.querySelector<HTMLElement>(".transport")!;
 const nameEl = document.querySelector<HTMLParagraphElement>("#flight-name")!;
 const summaryEl = document.querySelector<HTMLParagraphElement>("#summary")!;
 const tagList = document.querySelector<HTMLDivElement>("#tag-list")!;
@@ -35,6 +37,8 @@ const tagLabel = document.querySelector<HTMLInputElement>("#tag-label")!;
 const fileButton = document.querySelector<HTMLButtonElement>("#btn-file")!;
 const fileMenu = document.querySelector<HTMLDivElement>("#file-menu")!;
 const filePanel = document.querySelector<HTMLDivElement>("#file-panel")!;
+const tagsButton = document.querySelector<HTMLButtonElement>("#btn-tags")!;
+const tagsPanel = document.querySelector<HTMLDivElement>("#tags-panel")!;
 const moreButton = document.querySelector<HTMLButtonElement>("#btn-more")!;
 const morePanel = document.querySelector<HTMLDivElement>("#more-panel")!;
 
@@ -52,6 +56,7 @@ let lastFrame = 0;
 let playSpeed = Number(speedSelect.value);
 let drag: "start" | "end" | "seek" | null = null;
 let applyTrim: ((fly?: boolean) => Promise<void>) | null = null;
+let seekPlayhead: ((timeMs: number) => void) | null = null;
 
 function pathSlug(): string | null {
   return slugFromPath(window.location.pathname);
@@ -169,12 +174,7 @@ function renderTags(): void {
     chip.type = "button";
     chip.className = "tag-chip";
     chip.textContent = tag.label;
-    chip.addEventListener("click", () => {
-      cursorMs = tag.timeMs;
-      playing = false;
-      playButton.textContent = "Play";
-      renderHud();
-    });
+    chip.addEventListener("click", () => seekPlayhead?.(tag.timeMs));
     const remove = document.createElement("span");
     remove.textContent = "×";
     remove.title = "Remove tag";
@@ -203,7 +203,41 @@ function renderHud(): void {
   document.querySelector("#stat-utc")!.textContent = formatClock(p.time);
   summaryEl.textContent = `${(stats.distanceM / 1000).toFixed(1)} km · ${formatDuration(stats.durationMs)} · ${Math.round(stats.maxAlt)} m max`;
   hud.hidden = false;
+  layoutHud();
   drawProfile();
+}
+
+function layoutHud(): void {
+  if (hud.hidden) {
+    hudToggle.hidden = true;
+    document.body.classList.remove("hud-clipped", "hud-rows-1", "hud-rows-2", "hud-open");
+    hudToggle.setAttribute("aria-expanded", "false");
+    return;
+  }
+
+  const expanded = document.body.classList.contains("hud-open");
+  document.body.classList.remove("hud-clipped", "hud-rows-1", "hud-rows-2");
+
+  const cell = hud.querySelector(".hud-stat");
+  if (!cell) return;
+
+  const row = cell.getBoundingClientRect().height;
+  const gap = Number.parseFloat(getComputedStyle(hud).rowGap) || 8;
+  const available = transport.getBoundingClientRect().top - hud.getBoundingClientRect().top - 44;
+  const rowsFit = Math.max(0, Math.floor((available + gap) / (row + gap)));
+
+  if (rowsFit >= 3) {
+    hudToggle.hidden = true;
+    document.body.classList.remove("hud-open");
+    hudToggle.setAttribute("aria-expanded", "false");
+    return;
+  }
+
+  hudToggle.hidden = false;
+  document.body.classList.add("hud-clipped");
+  document.body.classList.add(rowsFit <= 1 ? "hud-rows-1" : "hud-rows-2");
+  if (expanded) document.body.classList.add("hud-open");
+  hudToggle.setAttribute("aria-expanded", String(expanded));
 }
 
 function hitHandle(x: number, width: number): "start" | "end" | null {
@@ -228,6 +262,17 @@ async function boot(): Promise<void> {
     viewer.setSample(sampleAt(flight, cursorMs), false);
     renderHud();
   };
+
+  seekPlayhead = (timeMs: number) => {
+    if (!flight || !trim) return;
+    cursorMs = Math.min(Math.max(timeMs, trim.startMs), trim.endMs);
+    playing = false;
+    playButton.textContent = "Play";
+    viewer.seekSample(sampleAt(flight, cursorMs), follow);
+    renderHud();
+  };
+
+  viewer.setOnTagPick((timeMs) => seekPlayhead?.(timeMs));
 
   window.addEventListener("flight-tags", () => viewer.setTags(tags));
 
@@ -297,23 +342,52 @@ async function boot(): Promise<void> {
     document.body.classList.toggle("file-open", open);
   }
 
+  function setTagsOpen(open: boolean): void {
+    tagsPanel.hidden = !open;
+    tagsButton.setAttribute("aria-expanded", String(open));
+    document.body.classList.toggle("tags-open", open);
+    layoutHud();
+  }
+
   function setMoreOpen(open: boolean): void {
     morePanel.hidden = !open;
     moreButton.setAttribute("aria-expanded", String(open));
     document.body.classList.toggle("more-open", open);
     if (open) resizeProfile();
+    layoutHud();
   }
 
   fileButton.addEventListener("click", () => {
     const open = filePanel.hidden;
     setFileOpen(open);
-    if (open) setMoreOpen(false);
+    if (open) {
+      setMoreOpen(false);
+      setTagsOpen(false);
+    }
+  });
+
+  tagsButton.addEventListener("click", () => {
+    const open = tagsPanel.hidden;
+    setTagsOpen(open);
+    if (open) {
+      setFileOpen(false);
+      setMoreOpen(false);
+    }
   });
 
   moreButton.addEventListener("click", () => {
     const open = morePanel.hidden;
     setMoreOpen(open);
-    if (open) setFileOpen(false);
+    if (open) {
+      setFileOpen(false);
+      setTagsOpen(false);
+    }
+  });
+
+  hudToggle.addEventListener("click", () => {
+    const open = !document.body.classList.contains("hud-open");
+    document.body.classList.toggle("hud-open", open);
+    hudToggle.setAttribute("aria-expanded", String(open));
   });
 
   document.addEventListener("pointerdown", (event) => {
@@ -358,7 +432,7 @@ async function boot(): Promise<void> {
   });
 
   tagButton.addEventListener("click", () => {
-    setMoreOpen(true);
+    setTagsOpen(true);
     tagLabel.value = "";
     tagDialog.showModal();
     tagLabel.focus();
@@ -486,7 +560,10 @@ async function boot(): Promise<void> {
     if (slug) void loadFromSlug(slug);
   });
 
-  window.addEventListener("resize", resizeProfile);
+  window.addEventListener("resize", () => {
+    resizeProfile();
+    layoutHud();
+  });
   resizeProfile();
   requestAnimationFrame(tick);
 
