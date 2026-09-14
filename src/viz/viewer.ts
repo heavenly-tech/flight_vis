@@ -1,5 +1,7 @@
 import {
   ArcGISTiledElevationTerrainProvider,
+  BoundingSphere,
+  Cartesian2,
   Cartesian3,
   ClockRange,
   Color,
@@ -7,26 +9,30 @@ import {
   ConstantProperty,
   EllipsoidTerrainProvider,
   Entity,
+  GeometryInstance,
   HeadingPitchRange,
   HeadingPitchRoll,
+  HorizontalOrigin,
+  ImageryLayer,
   Ion,
   JulianDate,
+  LabelStyle,
   Math as CesiumMath,
   Matrix4,
+  NearFarScalar,
   PointGraphics,
   PolylineColorAppearance,
+  PolylineGeometry,
   Primitive,
   SceneMode,
   Transforms,
   UrlTemplateImageryProvider,
+  VerticalOrigin,
   Viewer,
-  BoundingSphere,
-  GeometryInstance,
-  ImageryLayer,
-  PolylineGeometry,
   createWorldTerrainAsync,
 } from "cesium";
-import type { ColorMode, Flight, Sample } from "../track/types";
+import type { ColorMode, Flight, FlightTag, Sample, TrimRange } from "../track/types";
+import { fullRange, pointsInTrim } from "../track/trim";
 import { colorForUnit, normalizeValue, valueForMode } from "./colors";
 
 const ESRI_IMAGERY =
@@ -35,8 +41,10 @@ const ESRI_TERRAIN =
   "https://elevation3d.arcgis.com/arcgis/rest/services/WorldElevation3D/Terrain3D/ImageServer";
 
 export type FlightViewer = {
-  setFlight: (flight: Flight, colorMode: ColorMode) => Promise<void>;
+  setFlight: (flight: Flight, colorMode: ColorMode, trim?: TrimRange) => Promise<void>;
   setColorMode: (mode: ColorMode) => Promise<void>;
+  setTrim: (trim: TrimRange, fly?: boolean) => Promise<void>;
+  setTags: (tags: FlightTag[]) => void;
   setSample: (sample: Sample, follow: boolean) => void;
   flyOverview: () => void;
   destroy: () => void;
@@ -88,12 +96,64 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   }
 
   let flight: Flight | null = null;
+  let colorMode: ColorMode = "altitude";
+  let trim: TrimRange | null = null;
+  let tags: FlightTag[] = [];
   let trackPrimitive: Primitive | undefined;
   let craft: Entity | undefined;
+  let tagEntities: Entity[] = [];
   let trackPositions: Cartesian3[] = [];
 
-  async function rebuildTrack(next: Flight, mode: ColorMode): Promise<void> {
+  function unlockCamera(): void {
+    viewer.camera.lookAtTransform(Matrix4.IDENTITY);
+  }
+
+  function clearTags(): void {
+    for (const entity of tagEntities) viewer.entities.remove(entity);
+    tagEntities = [];
+  }
+
+  function drawTags(): void {
+    clearTags();
+    if (!flight) return;
+    for (const tag of tags) {
+      const point = flight.points.reduce((best, p) =>
+        Math.abs(p.time - tag.timeMs) < Math.abs(best.time - tag.timeMs) ? p : best,
+      );
+      tagEntities.push(
+        viewer.entities.add({
+          position: Cartesian3.fromDegrees(point.lon, point.lat, point.alt + 40),
+          point: new PointGraphics({
+            pixelSize: 10,
+            color: Color.fromCssColorString("#fbbf24"),
+            outlineColor: Color.WHITE,
+            outlineWidth: 2,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+          }),
+          label: {
+            text: tag.label,
+            font: "14px Outfit, sans-serif",
+            fillColor: Color.WHITE,
+            outlineColor: Color.BLACK,
+            outlineWidth: 2,
+            style: LabelStyle.FILL_AND_OUTLINE,
+            showBackground: true,
+            backgroundColor: Color.fromCssColorString("rgba(10,14,20,0.82)"),
+            pixelOffset: new Cartesian2(0, -22),
+            horizontalOrigin: HorizontalOrigin.CENTER,
+            verticalOrigin: VerticalOrigin.BOTTOM,
+            disableDepthTestDistance: Number.POSITIVE_INFINITY,
+            scaleByDistance: new NearFarScalar(800, 1.05, 120000, 0.55),
+          },
+        }),
+      );
+    }
+  }
+
+  async function rebuildTrack(next: Flight, mode: ColorMode, nextTrim: TrimRange): Promise<void> {
     flight = next;
+    colorMode = mode;
+    trim = nextTrim;
     if (trackPrimitive) {
       viewer.scene.primitives.remove(trackPrimitive);
       trackPrimitive = undefined;
@@ -103,11 +163,11 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       craft = undefined;
     }
 
-    const positions = next.points.map((p) => Cartesian3.fromDegrees(p.lon, p.lat, p.alt));
+    const visible = pointsInTrim(next, nextTrim);
+    const source = visible.length >= 2 ? visible : next.points;
+    const positions = source.map((p) => Cartesian3.fromDegrees(p.lon, p.lat, p.alt));
     trackPositions = positions;
-    const colors = next.points.map((p) =>
-      colorForUnit(normalizeValue(next, mode, valueForMode(p, mode))),
-    );
+    const colors = source.map((p) => colorForUnit(normalizeValue(next, mode, valueForMode(p, mode))));
 
     trackPrimitive = viewer.scene.primitives.add(
       new Primitive({
@@ -125,8 +185,8 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       }),
     );
 
-    const start = JulianDate.fromDate(new Date(next.points[0].time));
-    const stop = JulianDate.fromDate(new Date(next.points[next.points.length - 1].time));
+    const start = JulianDate.fromDate(new Date(source[0].time));
+    const stop = JulianDate.fromDate(new Date(source[source.length - 1].time));
     viewer.clock.startTime = start;
     viewer.clock.stopTime = stop;
     viewer.clock.currentTime = JulianDate.clone(start);
@@ -143,10 +203,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       }),
     });
-  }
-
-  function unlockCamera(): void {
-    viewer.camera.lookAtTransform(Matrix4.IDENTITY);
+    drawTags();
   }
 
   function setSample(sample: Sample, followCam: boolean): void {
@@ -187,13 +244,22 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   }
 
   return {
-    setFlight: async (next, mode) => {
-      await rebuildTrack(next, mode);
+    setFlight: async (next, mode, nextTrim) => {
+      await rebuildTrack(next, mode, nextTrim ?? fullRange(next));
       flyOverview();
     },
     setColorMode: async (mode) => {
+      if (!flight || !trim) return;
+      await rebuildTrack(flight, mode, trim);
+    },
+    setTrim: async (nextTrim, fly = false) => {
       if (!flight) return;
-      await rebuildTrack(flight, mode);
+      await rebuildTrack(flight, colorMode, nextTrim);
+      if (fly) flyOverview();
+    },
+    setTags: (next) => {
+      tags = next;
+      drawTags();
     },
     setSample,
     flyOverview,

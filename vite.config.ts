@@ -5,9 +5,9 @@ const cesiumSource = "node_modules/cesium/Build/Cesium";
 const cesiumBaseUrl = "cesiumStatic";
 
 export default defineConfig({
-  base: "./",
+  base: "/",
   define: {
-    CESIUM_BASE_URL: JSON.stringify(`./${cesiumBaseUrl}/`),
+    CESIUM_BASE_URL: JSON.stringify(`/${cesiumBaseUrl}/`),
   },
   plugins: [
     viteStaticCopy({
@@ -22,10 +22,16 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
+    proxy: {
+      "/api": "http://127.0.0.1:8080",
+    },
   },
   preview: {
     host: true,
     port: 4173,
+    proxy: {
+      "/api": "http://127.0.0.1:8080",
+    },
   },
   build: {
     chunkSizeWarningLimit: 4000,

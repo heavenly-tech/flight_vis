@@ -1,43 +1,33 @@
 # flight_vis
 
-3D flight visualization for **IGC** and **GPX** tracks. Built to match [SkyViz](https://skyviz.io) output: satellite globe, real terrain, altitude-colored path, and replay.
+3D IGC/GPX viewer at [flight.heavenly.cl](https://flight.heavenly.cl). Satellite globe, terrain, altitude-colored path, trim, event tags, and shareable slugs.
 
-Vuelo5 (`public/samples/vuelo5.gpx`) loads automatically.
+Vuelo 5 lives at [`/vuelo-5`](https://flight.heavenly.cl/vuelo-5).
 
 ## Stack
 
-- Vite 7 + TypeScript
-- [CesiumJS](https://cesium.com/platform/cesiumjs/) globe
-- Esri World Imagery + World Elevation (same family of data SkyViz uses)
-- Optional Cesium ion terrain via `VITE_CESIUM_ION_TOKEN`
+- Vite 7 + TypeScript frontend
+- CesiumJS globe (Esri imagery + elevation)
+- Small Hono API that stores tracks on disk
+- Docker on heavenly, routed by nginx-proxy (`VIRTUAL_HOST=flight.heavenly.cl`)
 
-## Run locally
+## Local
 
 ```bash
 npm install
-npm run dev
+npm run dev:api   # API + seeded vuelo-5 on :8080
+npm run dev       # Vite on :5173, proxies /api
 ```
 
-Open the printed URL (default `http://localhost:5173`). Drop another `.gpx` or `.igc` onto the page, or use **Open track**.
+Open `http://localhost:5173/vuelo-5`. Drag the profile handles to crop taxi, **Skip ground** to auto-trim, **Tag** to mark events, **Save** to keep the slug.
 
 ## Deploy
 
-Static site. Any host that serves `dist/` works.
-
 ```bash
-npm install
-npm run build
-npm run preview
+docker compose up -d --build
 ```
 
-- **Vercel / Netlify:** root of this repo, build command `npm run build`, output `dist`
-- **GitHub Pages:** enable Pages from GitHub Actions; `.github/workflows/pages.yml` publishes `dist` on push to `main`
-
-Terrain looks best with a free [Cesium ion](https://ion.cesium.com/) token:
-
-```bash
-echo 'VITE_CESIUM_ION_TOKEN=your_token' > .env.local
-```
+On heavenly the stack is `/opt/stacks/app-heavenly-flight-vis` on `proxy_network`. Data is `./data`.
 
 ## Attribution
 

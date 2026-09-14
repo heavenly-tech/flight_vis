@@ -11,6 +11,17 @@ export type TrackPoint = {
 
 export type ColorMode = "altitude" | "speed" | "vario";
 
+export type FlightTag = {
+  id: string;
+  timeMs: number;
+  label: string;
+};
+
+export type TrimRange = {
+  startMs: number;
+  endMs: number;
+};
+
 export type Flight = {
   name: string;
   source: "gpx" | "igc";

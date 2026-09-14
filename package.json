@@ -5,13 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:api": "node --watch server/index.mjs",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "node server/index.mjs"
   },
   "dependencies": {
-    "cesium": "^1.134.0"
+    "@hono/node-server": "^1.19.6",
+    "hono": "^4.10.3"
   },
   "devDependencies": {
+    "cesium": "^1.134.0",
     "typescript": "^5.9.2",
     "vite": "^7.1.5",
     "vite-plugin-static-copy": "^3.1.2"

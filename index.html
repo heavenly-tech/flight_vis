@@ -20,13 +20,18 @@
       <header class="topbar">
         <div>
           <p class="brand">flight_vis</p>
-          <p id="flight-name" class="flight-name">Loading Vuelo5…</p>
+          <p id="flight-name" class="flight-name">Loading…</p>
         </div>
         <div class="top-actions">
           <label class="file-btn">
             Open track
             <input id="file-input" type="file" accept=".gpx,.igc,.GPX,.IGC" />
           </label>
+          <label class="slug">
+            <span>Slug</span>
+            <input id="slug-input" class="slug-input" type="text" maxlength="64" value="vuelo-5" spellcheck="false" />
+          </label>
+          <button type="button" id="btn-share" class="chip">Save & copy link</button>
           <div class="modes" role="group" aria-label="Color mode">
             <button type="button" data-mode="altitude" class="chip active">Alt</button>
             <button type="button" data-mode="speed" class="chip">Speed</button>
@@ -62,11 +67,27 @@
               <option value="100">100×</option>
             </select>
           </label>
+          <button type="button" id="btn-skip-ground" class="chip">Skip ground</button>
+          <button type="button" id="btn-start-here" class="chip">Start here</button>
+          <button type="button" id="btn-end-here" class="chip">End here</button>
+          <button type="button" id="btn-tag" class="chip">Tag</button>
           <p id="summary" class="summary"></p>
         </div>
-        <canvas id="profile" height="88" aria-label="Altitude profile"></canvas>
+        <div id="tag-list" class="tag-list" hidden></div>
+        <canvas id="profile" height="100" aria-label="Altitude profile and trim"></canvas>
       </footer>
     </div>
+
+    <dialog id="tag-dialog">
+      <form method="dialog" id="tag-form">
+        <p>Mark an event at the playhead</p>
+        <input id="tag-label" name="label" type="text" maxlength="80" placeholder="Takeoff, ridge, landing…" required />
+        <div class="dialog-actions">
+          <button type="submit" value="ok" class="play">Add tag</button>
+          <button type="submit" value="cancel" formnovalidate class="chip">Cancel</button>
+        </div>
+      </form>
+    </dialog>
 
     <script type="module" src="/src/main.ts"></script>
   </body>
