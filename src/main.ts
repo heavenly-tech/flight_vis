@@ -32,6 +32,11 @@ const tagList = document.querySelector<HTMLDivElement>("#tag-list")!;
 const tagDialog = document.querySelector<HTMLDialogElement>("#tag-dialog")!;
 const tagForm = document.querySelector<HTMLFormElement>("#tag-form")!;
 const tagLabel = document.querySelector<HTMLInputElement>("#tag-label")!;
+const fileButton = document.querySelector<HTMLButtonElement>("#btn-file")!;
+const fileMenu = document.querySelector<HTMLDivElement>("#file-menu")!;
+const filePanel = document.querySelector<HTMLDivElement>("#file-panel")!;
+const moreButton = document.querySelector<HTMLButtonElement>("#btn-more")!;
+const morePanel = document.querySelector<HTMLDivElement>("#more-panel")!;
 
 const ctx = profile.getContext("2d")!;
 
@@ -76,7 +81,7 @@ function timeForX(x: number, width: number, pad: number): number {
 function resizeProfile(): void {
   const ratio = window.devicePixelRatio || 1;
   const width = profile.clientWidth;
-  const height = 100;
+  const height = Math.max(48, profile.clientHeight || 100);
   profile.width = Math.max(1, Math.floor(width * ratio));
   profile.height = Math.floor(height * ratio);
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -85,7 +90,7 @@ function resizeProfile(): void {
 
 function drawProfile(): void {
   const width = profile.clientWidth;
-  const height = 100;
+  const height = Math.max(48, profile.clientHeight || 100);
   ctx.clearRect(0, 0, width, height);
   if (!flight || !trim) return;
 
@@ -286,6 +291,35 @@ async function boot(): Promise<void> {
     }
   });
 
+  function setFileOpen(open: boolean): void {
+    filePanel.hidden = !open;
+    fileButton.setAttribute("aria-expanded", String(open));
+    document.body.classList.toggle("file-open", open);
+  }
+
+  function setMoreOpen(open: boolean): void {
+    morePanel.hidden = !open;
+    moreButton.setAttribute("aria-expanded", String(open));
+    document.body.classList.toggle("more-open", open);
+    if (open) resizeProfile();
+  }
+
+  fileButton.addEventListener("click", () => {
+    const open = filePanel.hidden;
+    setFileOpen(open);
+    if (open) setMoreOpen(false);
+  });
+
+  moreButton.addEventListener("click", () => {
+    const open = morePanel.hidden;
+    setMoreOpen(open);
+    if (open) setFileOpen(false);
+  });
+
+  document.addEventListener("pointerdown", (event) => {
+    if (!filePanel.hidden && !fileMenu.contains(event.target as Node)) setFileOpen(false);
+  });
+
   overviewButton.addEventListener("click", () => {
     follow = false;
     followButton.setAttribute("aria-pressed", "false");
@@ -324,6 +358,7 @@ async function boot(): Promise<void> {
   });
 
   tagButton.addEventListener("click", () => {
+    setMoreOpen(true);
     tagLabel.value = "";
     tagDialog.showModal();
     tagLabel.focus();
@@ -386,6 +421,7 @@ async function boot(): Promise<void> {
     history.replaceState(null, "", "/");
     try {
       await loadText(await file.text(), file.name);
+      setFileOpen(false);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Could not parse track");
     }

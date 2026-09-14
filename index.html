@@ -23,16 +23,24 @@
           <p id="flight-name" class="flight-name">Loading…</p>
         </div>
         <div class="top-actions">
-          <label class="file-btn">
-            Open track
-            <input id="file-input" type="file" accept=".gpx,.igc,.GPX,.IGC" />
-          </label>
-          <label class="slug">
-            <span>Slug</span>
-            <input id="slug-input" class="slug-input" type="text" maxlength="64" value="vuelo-5" spellcheck="false" />
-          </label>
-          <button type="button" id="btn-share" class="chip">Save & copy link</button>
-          <div class="modes" role="group" aria-label="Color mode">
+          <div class="menu" id="file-menu">
+            <button type="button" id="btn-file" class="chip disclosure" aria-expanded="false" aria-controls="file-panel">
+              File <span class="caret" aria-hidden="true">^</span>
+            </button>
+            <div id="file-panel" class="menu-panel" hidden>
+              <label class="file-btn">
+                Open track
+                <input id="file-input" type="file" accept=".gpx,.igc,.GPX,.IGC" />
+              </label>
+              <label class="slug">
+                <span>Slug</span>
+                <input id="slug-input" class="slug-input" type="text" maxlength="64" value="vuelo-5" spellcheck="false" />
+              </label>
+              <button type="button" id="btn-share" class="chip">Save & copy link</button>
+            </div>
+          </div>
+          <div class="modes color-modes" role="group" aria-label="Track color">
+            <span class="group-label">Color</span>
             <button type="button" data-mode="altitude" class="chip active">Alt</button>
             <button type="button" data-mode="speed" class="chip">Speed</button>
             <button type="button" data-mode="vario" class="chip">Vario</button>
@@ -43,16 +51,16 @@
       <aside id="hud" class="hud" hidden>
         <div><span>ALT</span><strong id="stat-alt">—</strong></div>
         <div><span>SPD</span><strong id="stat-spd">—</strong></div>
-        <div><span>VARIO</span><strong id="stat-vario">—</strong></div>
-        <div><span>DIST</span><strong id="stat-dist">—</strong></div>
+        <div class="hud-extra"><span>VARIO</span><strong id="stat-vario">—</strong></div>
+        <div class="hud-extra"><span>DIST</span><strong id="stat-dist">—</strong></div>
         <div><span>TIME</span><strong id="stat-time">—</strong></div>
-        <div><span>UTC</span><strong id="stat-utc">—</strong></div>
+        <div class="hud-extra"><span>UTC</span><strong id="stat-utc">—</strong></div>
       </aside>
 
       <p id="status" class="status">Preparing 3D globe…</p>
 
       <footer class="transport">
-        <div class="transport-row">
+        <div class="transport-row transport-primary">
           <button type="button" id="btn-play" class="play">Play</button>
           <button type="button" id="btn-follow" class="chip" aria-pressed="true">Follow</button>
           <div class="modes" role="group" aria-label="Follow heading">
@@ -60,25 +68,32 @@
             <button type="button" data-follow-mode="relative" class="chip active">Relative</button>
           </div>
           <button type="button" id="btn-overview" class="chip">Overview</button>
-          <label class="speed">
-            <span>Speed</span>
-            <select id="play-speed">
-              <option value="1">1×</option>
-              <option value="5">5×</option>
-              <option value="10">10×</option>
-              <option value="20" selected>20×</option>
-              <option value="50">50×</option>
-              <option value="100">100×</option>
-            </select>
-          </label>
-          <button type="button" id="btn-skip-ground" class="chip">Skip ground</button>
-          <button type="button" id="btn-start-here" class="chip">Start here</button>
-          <button type="button" id="btn-end-here" class="chip">End here</button>
-          <button type="button" id="btn-tag" class="chip">Tag</button>
+          <button type="button" id="btn-more" class="chip disclosure" aria-expanded="false" aria-controls="more-panel">
+            More <span class="caret" aria-hidden="true">^</span>
+          </button>
           <p id="summary" class="summary"></p>
         </div>
-        <div id="tag-list" class="tag-list" hidden></div>
-        <canvas id="profile" height="100" aria-label="Altitude profile and trim"></canvas>
+        <div id="more-panel" class="more-panel" hidden>
+          <div class="transport-row">
+            <label class="speed">
+              <span>Speed</span>
+              <select id="play-speed">
+                <option value="1">1×</option>
+                <option value="5">5×</option>
+                <option value="10">10×</option>
+                <option value="20" selected>20×</option>
+                <option value="50">50×</option>
+                <option value="100">100×</option>
+              </select>
+            </label>
+            <button type="button" id="btn-skip-ground" class="chip">Skip ground</button>
+            <button type="button" id="btn-start-here" class="chip">Start here</button>
+            <button type="button" id="btn-end-here" class="chip">End here</button>
+            <button type="button" id="btn-tag" class="chip">Tag</button>
+          </div>
+          <div id="tag-list" class="tag-list" hidden></div>
+          <canvas id="profile" height="100" aria-label="Altitude profile and trim"></canvas>
+        </div>
       </footer>
     </div>
 
