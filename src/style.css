@@ -80,7 +80,9 @@ select,
 .more-panel,
 .tags-panel,
 .tags,
-.toast {
+.toast,
+.auth-hint,
+#btn-login {
   pointer-events: auto;
 }
 
@@ -240,6 +242,19 @@ select,
   padding: 4px 2px;
   font: 500 13px Outfit, sans-serif;
   outline: none;
+}
+
+.auth-hint {
+  margin: 0;
+  width: 100%;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#btn-login {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
 }
 
 #tag-label {

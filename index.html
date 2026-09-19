@@ -23,6 +23,8 @@
           <p id="flight-name" class="flight-name">Loading…</p>
         </div>
         <div class="top-actions">
+          <a id="btn-login" class="chip" href="/login">Log in</a>
+          <button type="button" id="btn-logout" class="chip" hidden>Log out</button>
           <div class="menu" id="file-menu">
             <button type="button" id="btn-file" class="chip disclosure" aria-expanded="false" aria-controls="file-panel">
               File <span class="caret" aria-hidden="true">^</span>
@@ -37,6 +39,7 @@
                 <input id="slug-input" class="slug-input" type="text" maxlength="64" value="vuelo-5" spellcheck="false" />
               </label>
               <button type="button" id="btn-share" class="chip">Save & copy link</button>
+              <p id="auth-hint" class="auth-hint">Log in to upload and save a shareable slug.</p>
             </div>
           </div>
           <div class="readout-stack">

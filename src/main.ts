@@ -1,6 +1,6 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import "./style.css";
-import { getFlight, saveFlight, shareUrl } from "./api";
+import { getAuth, getFlight, loginUrl, logout, saveFlight, shareUrl, type AuthStatus } from "./api";
 import { formatClock, formatDuration } from "./track/geo";
 import { parseFlight, sampleAt } from "./track/parse";
 import { isValidSlug, normalizeSlug, slugFromPath } from "./track/slug";
@@ -41,6 +41,32 @@ const tagsButton = document.querySelector<HTMLButtonElement>("#btn-tags")!;
 const tagsPanel = document.querySelector<HTMLDivElement>("#tags-panel")!;
 const moreButton = document.querySelector<HTMLButtonElement>("#btn-more")!;
 const morePanel = document.querySelector<HTMLDivElement>("#more-panel")!;
+const shareButtonLabel = shareButton.textContent ?? "Save & copy link";
+const authHint = document.querySelector<HTMLParagraphElement>("#auth-hint")!;
+const loginLink = document.querySelector<HTMLAnchorElement>("#btn-login")!;
+const logoutButton = document.querySelector<HTMLButtonElement>("#btn-logout")!;
+
+let auth: AuthStatus = { authenticated: false, configured: true };
+
+function syncAuthUi(): void {
+  loginLink.href = loginUrl();
+  loginLink.hidden = auth.authenticated;
+  logoutButton.hidden = !auth.authenticated;
+  if (!auth.configured) {
+    authHint.hidden = false;
+    authHint.textContent = "Upload is locked until FLIGHT_VIS_PASSWORD is set.";
+    shareButton.textContent = "Save locked";
+    return;
+  }
+  if (auth.authenticated) {
+    authHint.hidden = true;
+    shareButton.textContent = shareButtonLabel;
+    return;
+  }
+  authHint.hidden = false;
+  authHint.textContent = "Log in to upload and save a shareable slug.";
+  shareButton.textContent = "Log in to save";
+}
 
 const ctx = profile.getContext("2d")!;
 
@@ -449,8 +475,18 @@ async function boot(): Promise<void> {
     viewer.setTags(tags);
   });
 
+  logoutButton.addEventListener("click", async () => {
+    await logout();
+    auth = { authenticated: false, configured: auth.configured };
+    syncAuthUi();
+  });
+
   shareButton.addEventListener("click", async () => {
     if (!flight || !trim) return;
+    if (!auth.authenticated) {
+      window.location.href = loginUrl();
+      return;
+    }
     const slug = normalizeSlug(slugInput.value);
     if (!isValidSlug(slug)) {
       setStatus("Slug must be lowercase letters, numbers, and dashes.");
@@ -587,6 +623,13 @@ async function boot(): Promise<void> {
       return false;
     }
   }
+
+  try {
+    auth = await getAuth();
+  } catch {
+    auth = { authenticated: false, configured: true };
+  }
+  syncAuthUi();
 
   try {
     const slug = pathSlug();

@@ -5,6 +5,8 @@ const RESERVED = new Set([
   "samples",
   "static",
   "health",
+  "login",
+  "logout",
   "favicon.ico",
 ]);
 
