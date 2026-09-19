@@ -97,6 +97,7 @@ select,
   justify-content: space-between;
   gap: 16px;
   align-items: flex-start;
+  z-index: 11;
 }
 
 .brand {
@@ -127,6 +128,8 @@ select,
 
 .top-actions {
   align-items: flex-start;
+  margin-left: auto;
+  justify-content: flex-end;
 }
 
 .readout-stack {
@@ -257,12 +260,12 @@ select,
   position: absolute;
   top: 88px;
   left: 16px;
-  bottom: 100px;
-  z-index: 9;
+  bottom: 120px;
+  z-index: 8;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  width: min(340px, calc(100vw - 32px));
+  width: min(320px, calc(100vw - 32px));
   padding: 12px;
   border-radius: 16px;
   background: var(--panel);
@@ -323,7 +326,8 @@ select,
 }
 
 .library-item.active {
-  border-color: rgba(103, 232, 249, 0.55);
+  border-color: rgba(103, 232, 249, 0.7);
+  background: rgba(103, 232, 249, 0.08);
 }
 
 .library-open {
@@ -465,6 +469,7 @@ body.hud-clipped:not(.hud-open).hud-rows-1 .hud-stat:nth-child(n + 3) {
   left: 16px;
   right: 16px;
   bottom: 16px;
+  z-index: 10;
   background: var(--panel);
   border: 1px solid var(--stroke);
   border-radius: 18px;
@@ -579,10 +584,10 @@ dialog input {
   }
 
   .library-panel {
-    top: 72px;
+    top: 64px;
     left: 8px;
     right: 8px;
-    bottom: 90px;
+    bottom: 110px;
     width: auto;
   }
 
