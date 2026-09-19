@@ -103,7 +103,7 @@ select,
 body.library-open .topbar,
 body.library-open .transport,
 body.library-open .status {
-  left: 352px;
+  left: 312px;
 }
 
 .brand {
@@ -271,7 +271,7 @@ body.library-open .status {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  width: 320px;
+  width: 280px;
   padding: 12px;
   border-radius: 16px;
   background: var(--panel);
