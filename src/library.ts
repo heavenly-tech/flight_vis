@@ -72,6 +72,7 @@ export function mountLibrary(opts: {
     panel.hidden = !open;
     button.setAttribute("aria-expanded", String(open));
     document.body.classList.toggle("library-open", open);
+    window.dispatchEvent(new Event("resize"));
     if (open) void refresh();
   }
 
