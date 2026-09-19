@@ -58,6 +58,7 @@ export function mountLibrary(opts: {
   const renameSlug = document.querySelector<HTMLInputElement>("#rename-slug")!;
   const renameWarn = document.querySelector<HTMLParagraphElement>("#rename-warn")!;
   const renameOverwrite = document.querySelector<HTMLButtonElement>("#rename-overwrite")!;
+  const renameSave = document.querySelector<HTMLButtonElement>("#rename-save")!;
   const renameCancel = document.querySelector<HTMLButtonElement>("#rename-cancel")!;
   const deleteDialog = document.querySelector<HTMLDialogElement>("#delete-dialog")!;
   const deleteForm = document.querySelector<HTMLFormElement>("#delete-form")!;
@@ -148,13 +149,18 @@ export function mountLibrary(opts: {
     render();
   }
 
+  function resetRenameActions(): void {
+    renameWarn.hidden = true;
+    renameWarn.textContent = "";
+    renameOverwrite.hidden = true;
+    renameSave.hidden = false;
+  }
+
   function openRename(item: FlightListItem): void {
     renaming = item;
     renameName.value = item.name;
     renameSlug.value = item.slug;
-    renameWarn.hidden = true;
-    renameWarn.textContent = "";
-    renameOverwrite.hidden = true;
+    resetRenameActions();
     renameDialog.showModal();
     renameName.focus();
     renameName.select();
@@ -181,21 +187,28 @@ export function mountLibrary(opts: {
       return;
     }
     try {
+      renameSave.disabled = true;
+      renameOverwrite.disabled = true;
       const from = renaming.slug;
       const saved = await renameFlight(from, { name, slug, overwrite });
       renameDialog.close();
       renaming = null;
+      resetRenameActions();
       opts.onRenamed(from, saved);
       await refresh();
     } catch (error) {
-      if (error instanceof SlugConflictError) {
+      if (error instanceof SlugConflictError && !overwrite) {
         renameWarn.hidden = false;
         renameWarn.textContent = `/${error.slug} already exists. Overwrite that flight?`;
+        renameSave.hidden = true;
         renameOverwrite.hidden = false;
         return;
       }
       renameWarn.hidden = false;
       renameWarn.textContent = error instanceof Error ? error.message : "Could not rename";
+    } finally {
+      renameSave.disabled = false;
+      renameOverwrite.disabled = false;
     }
   }
 
@@ -263,14 +276,24 @@ export function mountLibrary(opts: {
 
   renameForm.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (renameSave.hidden) return;
     void applyRename(false);
   });
-  renameOverwrite.addEventListener("click", () => {
+  renameOverwrite.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
     void applyRename(true);
   });
-  renameCancel.addEventListener("click", () => {
+  renameCancel.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
     renameDialog.close();
     renaming = null;
+    resetRenameActions();
+  });
+  renameDialog.addEventListener("close", () => {
+    renaming = null;
+    resetRenameActions();
   });
 
   deleteForm.addEventListener("submit", (event) => {
