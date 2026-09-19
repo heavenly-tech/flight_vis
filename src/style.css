@@ -100,6 +100,12 @@ select,
   z-index: 11;
 }
 
+body.library-open .topbar,
+body.library-open .transport,
+body.library-open .status {
+  left: 312px;
+}
+
 .brand {
   margin: 0;
   letter-spacing: 0.18em;
@@ -258,14 +264,14 @@ select,
 
 .library-panel {
   position: absolute;
-  top: 88px;
+  top: 16px;
   left: 16px;
-  bottom: 120px;
+  bottom: 16px;
   z-index: 8;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  width: min(320px, calc(100vw - 32px));
+  width: 280px;
   padding: 12px;
   border-radius: 16px;
   background: var(--panel);
@@ -583,8 +589,14 @@ dialog input {
     white-space: nowrap;
   }
 
+  body.library-open .topbar,
+  body.library-open .transport,
+  body.library-open .status {
+    left: 8px;
+  }
+
   .library-panel {
-    top: 64px;
+    top: 56px;
     left: 8px;
     right: 8px;
     bottom: 110px;
