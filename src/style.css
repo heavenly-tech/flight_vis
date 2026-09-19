@@ -82,7 +82,9 @@ select,
 .tags,
 .toast,
 .auth-hint,
-#btn-login {
+.library-panel,
+#btn-login,
+#btn-library {
   pointer-events: auto;
 }
 
@@ -95,6 +97,7 @@ select,
   justify-content: space-between;
   gap: 16px;
   align-items: flex-start;
+  z-index: 11;
 }
 
 .brand {
@@ -125,6 +128,8 @@ select,
 
 .top-actions {
   align-items: flex-start;
+  margin-left: auto;
+  justify-content: flex-end;
 }
 
 .readout-stack {
@@ -251,6 +256,136 @@ select,
   font-size: 12px;
 }
 
+.library-panel {
+  position: absolute;
+  top: 88px;
+  left: 16px;
+  bottom: 120px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(320px, calc(100vw - 32px));
+  padding: 12px;
+  border-radius: 16px;
+  background: var(--panel);
+  border: 1px solid var(--stroke);
+  backdrop-filter: blur(18px);
+}
+
+.library-panel.drop-hover {
+  border-color: var(--cyan);
+}
+
+.library-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.library-head h2 {
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cyan);
+}
+
+.library-hint,
+.library-drop {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.library-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.library-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.library-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--stroke);
+  border-radius: 12px;
+  background: rgba(7, 9, 13, 0.35);
+}
+
+.library-item.active {
+  border-color: rgba(103, 232, 249, 0.7);
+  background: rgba(103, 232, 249, 0.08);
+}
+
+.library-open {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+
+.library-open strong {
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.library-open span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.library-item-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.chip.danger {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.dialog-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.dialog-field span {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.dialog-warn {
+  color: #fca5a5;
+  font-size: 13px;
+  margin: 0 0 8px;
+}
+
 #btn-login {
   text-decoration: none;
   display: inline-flex;
@@ -334,6 +469,7 @@ body.hud-clipped:not(.hud-open).hud-rows-1 .hud-stat:nth-child(n + 3) {
   left: 16px;
   right: 16px;
   bottom: 16px;
+  z-index: 10;
   background: var(--panel);
   border: 1px solid var(--stroke);
   border-radius: 18px;
@@ -445,6 +581,14 @@ dialog input {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .library-panel {
+    top: 64px;
+    left: 8px;
+    right: 8px;
+    bottom: 110px;
+    width: auto;
   }
 
   .top-actions {

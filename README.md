@@ -22,18 +22,22 @@ App-level login — **not** nginx `htpasswd`.
 | --- | --- |
 | `GET /vuelo-5` and other shareable slugs | Public |
 | `GET /api/flights/:slug` | Public |
-| `GET /api/flights` (directory listing) | Session |
-| `PUT /api/flights/:slug` (upload / save) | Session |
+| `GET /api/flights` (library listing) | Session |
+| `POST /api/flights` (multi-file upload) | Session |
+| `PUT /api/flights/:slug` (save current track) | Session |
+| `PATCH /api/flights/:slug` (rename / change slug) | Session |
+| `DELETE /api/flights/:slug` | Session |
 | `GET/POST /login`, `GET/POST /logout`, `GET /api/auth/me` | Public |
 
 Set `FLIGHT_VIS_PASSWORD` on the host. If it is unset, existing slugs still render and upload/save stay locked.
 
 1. Open [`/login`](https://flight.heavenly.cl/login) and enter the password.
 2. Session cookie `fv_session` is HttpOnly, SameSite=Lax, 7 days (Secure behind HTTPS).
-3. **File → Open track** accepts `.igc` / `.gpx` (the formats the viewer already parses). Local preview does not write to disk.
-4. Pick a slug and **Save & copy link** to persist the track, trim, and tags. That `PUT` is the authenticated upload.
+3. After login, **Library** lists tracks stored under `FLIGHT_DATA`: open one in the viewer, rename (name or shareable slug), or delete (with confirmation). Changing a slug updates the URL; a taken slug needs an overwrite confirm so it is not clobbered by accident.
+4. **Library → Upload tracks** (or drop several `.igc` / `.gpx` files) saves each one with a slug from the filename. If that slug exists, the server adds `-2`, `-3`, …
+5. **File → Open track** still previews one local file without writing. Pick a slug and **Save & copy link** to persist the current viewer state (track, trim, tags).
 
-Log out from the File menu or `GET/POST /logout`.
+Public slug pages (`/vuelo-5`) stay viewable without login. Log out from the top bar or `GET/POST /logout`.
 
 ### Environment
 
@@ -56,7 +60,7 @@ npm run dev            # Vite on :5173, proxies /api, /login, /logout
 npm test
 ```
 
-Open `http://localhost:5173/vuelo-5`. Drag the profile handles to crop taxi, **Skip ground** to auto-trim, **Tag** to mark events, **Save** (after login) to keep the slug.
+Open `http://localhost:5173/vuelo-5`. After login the **Library** panel lists saved flights. Drag the profile handles to crop taxi, **Skip ground** to auto-trim, **Tag** to mark events, **Save** to keep the current slug.
 
 Without a password, the globe and public slugs still work; Save stays locked.
 
@@ -80,7 +84,7 @@ Do this on the VPS stack, not in git:
    ```
 
    Compose already interpolates `FLIGHT_VIS_PASSWORD` into the container. Recreate the container after changing it (sessions are signed with the password, so a change logs everyone out).
-3. Confirm [flight.heavenly.cl/login](https://flight.heavenly.cl/login) accepts the password, then **File → Open track → Save & copy link**.
+3. Confirm [flight.heavenly.cl/login](https://flight.heavenly.cl/login) accepts the password, then **Library** (list / upload / rename / delete) or **File → Open track → Save & copy link**.
 4. Leave nginx-proxy as host routing only. Do **not** add `htpasswd`. Do **not** enable GitHub Pages.
 
 Existing shareable slugs stay publicly viewable. The flight list and all writes require a session.

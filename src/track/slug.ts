@@ -25,6 +25,16 @@ export function isValidSlug(slug: string): boolean {
   return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) && !RESERVED.has(slug);
 }
 
+export function slugFromFileName(fileName: string): string {
+  const base = fileName.replace(/\.[^.]+$/, "");
+  const slug = normalizeSlug(base);
+  return isValidSlug(slug) ? slug : "track";
+}
+
+export function nameFromFileName(fileName: string): string {
+  return fileName.replace(/\.[^.]+$/, "") || "track";
+}
+
 export function slugFromPath(pathname: string): string | null {
   const raw = pathname.replace(/^\//, "").replace(/\/$/, "");
   if (!raw || raw.includes("/")) return null;

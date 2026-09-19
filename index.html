@@ -25,6 +25,9 @@
         <div class="top-actions">
           <a id="btn-login" class="chip" href="/login">Log in</a>
           <button type="button" id="btn-logout" class="chip" hidden>Log out</button>
+          <button type="button" id="btn-library" class="chip disclosure" aria-expanded="false" aria-controls="library-panel">
+            Library <span class="caret" aria-hidden="true">^</span>
+          </button>
           <div class="menu" id="file-menu">
             <button type="button" id="btn-file" class="chip disclosure" aria-expanded="false" aria-controls="file-panel">
               File <span class="caret" aria-hidden="true">^</span>
@@ -34,6 +37,7 @@
                 Open track
                 <input id="file-input" type="file" accept=".gpx,.igc,.GPX,.IGC" />
               </label>
+              <p class="auth-hint">Open one file to preview. Use Library to save several tracks.</p>
               <label class="slug">
                 <span>Slug</span>
                 <input id="slug-input" class="slug-input" type="text" maxlength="64" value="vuelo-5" spellcheck="false" />
@@ -63,6 +67,23 @@
           </div>
         </div>
       </header>
+
+      <aside id="library-panel" class="library-panel" hidden>
+        <div class="library-head">
+          <h2>Library</h2>
+          <button type="button" id="btn-library-close" class="chip">Close</button>
+        </div>
+        <p id="library-hint" class="library-hint">Saved tracks on this server.</p>
+        <div id="library-tools" class="library-tools" hidden>
+          <label class="file-btn">
+            Upload tracks
+            <input id="library-input" type="file" accept=".gpx,.igc,.GPX,.IGC" multiple />
+          </label>
+          <p class="library-drop">Drop .igc / .gpx here to save</p>
+        </div>
+        <a id="library-login" class="chip" href="/login" hidden>Log in to manage</a>
+        <ul id="library-list" class="library-list"></ul>
+      </aside>
 
       <p id="status" class="status">Preparing 3D globe…</p>
 
@@ -108,6 +129,37 @@
         </div>
       </footer>
     </div>
+
+    <dialog id="rename-dialog">
+      <form id="rename-form">
+        <p>Rename saved flight</p>
+        <label class="dialog-field">
+          <span>Name</span>
+          <input id="rename-name" name="name" type="text" maxlength="80" required />
+        </label>
+        <label class="dialog-field">
+          <span>Slug</span>
+          <input id="rename-slug" name="slug" type="text" maxlength="64" spellcheck="false" required />
+        </label>
+        <p id="rename-warn" class="dialog-warn" hidden></p>
+        <div class="dialog-actions">
+          <button type="submit" class="play">Save</button>
+          <button type="button" id="rename-overwrite" class="chip danger" hidden>Overwrite</button>
+          <button type="button" id="rename-cancel" class="chip">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="delete-dialog">
+      <form method="dialog" id="delete-form">
+        <p>Delete <strong id="delete-label"></strong>?</p>
+        <p class="dialog-warn">This removes the saved track. The shareable URL will stop working.</p>
+        <div class="dialog-actions">
+          <button type="submit" value="ok" class="chip danger">Delete</button>
+          <button type="submit" value="cancel" formnovalidate class="chip">Cancel</button>
+        </div>
+      </form>
+    </dialog>
 
     <dialog id="tag-dialog">
       <form method="dialog" id="tag-form">
