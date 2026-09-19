@@ -1,5 +1,5 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
@@ -56,6 +56,30 @@ export function isValidSlug(slug) {
   return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) && !RESERVED.has(slug);
 }
 
+export function slugFromFileName(fileName) {
+  const base = String(fileName || "").replace(/\.[^.]+$/, "");
+  const slug = normalizeSlug(base);
+  return isValidSlug(slug) ? slug : "track";
+}
+
+export function nameFromFileName(fileName) {
+  return String(fileName || "track").replace(/\.[^.]+$/, "") || "track";
+}
+
+export function allocateSlug(desired, taken) {
+  const base = isValidSlug(desired) ? desired : "track";
+  if (!taken.has(base)) return base;
+  for (let n = 2; n < 10000; n++) {
+    const suffix = `-${n}`;
+    const candidate = normalizeSlug(`${base.slice(0, 64 - suffix.length)}${suffix}`);
+    const slug = isValidSlug(candidate) ? candidate : `track${suffix}`;
+    if (!taken.has(slug)) return slug;
+  }
+  const error = new Error("Could not allocate slug");
+  error.status = 409;
+  throw error;
+}
+
 export function createStore(dataDir) {
   const flightsDir = path.join(dataDir, "flights");
 
@@ -101,6 +125,23 @@ export function createStore(dataDir) {
     return { ...meta, track };
   }
 
+  function exists(slug) {
+    const dir = flightDir(slug);
+    return existsSync(path.join(dir, "meta.json")) && existsSync(path.join(dir, "track"));
+  }
+
+  function summarize(slug, meta) {
+    const size = statSync(path.join(flightDir(slug), "track")).size;
+    return {
+      slug,
+      name: meta.name || slug,
+      fileName: meta.fileName || "track",
+      updatedAt: meta.updatedAt || null,
+      createdAt: meta.createdAt || null,
+      size,
+    };
+  }
+
   async function listFlights() {
     await mkdir(flightsDir, { recursive: true });
     const slugs = (await readdir(flightsDir, { withFileTypes: true }))
@@ -109,15 +150,133 @@ export function createStore(dataDir) {
       .filter(isValidSlug);
     const items = [];
     for (const slug of slugs) {
-      const record = await readMeta(slug);
-      if (!record) continue;
-      items.push({ slug: record.slug, name: record.name, updatedAt: record.updatedAt });
+      const metaPath = path.join(flightDir(slug), "meta.json");
+      const trackPath = path.join(flightDir(slug), "track");
+      if (!existsSync(metaPath) || !existsSync(trackPath)) continue;
+      const meta = JSON.parse(await readFile(metaPath, "utf8"));
+      items.push(summarize(slug, meta));
     }
-    items.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    items.sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
     return items;
   }
 
-  return { flightsDir, flightDir, readMeta, writeFlight, listFlights };
+  async function deleteFlight(slug) {
+    if (!exists(slug)) {
+      const error = new Error("Not found");
+      error.status = 404;
+      throw error;
+    }
+    await rm(flightDir(slug), { recursive: true, force: true });
+  }
+
+  async function renameFlight(fromSlug, body = {}) {
+    if (!exists(fromSlug)) {
+      const error = new Error("Not found");
+      error.status = 404;
+      throw error;
+    }
+
+    const nextName = body.name != null ? String(body.name).trim() : "";
+    const requested = body.slug != null ? normalizeSlug(body.slug) : fromSlug;
+    if (body.slug != null && !isValidSlug(requested)) {
+      const error = new Error("Invalid slug");
+      error.status = 400;
+      throw error;
+    }
+
+    const nextSlug = requested;
+    if (nextSlug !== fromSlug) {
+      if (exists(nextSlug) && !body.overwrite) {
+        const error = new Error("exists");
+        error.status = 409;
+        error.slug = nextSlug;
+        throw error;
+      }
+      if (exists(nextSlug) && body.overwrite) {
+        await rm(flightDir(nextSlug), { recursive: true, force: true });
+      }
+      await rename(flightDir(fromSlug), flightDir(nextSlug));
+    }
+
+    const metaPath = path.join(flightDir(nextSlug), "meta.json");
+    const meta = JSON.parse(await readFile(metaPath, "utf8"));
+    if (nextName) meta.name = nextName;
+    meta.slug = nextSlug;
+    meta.updatedAt = new Date().toISOString();
+    await writeFile(metaPath, JSON.stringify(meta, null, 2));
+    return summarize(nextSlug, meta);
+  }
+
+  async function uploadFlights(files, conflict = "suffix") {
+    if (!Array.isArray(files) || files.length === 0) {
+      const error = new Error("Files are required");
+      error.status = 400;
+      throw error;
+    }
+    if (files.length > 50) {
+      const error = new Error("Too many files");
+      error.status = 400;
+      throw error;
+    }
+
+    const mode = conflict === "overwrite" || conflict === "error" ? conflict : "suffix";
+    const taken = new Set((await listFlights()).map((item) => item.slug));
+    const existing = [];
+    const prepared = [];
+
+    for (const file of files) {
+      const fileName = String(file?.fileName || "track");
+      const track = file?.track;
+      if (!track || typeof track !== "string") {
+        const error = new Error("Track file is required");
+        error.status = 400;
+        throw error;
+      }
+      const desired = file.slug != null ? normalizeSlug(file.slug) : slugFromFileName(fileName);
+      const base = isValidSlug(desired) ? desired : slugFromFileName(fileName);
+      if (taken.has(base) && mode === "error") {
+        existing.push(base);
+        continue;
+      }
+      const slug = taken.has(base) && mode !== "overwrite" ? allocateSlug(base, taken) : base;
+      const name = String(file.name || "").trim() || nameFromFileName(fileName);
+      prepared.push({ slug, name, fileName, track });
+      taken.add(slug);
+    }
+
+    if (mode === "error" && existing.length) {
+      const error = new Error("exists");
+      error.status = 409;
+      error.slugs = [...new Set(existing)];
+      throw error;
+    }
+
+    const items = [];
+    for (const item of prepared) {
+      const saved = await writeFlight(item.slug, {
+        name: item.name,
+        fileName: item.fileName,
+        track: item.track,
+        tags: [],
+        trimStartMs: null,
+        trimEndMs: null,
+      });
+      items.push(summarize(item.slug, saved));
+    }
+    return { items };
+  }
+
+  return {
+    flightsDir,
+    flightDir,
+    readMeta,
+    writeFlight,
+    listFlights,
+    deleteFlight,
+    renameFlight,
+    uploadFlights,
+    exists,
+  };
 }
 
 export async function seed(dataDir, options = {}) {
@@ -288,6 +447,41 @@ export function createApp(options = {}) {
     const body = await c.req.json();
     try {
       return c.json(await store.writeFlight(slug, body));
+    } catch (error) {
+      return c.json({ error: error.message }, error.status || 500);
+    }
+  });
+
+  app.post("/api/flights", requireAuth, async (c) => {
+    const body = await c.req.json().catch(() => ({}));
+    try {
+      return c.json(await store.uploadFlights(body.files, body.conflict));
+    } catch (error) {
+      const payload = { error: error.message };
+      if (error.slugs) payload.slugs = error.slugs;
+      return c.json(payload, error.status || 500);
+    }
+  });
+
+  app.patch("/api/flights/:slug", requireAuth, async (c) => {
+    const slug = normalizeSlug(c.req.param("slug"));
+    if (!isValidSlug(slug)) return c.json({ error: "Invalid slug" }, 400);
+    const body = await c.req.json().catch(() => ({}));
+    try {
+      return c.json(await store.renameFlight(slug, body));
+    } catch (error) {
+      const payload = { error: error.message };
+      if (error.slug) payload.slug = error.slug;
+      return c.json(payload, error.status || 500);
+    }
+  });
+
+  app.delete("/api/flights/:slug", requireAuth, async (c) => {
+    const slug = normalizeSlug(c.req.param("slug"));
+    if (!isValidSlug(slug)) return c.json({ error: "Invalid slug" }, 400);
+    try {
+      await store.deleteFlight(slug);
+      return c.json({ ok: true });
     } catch (error) {
       return c.json({ error: error.message }, error.status || 500);
     }

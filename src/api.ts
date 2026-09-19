@@ -16,6 +16,24 @@ export type AuthStatus = {
   configured: boolean;
 };
 
+export type FlightListItem = {
+  slug: string;
+  name: string;
+  fileName: string;
+  updatedAt: string | null;
+  createdAt: string | null;
+  size: number;
+};
+
+function throwAuthOr(res: Response, body: { error?: string }, fallback: string): never {
+  if (res.status === 401) {
+    throw new Error(
+      body.error === "locked" ? "Upload is locked until FLIGHT_VIS_PASSWORD is set." : "Log in to manage saved flights.",
+    );
+  }
+  throw new Error(body.error || fallback);
+}
+
 export function shareUrl(slug: string): string {
   return `${window.location.origin}/${slug}`;
 }
@@ -70,4 +88,64 @@ export async function saveFlight(input: {
     throw new Error(text || "Could not save flight");
   }
   return res.json() as Promise<FlightRecord>;
+}
+
+export async function listFlights(): Promise<FlightListItem[]> {
+  const res = await fetch("/api/flights", { credentials: "same-origin" });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throwAuthOr(res, body, "Could not list flights");
+  }
+  return res.json() as Promise<FlightListItem[]>;
+}
+
+export async function uploadFlights(
+  files: { fileName: string; track: string; name?: string; slug?: string }[],
+  conflict: "suffix" | "error" | "overwrite" = "suffix",
+): Promise<{ items: FlightListItem[] }> {
+  const res = await fetch("/api/flights", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ files, conflict }),
+  });
+  const body = (await res.json().catch(() => ({}))) as { error?: string; items?: FlightListItem[] };
+  if (!res.ok) throwAuthOr(res, body, body.error || "Could not upload flights");
+  return body as { items: FlightListItem[] };
+}
+
+export class SlugConflictError extends Error {
+  slug: string;
+  constructor(slug: string) {
+    super("exists");
+    this.name = "SlugConflictError";
+    this.slug = slug;
+  }
+}
+
+export async function renameFlight(
+  slug: string,
+  input: { slug?: string; name?: string; overwrite?: boolean },
+): Promise<FlightListItem> {
+  const res = await fetch(`/api/flights/${encodeURIComponent(slug)}`, {
+    method: "PATCH",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  const body = (await res.json().catch(() => ({}))) as FlightListItem & { error?: string; slug?: string };
+  if (res.status === 409) throw new SlugConflictError(body.slug || input.slug || slug);
+  if (!res.ok) throwAuthOr(res, body, body.error || "Could not rename flight");
+  return body;
+}
+
+export async function deleteFlight(slug: string): Promise<void> {
+  const res = await fetch(`/api/flights/${encodeURIComponent(slug)}`, {
+    method: "DELETE",
+    credentials: "same-origin",
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throwAuthOr(res, body, body.error || "Could not delete flight");
+  }
 }

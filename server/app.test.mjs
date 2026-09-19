@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, describe, it } from "node:test";
 import { COOKIE, createAuth, parseCookie } from "./auth.mjs";
-import { createApp, seed } from "./app.mjs";
+import { allocateSlug, createApp, seed, slugFromFileName } from "./app.mjs";
 
 const TRACK = `<?xml version="1.0"?>
 <gpx version="1.1"><trk><name>Test</name><trkseg>
@@ -153,5 +153,181 @@ describe("flight API auth", () => {
 
     const me = await app.request("/api/auth/me");
     assert.deepEqual(await me.json(), { authenticated: false, configured: true });
+  });
+});
+
+describe("flight library", () => {
+  let dataDir;
+  let distDir;
+  let app;
+  const auth = createAuth({ FLIGHT_VIS_PASSWORD: "secret" });
+
+  before(async () => {
+    dataDir = await mkdtemp(path.join(os.tmpdir(), "flight-lib-"));
+    distDir = path.join(dataDir, "dist");
+    await mkdir(distDir, { recursive: true });
+    await writeFile(path.join(distDir, "index.html"), "<html>app</html>");
+    await writeFile(path.join(distDir, "login.html"), "<html>login</html>");
+    app = createApp({ dataDir, distDir, auth });
+  });
+
+  after(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  function cookie() {
+    return `${COOKIE}=${auth.mint()}`;
+  }
+
+  async function putFlight(slug, extra = {}) {
+    return app.request(`/api/flights/${slug}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Cookie: cookie() },
+      body: JSON.stringify({
+        name: extra.name || slug,
+        fileName: extra.fileName || `${slug}.gpx`,
+        track: extra.track || TRACK,
+        tags: [],
+      }),
+    });
+  }
+
+  it("derives slugs from filenames and suffixes collisions", () => {
+    assert.equal(slugFromFileName("Ridge Run.IGC"), "ridge-run");
+    assert.equal(slugFromFileName("api.gpx"), "track");
+    const taken = new Set(["ridge-run"]);
+    assert.equal(allocateSlug("ridge-run", taken), "ridge-run-2");
+  });
+
+  it("rejects unauthenticated list extras, upload, rename, and delete", async () => {
+    const upload = await app.request("/api/flights", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ files: [{ fileName: "a.gpx", track: TRACK }] }),
+    });
+    assert.equal(upload.status, 401);
+
+    const patch = await app.request("/api/flights/demo", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ slug: "other" }),
+    });
+    assert.equal(patch.status, 401);
+
+    const del = await app.request("/api/flights/demo", { method: "DELETE" });
+    assert.equal(del.status, 401);
+  });
+
+  it("lists saved flights with size and mtime after login", async () => {
+    assert.equal((await putFlight("alpha", { name: "Alpha" })).status, 200);
+
+    const anon = await app.request("/api/flights");
+    assert.equal(anon.status, 401);
+
+    const list = await app.request("/api/flights", { headers: { Cookie: cookie() } });
+    assert.equal(list.status, 200);
+    const items = await list.json();
+    const alpha = items.find((item) => item.slug === "alpha");
+    assert.equal(alpha.name, "Alpha");
+    assert.equal(alpha.fileName, "alpha.gpx");
+    assert.equal(typeof alpha.size, "number");
+    assert.equal(alpha.size > 0, true);
+    assert.equal(typeof alpha.updatedAt, "string");
+  });
+
+  it("uploads several tracks with filename slugs and suffixes conflicts", async () => {
+    const first = await app.request("/api/flights", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie() },
+      body: JSON.stringify({
+        files: [
+          { fileName: "Cerro Provincia.igc", track: TRACK },
+          { fileName: "cerro-provincia.gpx", track: TRACK },
+        ],
+      }),
+    });
+    assert.equal(first.status, 200);
+    const created = await first.json();
+    assert.deepEqual(
+      created.items.map((item) => item.slug).sort(),
+      ["cerro-provincia", "cerro-provincia-2"],
+    );
+    assert.equal(created.items[0].name.includes("Cerro") || created.items[1].name.includes("Cerro"), true);
+
+    const clash = await app.request("/api/flights", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Cookie: cookie() },
+      body: JSON.stringify({
+        conflict: "error",
+        files: [{ fileName: "cerro-provincia.gpx", track: TRACK }],
+      }),
+    });
+    assert.equal(clash.status, 409);
+    assert.deepEqual((await clash.json()).slugs, ["cerro-provincia"]);
+  });
+
+  it("renames a slug without clobbering unless overwrite is set", async () => {
+    assert.equal((await putFlight("source", { name: "Source" })).status, 200);
+    assert.equal((await putFlight("taken", { name: "Taken" })).status, 200);
+
+    const blocked = await app.request("/api/flights/source", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: cookie() },
+      body: JSON.stringify({ slug: "taken", name: "Nope" }),
+    });
+    assert.equal(blocked.status, 409);
+    assert.equal((await blocked.json()).error, "exists");
+
+    const still = await app.request("/api/flights/taken");
+    assert.equal((await still.json()).name, "Taken");
+
+    const renamed = await app.request("/api/flights/source", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: cookie() },
+      body: JSON.stringify({ slug: "renamed-source", name: "Renamed" }),
+    });
+    assert.equal(renamed.status, 200);
+    assert.deepEqual(await renamed.json().then((body) => ({ slug: body.slug, name: body.name })), {
+      slug: "renamed-source",
+      name: "Renamed",
+    });
+
+    const old = await app.request("/api/flights/source");
+    assert.equal(old.status, 404);
+    const neu = await app.request("/api/flights/renamed-source");
+    assert.equal(neu.status, 200);
+    assert.match((await neu.json()).track, /<gpx/);
+
+    const overwrite = await app.request("/api/flights/renamed-source", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", Cookie: cookie() },
+      body: JSON.stringify({ slug: "taken", overwrite: true }),
+    });
+    assert.equal(overwrite.status, 200);
+    assert.equal((await overwrite.json()).slug, "taken");
+    assert.equal((await app.request("/api/flights/renamed-source")).status, 404);
+  });
+
+  it("deletes a saved flight and keeps public slug reads working for others", async () => {
+    assert.equal((await putFlight("keep-me")).status, 200);
+    assert.equal((await putFlight("drop-me")).status, 200);
+
+    const gone = await app.request("/api/flights/drop-me", {
+      method: "DELETE",
+      headers: { Cookie: cookie() },
+    });
+    assert.equal(gone.status, 200);
+    assert.equal((await app.request("/api/flights/drop-me")).status, 404);
+
+    const keep = await app.request("/api/flights/keep-me");
+    assert.equal(keep.status, 200);
+    assert.equal((await keep.json()).slug, "keep-me");
+  });
+
+  it("locks library writes when no password is configured", async () => {
+    const locked = createApp({ dataDir, distDir, auth: createAuth({}) });
+    const del = await locked.request("/api/flights/keep-me", { method: "DELETE" });
+    assert.equal(del.status, 401);
+    assert.equal((await del.json()).error, "locked");
   });
 });

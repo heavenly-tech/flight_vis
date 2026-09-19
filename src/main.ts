@@ -1,9 +1,10 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import "./style.css";
 import { getAuth, getFlight, loginUrl, logout, saveFlight, shareUrl, type AuthStatus } from "./api";
+import { isTrackFile, mountLibrary, type LibraryHandle } from "./library";
 import { formatClock, formatDuration } from "./track/geo";
 import { parseFlight, sampleAt } from "./track/parse";
-import { isValidSlug, normalizeSlug, slugFromPath } from "./track/slug";
+import { isValidSlug, normalizeSlug, slugFromFileName, slugFromPath } from "./track/slug";
 import type { ColorMode, Flight, FlightTag, TrimRange } from "./track/types";
 import { clampTrim, fullRange, newTagId, rangeStats, suggestTrim } from "./track/trim";
 import { cssForUnit } from "./viz/colors";
@@ -47,11 +48,13 @@ const loginLink = document.querySelector<HTMLAnchorElement>("#btn-login")!;
 const logoutButton = document.querySelector<HTMLButtonElement>("#btn-logout")!;
 
 let auth: AuthStatus = { authenticated: false, configured: true };
+let library: LibraryHandle | null = null;
 
 function syncAuthUi(): void {
   loginLink.href = loginUrl();
   loginLink.hidden = auth.authenticated;
   logoutButton.hidden = !auth.authenticated;
+  library?.setAuth(auth);
   if (!auth.configured) {
     authHint.hidden = false;
     authHint.textContent = "Upload is locked until FLIGHT_VIS_PASSWORD is set.";
@@ -392,6 +395,12 @@ async function boot(): Promise<void> {
     }
   });
 
+  document.querySelector("#btn-library")?.addEventListener("click", () => {
+    setFileOpen(false);
+    setMoreOpen(false);
+    setTagsOpen(false);
+  });
+
   tagsButton.addEventListener("click", () => {
     const open = tagsPanel.hidden;
     setTagsOpen(open);
@@ -479,6 +488,7 @@ async function boot(): Promise<void> {
     await logout();
     auth = { authenticated: false, configured: auth.configured };
     syncAuthUi();
+    library?.setOpen(false);
   });
 
   shareButton.addEventListener("click", async () => {
@@ -507,6 +517,8 @@ async function boot(): Promise<void> {
       slugInput.value = saved.slug;
       const url = shareUrl(saved.slug);
       history.replaceState({ slug: saved.slug }, "", `/${saved.slug}`);
+      library?.setCurrentSlug(saved.slug);
+      await library?.refresh();
       await navigator.clipboard.writeText(url);
       setStatus(`Copied ${url}`);
       window.setTimeout(() => setStatus(null), 2400);
@@ -525,12 +537,19 @@ async function boot(): Promise<void> {
     });
   });
 
+  async function previewLocal(file: File): Promise<void> {
+    history.replaceState(null, "", "/");
+    slugInput.value = slugFromFileName(file.name);
+    library?.setCurrentSlug(null);
+    await loadText(await file.text(), file.name);
+  }
+
   fileInput.addEventListener("change", async () => {
     const file = fileInput.files?.[0];
+    fileInput.value = "";
     if (!file) return;
-    history.replaceState(null, "", "/");
     try {
-      await loadText(await file.text(), file.name);
+      await previewLocal(file);
       setFileOpen(false);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Could not parse track");
@@ -540,11 +559,19 @@ async function boot(): Promise<void> {
   window.addEventListener("dragover", (event) => event.preventDefault());
   window.addEventListener("drop", async (event) => {
     event.preventDefault();
-    const file = event.dataTransfer?.files[0];
-    if (!file) return;
-    history.replaceState(null, "", "/");
+    const files = [...(event.dataTransfer?.files ?? [])].filter(isTrackFile);
+    if (!files.length) return;
+    if (files.length > 1 || library?.isOpen()) {
+      if (!auth.authenticated) {
+        window.location.href = loginUrl();
+        return;
+      }
+      library?.setOpen(true);
+      await library?.saveFiles(files);
+      return;
+    }
     try {
-      await loadText(await file.text(), file.name);
+      await previewLocal(files[0]);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "Could not parse track");
     }
@@ -618,6 +645,7 @@ async function boot(): Promise<void> {
         tags: stored.tags ?? [],
       });
       nameEl.textContent = stored.name;
+      library?.setCurrentSlug(stored.slug);
       return true;
     } catch {
       return false;
@@ -629,7 +657,32 @@ async function boot(): Promise<void> {
   } catch {
     auth = { authenticated: false, configured: true };
   }
+
+  library = mountLibrary({
+    getAuth: () => auth,
+    currentSlug: () => pathSlug() || slugInput.value || null,
+    onOpenFlight: async (slug) => {
+      const ok = await loadFromSlug(slug);
+      if (!ok) setStatus("Could not open that flight");
+    },
+    onRenamed: (from, to) => {
+      if (slugInput.value === from || pathSlug() === from) {
+        slugInput.value = to.slug;
+        nameEl.textContent = to.name;
+        history.replaceState({ slug: to.slug }, "", `/${to.slug}`);
+      }
+      library?.setCurrentSlug(pathSlug() || to.slug);
+    },
+    onDeleted: (slug) => {
+      if (slugInput.value === slug || pathSlug() === slug) {
+        history.replaceState(null, "", "/");
+      }
+      library?.setCurrentSlug(pathSlug());
+    },
+    setStatus,
+  });
   syncAuthUi();
+  if (auth.authenticated) library.setOpen(true);
 
   try {
     const slug = pathSlug();
