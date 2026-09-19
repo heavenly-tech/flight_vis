@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Log in to upload and save flights." />
+    <title>flight_vis · login</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@380;500;650&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #07090d;
+        --panel: #10151d;
+        --stroke: rgba(255, 255, 255, 0.12);
+        --text: #f4f7fb;
+        --muted: #9aa6b5;
+        --cyan: #67e8f9;
+        --bad: #f87171;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 Outfit, system-ui, sans-serif;
+      }
+
+      .sheet {
+        width: min(400px, 92vw);
+        padding: 28px 24px;
+        border: 1px solid var(--stroke);
+        border-radius: 16px;
+        background: var(--panel);
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+      }
+
+      h1 {
+        margin: 0;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        font-size: 11px;
+        color: var(--cyan);
+      }
+
+      .lead {
+        color: var(--muted);
+        margin: 10px 0 18px;
+      }
+
+      label {
+        display: block;
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 6px;
+      }
+
+      input {
+        width: 100%;
+        background: #0b0f16;
+        color: var(--text);
+        border: 1px solid var(--stroke);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font: 500 14px Outfit, sans-serif;
+      }
+
+      button {
+        margin-top: 14px;
+        width: 100%;
+        cursor: pointer;
+        background: #ecebff;
+        color: #15132a;
+        border: 0;
+        border-radius: 10px;
+        padding: 10px 12px;
+        font: 650 14px Outfit, sans-serif;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .err {
+        color: var(--bad);
+        font-size: 13px;
+        margin: 10px 0 0;
+        min-height: 1.2em;
+      }
+
+      .lock {
+        color: var(--muted);
+        margin: 0;
+      }
+
+      code {
+        font-family: "IBM Plex Mono", ui-monospace, monospace;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <form class="sheet" id="login-form" method="post" action="/login" autocomplete="current-password">
+      <h1>flight_vis</h1>
+      <p class="lead">heavenly.cl · password to save and upload tracks</p>
+      <div id="body">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" required autofocus />
+        <input type="hidden" name="next" id="next" value="/" />
+        <button type="submit">Log in</button>
+        <p class="err" id="err"></p>
+      </div>
+    </form>
+    <script>
+      (function () {
+        var q = new URLSearchParams(location.search);
+        var err = document.getElementById("err");
+        var next = document.getElementById("next");
+        var dest = q.get("next") || "/";
+        if (!dest.startsWith("/") || dest.startsWith("//") || dest.indexOf("://") !== -1) dest = "/";
+        next.value = dest;
+        if (q.get("e") === "1") err.textContent = "Wrong password.";
+        function showLocked() {
+          document.getElementById("body").innerHTML =
+            '<p class="lock">Upload is locked. Administrator must set <code>FLIGHT_VIS_PASSWORD</code>.</p>';
+        }
+        if (q.get("locked") === "1") showLocked();
+        document.getElementById("login-form").addEventListener("submit", function () {
+          var button = this.querySelector("button");
+          if (button) button.disabled = true;
+        });
+        fetch("/api/auth/me", { credentials: "same-origin" })
+          .then(function (res) {
+            return res.ok ? res.json() : { authenticated: false, configured: true };
+          })
+          .then(function (me) {
+            if (me.authenticated) location.replace(next.value || "/");
+            else if (!me.configured) showLocked();
+          })
+          .catch(function () {});
+      })();
+    </script>
+  </body>
+</html>
