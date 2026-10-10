@@ -300,6 +300,31 @@ function hitHandle(x: number, width: number): "start" | "end" | null {
 async function boot(): Promise<void> {
   setStatus("Preparing 3D globe…");
   const viewer = await createFlightViewer(document.getElementById("cesiumContainer")!);
+  (window as unknown as { __fv: typeof viewer }).__fv = viewer;
+
+  if (new URLSearchParams(window.location.search).has("perf")) {
+    const overlay = document.createElement("div");
+    overlay.id = "perf-overlay";
+    document.body.append(overlay);
+    let frames = 0;
+    let lastT = performance.now();
+    const update = () => {
+      frames += 1;
+      const now = performance.now();
+      if (now - lastT >= 500) {
+        const stats = viewer.getPerfStats();
+        const fps = (frames * 1000) / (now - lastT);
+        overlay.textContent =
+          `${fps.toFixed(0)} fps · ${(1000 / Math.max(1, fps)).toFixed(1)} ms · ` +
+          `${stats.commands} cmds · ${(stats.triangles / 1000).toFixed(0)}k tris · ` +
+          `${pathMode} · ${follow ? "follow" : "free"} · ${playing ? `play ${playSpeed}x` : "paused"}`;
+        frames = 0;
+        lastT = now;
+      }
+      requestAnimationFrame(update);
+    };
+    requestAnimationFrame(update);
+  }
 
   applyTrim = async (fly = true) => {
     if (!flight || !trim) return;

@@ -58,6 +58,7 @@ export type FlightViewer = {
   setOnTagPick: (handler: (timeMs: number) => void) => void;
   setPathMode: (mode: PathMode, timeMs: number) => void;
   flyOverview: () => void;
+  getPerfStats: () => { commands: number; triangles: number };
   destroy: () => void;
 };
 
@@ -88,7 +89,9 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       new UrlTemplateImageryProvider({
         url: ESRI_IMAGERY,
         credit: "Esri, Maxar, Earthstar Geographics",
-        maximumLevel: 19,
+        // Level 18 (~0.6 m/px) is plenty from flight altitudes and halves
+        // the deepest tile count vs 19.
+        maximumLevel: 18,
       }),
     ),
     sceneMode: SceneMode.SCENE3D,
@@ -101,6 +104,14 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   viewer.scene.globe.depthTestAgainstTerrain = false;
   viewer.scene.fog.enabled = true;
   if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = true;
+  // Fill-rate and geometry budget: the globe is ~95% of every frame, so cap
+  // pixel and terrain density where flight altitudes make it invisible.
+  // 1.5x effective pixels (no-op on 1x displays, -44% fill on 2x).
+  viewer.resolutionScale = Math.min(1, 1.5 / (window.devicePixelRatio || 1));
+  // Coarser terrain mesh (default 2): far fewer globe triangles.
+  viewer.scene.globe.maximumScreenSpaceError = 4;
+  // 2x MSAA instead of 4x: lines stay smooth, multisample fill halves.
+  viewer.scene.msaaSamples = 2;
   viewer.scene.screenSpaceCameraController.minimumZoomDistance = 50;
   viewer.scene.screenSpaceCameraController.maximumZoomDistance = 2_000_000;
 
@@ -593,6 +604,17 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       unlockCamera();
     },
     flyOverview,
+    getPerfStats: () => {
+      const frameState = viewer.scene as unknown as {
+        frameState?: { commandList?: Array<{ count?: unknown }> };
+      };
+      const commands = frameState.frameState?.commandList ?? [];
+      let triangles = 0;
+      for (const cmd of commands) {
+        if (typeof cmd.count === "number") triangles += cmd.count / 3;
+      }
+      return { commands: commands.length, triangles: Math.round(triangles) };
+    },
     destroy: () => {
       pickHandler.destroy();
       viewer.destroy();
