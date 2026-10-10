@@ -59,7 +59,7 @@ export type FlightViewer = {
   setOnTagPick: (handler: (timeMs: number) => void) => void;
   setPathMode: (mode: PathMode, timeMs: number) => void;
   flyOverview: () => void;
-  getPerfStats: () => { commands: number; triangles: number; quality: number; farKm: number };
+  getPerfStats: () => { commands: number; triangles: number; quality: number; farKm: number; tilesLoaded: boolean };
   stepQuality: (fps: number) => void;
   destroy: () => void;
 };
@@ -735,6 +735,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
         triangles: Math.round(triangles),
         quality: qualityLevel,
         farKm: rangeLimited ? rangeLimitM / 1000 : 0,
+        tilesLoaded: viewer.scene.globe.tilesLoaded,
       };
     },
     stepQuality,
