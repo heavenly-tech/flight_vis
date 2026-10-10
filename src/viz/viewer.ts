@@ -110,6 +110,9 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   viewer.scene.globe.enableLighting = true;
   viewer.scene.globe.depthTestAgainstTerrain = false;
   viewer.scene.fog.enabled = true;
+  // Untextured/loading tiles show baseColor (default dark navy): keep it haze
+  // so streaming terrain blooms in as fog instead of flashing dark.
+  viewer.scene.globe.baseColor = Color.fromCssColorString("#a3b8c7");
   if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = true;
   // Fill-rate and geometry budget: the globe is ~95% of every frame, so cap
   // pixel and terrain density where flight altitudes make it invisible.
