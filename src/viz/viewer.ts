@@ -24,6 +24,7 @@ import {
   PolylineColorAppearance,
   PolylineGeometry,
   Primitive,
+  RequestScheduler,
   SceneMode,
   Transforms,
   UrlTemplateImageryProvider,
@@ -122,6 +123,11 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   viewer.scene.globe.maximumScreenSpaceError = QUALITY_LEVELS[0].sse;
   // 2x MSAA instead of 4x: lines stay smooth, multisample fill halves.
   viewer.scene.msaaSamples = 2;
+  // Imagery diet for flaky links: failed tile textures render black, so make
+  // failures rarer — fewer parallel fetches competing (default 18/server)
+  // and a deeper tile cache so rotations reuse instead of refetching.
+  RequestScheduler.maximumRequestsPerServer = 8;
+  viewer.scene.globe.tileCacheSize = 256;
   viewer.scene.screenSpaceCameraController.minimumZoomDistance = 50;
   viewer.scene.screenSpaceCameraController.maximumZoomDistance = 2_000_000;
 
