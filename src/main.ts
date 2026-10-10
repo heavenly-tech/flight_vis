@@ -8,7 +8,7 @@ import { isValidSlug, normalizeSlug, slugFromFileName, slugFromPath } from "./tr
 import type { ColorMode, Flight, FlightTag, TrimRange } from "./track/types";
 import { clampTrim, fullRange, newTagId, rangeStats, suggestTrim } from "./track/trim";
 import { cssForUnit } from "./viz/colors";
-import { createFlightViewer } from "./viz/viewer";
+import { createFlightViewer, type PathMode } from "./viz/viewer";
 
 const SAMPLE_URL = `${import.meta.env.BASE_URL}samples/vuelo5.gpx`;
 const HANDLE = 10;
@@ -16,7 +16,6 @@ const HANDLE = 10;
 const fileInput = document.querySelector<HTMLInputElement>("#file-input")!;
 const playButton = document.querySelector<HTMLButtonElement>("#btn-play")!;
 const followButton = document.querySelector<HTMLButtonElement>("#btn-follow")!;
-const paintButton = document.querySelector<HTMLButtonElement>("#btn-paint")!;
 const overviewButton = document.querySelector<HTMLButtonElement>("#btn-overview")!;
 const shareButton = document.querySelector<HTMLButtonElement>("#btn-share")!;
 const slugInput = document.querySelector<HTMLInputElement>("#slug-input")!;
@@ -81,6 +80,7 @@ let tags: FlightTag[] = [];
 let playing = false;
 let follow = true;
 let colorMode: ColorMode = "altitude";
+let pathMode: PathMode = "trace";
 let cursorMs = 0;
 let lastFrame = 0;
 let playSpeed = Number(speedSelect.value);
@@ -120,7 +120,7 @@ function resizeProfile(): void {
   profile.width = Math.max(1, Math.floor(width * ratio));
   profile.height = Math.floor(height * ratio);
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-  drawProfile();
+  maybeDrawProfile(true);
 }
 
 function drawProfile(): void {
@@ -212,7 +212,7 @@ function renderTags(): void {
       event.stopPropagation();
       tags = tags.filter((t) => t.id !== tag.id);
       renderTags();
-      drawProfile();
+      maybeDrawProfile(true);
       window.dispatchEvent(new CustomEvent("flight-tags"));
     });
     chip.append(remove);
@@ -224,17 +224,34 @@ function renderHud(): void {
   if (!flight || !trim) return;
   const sample = sampleAt(flight, cursorMs);
   const p = sample.point;
-  const stats = rangeStats(flight, trim);
   document.querySelector("#stat-alt")!.textContent = `${Math.round(p.alt)} m`;
   document.querySelector("#stat-spd")!.textContent = `${(p.speedMps * 3.6).toFixed(0)} km/h`;
   document.querySelector("#stat-vario")!.textContent = `${p.varioMps >= 0 ? "+" : ""}${p.varioMps.toFixed(1)} m/s`;
   document.querySelector("#stat-dist")!.textContent = `${(p.distanceM / 1000).toFixed(1)} km`;
   document.querySelector("#stat-time")!.textContent = formatDuration(p.time - trim.startMs);
   document.querySelector("#stat-utc")!.textContent = formatClock(p.time);
-  summaryEl.textContent = `${(stats.distanceM / 1000).toFixed(1)} km · ${formatDuration(stats.durationMs)} · ${Math.round(stats.maxAlt)} m max`;
-  hud.hidden = false;
-  layoutHud();
+  if (hud.hidden) {
+    hud.hidden = false;
+    layoutHud();
+  }
+  maybeDrawProfile(false);
+}
+
+let lastProfileAt = 0;
+
+function maybeDrawProfile(force: boolean): void {
+  const now = performance.now();
+  if (!force && now - lastProfileAt < 150) return;
+  lastProfileAt = now;
   drawProfile();
+}
+
+// Trim stats only change when the flight or trim changes, so cache them
+// instead of re-filtering the whole track on every animation frame.
+function refreshTrimStats(): void {
+  if (!flight || !trim) return;
+  const stats = rangeStats(flight, trim);
+  summaryEl.textContent = `${(stats.distanceM / 1000).toFixed(1)} km · ${formatDuration(stats.durationMs)} · ${Math.round(stats.maxAlt)} m max`;
 }
 
 function layoutHud(): void {
@@ -290,6 +307,7 @@ async function boot(): Promise<void> {
     cursorMs = Math.min(Math.max(cursorMs, trim.startMs), trim.endMs);
     await viewer.setTrim(trim, fly);
     viewer.setSample(sampleAt(flight, cursorMs), false);
+    refreshTrimStats();
     renderHud();
   };
 
@@ -319,6 +337,7 @@ async function boot(): Promise<void> {
     await viewer.setFlight(next, colorMode, trim);
     viewer.setTags(tags);
     renderTags();
+    refreshTrimStats();
     renderHud();
     setStatus(null);
     viewer.setSample(sampleAt(next, cursorMs), false);
@@ -353,10 +372,12 @@ async function boot(): Promise<void> {
     playButton.textContent = playing ? "Pause" : "Play";
   });
 
-  paintButton.addEventListener("click", () => {
-    const on = paintButton.getAttribute("aria-pressed") !== "true";
-    paintButton.setAttribute("aria-pressed", String(on));
-    if (flight) viewer.setPaint(on, cursorMs);
+  document.querySelectorAll<HTMLButtonElement>("[data-path-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      pathMode = button.dataset.pathMode as PathMode;
+      document.querySelectorAll("[data-path-mode]").forEach((el) => el.classList.toggle("active", el === button));
+      if (flight) viewer.setPathMode(pathMode, cursorMs);
+    });
   });
 
   followButton.addEventListener("click", () => {
@@ -487,7 +508,7 @@ async function boot(): Promise<void> {
     if (!label) return;
     tags = [...tags, { id: newTagId(), timeMs: cursorMs, label }].sort((a, b) => a.timeMs - b.timeMs);
     renderTags();
-    drawProfile();
+    maybeDrawProfile(true);
     viewer.setTags(tags);
   });
 
@@ -606,6 +627,8 @@ async function boot(): Promise<void> {
     if (drag === "seek") {
       cursorMs = t;
       viewer.setSample(sampleAt(flight, cursorMs), follow);
+    } else {
+      refreshTrimStats();
     }
     renderHud();
   });

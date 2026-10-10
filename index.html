@@ -94,7 +94,10 @@
             <button type="button" data-follow-mode="fixed" class="chip">Fixed</button>
             <button type="button" data-follow-mode="relative" class="chip active">Relative</button>
           </div>
-          <button type="button" id="btn-paint" class="chip" aria-pressed="false">Paint</button>
+          <div class="modes" role="group" aria-label="Path display">
+            <button type="button" data-path-mode="trace" class="chip active">Trace</button>
+            <button type="button" data-path-mode="draw" class="chip">Draw</button>
+          </div>
           <button type="button" id="btn-overview" class="chip">Overview</button>
           <button type="button" id="btn-tags" class="chip disclosure" aria-expanded="false" aria-controls="tags-panel">
             Tags <span class="caret" aria-hidden="true">^</span>
