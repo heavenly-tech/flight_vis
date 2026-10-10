@@ -183,35 +183,56 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     viewer.scene.requestRender();
   }
 
-  // Range limit: while following, clip the frustum far plane to ~25 km past
-  // the camera target. Tiles outside the frustum are never refined, loaded
-  // or drawn, so follow mode stops paying for the horizon. Overview and free
-  // camera keep the default far plane. The clipped region shows a haze-toned
-  // background, blended by a slightly deepened visual fog at the edge.
-  const RANGE_BUBBLE_M = 25_000;
-  const RANGE_MARGIN_M = 5_000;
+  // Range limit: keep rendering bounded to ~10 km past the flight path.
+  // Driven by camera distance to the current target, so it works for the
+  // follow camera and a free camera alike: near the path the frustum far
+  // plane clips everything past target + bubble, and horizon tiles are never
+  // refined, loaded or drawn. Far away (overview) the default far plane
+  // applies. Hysteresis keeps the switch from flickering at the boundary.
+  // The backdrop is a constant haze tone so clipped regions and not-yet-
+  // loaded tiles read as fog instead of flashing dark.
+  const PATH_BUBBLE_M = 10_000;
+  const NEAR_ENTER_M = 50_000;
+  const NEAR_EXIT_M = 70_000;
   // Near/far live on the frustum (PerspectiveFrustum in 3D mode).
   const frustum = viewer.camera.frustum as unknown as { far: number };
   const farDefault = frustum.far;
-  const bgDefault = viewer.scene.backgroundColor.clone();
-  const bgHaze = Color.fromCssColorString("#a3b8c7");
+  viewer.scene.backgroundColor = Color.fromCssColorString("#a3b8c7").clone();
   let rangeLimited = false;
   let rangeLimitM = 0;
+  const lastTarget = new Cartesian3();
+  let hasTarget = false;
 
-  function updateRangeLimit(rangeMeters: number | null): void {
-    if (rangeMeters == null) {
+  function marginFor(distMeters: number): number {
+    return Math.max(5_000, distMeters * 0.3);
+  }
+
+  function updateRangeLimit(distMeters: number | null): void {
+    if (distMeters == null) {
       if (!rangeLimited) return;
       rangeLimited = false;
       rangeLimitM = 0;
       frustum.far = farDefault;
-      viewer.scene.backgroundColor = bgDefault.clone();
+      requestRender();
       return;
     }
-    const far = rangeMeters + RANGE_BUBBLE_M + RANGE_MARGIN_M;
+    const near = rangeLimited ? distMeters < NEAR_EXIT_M : distMeters < NEAR_ENTER_M;
+    if (!near) {
+      if (!rangeLimited) return;
+      rangeLimited = false;
+      rangeLimitM = 0;
+      frustum.far = farDefault;
+      requestRender();
+      return;
+    }
+    const far = distMeters + PATH_BUBBLE_M + marginFor(distMeters);
     rangeLimited = true;
     rangeLimitM = far;
     frustum.far = far;
-    viewer.scene.backgroundColor = bgHaze.clone();
+  }
+
+  function distToTarget(target: Cartesian3): number {
+    return Cartesian3.distance(viewer.camera.positionWC, target);
   }
 
   function applyQuality(): void {
@@ -523,13 +544,15 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     const hpr = new HeadingPitchRoll(sample.point.headingRad, 0, 0);
     craft.orientation = new ConstantProperty(Transforms.headingPitchRollQuaternion(position, hpr));
     revealTo(sample.t);
+    Cartesian3.clone(position, lastTarget);
+    hasTarget = true;
     requestRender();
 
     if (!followCam) {
       if (following) unlockCamera();
       following = false;
       lastFollowMs = 0;
-      updateRangeLimit(null);
+      updateRangeLimit(distToTarget(position));
       return;
     }
 
@@ -566,7 +589,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       smoothTarget,
       new HeadingPitchRange(smoothHeading, smoothPitch, smoothRange),
     );
-    updateRangeLimit(smoothRange ?? followRange);
+    updateRangeLimit(distToTarget(smoothTarget));
     requestRender();
   }
 
@@ -600,6 +623,12 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     const tag = tags.find((item) => item.id === tagId);
     if (tag) onTagPick?.(tag.timeMs);
   }, ScreenSpaceEventType.LEFT_CLICK);
+
+  // Re-derive the limit after manual zoom/pan (no playhead updates then).
+  viewer.camera.moveEnd.addEventListener(() => {
+    if (!hasTarget) return;
+    updateRangeLimit(distToTarget(lastTarget));
+  });
 
   function flyOverview(): void {
     if (!flight) return;
