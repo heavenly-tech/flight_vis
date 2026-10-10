@@ -317,7 +317,8 @@ async function boot(): Promise<void> {
         overlay.textContent =
           `${fps.toFixed(0)} fps · ${(1000 / Math.max(1, fps)).toFixed(1)} ms · ` +
           `${stats.commands} cmds · ${(stats.triangles / 1000).toFixed(0)}k tris · ` +
-          `${pathMode} · ${follow ? "follow" : "free"} · ${playing ? `play ${playSpeed}x` : "paused"}`;
+          `${pathMode} · ${follow ? "follow" : "free"} · ${playing ? `play ${playSpeed}x` : "paused"} · ` +
+          `q${stats.quality} · ${stats.fogKm ? `fog${stats.fogKm.toFixed(0)}km` : "fog∞"}`;
         frames = 0;
         lastT = now;
       }
@@ -387,7 +388,24 @@ async function boot(): Promise<void> {
       renderHud();
     }
     lastFrame = now;
+    sampleQuality(now, playing);
     requestAnimationFrame(tick);
+  }
+
+  // Feed the viewer's auto quality governor a 2s rolling fps, but only
+  // while playing: paused frames are free and must not skew the average.
+  let qualityFrames = 0;
+  let qualityWindowStart = 0;
+
+  function sampleQuality(now: number, active: boolean): void {
+    if (!qualityWindowStart) qualityWindowStart = now;
+    qualityFrames += 1;
+    if (now - qualityWindowStart >= 2000) {
+      const fps = (qualityFrames * 1000) / Math.max(1, now - qualityWindowStart);
+      if (active) viewer.stepQuality(fps);
+      qualityFrames = 0;
+      qualityWindowStart = now;
+    }
   }
 
   playButton.addEventListener("click", () => {

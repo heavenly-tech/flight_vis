@@ -58,7 +58,8 @@ export type FlightViewer = {
   setOnTagPick: (handler: (timeMs: number) => void) => void;
   setPathMode: (mode: PathMode, timeMs: number) => void;
   flyOverview: () => void;
-  getPerfStats: () => { commands: number; triangles: number };
+  getPerfStats: () => { commands: number; triangles: number; quality: number; fogKm: number };
+  stepQuality: (fps: number) => void;
   destroy: () => void;
 };
 
@@ -67,6 +68,12 @@ export type FlightViewer = {
 export type PathMode = "trace" | "draw";
 
 export type { FollowMode };
+
+const QUALITY_LEVELS = [
+  { pixelCap: 1.5, sse: 4 },
+  { pixelCap: 1.25, sse: 6 },
+  { pixelCap: 1.0, sse: 8 },
+] as const;
 
 export async function createFlightViewer(container: HTMLElement): Promise<FlightViewer> {
   const ionToken = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
@@ -106,10 +113,10 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = true;
   // Fill-rate and geometry budget: the globe is ~95% of every frame, so cap
   // pixel and terrain density where flight altitudes make it invisible.
-  // 1.5x effective pixels (no-op on 1x displays, -44% fill on 2x).
-  viewer.resolutionScale = Math.min(1, 1.5 / (window.devicePixelRatio || 1));
-  // Coarser terrain mesh (default 2): far fewer globe triangles.
-  viewer.scene.globe.maximumScreenSpaceError = 4;
+  // The auto quality governor below steps these down only while fps sags.
+  // (Applied inline: applyQuality() reads closure state declared further down.)
+  viewer.resolutionScale = Math.min(1, QUALITY_LEVELS[0].pixelCap / (window.devicePixelRatio || 1));
+  viewer.scene.globe.maximumScreenSpaceError = QUALITY_LEVELS[0].sse;
   // 2x MSAA instead of 4x: lines stay smooth, multisample fill halves.
   viewer.scene.msaaSamples = 2;
   viewer.scene.screenSpaceCameraController.minimumZoomDistance = 50;
@@ -147,6 +154,11 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   // Tag anchor positions, resolved once per setTags/rebuild so the per-frame
   // reveal filter never scans the track.
   let tagAnchors = new Map<string, Cartesian3>();
+  // Adaptive quality: full fidelity while the GPU keeps up, stepped down
+  // only during sustained fps sags (camera motion on weak GPUs).
+  let qualityLevel = 0;
+  let lowStreak = 0;
+  let highStreak = 0;
   let craft: Entity | undefined;
   let tagEntities: Entity[] = [];
   let trackPositions: Cartesian3[] = [];
@@ -169,6 +181,67 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
 
   function requestRender(): void {
     viewer.scene.requestRender();
+  }
+
+  // Fog bubble: terrain fully fogged is also culled (never refined, uploaded
+  // or drawn), so while following we compress the fog range to ~25 km around
+  // the camera target instead of rendering out to the horizon.
+  const FOG_BUBBLE_M = 25_000;
+  const FOG_CULL_K = 27.28; // 1 - exp(-(d*r)^2) hits 1.0 in doubles at d*r ≈ 27.28
+  const fogDensityDefault = viewer.scene.fog.density;
+  const fogVisualDefault = viewer.scene.fog.visualDensityScalar;
+  let fogNear = false;
+  let fogCullMeters = 0;
+
+  function updateFogForRange(rangeMeters: number | null): void {
+    const fog = viewer.scene.fog;
+    if (rangeMeters == null) {
+      if (!fogNear) return;
+      fogNear = false;
+      fogCullMeters = 0;
+      fog.density = fogDensityDefault;
+      fog.visualDensityScalar = fogVisualDefault;
+      return;
+    }
+    const cull = rangeMeters + FOG_BUBBLE_M;
+    if (fogNear && Math.abs(cull - fogCullMeters) / fogCullMeters < 0.1) return;
+    fogNear = true;
+    fogCullMeters = cull;
+    const density = FOG_CULL_K / cull;
+    fog.density = density;
+    fog.visualDensityScalar = fogVisualDefault * (density / fogDensityDefault);
+  }
+
+  function applyQuality(): void {
+    const q = QUALITY_LEVELS[qualityLevel];
+    viewer.resolutionScale = Math.min(1, q.pixelCap / (window.devicePixelRatio || 1));
+    viewer.scene.globe.maximumScreenSpaceError = q.sse;
+    requestRender();
+  }
+
+  function stepQuality(fps: number): void {
+    if (fps < 50 && qualityLevel < QUALITY_LEVELS.length - 1) {
+      lowStreak += 1;
+      highStreak = 0;
+      if (lowStreak >= 2) {
+        qualityLevel += 1;
+        lowStreak = 0;
+        applyQuality();
+      }
+      return;
+    }
+    if (fps > 57 && qualityLevel > 0) {
+      highStreak += 1;
+      lowStreak = 0;
+      if (highStreak >= 5) {
+        qualityLevel -= 1;
+        highStreak = 0;
+        applyQuality();
+      }
+      return;
+    }
+    lowStreak = 0;
+    highStreak = 0;
   }
 
   function trackHeading(sample: Sample): number {
@@ -454,6 +527,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       if (following) unlockCamera();
       following = false;
       lastFollowMs = 0;
+      updateFogForRange(null);
       return;
     }
 
@@ -490,6 +564,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       smoothTarget,
       new HeadingPitchRange(smoothHeading, smoothPitch, smoothRange),
     );
+    updateFogForRange(smoothRange ?? followRange);
     requestRender();
   }
 
@@ -526,6 +601,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
 
   function flyOverview(): void {
     if (!flight) return;
+    updateFogForRange(null);
     const drawing = pathMode === "draw";
     const pts = drawing ? linePositions.slice(0, Math.max(drawnCount, 0)) : trackPositions;
     if (pts.length < 2) {
@@ -601,6 +677,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       following = false;
       captured = false;
       lastFollowMs = 0;
+      updateFogForRange(null);
       unlockCamera();
     },
     flyOverview,
@@ -613,8 +690,14 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       for (const cmd of commands) {
         if (typeof cmd.count === "number") triangles += cmd.count / 3;
       }
-      return { commands: commands.length, triangles: Math.round(triangles) };
+      return {
+        commands: commands.length,
+        triangles: Math.round(triangles),
+        quality: qualityLevel,
+        fogKm: fogNear ? fogCullMeters / 1000 : 0,
+      };
     },
+    stepQuality,
     destroy: () => {
       pickHandler.destroy();
       viewer.destroy();
