@@ -1,5 +1,7 @@
 mod auth;
+mod flights;
 mod static_files;
+mod store;
 
 use auth::Auth;
 use axum::{
@@ -12,11 +14,13 @@ use axum::{
 };
 use serde_json::json;
 use std::{collections::HashMap, net::SocketAddr, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+use store::Store;
 
 #[derive(Clone)]
-struct AppState {
-    dist_dir: PathBuf,
-    auth: Auth,
+pub(crate) struct AppState {
+    pub(crate) dist_dir: PathBuf,
+    pub(crate) auth: Auth,
+    pub(crate) store: Store,
 }
 
 fn now_secs() -> u64 {
@@ -28,6 +32,9 @@ fn now_secs() -> u64 {
 
 fn config_from_env() -> (AppState, u16) {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let raw_data = std::env::var("FLIGHT_DATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| root.join("../data"));
     let raw_dist = std::env::var("FLIGHT_VIS_DIST")
         .map(PathBuf::from)
         .unwrap_or_else(|_| root.join("../dist"));
@@ -42,6 +49,7 @@ fn config_from_env() -> (AppState, u16) {
         AppState {
             dist_dir,
             auth: Auth::from_env(),
+            store: Store::new(&raw_data),
         },
         port,
     )
@@ -310,17 +318,35 @@ fn require_auth(
         .into_response())
 }
 
-#[tokio::main]
-async fn main() {
-    let (state, port) = config_from_env();
-    let app = Router::new()
+fn build_router(state: AppState) -> Router {
+    Router::new()
         .route("/api/health", get(health))
         .route("/api/auth/me", get(auth_me))
         .route("/login", get(login_page).post(login_post))
         .route("/login.html", get(login_html_redirect))
         .route("/logout", get(logout).post(logout))
+        .merge(flights::router())
         .fallback(fallback)
-        .with_state(state);
+        .with_state(state)
+}
+
+#[tokio::main]
+async fn main() {
+    let (state, port) = config_from_env();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    state
+        .store
+        .seed(
+            vec![
+                root.join("../samples/vuelo5.gpx"),
+                root.join("../public/samples/vuelo5.gpx"),
+                root.join("../dist/samples/vuelo5.gpx"),
+            ],
+            None,
+        )
+        .await
+        .expect("seed sample flight");
+    let app = build_router(state);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     eprintln!("flight_vis (rust) listening on {port}");
     let listener = tokio::net::TcpListener::bind(addr)
