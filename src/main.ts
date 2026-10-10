@@ -318,7 +318,7 @@ async function boot(): Promise<void> {
           `${fps.toFixed(0)} fps · ${(1000 / Math.max(1, fps)).toFixed(1)} ms · ` +
           `${stats.commands} cmds · ${(stats.triangles / 1000).toFixed(0)}k tris · ` +
           `${pathMode} · ${follow ? "follow" : "free"} · ${playing ? `play ${playSpeed}x` : "paused"} · ` +
-          `q${stats.quality} · ${stats.fogKm ? `fog${stats.fogKm.toFixed(0)}km` : "fog∞"}`;
+          `q${stats.quality} · ${stats.farKm ? `far${stats.farKm.toFixed(0)}km` : "far∞"}`;
         frames = 0;
         lastT = now;
       }

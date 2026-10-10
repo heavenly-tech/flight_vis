@@ -58,7 +58,7 @@ export type FlightViewer = {
   setOnTagPick: (handler: (timeMs: number) => void) => void;
   setPathMode: (mode: PathMode, timeMs: number) => void;
   flyOverview: () => void;
-  getPerfStats: () => { commands: number; triangles: number; quality: number; fogKm: number };
+  getPerfStats: () => { commands: number; triangles: number; quality: number; farKm: number };
   stepQuality: (fps: number) => void;
   destroy: () => void;
 };
@@ -183,33 +183,38 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     viewer.scene.requestRender();
   }
 
-  // Fog bubble: terrain fully fogged is also culled (never refined, uploaded
-  // or drawn), so while following we compress the fog range to ~25 km around
-  // the camera target instead of rendering out to the horizon.
-  const FOG_BUBBLE_M = 25_000;
-  const FOG_CULL_K = 27.28; // 1 - exp(-(d*r)^2) hits 1.0 in doubles at d*r ≈ 27.28
-  const fogDensityDefault = viewer.scene.fog.density;
+  // Range limit: while following, clip the frustum far plane to ~25 km past
+  // the camera target. Tiles outside the frustum are never refined, loaded
+  // or drawn, so follow mode stops paying for the horizon. Overview and free
+  // camera keep the default far plane. The clipped region shows a haze-toned
+  // background, blended by a slightly deepened visual fog at the edge.
+  const RANGE_BUBBLE_M = 25_000;
+  const RANGE_MARGIN_M = 5_000;
+  // Near/far live on the frustum (PerspectiveFrustum in 3D mode).
+  const frustum = viewer.camera.frustum as unknown as { far: number };
+  const farDefault = frustum.far;
+  const bgDefault = viewer.scene.backgroundColor.clone();
+  const bgHaze = Color.fromCssColorString("#a3b8c7");
   const fogVisualDefault = viewer.scene.fog.visualDensityScalar;
-  let fogNear = false;
-  let fogCullMeters = 0;
+  let rangeLimited = false;
+  let rangeLimitM = 0;
 
-  function updateFogForRange(rangeMeters: number | null): void {
-    const fog = viewer.scene.fog;
+  function updateRangeLimit(rangeMeters: number | null): void {
     if (rangeMeters == null) {
-      if (!fogNear) return;
-      fogNear = false;
-      fogCullMeters = 0;
-      fog.density = fogDensityDefault;
-      fog.visualDensityScalar = fogVisualDefault;
+      if (!rangeLimited) return;
+      rangeLimited = false;
+      rangeLimitM = 0;
+      frustum.far = farDefault;
+      viewer.scene.backgroundColor = bgDefault.clone();
+      viewer.scene.fog.visualDensityScalar = fogVisualDefault;
       return;
     }
-    const cull = rangeMeters + FOG_BUBBLE_M;
-    if (fogNear && Math.abs(cull - fogCullMeters) / fogCullMeters < 0.1) return;
-    fogNear = true;
-    fogCullMeters = cull;
-    const density = FOG_CULL_K / cull;
-    fog.density = density;
-    fog.visualDensityScalar = fogVisualDefault * (density / fogDensityDefault);
+    const far = rangeMeters + RANGE_BUBBLE_M + RANGE_MARGIN_M;
+    rangeLimited = true;
+    rangeLimitM = far;
+    frustum.far = far;
+    viewer.scene.backgroundColor = bgHaze.clone();
+    viewer.scene.fog.visualDensityScalar = fogVisualDefault * 2;
   }
 
   function applyQuality(): void {
@@ -527,7 +532,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       if (following) unlockCamera();
       following = false;
       lastFollowMs = 0;
-      updateFogForRange(null);
+      updateRangeLimit(null);
       return;
     }
 
@@ -564,7 +569,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       smoothTarget,
       new HeadingPitchRange(smoothHeading, smoothPitch, smoothRange),
     );
-    updateFogForRange(smoothRange ?? followRange);
+    updateRangeLimit(smoothRange ?? followRange);
     requestRender();
   }
 
@@ -601,7 +606,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
 
   function flyOverview(): void {
     if (!flight) return;
-    updateFogForRange(null);
+    updateRangeLimit(null);
     const drawing = pathMode === "draw";
     const pts = drawing ? linePositions.slice(0, Math.max(drawnCount, 0)) : trackPositions;
     if (pts.length < 2) {
@@ -677,7 +682,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       following = false;
       captured = false;
       lastFollowMs = 0;
-      updateFogForRange(null);
+      updateRangeLimit(null);
       unlockCamera();
     },
     flyOverview,
@@ -694,7 +699,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
         commands: commands.length,
         triangles: Math.round(triangles),
         quality: qualityLevel,
-        fogKm: fogNear ? fogCullMeters / 1000 : 0,
+        farKm: rangeLimited ? rangeLimitM / 1000 : 0,
       };
     },
     stepQuality,
