@@ -16,6 +16,7 @@ const HANDLE = 10;
 const fileInput = document.querySelector<HTMLInputElement>("#file-input")!;
 const playButton = document.querySelector<HTMLButtonElement>("#btn-play")!;
 const followButton = document.querySelector<HTMLButtonElement>("#btn-follow")!;
+const paintButton = document.querySelector<HTMLButtonElement>("#btn-paint")!;
 const overviewButton = document.querySelector<HTMLButtonElement>("#btn-overview")!;
 const shareButton = document.querySelector<HTMLButtonElement>("#btn-share")!;
 const slugInput = document.querySelector<HTMLInputElement>("#slug-input")!;
@@ -350,6 +351,12 @@ async function boot(): Promise<void> {
     if (cursorMs >= trim.endMs || cursorMs < trim.startMs) cursorMs = trim.startMs;
     playing = !playing;
     playButton.textContent = playing ? "Pause" : "Play";
+  });
+
+  paintButton.addEventListener("click", () => {
+    const on = paintButton.getAttribute("aria-pressed") !== "true";
+    paintButton.setAttribute("aria-pressed", String(on));
+    if (flight) viewer.setPaint(on, cursorMs);
   });
 
   followButton.addEventListener("click", () => {

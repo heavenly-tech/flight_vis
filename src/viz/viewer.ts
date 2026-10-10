@@ -56,6 +56,7 @@ export type FlightViewer = {
   captureFollowFromCamera: (sample: Sample) => void;
   unlockFollow: () => void;
   setOnTagPick: (handler: (timeMs: number) => void) => void;
+  setPaint: (on: boolean, timeMs: number) => void;
   flyOverview: () => void;
   destroy: () => void;
 };
@@ -112,6 +113,14 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   let trim: TrimRange | null = null;
   let tags: FlightTag[] = [];
   let trackPrimitive: Primitive | undefined;
+  let paint = false;
+  let revealMs = Number.NEGATIVE_INFINITY;
+  let shownUntil = -1;
+  let lastPaintAt = 0;
+  let drawnTagKey = "";
+  let linePoints: Flight["points"] = [];
+  let linePositions: Cartesian3[] = [];
+  let lineColors: Color[] = [];
   let craft: Entity | undefined;
   let tagEntities: Entity[] = [];
   let trackPositions: Cartesian3[] = [];
@@ -189,9 +198,13 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   }
 
   function drawTags(): void {
+    const shown = paint ? tags.filter((tag) => tag.timeMs <= revealMs) : tags;
+    const key = shown.map((tag) => tag.id).join("\0");
+    if (key === drawnTagKey) return;
+    drawnTagKey = key;
     clearTags();
     if (!flight) return;
-    for (const tag of tags) {
+    for (const tag of shown) {
       const point = flight.points.reduce((best, p) =>
         Math.abs(p.time - tag.timeMs) < Math.abs(best.time - tag.timeMs) ? p : best,
       );
@@ -226,25 +239,42 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     }
   }
 
-  async function rebuildTrack(next: Flight, mode: ColorMode, nextTrim: TrimRange): Promise<void> {
-    flight = next;
-    colorMode = mode;
-    trim = nextTrim;
+  function countUntil(timeMs: number): number {
+    const n = linePoints.length;
+    if (n === 0) return 0;
+    if (linePoints[0].time > timeMs) return 1;
+    let lo = 0;
+    let hi = n - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (linePoints[mid].time <= timeMs) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo + 1;
+  }
+
+  function mountLine(count: number): void {
     if (trackPrimitive) {
       viewer.scene.primitives.remove(trackPrimitive);
       trackPrimitive = undefined;
     }
-    if (craft) {
-      viewer.entities.remove(craft);
-      craft = undefined;
+    shownUntil = count;
+    if (count < 2 || linePositions.length < 2) return;
+    const n = Math.min(count, linePositions.length);
+    // ponytail: cap painted vertices at 1600; drop the cap if the trail looks segmented
+    const stride = paint && n > 1600 ? Math.ceil(n / 1600) : 1;
+    const positions: Cartesian3[] = [];
+    const colors: Color[] = [];
+    for (let i = 0; i < n; i += stride) {
+      positions.push(linePositions[i]);
+      colors.push(lineColors[i]);
     }
-
-    const visible = pointsInTrim(next, nextTrim);
-    const source = visible.length >= 2 ? visible : next.points;
-    const positions = source.map((p) => Cartesian3.fromDegrees(p.lon, p.lat, p.alt));
-    trackPositions = positions;
-    const colors = source.map((p) => colorForUnit(normalizeValue(next, mode, valueForMode(p, mode))));
-
+    const last = n - 1;
+    if ((n - 1) % stride !== 0) {
+      positions.push(linePositions[last]);
+      colors.push(lineColors[last]);
+    }
+    if (positions.length < 2) return;
     trackPrimitive = viewer.scene.primitives.add(
       new Primitive({
         geometryInstances: new GeometryInstance({
@@ -260,9 +290,46 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
         asynchronous: false,
       }),
     );
+  }
 
-    const start = JulianDate.fromDate(new Date(source[0].time));
-    const stop = JulianDate.fromDate(new Date(source[source.length - 1].time));
+  function revealTo(timeMs: number, force = false): void {
+    revealMs = timeMs;
+    if (!paint) return;
+    const count = countUntil(timeMs);
+    if (count === shownUntil) return;
+    const now = performance.now();
+    const backward = count < shownUntil;
+    if (!force && !backward && now - lastPaintAt < 80 && count - shownUntil < 12) return;
+    lastPaintAt = now;
+    mountLine(count);
+    drawTags();
+  }
+
+  async function rebuildTrack(next: Flight, mode: ColorMode, nextTrim: TrimRange): Promise<void> {
+    flight = next;
+    colorMode = mode;
+    trim = nextTrim;
+    if (trackPrimitive) {
+      viewer.scene.primitives.remove(trackPrimitive);
+      trackPrimitive = undefined;
+    }
+    if (craft) {
+      viewer.entities.remove(craft);
+      craft = undefined;
+    }
+
+    const visible = pointsInTrim(next, nextTrim);
+    const source = visible.length >= 2 ? visible : next.points;
+    linePoints = source;
+    linePositions = source.map((p) => Cartesian3.fromDegrees(p.lon, p.lat, p.alt));
+    lineColors = source.map((p) => colorForUnit(normalizeValue(next, mode, valueForMode(p, mode))));
+    trackPositions = linePositions;
+    revealMs = Math.min(Math.max(revealMs, source[0].time), source[source.length - 1].time);
+    drawnTagKey = "";
+    mountLine(paint ? countUntil(revealMs) : linePositions.length);
+
+    const start = JulianDate.fromDate(new Date(linePoints[0].time));
+    const stop = JulianDate.fromDate(new Date(linePoints[linePoints.length - 1].time));
     viewer.clock.startTime = start;
     viewer.clock.stopTime = stop;
     viewer.clock.currentTime = JulianDate.clone(start);
@@ -270,7 +337,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     viewer.clock.shouldAnimate = false;
 
     craft = viewer.entities.add({
-      position: positions[0],
+      position: linePositions[0],
       point: new PointGraphics({
         pixelSize: 14,
         color: Color.WHITE,
@@ -289,6 +356,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     viewer.clock.currentTime = JulianDate.fromDate(new Date(sample.t));
     const hpr = new HeadingPitchRoll(sample.point.headingRad, 0, 0);
     craft.orientation = new ConstantProperty(Transforms.headingPitchRollQuaternion(position, hpr));
+    revealTo(sample.t);
 
     if (!followCam) {
       if (following) unlockCamera();
@@ -364,9 +432,20 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   }, ScreenSpaceEventType.LEFT_CLICK);
 
   function flyOverview(): void {
-    if (!flight || trackPositions.length === 0) return;
+    if (!flight) return;
+    const pts = paint ? linePositions.slice(0, Math.max(shownUntil, 0)) : trackPositions;
+    if (pts.length < 2) {
+      const pos = linePositions[Math.max(0, shownUntil - 1)] ?? linePositions[0];
+      if (!pos) return;
+      unlockCamera();
+      viewer.camera.flyToBoundingSphere(new BoundingSphere(pos, 400), {
+        offset: new HeadingPitchRange(0, CesiumMath.toRadians(-35), 4500),
+        duration: 1.1,
+      });
+      return;
+    }
     unlockCamera();
-    const sphere = BoundingSphere.fromPoints(trackPositions);
+    const sphere = BoundingSphere.fromPoints(pts);
     viewer.camera.flyToBoundingSphere(sphere, {
       offset: new HeadingPitchRange(0, CesiumMath.toRadians(-48), Math.max(sphere.radius * 2.1, 8000)),
       duration: 1.2,
@@ -392,7 +471,18 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     },
     setTags: (next) => {
       tags = next;
+      drawnTagKey = "";
       drawTags();
+    },
+    setPaint: (on, timeMs) => {
+      paint = on;
+      if (!linePositions.length) return;
+      if (on) revealTo(timeMs, true);
+      else {
+        mountLine(linePositions.length);
+        drawnTagKey = "";
+        drawTags();
+      }
     },
     setSample,
     seekSample,
