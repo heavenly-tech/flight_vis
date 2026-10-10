@@ -493,11 +493,19 @@ export function createApp(options = {}) {
     const file = path.resolve(distDir, relative);
     if (relative && file.startsWith(distDir + path.sep) && existsSync(file) && statSync(file).isFile()) {
       const type = MIME[path.extname(file).toLowerCase()] || "application/octet-stream";
-      return c.body(createReadStream(file), 200, { "Content-Type": type });
+      const headers = { "Content-Type": type };
+      // Hashed asset names are content-addressed: cache them hard. Everything
+      // else (HTML entry points) must revalidate so clients pick up new builds.
+      if (/-[A-Za-z0-9_-]{6,}\.[a-z0-9]+$/.test(relative)) {
+        headers["Cache-Control"] = "public, max-age=31536000, immutable";
+      } else {
+        headers["Cache-Control"] = "no-cache";
+      }
+      return c.body(createReadStream(file), 200, headers);
     }
     const index = path.join(distDir, "index.html");
     if (!existsSync(index)) return c.text("Build the frontend first", 500);
-    return c.html(await readFile(index, "utf8"));
+    return c.html(await readFile(index, "utf8"), 200, { "Cache-Control": "no-cache" });
   });
 
   return app;

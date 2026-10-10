@@ -195,7 +195,6 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   const farDefault = frustum.far;
   const bgDefault = viewer.scene.backgroundColor.clone();
   const bgHaze = Color.fromCssColorString("#a3b8c7");
-  const fogVisualDefault = viewer.scene.fog.visualDensityScalar;
   let rangeLimited = false;
   let rangeLimitM = 0;
 
@@ -206,7 +205,6 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       rangeLimitM = 0;
       frustum.far = farDefault;
       viewer.scene.backgroundColor = bgDefault.clone();
-      viewer.scene.fog.visualDensityScalar = fogVisualDefault;
       return;
     }
     const far = rangeMeters + RANGE_BUBBLE_M + RANGE_MARGIN_M;
@@ -214,7 +212,6 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     rangeLimitM = far;
     frustum.far = far;
     viewer.scene.backgroundColor = bgHaze.clone();
-    viewer.scene.fog.visualDensityScalar = fogVisualDefault * 2;
   }
 
   function applyQuality(): void {
