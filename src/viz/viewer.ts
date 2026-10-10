@@ -111,6 +111,14 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   viewer.scene.globe.enableLighting = true;
   viewer.scene.globe.depthTestAgainstTerrain = false;
   viewer.scene.fog.enabled = true;
+  // The Viewer adds a default Tycho-2 starfield skybox; with the far plane
+  // clipping the atmosphere in follow mode the sky read as night. Drop the
+  // stars (keep Sun/Moon/lighting) so the sky is always the haze backdrop.
+  const defaultSkyBox = viewer.scene.skyBox;
+  if (defaultSkyBox) {
+    viewer.scene.skyBox = undefined;
+    defaultSkyBox.destroy();
+  }
   // Untextured/loading tiles show baseColor (default dark navy): keep it haze
   // so streaming terrain blooms in as fog instead of flashing dark.
   viewer.scene.globe.baseColor = Color.fromCssColorString("#a3b8c7");
