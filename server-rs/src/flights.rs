@@ -205,10 +205,14 @@ mod tests {
         tokio::fs::write(dist_dir.join("login.html"), "<html>login</html>")
             .await
             .unwrap();
+        let store = Store::new(&data_dir);
+        let (video_queue, queue_rx) = tokio::sync::mpsc::unbounded_channel();
+        crate::video::spawn_transcode_worker(store.clone(), queue_rx);
         let state = AppState {
             dist_dir,
             auth: Auth::with_password(password),
-            store: Store::new(&data_dir),
+            store,
+            video_queue,
         };
         let router = build_router(state);
         (router, data_dir)

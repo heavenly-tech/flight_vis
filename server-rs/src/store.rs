@@ -31,7 +31,7 @@ pub struct StoreError {
 }
 
 impl StoreError {
-    fn status(status: u16, message: impl Into<String>) -> Self {
+    pub(crate) fn status(status: u16, message: impl Into<String>) -> Self {
         Self {
             status,
             message: message.into(),
@@ -267,6 +267,28 @@ impl Store {
 
     pub fn flight_dir(&self, slug: &str) -> PathBuf {
         self.flights_dir.join(slug)
+    }
+
+    /// Read-modify-write of meta.json under the write lock. Used for video
+    /// record transitions; returns 404 when the flight is missing.
+    pub(crate) async fn update_meta(
+        &self,
+        slug: &str,
+        apply: impl FnOnce(&mut FlightMeta),
+    ) -> Result<FlightMeta, StoreError> {
+        let _guard = self.write_lock.lock().await;
+        let meta_path = self.flight_dir(slug).join("meta.json");
+        let raw = tokio::fs::read_to_string(&meta_path)
+            .await
+            .map_err(|_| StoreError::status(404, "Not found"))?;
+        let mut meta: FlightMeta =
+            serde_json::from_str(&raw).map_err(|error| StoreError::status(500, error.to_string()))?;
+        apply(&mut meta);
+        meta.updated_at = Some(now_iso());
+        Self::write_text_atomic(&meta_path, &serde_json::to_string_pretty(&meta).unwrap())
+            .await
+            .map_err(|error| StoreError::status(500, error.to_string()))?;
+        Ok(meta)
     }
 
     pub async fn read_meta(&self, slug: &str) -> Option<FlightRecord> {

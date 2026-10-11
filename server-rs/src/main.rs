@@ -2,6 +2,7 @@ mod auth;
 mod flights;
 mod static_files;
 mod store;
+mod video;
 
 use auth::Auth;
 use axum::{
@@ -21,6 +22,20 @@ pub(crate) struct AppState {
     pub(crate) dist_dir: PathBuf,
     pub(crate) auth: Auth,
     pub(crate) store: Store,
+    pub(crate) video_queue: tokio::sync::mpsc::UnboundedSender<video::VideoJob>,
+}
+
+fn app_state(dist_dir: PathBuf, auth: Auth, store: Store) -> (AppState, tokio::sync::mpsc::UnboundedReceiver<video::VideoJob>) {
+    let (video_queue, queue_rx) = tokio::sync::mpsc::unbounded_channel();
+    (
+        AppState {
+            dist_dir,
+            auth,
+            store,
+            video_queue,
+        },
+        queue_rx,
+    )
 }
 
 fn now_secs() -> u64 {
@@ -30,9 +45,15 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-fn config_from_env() -> (AppState, u16) {
+struct ServerConfig {
+    dist_dir: PathBuf,
+    data_dir: PathBuf,
+    port: u16,
+}
+
+fn config_from_env() -> ServerConfig {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let raw_data = std::env::var("FLIGHT_DATA")
+    let data_dir = std::env::var("FLIGHT_DATA")
         .map(PathBuf::from)
         .unwrap_or_else(|_| root.join("../data"));
     let raw_dist = std::env::var("FLIGHT_VIS_DIST")
@@ -45,14 +66,11 @@ fn config_from_env() -> (AppState, u16) {
         .ok()
         .and_then(|raw| raw.parse().ok())
         .unwrap_or(8080);
-    (
-        AppState {
-            dist_dir,
-            auth: Auth::from_env(),
-            store: Store::new(&raw_data),
-        },
+    ServerConfig {
+        dist_dir,
+        data_dir,
         port,
-    )
+    }
 }
 
 fn session_token(headers: &HeaderMap) -> Option<String> {
@@ -326,14 +344,20 @@ fn build_router(state: AppState) -> Router {
         .route("/login.html", get(login_html_redirect))
         .route("/logout", get(logout).post(logout))
         .merge(flights::router())
+        .merge(video::router())
         .fallback(fallback)
         .with_state(state)
 }
 
 #[tokio::main]
 async fn main() {
-    let (state, port) = config_from_env();
+    let config = config_from_env();
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let (state, queue_rx) = app_state(
+        config.dist_dir,
+        Auth::from_env(),
+        Store::new(&config.data_dir),
+    );
     state
         .store
         .seed(
@@ -346,9 +370,12 @@ async fn main() {
         )
         .await
         .expect("seed sample flight");
+    let worker_store = state.store.clone();
+    video::spawn_transcode_worker(worker_store, queue_rx);
+    video::requeue_transcoding(&state.store, &state.video_queue).await;
     let app = build_router(state);
-    let addr = SocketAddr::from(([0, 0, 0, 0], port));
-    eprintln!("flight_vis (rust) listening on {port}");
+    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    eprintln!("flight_vis (rust) listening on {}", config.port);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("bind listener");
