@@ -10,7 +10,7 @@ Shareable slug pages are public. Saving, uploading, and the library need a login
 
 - Vite 7 + TypeScript
 - CesiumJS globe (Esri imagery and elevation)
-- Hono API that stores tracks on disk
+- Axum (Rust) API that stores tracks on disk
 - Password login with a signed session cookie
 
 ## Auth
@@ -33,6 +33,8 @@ npm run dev:api
 npm run dev
 npm test
 ```
+
+Needs a Rust toolchain for the API (`dev:api`, `test`, `start`). `npm test` runs the Rust suite; the API idles around 5 MB RSS.
 
 Open `http://localhost:5173/vuelo-5`. Drag the profile handles to crop the track, **Skip ground** to auto-trim, **Tag** to mark events, **Save** to keep the current slug.
 

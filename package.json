@@ -6,16 +6,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:api": "node --watch server/index.mjs",
+    "dev:api": "cargo run --manifest-path server-rs/Cargo.toml",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "start": "node server/index.mjs",
-    "test": "node --test server/*.test.mjs"
+    "start": "cargo run --release --manifest-path server-rs/Cargo.toml",
+    "test": "cargo test --manifest-path server-rs/Cargo.toml"
   },
-  "dependencies": {
-    "@hono/node-server": "^1.19.6",
-    "hono": "^4.10.3"
-  },
+  "dependencies": {},
   "devDependencies": {
     "cesium": "^1.134.0",
     "typescript": "^5.9.2",
