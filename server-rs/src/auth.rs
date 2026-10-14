@@ -1,0 +1,233 @@
+//! Session auth with byte-parity to the Node implementation: identical cookie
+//! format (`v1.{exp}.{hmac-sha256-hex}`), key derivation, timing-safe
+//! comparison, 7-day TTL, cookie flags, redirect sanitizing, and login flows.
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use subtle::ConstantTimeEq;
+
+pub const COOKIE: &str = "fv_session";
+pub const TTL_SEC: u64 = 7 * 24 * 3600;
+const SALT: &[u8] = b"flight-vis-login-v1";
+
+fn hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize] as char);
+        out.push(HEX[(b & 0xf) as usize] as char);
+    }
+    out
+}
+
+fn sign_key(secret: &str) -> Vec<u8> {
+    use sha2::Digest;
+    let mut hasher = Sha256::new();
+    hasher.update(SALT);
+    hasher.update(secret.as_bytes());
+    hasher.finalize().to_vec()
+}
+
+fn hmac_hex(key: &[u8], payload: &str) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("hmac key");
+    mac.update(payload.as_bytes());
+    hex(&mac.finalize().into_bytes())
+}
+
+fn sha256_hex(input: &str) -> String {
+    use sha2::Digest;
+    hex(&Sha256::digest(input.as_bytes()))
+}
+
+fn timing_equal(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.ct_eq(b).into()
+}
+
+#[derive(Clone)]
+pub struct Auth {
+    password: String,
+}
+
+impl Auth {
+    pub fn from_env() -> Self {
+        Self {
+            password: std::env::var("FLIGHT_VIS_PASSWORD")
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_password(password: impl Into<String>) -> Self {
+        Self {
+            password: password.into().trim().to_string(),
+        }
+    }
+
+    pub fn configured(&self) -> bool {
+        !self.password.is_empty()
+    }
+
+    pub fn mint(&self, now: u64) -> String {
+        let exp = now + TTL_SEC;
+        let payload = format!("v1.{exp}");
+        let sig = hmac_hex(&sign_key(&self.password), &payload);
+        format!("{payload}.{sig}")
+    }
+
+    pub fn check_password(&self, candidate: &str) -> bool {
+        if !self.configured() {
+            return false;
+        }
+        timing_equal(
+            sha256_hex(&self.password).as_bytes(),
+            sha256_hex(candidate).as_bytes(),
+        )
+    }
+
+    pub fn verify(&self, token: &str, now: u64) -> bool {
+        if !self.configured() || token.is_empty() {
+            return false;
+        }
+        let mut parts = token.split('.');
+        let (Some(tag), Some(exp_raw), Some(sig), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return false;
+        };
+        if tag != "v1" {
+            return false;
+        }
+        let Ok(exp) = exp_raw.parse::<u64>() else {
+            return false;
+        };
+        let payload = format!("v1.{exp_raw}");
+        let expect = hmac_hex(&sign_key(&self.password), &payload);
+        if !timing_equal(expect.as_bytes(), sig.as_bytes()) {
+            return false;
+        }
+        exp > now
+    }
+}
+
+pub fn parse_cookie(header: Option<&str>) -> Option<String> {
+    let header = header?;
+    for part in header.split(';') {
+        let part = part.trim();
+        let mut kv = part.splitn(2, '=');
+        let key = kv.next().unwrap_or("");
+        let value = kv.next().unwrap_or("");
+        if key == COOKIE {
+            return Some(value.to_string());
+        }
+    }
+    None
+}
+
+pub fn safe_next(input: &str) -> String {
+    let value = input.trim();
+    if !value.starts_with('/') || value.starts_with("//") {
+        return "/".to_string();
+    }
+    if value.contains('\\') || value.contains("://") {
+        return "/".to_string();
+    }
+    if value == "/login" || value.starts_with("/login?") {
+        return "/".to_string();
+    }
+    value.to_string()
+}
+
+pub fn set_cookie_header(token: &str, secure: bool) -> String {
+    let mut flags = format!("{COOKIE}={token}; Path=/; Max-Age={TTL_SEC}; HttpOnly; SameSite=Lax");
+    if secure {
+        flags.push_str("; Secure");
+    }
+    flags
+}
+
+pub fn clear_cookie_header(secure: bool) -> String {
+    let mut flags = format!("{COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax");
+    if secure {
+        flags.push_str("; Secure");
+    }
+    flags
+}
+
+pub fn is_secure_request(forwarded_proto: Option<&str>) -> bool {
+    forwarded_proto
+        .unwrap_or("")
+        .split(',')
+        .next()
+        .map(str::trim)
+        .map(|proto| proto.eq_ignore_ascii_case("https"))
+        .unwrap_or(false)
+}
+
+pub fn wants_json(accept: &str, content_type: &str) -> bool {
+    accept.contains("application/json") || content_type.contains("application/json")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Cross-implementation vector generated by server/auth.mjs with
+    // FLIGHT_VIS_PASSWORD=secret at now=1700000000.
+    const VECTOR_TOKEN: &str =
+        "v1.1700604800.c8dfb2b0d238c9e31dfe63622d8cd6975c0bc3be1c3052a7525f4adea25774ee";
+
+    #[test]
+    fn token_is_byte_identical_to_node() {
+        let auth = Auth::with_password("secret");
+        assert_eq!(auth.mint(1_700_000_000), VECTOR_TOKEN);
+    }
+
+    #[test]
+    fn rejects_when_password_unset() {
+        let auth = Auth::with_password("");
+        assert!(!auth.configured());
+        assert!(!auth.check_password("anything"));
+        assert!(!auth.verify(&auth.mint(1_700_000_000), 1_700_000_000));
+    }
+
+    #[test]
+    fn mints_and_verifies_session() {
+        let auth = Auth::with_password("secret");
+        assert!(auth.configured());
+        assert!(auth.check_password("secret"));
+        assert!(!auth.check_password("nope"));
+        let now = 1_700_000_000;
+        assert!(auth.verify(&auth.mint(now), now));
+    }
+
+    #[test]
+    fn rejects_expired_or_foreign_tokens() {
+        let auth = Auth::with_password("secret");
+        let now = 1_700_000_000;
+        let token = auth.mint(now);
+        assert!(auth.verify(&token, now + 10));
+        assert!(!auth.verify(&token, now + 8 * 24 * 3600));
+        let other = Auth::with_password("other");
+        assert!(!other.verify(&token, now + 10));
+        assert!(!auth.verify("v1.abc.def", now));
+        assert!(!auth.verify("bogus", now));
+    }
+
+    #[test]
+    fn parses_cookie_and_sanitizes_next() {
+        assert_eq!(
+            parse_cookie(Some("a=1; fv_session=v1.1.abc; b=2")).as_deref(),
+            Some("v1.1.abc")
+        );
+        assert_eq!(parse_cookie(Some("fv_session=")).as_deref(), Some(""));
+        assert_eq!(parse_cookie(None), None);
+        assert_eq!(safe_next("/vuelo-5"), "/vuelo-5");
+        assert_eq!(safe_next("//evil"), "/");
+        assert_eq!(safe_next("https://evil.example"), "/");
+        assert_eq!(safe_next("/login"), "/");
+    }
+}

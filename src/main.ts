@@ -8,7 +8,7 @@ import { isValidSlug, normalizeSlug, slugFromFileName, slugFromPath } from "./tr
 import type { ColorMode, Flight, FlightTag, TrimRange } from "./track/types";
 import { clampTrim, fullRange, newTagId, rangeStats, suggestTrim } from "./track/trim";
 import { cssForUnit } from "./viz/colors";
-import { createFlightViewer } from "./viz/viewer";
+import { createFlightViewer, type PathMode } from "./viz/viewer";
 
 const SAMPLE_URL = `${import.meta.env.BASE_URL}samples/vuelo5.gpx`;
 const HANDLE = 10;
@@ -80,6 +80,7 @@ let tags: FlightTag[] = [];
 let playing = false;
 let follow = true;
 let colorMode: ColorMode = "altitude";
+let pathMode: PathMode = "trace";
 let cursorMs = 0;
 let lastFrame = 0;
 let playSpeed = Number(speedSelect.value);
@@ -119,7 +120,7 @@ function resizeProfile(): void {
   profile.width = Math.max(1, Math.floor(width * ratio));
   profile.height = Math.floor(height * ratio);
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
-  drawProfile();
+  maybeDrawProfile(true);
 }
 
 function drawProfile(): void {
@@ -211,7 +212,7 @@ function renderTags(): void {
       event.stopPropagation();
       tags = tags.filter((t) => t.id !== tag.id);
       renderTags();
-      drawProfile();
+      maybeDrawProfile(true);
       window.dispatchEvent(new CustomEvent("flight-tags"));
     });
     chip.append(remove);
@@ -223,17 +224,34 @@ function renderHud(): void {
   if (!flight || !trim) return;
   const sample = sampleAt(flight, cursorMs);
   const p = sample.point;
-  const stats = rangeStats(flight, trim);
   document.querySelector("#stat-alt")!.textContent = `${Math.round(p.alt)} m`;
   document.querySelector("#stat-spd")!.textContent = `${(p.speedMps * 3.6).toFixed(0)} km/h`;
   document.querySelector("#stat-vario")!.textContent = `${p.varioMps >= 0 ? "+" : ""}${p.varioMps.toFixed(1)} m/s`;
   document.querySelector("#stat-dist")!.textContent = `${(p.distanceM / 1000).toFixed(1)} km`;
   document.querySelector("#stat-time")!.textContent = formatDuration(p.time - trim.startMs);
   document.querySelector("#stat-utc")!.textContent = formatClock(p.time);
-  summaryEl.textContent = `${(stats.distanceM / 1000).toFixed(1)} km · ${formatDuration(stats.durationMs)} · ${Math.round(stats.maxAlt)} m max`;
-  hud.hidden = false;
-  layoutHud();
+  if (hud.hidden) {
+    hud.hidden = false;
+    layoutHud();
+  }
+  maybeDrawProfile(false);
+}
+
+let lastProfileAt = 0;
+
+function maybeDrawProfile(force: boolean): void {
+  const now = performance.now();
+  if (!force && now - lastProfileAt < 150) return;
+  lastProfileAt = now;
   drawProfile();
+}
+
+// Trim stats only change when the flight or trim changes, so cache them
+// instead of re-filtering the whole track on every animation frame.
+function refreshTrimStats(): void {
+  if (!flight || !trim) return;
+  const stats = rangeStats(flight, trim);
+  summaryEl.textContent = `${(stats.distanceM / 1000).toFixed(1)} km · ${formatDuration(stats.durationMs)} · ${Math.round(stats.maxAlt)} m max`;
 }
 
 function layoutHud(): void {
@@ -282,6 +300,33 @@ function hitHandle(x: number, width: number): "start" | "end" | null {
 async function boot(): Promise<void> {
   setStatus("Preparing 3D globe…");
   const viewer = await createFlightViewer(document.getElementById("cesiumContainer")!);
+  (window as unknown as { __fv: typeof viewer }).__fv = viewer;
+
+  if (new URLSearchParams(window.location.search).has("perf")) {
+    const overlay = document.createElement("div");
+    overlay.id = "perf-overlay";
+    document.body.append(overlay);
+    let frames = 0;
+    let lastT = performance.now();
+    const update = () => {
+      frames += 1;
+      const now = performance.now();
+      if (now - lastT >= 500) {
+        const stats = viewer.getPerfStats();
+        const fps = (frames * 1000) / (now - lastT);
+        overlay.textContent =
+          `${fps.toFixed(0)} fps · ${(1000 / Math.max(1, fps)).toFixed(1)} ms · ` +
+          `${stats.commands} cmds · ${(stats.triangles / 1000).toFixed(0)}k tris · ` +
+          `${pathMode} · ${follow ? "follow" : "free"} · ${playing ? `play ${playSpeed}x` : "paused"} · ` +
+          `q${stats.quality} · ${stats.farKm ? `far${stats.farKm.toFixed(0)}km` : "far∞"} · ` +
+          `${stats.tilesLoaded ? "tiles ready" : "tiles loading"}`;
+        frames = 0;
+        lastT = now;
+      }
+      requestAnimationFrame(update);
+    };
+    requestAnimationFrame(update);
+  }
 
   applyTrim = async (fly = true) => {
     if (!flight || !trim) return;
@@ -289,6 +334,7 @@ async function boot(): Promise<void> {
     cursorMs = Math.min(Math.max(cursorMs, trim.startMs), trim.endMs);
     await viewer.setTrim(trim, fly);
     viewer.setSample(sampleAt(flight, cursorMs), false);
+    refreshTrimStats();
     renderHud();
   };
 
@@ -318,6 +364,7 @@ async function boot(): Promise<void> {
     await viewer.setFlight(next, colorMode, trim);
     viewer.setTags(tags);
     renderTags();
+    refreshTrimStats();
     renderHud();
     setStatus(null);
     viewer.setSample(sampleAt(next, cursorMs), false);
@@ -342,7 +389,24 @@ async function boot(): Promise<void> {
       renderHud();
     }
     lastFrame = now;
+    sampleQuality(now, playing);
     requestAnimationFrame(tick);
+  }
+
+  // Feed the viewer's auto quality governor a 2s rolling fps, but only
+  // while playing: paused frames are free and must not skew the average.
+  let qualityFrames = 0;
+  let qualityWindowStart = 0;
+
+  function sampleQuality(now: number, active: boolean): void {
+    if (!qualityWindowStart) qualityWindowStart = now;
+    qualityFrames += 1;
+    if (now - qualityWindowStart >= 2000) {
+      const fps = (qualityFrames * 1000) / Math.max(1, now - qualityWindowStart);
+      if (active) viewer.stepQuality(fps);
+      qualityFrames = 0;
+      qualityWindowStart = now;
+    }
   }
 
   playButton.addEventListener("click", () => {
@@ -350,6 +414,14 @@ async function boot(): Promise<void> {
     if (cursorMs >= trim.endMs || cursorMs < trim.startMs) cursorMs = trim.startMs;
     playing = !playing;
     playButton.textContent = playing ? "Pause" : "Play";
+  });
+
+  document.querySelectorAll<HTMLButtonElement>("[data-path-mode]").forEach((button) => {
+    button.addEventListener("click", () => {
+      pathMode = button.dataset.pathMode as PathMode;
+      document.querySelectorAll("[data-path-mode]").forEach((el) => el.classList.toggle("active", el === button));
+      if (flight) viewer.setPathMode(pathMode, cursorMs);
+    });
   });
 
   followButton.addEventListener("click", () => {
@@ -480,7 +552,7 @@ async function boot(): Promise<void> {
     if (!label) return;
     tags = [...tags, { id: newTagId(), timeMs: cursorMs, label }].sort((a, b) => a.timeMs - b.timeMs);
     renderTags();
-    drawProfile();
+    maybeDrawProfile(true);
     viewer.setTags(tags);
   });
 
@@ -599,6 +671,8 @@ async function boot(): Promise<void> {
     if (drag === "seek") {
       cursorMs = t;
       viewer.setSample(sampleAt(flight, cursorMs), follow);
+    } else {
+      refreshTrimStats();
     }
     renderHud();
   });

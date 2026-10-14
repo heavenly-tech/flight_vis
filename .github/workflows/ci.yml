@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@1.98.0
+        with:
+          components: clippy
+
+      - name: Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: cargo test
+        run: cargo test --manifest-path server-rs/Cargo.toml
+
+      - name: cargo clippy
+        run: cargo clippy --manifest-path server-rs/Cargo.toml --all-targets -- -D warnings
+
+      - name: frontend
+        run: npm ci && npm run build
+
+      - name: docker build
+        run: docker build .
