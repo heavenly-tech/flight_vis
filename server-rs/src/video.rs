@@ -86,13 +86,23 @@ pub fn new_video_id() -> String {
     format!("vid-{suffix}")
 }
 
-/// Route ids are a single path segment: lowercase, digits, and dashes only.
+/// Route ids are one path segment, at most 32 characters.
+/// New ids are `vid-` plus base-36. Ids already stored may use `vid_`.
 pub fn is_valid_video_id(id: &str) -> bool {
+    fn charset(bytes: &[u8]) -> bool {
+        !bytes.is_empty()
+            && bytes
+                .iter()
+                .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'z' | b'-'))
+    }
     let bytes = id.as_bytes();
-    (1..=32).contains(&bytes.len())
-        && bytes
-            .iter()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'z' | b'-'))
+    if bytes.is_empty() || bytes.len() > 32 {
+        return false;
+    }
+    if let Some(rest) = id.strip_prefix("vid_") {
+        return charset(rest.as_bytes());
+    }
+    charset(bytes)
 }
 
 pub fn sanitize_ext(file_name: &str) -> String {
@@ -871,8 +881,11 @@ mod tests {
         assert_ne!(a, b);
         assert!(is_valid_video_id("a"));
         assert!(is_valid_video_id("vid-0123abcd"));
+        assert!(is_valid_video_id("vid_0123abcd"));
         assert!(!is_valid_video_id(""));
-        assert!(!is_valid_video_id("vid_0123abcd"));
+        assert!(!is_valid_video_id("vid_"));
+        assert!(!is_valid_video_id("bad_id"));
+        assert!(!is_valid_video_id("vid__abc"));
         assert!(!is_valid_video_id("ABC"));
         assert!(!is_valid_video_id("bad/id"));
         assert!(!is_valid_video_id("has.dot"));
@@ -1056,6 +1069,36 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}/file");
             assert_eq!(body["error"], "Invalid video id");
         }
+        let _ = tokio::fs::remove_dir_all(&data_dir).await;
+    }
+
+    #[tokio::test]
+    async fn video_id_accepts_vid_dash_and_vid_underscore() {
+        let (mut router, data_dir) = video_app("secret").await;
+        let cookie = authed_cookie(&mut router, "secret").await;
+        for id in ["vid-0123abcd", "vid_0123abcd"] {
+            let uri = format!("/api/flights/demo/videos/{id}");
+            let (status, body, _) = get_json(
+                &mut router,
+                "PATCH",
+                &uri,
+                Some(&cookie),
+                Some("application/json"),
+                b"{\"name\":\"x\"}".to_vec(),
+            )
+            .await;
+            assert_ne!(status, StatusCode::BAD_REQUEST, "{id}");
+            assert_eq!(status, StatusCode::NOT_FOUND, "{id}");
+            assert_eq!(body["error"], "Not found");
+            let (status, body, _) =
+                get_json(&mut router, "GET", &format!("{uri}/file"), None, None, vec![]).await;
+            assert_ne!(status, StatusCode::BAD_REQUEST, "{id}/file");
+            assert_eq!(status, StatusCode::NOT_FOUND, "{id}/file");
+            assert_eq!(body["error"], "Not found");
+        }
+        let generated = new_video_id();
+        assert!(generated.starts_with("vid-"));
+        assert!(!generated.contains('_'));
         let _ = tokio::fs::remove_dir_all(&data_dir).await;
     }
 
