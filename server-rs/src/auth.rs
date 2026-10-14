@@ -93,12 +93,9 @@ impl Auth {
             return false;
         }
         let mut parts = token.split('.');
-        let (Some(tag), Some(exp_raw), Some(sig), None) = (
-            parts.next(),
-            parts.next(),
-            parts.next(),
-            parts.next(),
-        ) else {
+        let (Some(tag), Some(exp_raw), Some(sig), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
             return false;
         };
         if tag != "v1" {

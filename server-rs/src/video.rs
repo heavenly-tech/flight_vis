@@ -127,15 +127,18 @@ pub fn rendition_path(dir: &Path, id: &str) -> PathBuf {
 }
 
 fn find_original(dir: &Path, id: &str) -> Option<PathBuf> {
-    std::fs::read_dir(dir).ok()?.filter_map(|entry| {
-        let entry = entry.ok()?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name.starts_with(&format!("video-{id}-orig.")) && entry.path().is_file() {
-            Some(entry.path())
-        } else {
-            None
-        }
-    }).next()
+    std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(&format!("video-{id}-orig.")) && entry.path().is_file() {
+                Some(entry.path())
+            } else {
+                None
+            }
+        })
+        .next()
 }
 
 pub fn content_type_for(path: &Path) -> &'static str {
@@ -164,7 +167,15 @@ async fn run_capture(program: &str, args: &[&str]) -> Result<String, String> {
         .map_err(|error| format!("{program} unavailable: {error}"))?;
     if !output.status.success() {
         let tail = String::from_utf8_lossy(&output.stderr);
-        let tail: String = tail.lines().rev().take(5).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
+        let tail: String = tail
+            .lines()
+            .rev()
+            .take(5)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect::<Vec<_>>()
+            .join("\n");
         return Err(format!("{program} failed: {tail}"));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
@@ -174,9 +185,12 @@ pub async fn probe_duration(path: &Path) -> Result<f64, String> {
     let out = run_capture(
         "ffprobe",
         &[
-            "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
             &path.to_string_lossy(),
         ],
     )
@@ -237,10 +251,16 @@ impl Store {
         }
     }
 
-    pub(crate) async fn video_add(&self, slug: &str, record: &VideoRecord) -> Result<(), crate::store::StoreError> {
-        let value = serde_json::to_value(record).map_err(|e| crate::store::StoreError::status(500, e.to_string()))?;
+    pub(crate) async fn video_add(
+        &self,
+        slug: &str,
+        record: &VideoRecord,
+    ) -> Result<(), crate::store::StoreError> {
+        let value = serde_json::to_value(record)
+            .map_err(|e| crate::store::StoreError::status(500, e.to_string()))?;
         self.update_meta(slug, |meta| {
-            meta.videos.retain(|v| v.get("id").and_then(|id| id.as_str()) != Some(record.id.as_str()));
+            meta.videos
+                .retain(|v| v.get("id").and_then(|id| id.as_str()) != Some(record.id.as_str()));
             meta.videos.push(value.clone());
         })
         .await?;
@@ -257,7 +277,8 @@ impl Store {
         let status = status.to_string();
         self.update_meta(slug, |meta| {
             let mut videos: Vec<VideoRecord> =
-                serde_json::from_value(serde_json::Value::Array(meta.videos.clone())).unwrap_or_default();
+                serde_json::from_value(serde_json::Value::Array(meta.videos.clone()))
+                    .unwrap_or_default();
             if let Some(rec) = videos.iter_mut().find(|v| v.id == id) {
                 rec.status = status.clone();
                 rec.error = error.clone();
@@ -281,7 +302,8 @@ impl Store {
         let meta = self
             .update_meta(slug, |meta| {
                 let mut videos: Vec<VideoRecord> =
-                    serde_json::from_value(serde_json::Value::Array(meta.videos.clone())).unwrap_or_default();
+                    serde_json::from_value(serde_json::Value::Array(meta.videos.clone()))
+                        .unwrap_or_default();
                 if let Some(rec) = videos.iter_mut().find(|v| v.id == id) {
                     if let Some(offset) = patch.offset_ms {
                         rec.offset_ms = Some(offset);
@@ -303,7 +325,11 @@ impl Store {
         Ok(videos.into_iter().find(|v| v.id == id))
     }
 
-    pub(crate) async fn video_remove(&self, slug: &str, id: &str) -> Result<bool, crate::store::StoreError> {
+    pub(crate) async fn video_remove(
+        &self,
+        slug: &str,
+        id: &str,
+    ) -> Result<bool, crate::store::StoreError> {
         let id = id.to_string();
         let mut removed = false;
         self.update_meta(slug, |meta| {
@@ -316,13 +342,18 @@ impl Store {
         Ok(removed)
     }
 
-    pub(crate) async fn video_list(&self, slug: &str) -> Result<Vec<VideoRecord>, crate::store::StoreError> {
-        let dir = self.find_video_dir(slug).ok_or_else(|| crate::store::StoreError::status(404, "Not found"))?;
+    pub(crate) async fn video_list(
+        &self,
+        slug: &str,
+    ) -> Result<Vec<VideoRecord>, crate::store::StoreError> {
+        let dir = self
+            .find_video_dir(slug)
+            .ok_or_else(|| crate::store::StoreError::status(404, "Not found"))?;
         let raw = tokio::fs::read_to_string(dir.join("meta.json"))
             .await
             .map_err(|_| crate::store::StoreError::status(404, "Not found"))?;
-        let meta: crate::store::FlightMeta =
-            serde_json::from_str(&raw).map_err(|e| crate::store::StoreError::status(500, e.to_string()))?;
+        let meta: crate::store::FlightMeta = serde_json::from_str(&raw)
+            .map_err(|e| crate::store::StoreError::status(500, e.to_string()))?;
         Ok(serde_json::from_value(serde_json::Value::Array(meta.videos)).unwrap_or_default())
     }
 }
@@ -344,7 +375,9 @@ pub fn spawn_transcode_worker(
             .await;
             match result {
                 Ok(()) => {
-                    let _ = store.video_set_status(&job.slug, &job.video_id, "ready", None).await;
+                    let _ = store
+                        .video_set_status(&job.slug, &job.video_id, "ready", None)
+                        .await;
                 }
                 Err(error) => {
                     eprintln!("transcode {}:{} failed: {error}", job.slug, job.video_id);
@@ -358,10 +391,7 @@ pub fn spawn_transcode_worker(
 }
 
 /// Requeue interrupted transcodes after a restart.
-pub async fn requeue_transcoding(
-    store: &Store,
-    queue: &tokio::sync::mpsc::Sender<VideoJob>,
-) {
+pub async fn requeue_transcoding(store: &Store, queue: &tokio::sync::mpsc::Sender<VideoJob>) {
     for item in store.list_flights().await {
         let Ok(videos) = store.video_list(&item.slug).await else {
             continue;
@@ -400,7 +430,10 @@ use futures_util::StreamExt;
 use http_body_util::BodyDataStream;
 use serde_json::json;
 use std::collections::HashMap;
-use tokio::{fs::File, io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt}};
+use tokio::{
+    fs::File,
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+};
 
 fn parse_range(value: &str, size: u64) -> Result<(u64, u64), ()> {
     let spec = value.strip_prefix("bytes=").ok_or(())?;
@@ -454,11 +487,7 @@ async fn post_video(
             .into_response();
     }
     if !state.store.exists(&slug) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "Not found" })),
-        )
-            .into_response();
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response();
     }
     let content_type = headers
         .get(header::CONTENT_TYPE)
@@ -471,7 +500,10 @@ async fn post_video(
         )
             .into_response();
     }
-    let file_name = query.get("fileName").cloned().unwrap_or_else(|| "video.mp4".to_string());
+    let file_name = query
+        .get("fileName")
+        .cloned()
+        .unwrap_or_else(|| "video.mp4".to_string());
     let ext = sanitize_ext(&file_name);
     let name = {
         let base = name_from_file_name(&file_name);
@@ -589,11 +621,7 @@ async fn list_videos(
     let slug = normalize_slug(&raw_slug);
     match state.store.video_list(&slug).await {
         Ok(videos) => Json(videos).into_response(),
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "Not found" })),
-        )
-            .into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response(),
     }
 }
 
@@ -624,11 +652,7 @@ async fn patch_video(
     let patch: VideoPatch = serde_json::from_slice(&body).unwrap_or_default();
     match state.store.video_patch(&slug, &id, &patch).await {
         Ok(Some(record)) => Json(record).into_response(),
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "Not found" })),
-        )
-            .into_response(),
+        Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response(),
         Err(error) => (
             StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             Json(json!({ "error": error.message })),
@@ -669,11 +693,7 @@ async fn delete_video(
             let _ = tokio::fs::remove_file(rendition_path(&dir, &id)).await;
             Json(json!({ "ok": true })).into_response()
         }
-        Ok(false) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "Not found" })),
-        )
-            .into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response(),
         Err(error) => (
             StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             Json(json!({ "error": error.message })),
@@ -699,19 +719,11 @@ async fn get_video_file(
     let videos = match state.store.video_list(&slug).await {
         Ok(videos) => videos,
         Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({ "error": "Not found" })),
-            )
-                .into_response();
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response();
         }
     };
-    if videos.iter().find(|v| v.id == id).is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "Not found" })),
-        )
-            .into_response();
+    if !videos.iter().any(|v| v.id == id) {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response();
     }
     let dir = state.store.flight_dir(&slug);
     let rendition = rendition_path(&dir, &id);
@@ -723,10 +735,7 @@ async fn get_video_file(
         Some("original") => match find_original(&dir, &id) {
             Some(path) => path,
             None => {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(json!({ "error": "Not found" })),
-                )
+                return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" })))
                     .into_response();
             }
         },
@@ -754,10 +763,7 @@ async fn get_video_file(
                 match find_original(&dir, &id) {
                     Some(path) => path,
                     None => {
-                        return (
-                            StatusCode::NOT_FOUND,
-                            Json(json!({ "error": "Not found" })),
-                        )
+                        return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" })))
                             .into_response();
                     }
                 }
@@ -767,11 +773,7 @@ async fn get_video_file(
     let size = match tokio::fs::metadata(&path).await {
         Ok(meta) => meta.len(),
         Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({ "error": "Not found" })),
-            )
-                .into_response();
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response();
         }
     };
     let content_type = content_type_for(&path).to_string();
@@ -781,11 +783,7 @@ async fn get_video_file(
         .unwrap_or("");
     if range.is_empty() || size == 0 {
         let Ok(file) = File::open(&path).await else {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({ "error": "Not found" })),
-            )
-                .into_response();
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response();
         };
         let body = Body::from_stream(tokio_util::io::ReaderStream::new(file));
         return (
@@ -813,11 +811,7 @@ async fn get_video_file(
     let mut file = match File::open(&path).await {
         Ok(file) => file,
         Err(_) => {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({ "error": "Not found" })),
-            )
-                .into_response();
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response();
         }
     };
     if file.seek(std::io::SeekFrom::Start(start)).await.is_err() {
@@ -834,10 +828,7 @@ async fn get_video_file(
         [
             (header::CONTENT_TYPE, content_type),
             (header::ACCEPT_RANGES, "bytes".to_string()),
-            (
-                header::CONTENT_RANGE,
-                format!("bytes {start}-{end}/{size}"),
-            ),
+            (header::CONTENT_RANGE, format!("bytes {start}-{end}/{size}")),
             (header::CONTENT_LENGTH, len.to_string()),
         ],
         body,
@@ -897,7 +888,10 @@ mod tests {
         assert_eq!(sanitize_ext("a.b"), "mp4");
         assert_eq!(content_type_for(Path::new("x.mp4")), "video/mp4");
         assert_eq!(content_type_for(Path::new("x.webm")), "video/webm");
-        assert_eq!(content_type_for(Path::new("x.foo")), "application/octet-stream");
+        assert_eq!(
+            content_type_for(Path::new("x.foo")),
+            "application/octet-stream"
+        );
         assert_eq!(parse_range("bytes=0-99", 1000), Ok((0, 99)));
         assert_eq!(parse_range("bytes=500-", 1000), Ok((500, 999)));
         assert_eq!(parse_range("bytes=-100", 1000), Ok((900, 999)));
@@ -935,11 +929,22 @@ mod tests {
         let status = tokio::process::Command::new("ffmpeg")
             .args([
                 "-y",
-                "-f", "lavfi", "-i", "testsrc=duration=2:size=320x240:rate=10",
-                "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
-                "-pix_fmt", "yuv420p",
-                "-c:v", "libx264", "-preset", "ultrafast",
-                "-c:a", "aac",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=2:size=320x240:rate=10",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "ultrafast",
+                "-c:a",
+                "aac",
                 &path.to_string_lossy(),
             ])
             .status()
@@ -983,7 +988,13 @@ mod tests {
             .unwrap();
         let response = router.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let set_cookie = response.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap().to_string();
+        let set_cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         set_cookie.split(';').next().unwrap().to_string()
     }
 
@@ -1006,7 +1017,10 @@ mod tests {
         let response = router.clone().oneshot(request).await.unwrap();
         let status = response.status();
         let headers = response.headers().clone();
-        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap().to_vec();
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
         let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         let _ = headers;
         (status, json, bytes)
@@ -1064,8 +1078,15 @@ mod tests {
             .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
             assert_eq!(body["error"], "Invalid video id");
-            let (status, body, _) =
-                get_json(&mut router, "GET", &format!("{uri}/file"), None, None, vec![]).await;
+            let (status, body, _) = get_json(
+                &mut router,
+                "GET",
+                &format!("{uri}/file"),
+                None,
+                None,
+                vec![],
+            )
+            .await;
             assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}/file");
             assert_eq!(body["error"], "Invalid video id");
         }
@@ -1090,8 +1111,15 @@ mod tests {
             assert_ne!(status, StatusCode::BAD_REQUEST, "{id}");
             assert_eq!(status, StatusCode::NOT_FOUND, "{id}");
             assert_eq!(body["error"], "Not found");
-            let (status, body, _) =
-                get_json(&mut router, "GET", &format!("{uri}/file"), None, None, vec![]).await;
+            let (status, body, _) = get_json(
+                &mut router,
+                "GET",
+                &format!("{uri}/file"),
+                None,
+                None,
+                vec![],
+            )
+            .await;
             assert_ne!(status, StatusCode::BAD_REQUEST, "{id}/file");
             assert_eq!(status, StatusCode::NOT_FOUND, "{id}/file");
             assert_eq!(body["error"], "Not found");
@@ -1109,8 +1137,18 @@ mod tests {
         };
         let cookie = authed_cookie(&mut router, "secret").await;
 
-        let put_body = serde_json::json!({ "name": "V", "fileName": "v.gpx", "track": TRACK, "tags": [] }).to_string();
-        let (status, _, _) = get_json(&mut router, "PUT", "/api/flights/vid", Some(&cookie), Some("application/json"), put_body.into_bytes()).await;
+        let put_body =
+            serde_json::json!({ "name": "V", "fileName": "v.gpx", "track": TRACK, "tags": [] })
+                .to_string();
+        let (status, _, _) = get_json(
+            &mut router,
+            "PUT",
+            "/api/flights/vid",
+            Some(&cookie),
+            Some("application/json"),
+            put_body.into_bytes(),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
 
         let fixture = data_dir.join("fixture.mp4");
@@ -1118,8 +1156,12 @@ mod tests {
         let bytes = tokio::fs::read(&fixture).await.unwrap();
 
         let (status, record, _) = get_json(
-            &mut router, "POST", "/api/flights/vid/videos?fileName=test.mp4",
-            Some(&cookie), Some("video/mp4"), bytes.clone(),
+            &mut router,
+            "POST",
+            "/api/flights/vid/videos?fileName=test.mp4",
+            Some(&cookie),
+            Some("video/mp4"),
+            bytes.clone(),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED);
@@ -1127,22 +1169,34 @@ mod tests {
         assert_eq!(record["status"], "transcoding");
 
         let (status, _, _) = get_json(
-            &mut router, "POST", "/api/flights/vid/videos?fileName=test.mp4",
-            None, Some("video/mp4"), bytes.clone(),
+            &mut router,
+            "POST",
+            "/api/flights/vid/videos?fileName=test.mp4",
+            None,
+            Some("video/mp4"),
+            bytes.clone(),
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
 
         let (status, _, _) = get_json(
-            &mut router, "POST", "/api/flights/vid/videos?fileName=note.txt",
-            Some(&cookie), Some("video/mp4"), b"not a video".to_vec(),
+            &mut router,
+            "POST",
+            "/api/flights/vid/videos?fileName=note.txt",
+            Some(&cookie),
+            Some("video/mp4"),
+            b"not a video".to_vec(),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
 
         let (status, _, _) = get_json(
-            &mut router, "POST", "/api/flights/vid/videos?fileName=test.mp4",
-            Some(&cookie), Some("application/json"), b"{}".to_vec(),
+            &mut router,
+            "POST",
+            "/api/flights/vid/videos?fileName=test.mp4",
+            Some(&cookie),
+            Some("application/json"),
+            b"{}".to_vec(),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -1166,8 +1220,15 @@ mod tests {
         }
         assert!(ready, "transcode did not finish in time");
 
-        let (status, videos, _) =
-            get_json(&mut router, "GET", "/api/flights/vid/videos", None, None, vec![]).await;
+        let (status, videos, _) = get_json(
+            &mut router,
+            "GET",
+            "/api/flights/vid/videos",
+            None,
+            None,
+            vec![],
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(videos.as_array().unwrap().len(), 1);
 
@@ -1180,25 +1241,46 @@ mod tests {
             .unwrap();
         let response = router.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
-        let content_range = response.headers().get(header::CONTENT_RANGE).unwrap().to_str().unwrap().to_string();
+        let content_range = response
+            .headers()
+            .get(header::CONTENT_RANGE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
         assert!(content_range.starts_with("bytes 0-99/"), "{content_range}");
         let chunk = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(chunk.len(), 100);
 
         // Full file + original + bad quality + bad range.
         let (status, _, full) = get_json(
-            &mut router, "GET", &format!("/api/flights/vid/videos/{id}/file"), None, None, vec![],
+            &mut router,
+            "GET",
+            &format!("/api/flights/vid/videos/{id}/file"),
+            None,
+            None,
+            vec![],
         )
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(!full.is_empty());
         let (status, _, _) = get_json(
-            &mut router, "GET", &format!("/api/flights/vid/videos/{id}/file?quality=original"), None, None, vec![],
+            &mut router,
+            "GET",
+            &format!("/api/flights/vid/videos/{id}/file?quality=original"),
+            None,
+            None,
+            vec![],
         )
         .await;
         assert_eq!(status, StatusCode::OK);
         let (status, _, _) = get_json(
-            &mut router, "GET", &format!("/api/flights/vid/videos/{id}/file?quality=bogus"), None, None, vec![],
+            &mut router,
+            "GET",
+            &format!("/api/flights/vid/videos/{id}/file?quality=bogus"),
+            None,
+            None,
+            vec![],
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -1213,25 +1295,46 @@ mod tests {
 
         // Offset patch flows back into the flight record.
         let (status, record, _) = get_json(
-            &mut router, "PATCH", &format!("/api/flights/vid/videos/{id}"),
-            Some(&cookie), Some("application/json"), b"{\"offsetMs\":12345}".to_vec(),
+            &mut router,
+            "PATCH",
+            &format!("/api/flights/vid/videos/{id}"),
+            Some(&cookie),
+            Some("application/json"),
+            b"{\"offsetMs\":12345}".to_vec(),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(record["offsetMs"], 12345);
 
         let (status, _, _) = get_json(
-            &mut router, "DELETE", &format!("/api/flights/vid/videos/{id}"), Some(&cookie), None, vec![],
+            &mut router,
+            "DELETE",
+            &format!("/api/flights/vid/videos/{id}"),
+            Some(&cookie),
+            None,
+            vec![],
         )
         .await;
         assert_eq!(status, StatusCode::OK);
         let (status, _, _) = get_json(
-            &mut router, "GET", &format!("/api/flights/vid/videos/{id}/file"), None, None, vec![],
+            &mut router,
+            "GET",
+            &format!("/api/flights/vid/videos/{id}/file"),
+            None,
+            None,
+            vec![],
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        let (status, videos, _) =
-            get_json(&mut router, "GET", "/api/flights/vid/videos", None, None, vec![]).await;
+        let (status, videos, _) = get_json(
+            &mut router,
+            "GET",
+            "/api/flights/vid/videos",
+            None,
+            None,
+            vec![],
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(videos.as_array().unwrap().len(), 0);
         let _ = tokio::fs::remove_dir_all(&data_dir).await;

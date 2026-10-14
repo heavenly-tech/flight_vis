@@ -7,6 +7,7 @@ description: Build and deploy the flight_vis image. Use when changing the Docker
 
 ```bash
 docker build .
+chown -R 10001:10001 ./data
 docker compose up -d --build
 ```
 
@@ -25,6 +26,6 @@ Runtime process:
 - `PORT=8080`, `FLIGHT_DATA=/data`, `FLIGHT_VIS_DIST=/app/dist`.
 - `HEALTHCHECK` runs `wget -q -O /dev/null http://127.0.0.1:8080/api/health`.
 
-Compose publishes the container on the external `proxy_network` (`VIRTUAL_HOST` / `LETSENCRYPT_HOST` = `flight.heavenly.cl`) and mounts `./data` on `/data`. A host mount replaces the image's `/data` directory; the mount must be writable by uid 10001.
+Compose publishes the container on the external `proxy_network` (`VIRTUAL_HOST` / `LETSENCRYPT_HOST` = `flight.heavenly.cl`) and mounts `./data` on `/data`. A host mount replaces the image's `/data` directory; the mount must be writable by uid 10001. Before `docker compose up -d`, run `chown -R 10001:10001 ./data` on the host. The prod data folders are currently owned by root, so this step is required on the next deploy or the container cannot write the store.
 
 Do not deploy from a review task unless that task explicitly says to.

@@ -44,4 +44,4 @@ The Rust server replaced the Node server. Keep byte-level behavior below unless 
 - Video ids are at most 32 characters. The body is `[0-9a-z-]`. New ids are `vid-` plus 10 base-36 characters. Ids already stored as `vid_` plus that same body still pass. Any other underscore, slash, dot, or uppercase character is `400 {"error":"Invalid video id"}`.
 - Failing to create the upload file is logged server-side and returned as `500 {"error":"could not store video"}`. Do not put the OS error in the JSON body.
 - The transcode queue is a bounded channel of 32 jobs. ffmpeg is invoked with `-protocol_whitelist file` before `-i`.
-- `POST /login` allows 8 attempts per client address per 60 seconds, then `429 {"error":"too many attempts"}`. The address is the first `X-Forwarded-For` hop, else `X-Real-IP`, else the socket address.
+- `POST /login` allows 8 attempts per client address per 60 seconds, then `429 {"error":"too many attempts"}`. A socket peer inside `TRUSTED_PROXY_CIDRS` (default docker `proxy_network` plus loopback) uses `X-Real-IP`, else the last `X-Forwarded-For` entry; any other peer uses the socket address. No socket peer is `unknown`.

@@ -82,7 +82,11 @@ fn ext_of(relative: &str) -> &str {
     relative.rsplit('.').next().unwrap_or("")
 }
 
-async fn file_response(path: &Path, content_type: &str, cache: &str) -> Result<axum::response::Response, StatusCode> {
+async fn file_response(
+    path: &Path,
+    content_type: &str,
+    cache: &str,
+) -> Result<axum::response::Response, StatusCode> {
     let file = File::open(path).await.map_err(|_| StatusCode::NOT_FOUND)?;
     let body = Body::from_stream(ReaderStream::new(file));
     axum::response::Response::builder()
@@ -93,9 +97,16 @@ async fn file_response(path: &Path, content_type: &str, cache: &str) -> Result<a
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-pub async fn serve(dist_dir: &Path, url_path: &str) -> Result<axum::response::Response, StatusCode> {
+pub async fn serve(
+    dist_dir: &Path,
+    url_path: &str,
+) -> Result<axum::response::Response, StatusCode> {
     if let Some(joined) = safe_join(dist_dir, url_path) {
-        if tokio::fs::metadata(&joined).await.map(|m| m.is_file()).unwrap_or(false) {
+        if tokio::fs::metadata(&joined)
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false)
+        {
             let relative = joined
                 .strip_prefix(dist_dir)
                 .ok()
@@ -110,7 +121,11 @@ pub async fn serve(dist_dir: &Path, url_path: &str) -> Result<axum::response::Re
         }
     }
     let index = dist_dir.join("index.html");
-    if tokio::fs::metadata(&index).await.map(|m| m.is_file()).unwrap_or(false) {
+    if tokio::fs::metadata(&index)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+    {
         return file_response(&index, "text/html; charset=UTF-8", "no-cache").await;
     }
     Err(StatusCode::INTERNAL_SERVER_ERROR)

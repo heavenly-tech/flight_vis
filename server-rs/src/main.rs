@@ -16,9 +16,9 @@ use axum::{
 use serde_json::json;
 use std::{
     collections::HashMap,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 use store::Store;
@@ -208,21 +208,28 @@ async fn login_page(
 
 async fn login_html_redirect(Query(query): Query<HashMap<String, String>>) -> impl IntoResponse {
     match query.get("next") {
-        Some(next) => {
-            redirect_found(&format!("/login?next={}", url_encode(next))).into_response()
-        }
+        Some(next) => redirect_found(&format!("/login?next={}", url_encode(next))).into_response(),
         None => redirect_found("/login").into_response(),
     }
 }
 
 fn redirect_found(location: &str) -> impl IntoResponse {
-    (StatusCode::FOUND, [(header::LOCATION, location.to_string())], "")
+    (
+        StatusCode::FOUND,
+        [(header::LOCATION, location.to_string())],
+        "",
+    )
 }
 
 fn url_encode(input: &str) -> String {
     let mut out = String::new();
     for b in input.bytes() {
-        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')') {
+        if b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'' | b'(' | b')'
+            )
+        {
             out.push(b as char);
         } else {
             out.push_str(&format!("%{b:02X}"));
@@ -250,9 +257,7 @@ fn login_fields(headers: &HeaderMap, body: &[u8]) -> LoginFields {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string(),
-            next: auth::safe_next(
-                parsed.get("next").and_then(|v| v.as_str()).unwrap_or(""),
-            ),
+            next: auth::safe_next(parsed.get("next").and_then(|v| v.as_str()).unwrap_or("")),
         };
     }
     let parsed: HashMap<String, String> = serde_urlencoded::from_bytes(body).unwrap_or_default();
@@ -263,8 +268,10 @@ fn login_fields(headers: &HeaderMap, body: &[u8]) -> LoginFields {
 }
 
 /// Failed and successful `POST /login` attempts share one sliding window per
-/// client address. Direct peers use the socket address; behind the compose
-/// proxy, `X-Forwarded-For` (then `X-Real-IP`) is the client address.
+/// client address. Forwarding headers are trusted only when the socket peer is
+/// inside `TRUSTED_PROXY_CIDRS`; otherwise the socket address is used. When the
+/// peer is trusted, `X-Real-IP` wins, then the last `X-Forwarded-For` entry
+/// (the one appended by our own proxy).
 pub(crate) const LOGIN_MAX_ATTEMPTS: usize = 8;
 const LOGIN_WINDOW_SECS: u64 = 60;
 
@@ -308,35 +315,124 @@ where
 }
 
 fn client_ip(parts: &Parts) -> String {
-    if let Some(ip) = header_ip(parts.headers.get("x-forwarded-for"), true) {
-        return ip;
-    }
-    if let Some(ip) = header_ip(parts.headers.get("x-real-ip"), false) {
-        return ip;
-    }
-    if let Some(ConnectInfo(addr)) = parts.extensions.get::<ConnectInfo<SocketAddr>>() {
-        return addr.ip().to_string();
-    }
-    "unknown".to_string()
+    let peer = parts
+        .extensions
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip());
+    client_ip_with(peer, &parts.headers, trusted_proxy_cidrs())
 }
 
-fn header_ip(value: Option<&axum::http::HeaderValue>, first_hop: bool) -> Option<String> {
+/// Resolve the throttle key from a socket peer and forwarding headers. A client
+/// that connects directly (peer outside every trusted network) cannot influence
+/// the result with spoofed `X-Forwarded-For` / `X-Real-IP` headers.
+fn client_ip_with(peer: Option<IpAddr>, headers: &HeaderMap, trusted: &[Cidr]) -> String {
+    let peer_trusted = peer.is_some_and(|ip| trusted.iter().any(|cidr| cidr.contains(&ip)));
+    if peer_trusted {
+        if let Some(ip) = parse_ip_header(headers.get("x-real-ip"), false) {
+            return ip;
+        }
+        if let Some(ip) = parse_ip_header(headers.get("x-forwarded-for"), true) {
+            return ip;
+        }
+    }
+    match peer {
+        Some(ip) => ip.to_string(),
+        None => "unknown".to_string(),
+    }
+}
+
+/// Parse a single IP out of a forwarding header. `last_hop` selects the final
+/// comma-separated `X-Forwarded-For` entry (the nearest proxy to us). Values
+/// that do not parse as an `IpAddr` are ignored.
+fn parse_ip_header(value: Option<&axum::http::HeaderValue>, last_hop: bool) -> Option<String> {
     let raw = value?.to_str().ok()?;
-    let token = if first_hop {
-        raw.split(',').next().unwrap_or("").trim()
+    let token = if last_hop {
+        raw.rsplit(',').next().unwrap_or("").trim()
     } else {
         raw.trim()
     };
-    if token.is_empty() || token.len() > 128 {
-        return None;
+    token.parse::<IpAddr>().ok().map(|ip| ip.to_string())
+}
+
+/// Default expands to the docker `proxy_network` plus loopback.
+const DEFAULT_TRUSTED_PROXY_CIDRS: &str = "172.18.0.0/16,127.0.0.1/32,::1/128";
+
+#[derive(Clone, Copy, Eq, PartialEq, Debug)]
+struct Cidr {
+    base: IpAddr,
+    prefix: u8,
+}
+
+impl Cidr {
+    fn parse(raw: &str) -> Option<Cidr> {
+        let raw = raw.trim();
+        let (addr_part, prefix_part) = match raw.split_once('/') {
+            Some((addr, prefix)) => (addr.trim(), Some(prefix.trim())),
+            None => (raw, None),
+        };
+        let base: IpAddr = addr_part.parse().ok()?;
+        let max = match base {
+            IpAddr::V4(_) => 32,
+            IpAddr::V6(_) => 128,
+        };
+        let prefix = match prefix_part {
+            Some(prefix) => prefix.parse::<u8>().ok()?,
+            None => max,
+        };
+        if prefix > max {
+            return None;
+        }
+        Some(Cidr { base, prefix })
     }
-    if token
-        .bytes()
-        .any(|b| b.is_ascii_whitespace() || matches!(b, b'/' | b'\\' | b'\0'))
-    {
-        return None;
+
+    fn contains(&self, ip: &IpAddr) -> bool {
+        match (self.base, ip) {
+            (IpAddr::V4(net), IpAddr::V4(ip)) => {
+                let mask = prefix_mask32(self.prefix);
+                (u32::from(net) & mask) == (u32::from(*ip) & mask)
+            }
+            (IpAddr::V6(net), IpAddr::V6(ip)) => {
+                let mask = prefix_mask128(self.prefix);
+                (u128::from(net) & mask) == (u128::from(*ip) & mask)
+            }
+            _ => false,
+        }
     }
-    Some(token.to_string())
+}
+
+fn prefix_mask32(prefix: u8) -> u32 {
+    if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    }
+}
+
+fn prefix_mask128(prefix: u8) -> u128 {
+    if prefix == 0 {
+        0
+    } else {
+        u128::MAX << (128 - prefix)
+    }
+}
+
+fn parse_trusted_cidrs(raw: &str) -> Vec<Cidr> {
+    raw.split(',').filter_map(Cidr::parse).collect()
+}
+
+/// Parse `TRUSTED_PROXY_CIDRS` once. A missing, empty, or unparseable value
+/// falls back to [`DEFAULT_TRUSTED_PROXY_CIDRS`].
+fn trusted_proxy_cidrs() -> &'static [Cidr] {
+    static CIDRS: OnceLock<Vec<Cidr>> = OnceLock::new();
+    CIDRS.get_or_init(|| {
+        let raw = std::env::var("TRUSTED_PROXY_CIDRS").unwrap_or_default();
+        let parsed = parse_trusted_cidrs(&raw);
+        if parsed.is_empty() {
+            parse_trusted_cidrs(DEFAULT_TRUSTED_PROXY_CIDRS)
+        } else {
+            parsed
+        }
+    })
 }
 
 fn too_many_logins(json: bool) -> axum::response::Response {
@@ -393,11 +489,7 @@ async fn login_post(
         )
             .into_response();
     }
-    (
-        [(header::SET_COOKIE, cookie)],
-        redirect_found(&fields.next),
-    )
-        .into_response()
+    ([(header::SET_COOKIE, cookie)], redirect_found(&fields.next)).into_response()
 }
 
 async fn logout(State(_state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
@@ -411,11 +503,7 @@ async fn logout(State(_state): State<AppState>, headers: HeaderMap) -> impl Into
         )
             .into_response();
     }
-    (
-        [(header::SET_COOKIE, cookie)],
-        redirect_found("/login"),
-    )
-        .into_response()
+    ([(header::SET_COOKIE, cookie)], redirect_found("/login")).into_response()
 }
 
 fn require_auth(
@@ -434,11 +522,7 @@ fn require_auth(
         "locked"
     };
     Err(Box::new(
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": error })),
-        )
-            .into_response(),
+        (StatusCode::UNAUTHORIZED, Json(json!({ "error": error }))).into_response(),
     ))
 }
 
@@ -491,4 +575,124 @@ async fn main() {
     )
     .await
     .expect("serve app");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderName, HeaderValue};
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in pairs {
+            map.insert(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        map
+    }
+
+    fn cidr(raw: &str) -> Cidr {
+        Cidr::parse(raw).unwrap()
+    }
+
+    fn ip(raw: &str) -> IpAddr {
+        raw.parse().unwrap()
+    }
+
+    #[test]
+    fn cidr_matching_v4_and_v6() {
+        let net = cidr("172.18.0.0/16");
+        assert!(net.contains(&ip("172.18.5.5")));
+        assert!(!net.contains(&ip("172.19.0.1")));
+
+        let loopback = cidr("127.0.0.1/32");
+        assert!(loopback.contains(&ip("127.0.0.1")));
+        assert!(!loopback.contains(&ip("127.0.0.2")));
+
+        let v6 = cidr("::1/128");
+        assert!(v6.contains(&ip("::1")));
+        assert!(!v6.contains(&ip("::2")));
+
+        let v6net = cidr("2001:db8::/32");
+        assert!(v6net.contains(&ip("2001:db8::1")));
+        assert!(!v6net.contains(&ip("2001:db9::1")));
+
+        // Families never cross-match.
+        assert!(!net.contains(&ip("::1")));
+    }
+
+    #[test]
+    fn cidr_parse_rejects_bad_input() {
+        assert_eq!(Cidr::parse(""), None);
+        assert_eq!(Cidr::parse("not-an-ip"), None);
+        assert_eq!(Cidr::parse("172.18.0.0/33"), None);
+        assert_eq!(Cidr::parse("::1/129"), None);
+        assert_eq!(Cidr::parse("172.18.0.0/abc"), None);
+        // A bare address is a host route.
+        assert_eq!(
+            cidr("10.0.0.1"),
+            Cidr {
+                base: ip("10.0.0.1"),
+                prefix: 32
+            }
+        );
+    }
+
+    #[test]
+    fn untrusted_peer_ignores_spoofed_forwarding_headers() {
+        let trusted = [cidr("172.18.0.0/16")];
+        let peer = Some(ip("198.51.100.9"));
+
+        let spoofed = headers(&[("x-forwarded-for", "1.2.3.4")]);
+        assert_eq!(client_ip_with(peer, &spoofed, &trusted), "198.51.100.9");
+
+        let real = headers(&[("x-real-ip", "1.2.3.4")]);
+        assert_eq!(client_ip_with(peer, &real, &trusted), "198.51.100.9");
+    }
+
+    #[test]
+    fn trusted_peer_prefers_x_real_ip() {
+        let trusted = [cidr("172.18.0.0/16")];
+        let hdrs = headers(&[
+            ("x-real-ip", "9.9.9.9"),
+            ("x-forwarded-for", "1.2.3.4, 5.6.7.8"),
+        ]);
+        let peer = Some(ip("172.18.0.5"));
+        assert_eq!(client_ip_with(peer, &hdrs, &trusted), "9.9.9.9");
+    }
+
+    #[test]
+    fn trusted_peer_uses_last_forwarded_for_entry() {
+        let trusted = [cidr("172.18.0.0/16")];
+        let hdrs = headers(&[("x-forwarded-for", "1.2.3.4, 5.6.7.8")]);
+        let peer = Some(ip("172.18.0.5"));
+        assert_eq!(client_ip_with(peer, &hdrs, &trusted), "5.6.7.8");
+    }
+
+    #[test]
+    fn trusted_peer_with_invalid_header_falls_back_to_peer() {
+        let trusted = [cidr("172.18.0.0/16")];
+        let hdrs = headers(&[("x-forwarded-for", "not-an-ip")]);
+        let peer = Some(ip("172.18.0.5"));
+        assert_eq!(client_ip_with(peer, &hdrs, &trusted), "172.18.0.5");
+    }
+
+    #[test]
+    fn missing_connect_info_is_unknown() {
+        let trusted = [cidr("127.0.0.1/32")];
+        assert_eq!(client_ip_with(None, &HeaderMap::new(), &trusted), "unknown");
+        // A spoofed header cannot rescue a missing peer.
+        let hdrs = headers(&[("x-forwarded-for", "1.2.3.4")]);
+        assert_eq!(client_ip_with(None, &hdrs, &trusted), "unknown");
+    }
+
+    #[test]
+    fn default_cidrs_cover_docker_proxy_and_loopback() {
+        let cidrs = parse_trusted_cidrs(DEFAULT_TRUSTED_PROXY_CIDRS);
+        assert!(cidrs.iter().any(|c| c.contains(&ip("172.18.0.9"))));
+        assert!(cidrs.iter().any(|c| c.contains(&ip("127.0.0.1"))));
+        assert!(cidrs.iter().any(|c| c.contains(&ip("::1"))));
+    }
 }

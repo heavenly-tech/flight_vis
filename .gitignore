@@ -9,3 +9,4 @@ data
 .vscode
 .idea
 server-rs/target/
+server-rs/.cargo-home/
