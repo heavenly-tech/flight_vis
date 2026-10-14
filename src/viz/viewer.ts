@@ -642,7 +642,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   }, ScreenSpaceEventType.LEFT_CLICK);
 
   // Re-derive the limit after manual zoom/pan (no playhead updates then).
-  viewer.camera.moveEnd.addEventListener(() => {
+  const removeCameraMoveEnd = viewer.camera.moveEnd.addEventListener(() => {
     if (!hasTarget) return;
     updateRangeLimit(distToTarget(lastTarget));
   });
@@ -748,6 +748,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     },
     stepQuality,
     destroy: () => {
+      removeCameraMoveEnd();
       pickHandler.destroy();
       viewer.destroy();
     },

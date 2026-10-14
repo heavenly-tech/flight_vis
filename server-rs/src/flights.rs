@@ -27,7 +27,7 @@ fn store_error(error: StoreError) -> axum::response::Response {
 
 async fn list_flights(State(state): State<AppState>, headers: HeaderMap) -> axum::response::Response {
     if let Err(denied) = require_auth(&state, &headers) {
-        return denied;
+        return *denied;
     }
     Json(state.store.list_flights().await).into_response()
 }
@@ -61,7 +61,7 @@ async fn put_flight(
     body: Bytes,
 ) -> axum::response::Response {
     if let Err(denied) = require_auth(&state, &headers) {
-        return denied;
+        return *denied;
     }
     let slug = normalize_slug(&raw);
     if !is_valid_slug(&slug) {
@@ -101,7 +101,7 @@ async fn post_flights(
     body: Bytes,
 ) -> axum::response::Response {
     if let Err(denied) = require_auth(&state, &headers) {
-        return denied;
+        return *denied;
     }
     let parsed: UploadBody = serde_json::from_slice(&body).unwrap_or_default();
     match state
@@ -121,7 +121,7 @@ async fn patch_flight(
     body: Bytes,
 ) -> axum::response::Response {
     if let Err(denied) = require_auth(&state, &headers) {
-        return denied;
+        return *denied;
     }
     let slug = normalize_slug(&raw);
     if !is_valid_slug(&slug) {
@@ -148,7 +148,7 @@ async fn delete_flight(
     Path(raw): Path<String>,
 ) -> axum::response::Response {
     if let Err(denied) = require_auth(&state, &headers) {
-        return denied;
+        return *denied;
     }
     let slug = normalize_slug(&raw);
     if !is_valid_slug(&slug) {
@@ -206,13 +206,14 @@ mod tests {
             .await
             .unwrap();
         let store = Store::new(&data_dir);
-        let (video_queue, queue_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (video_queue, queue_rx) = tokio::sync::mpsc::channel(crate::video::VIDEO_QUEUE_CAPACITY);
         crate::video::spawn_transcode_worker(store.clone(), queue_rx);
         let state = AppState {
             dist_dir,
             auth: Auth::with_password(password),
             store,
             video_queue,
+            login_throttle: crate::LoginThrottle::default(),
         };
         let router = build_router(state);
         (router, data_dir)
@@ -487,6 +488,74 @@ mod tests {
         };
         assert_eq!(status, StatusCode::FOUND);
         assert_eq!(headers_text.unwrap().to_str().unwrap(), "/login?locked=1");
+        cleanup(&data_dir).await;
+    }
+
+    #[tokio::test]
+    async fn flight_write_accepts_body_over_two_megabytes() {
+        let (mut router, data_dir) = test_state("secret").await;
+        let cookie = login_cookie(&mut router, "secret").await;
+        let track = "x".repeat(2 * 1024 * 1024 + 1);
+        let body = serde_json::json!({
+            "name": "Big",
+            "fileName": "big.gpx",
+            "track": track,
+            "tags": [],
+        })
+        .to_string();
+        assert!(body.len() > 2 * 1024 * 1024);
+        let (status, parsed, text) = call(
+            &mut router,
+            "PUT",
+            "/api/flights/big-track",
+            Some(&cookie),
+            Some("application/json"),
+            &body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert_eq!(parsed["slug"], "big-track");
+        assert!(parsed["track"].as_str().unwrap().len() > 2 * 1024 * 1024);
+        cleanup(&data_dir).await;
+    }
+
+    #[tokio::test]
+    async fn login_is_throttled_per_ip() {
+        let (mut router, data_dir) = test_state("secret").await;
+        let body = "{\"password\":\"wrong\"}";
+
+        async fn attempt(
+            router: &mut axum::Router,
+            ip: &str,
+            body: &str,
+        ) -> (StatusCode, serde_json::Value) {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json")
+                .header("x-forwarded-for", ip)
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            let response = router.clone().oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+            (status, json)
+        }
+
+        for _ in 0..crate::LOGIN_MAX_ATTEMPTS {
+            let (status, parsed) = attempt(&mut router, "203.0.113.10", body).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert_eq!(parsed["error"], "unauthorized");
+        }
+        let (status, parsed) = attempt(&mut router, "203.0.113.10", body).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(parsed["error"], "too many attempts");
+
+        let (status, parsed) = attempt(&mut router, "203.0.113.11", body).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(parsed["error"], "unauthorized");
         cleanup(&data_dir).await;
     }
 }

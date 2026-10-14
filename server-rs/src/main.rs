@@ -7,14 +7,20 @@ mod video;
 use auth::Auth;
 use axum::{
     body::Bytes,
-    extract::{Query, State},
-    http::{header, HeaderMap, StatusCode, Uri},
+    extract::{ConnectInfo, DefaultBodyLimit, FromRequestParts, Query, State},
+    http::{header, request::Parts, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Json},
     routing::get,
     Router,
 };
 use serde_json::json;
-use std::{collections::HashMap, net::SocketAddr, path::PathBuf, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
+};
 use store::Store;
 
 #[derive(Clone)]
@@ -22,17 +28,23 @@ pub(crate) struct AppState {
     pub(crate) dist_dir: PathBuf,
     pub(crate) auth: Auth,
     pub(crate) store: Store,
-    pub(crate) video_queue: tokio::sync::mpsc::UnboundedSender<video::VideoJob>,
+    pub(crate) video_queue: tokio::sync::mpsc::Sender<video::VideoJob>,
+    pub(crate) login_throttle: LoginThrottle,
 }
 
-fn app_state(dist_dir: PathBuf, auth: Auth, store: Store) -> (AppState, tokio::sync::mpsc::UnboundedReceiver<video::VideoJob>) {
-    let (video_queue, queue_rx) = tokio::sync::mpsc::unbounded_channel();
+fn app_state(
+    dist_dir: PathBuf,
+    auth: Auth,
+    store: Store,
+) -> (AppState, tokio::sync::mpsc::Receiver<video::VideoJob>) {
+    let (video_queue, queue_rx) = tokio::sync::mpsc::channel(video::VIDEO_QUEUE_CAPACITY);
     (
         AppState {
             dist_dir,
             auth,
             store,
             video_queue,
+            login_throttle: LoginThrottle::default(),
         },
         queue_rx,
     )
@@ -52,15 +64,14 @@ struct ServerConfig {
 }
 
 fn config_from_env() -> ServerConfig {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let data_dir = std::env::var("FLIGHT_DATA")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| root.join("../data"));
+        .unwrap_or_else(|_| PathBuf::from("data"));
     let raw_dist = std::env::var("FLIGHT_VIS_DIST")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| root.join("../dist"));
-    // Normalize (resolves the `..`) so prefix checks behave; fall back to the
-    // raw path when the directory does not exist yet (all reads then 404/500).
+        .unwrap_or_else(|_| PathBuf::from("dist"));
+    // Normalize so prefix checks behave; fall back to the raw path when the
+    // directory does not exist yet (all reads then 404/500).
     let dist_dir = std::fs::canonicalize(&raw_dist).unwrap_or(raw_dist);
     let port: u16 = std::env::var("PORT")
         .ok()
@@ -167,14 +178,9 @@ fn login_fallback_html(configured: bool) -> String {
 }
 
 async fn read_login_page(dist_dir: &std::path::Path, configured: bool) -> String {
-    for candidate in [
-        dist_dir.join("login.html"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist/login.html"),
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../login.html"),
-    ] {
-        if let Ok(html) = tokio::fs::read_to_string(&candidate).await {
-            return html;
-        }
+    let candidate = dist_dir.join("login.html");
+    if let Ok(html) = tokio::fs::read_to_string(&candidate).await {
+        return html;
     }
     login_fallback_html(configured)
 }
@@ -256,12 +262,110 @@ fn login_fields(headers: &HeaderMap, body: &[u8]) -> LoginFields {
     }
 }
 
+/// Failed and successful `POST /login` attempts share one sliding window per
+/// client address. Direct peers use the socket address; behind the compose
+/// proxy, `X-Forwarded-For` (then `X-Real-IP`) is the client address.
+pub(crate) const LOGIN_MAX_ATTEMPTS: usize = 8;
+const LOGIN_WINDOW_SECS: u64 = 60;
+
+#[derive(Clone, Default)]
+pub(crate) struct LoginThrottle {
+    hits: Arc<Mutex<HashMap<String, Vec<u64>>>>,
+}
+
+impl LoginThrottle {
+    fn allow(&self, ip: &str, now: u64) -> bool {
+        let mut hits = self.hits.lock().unwrap_or_else(|err| err.into_inner());
+        let cutoff = now.saturating_sub(LOGIN_WINDOW_SECS);
+        let allowed = {
+            let entry = hits.entry(ip.to_string()).or_default();
+            entry.retain(|stamp| *stamp > cutoff);
+            if entry.len() >= LOGIN_MAX_ATTEMPTS {
+                false
+            } else {
+                entry.push(now);
+                true
+            }
+        };
+        if hits.len() > 4096 {
+            hits.retain(|_, times| times.last().is_some_and(|stamp| *stamp > cutoff));
+        }
+        allowed
+    }
+}
+
+pub(crate) struct ClientIp(pub String);
+
+impl<S> FromRequestParts<S> for ClientIp
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        Ok(ClientIp(client_ip(parts)))
+    }
+}
+
+fn client_ip(parts: &Parts) -> String {
+    if let Some(ip) = header_ip(parts.headers.get("x-forwarded-for"), true) {
+        return ip;
+    }
+    if let Some(ip) = header_ip(parts.headers.get("x-real-ip"), false) {
+        return ip;
+    }
+    if let Some(ConnectInfo(addr)) = parts.extensions.get::<ConnectInfo<SocketAddr>>() {
+        return addr.ip().to_string();
+    }
+    "unknown".to_string()
+}
+
+fn header_ip(value: Option<&axum::http::HeaderValue>, first_hop: bool) -> Option<String> {
+    let raw = value?.to_str().ok()?;
+    let token = if first_hop {
+        raw.split(',').next().unwrap_or("").trim()
+    } else {
+        raw.trim()
+    };
+    if token.is_empty() || token.len() > 128 {
+        return None;
+    }
+    if token
+        .bytes()
+        .any(|b| b.is_ascii_whitespace() || matches!(b, b'/' | b'\\' | b'\0'))
+    {
+        return None;
+    }
+    Some(token.to_string())
+}
+
+fn too_many_logins(json: bool) -> axum::response::Response {
+    if json {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "too many attempts" })),
+        )
+            .into_response()
+    } else {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            "too many attempts",
+        )
+            .into_response()
+    }
+}
+
 async fn login_post(
     State(state): State<AppState>,
     headers: HeaderMap,
+    client_ip: ClientIp,
     body: Bytes,
 ) -> impl IntoResponse {
     let json = wants_json(&headers);
+    if !state.login_throttle.allow(&client_ip.0, now_secs()) {
+        return too_many_logins(json);
+    }
     if !state.auth.configured() {
         if json {
             return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "locked" }))).into_response();
@@ -317,7 +421,7 @@ async fn logout(State(_state): State<AppState>, headers: HeaderMap) -> impl Into
 fn require_auth(
     state: &AppState,
     headers: &HeaderMap,
-) -> Result<(), axum::response::Response> {
+) -> Result<(), Box<axum::response::Response>> {
     let ok = session_token(headers)
         .map(|token| state.auth.verify(&token, now_secs()))
         .unwrap_or(false);
@@ -329,11 +433,13 @@ fn require_auth(
     } else {
         "locked"
     };
-    Err((
-        StatusCode::UNAUTHORIZED,
-        Json(json!({ "error": error })),
-    )
-        .into_response())
+    Err(Box::new(
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": error })),
+        )
+            .into_response(),
+    ))
 }
 
 fn build_router(state: AppState) -> Router {
@@ -343,7 +449,7 @@ fn build_router(state: AppState) -> Router {
         .route("/login", get(login_page).post(login_post))
         .route("/login.html", get(login_html_redirect))
         .route("/logout", get(logout).post(logout))
-        .merge(flights::router())
+        .merge(flights::router().layer(DefaultBodyLimit::max(64 * 1024 * 1024)))
         .merge(video::router())
         .fallback(fallback)
         .with_state(state)
@@ -379,5 +485,10 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .expect("bind listener");
-    axum::serve(listener, app).await.expect("serve app");
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .expect("serve app");
 }
