@@ -194,7 +194,10 @@ pub fn name_from_file_name(file_name: &str) -> String {
     }
 }
 
-pub fn allocate_slug(desired: &str, taken: &std::collections::HashSet<String>) -> Result<String, StoreError> {
+pub fn allocate_slug(
+    desired: &str,
+    taken: &std::collections::HashSet<String>,
+) -> Result<String, StoreError> {
     let base = if is_valid_slug(desired) {
         desired.to_string()
     } else {
@@ -281,8 +284,8 @@ impl Store {
         let raw = tokio::fs::read_to_string(&meta_path)
             .await
             .map_err(|_| StoreError::status(404, "Not found"))?;
-        let mut meta: FlightMeta =
-            serde_json::from_str(&raw).map_err(|error| StoreError::status(500, error.to_string()))?;
+        let mut meta: FlightMeta = serde_json::from_str(&raw)
+            .map_err(|error| StoreError::status(500, error.to_string()))?;
         apply(&mut meta);
         meta.updated_at = Some(now_iso());
         Self::write_text_atomic(&meta_path, &serde_json::to_string_pretty(&meta).unwrap())
@@ -293,7 +296,9 @@ impl Store {
 
     pub async fn read_meta(&self, slug: &str) -> Option<FlightRecord> {
         let dir = self.flight_dir(slug);
-        let meta_raw = tokio::fs::read_to_string(dir.join("meta.json")).await.ok()?;
+        let meta_raw = tokio::fs::read_to_string(dir.join("meta.json"))
+            .await
+            .ok()?;
         let track = tokio::fs::read_to_string(dir.join("track")).await.ok()?;
         let mut meta: FlightMeta = serde_json::from_str(&meta_raw).ok()?;
         meta.slug = slug.to_string();
@@ -315,7 +320,11 @@ impl Store {
         Ok(())
     }
 
-    pub async fn write_flight(&self, slug: &str, body: WriteFlightBody) -> Result<FlightRecord, StoreError> {
+    pub async fn write_flight(
+        &self,
+        slug: &str,
+        body: WriteFlightBody,
+    ) -> Result<FlightRecord, StoreError> {
         let _guard = self.write_lock.lock().await;
         let dir = self.flight_dir(slug);
         let existing: Option<FlightMeta> = tokio::fs::read_to_string(dir.join("meta.json"))
@@ -345,10 +354,22 @@ impl Store {
             slug: slug.to_string(),
             name,
             file_name,
-            trim_start_ms: body.trim_start_ms.or_else(|| existing.as_ref().and_then(|m| m.trim_start_ms)),
-            trim_end_ms: body.trim_end_ms.or_else(|| existing.as_ref().and_then(|m| m.trim_end_ms)),
-            tags: body.tags.unwrap_or_else(|| existing.as_ref().map(|m| m.tags.clone()).unwrap_or_default()),
-            videos: existing.as_ref().map(|m| m.videos.clone()).unwrap_or_default(),
+            trim_start_ms: body
+                .trim_start_ms
+                .or_else(|| existing.as_ref().and_then(|m| m.trim_start_ms)),
+            trim_end_ms: body
+                .trim_end_ms
+                .or_else(|| existing.as_ref().and_then(|m| m.trim_end_ms)),
+            tags: body.tags.unwrap_or_else(|| {
+                existing
+                    .as_ref()
+                    .map(|m| m.tags.clone())
+                    .unwrap_or_default()
+            }),
+            videos: existing
+                .as_ref()
+                .map(|m| m.videos.clone())
+                .unwrap_or_default(),
             updated_at: Some(now_iso()),
             created_at: existing
                 .as_ref()
@@ -358,9 +379,12 @@ impl Store {
         Self::write_text_atomic(&dir.join("track"), &track)
             .await
             .map_err(|error| StoreError::status(500, error.to_string()))?;
-        Self::write_text_atomic(&dir.join("meta.json"), &serde_json::to_string_pretty(&meta).unwrap())
-            .await
-            .map_err(|error| StoreError::status(500, error.to_string()))?;
+        Self::write_text_atomic(
+            &dir.join("meta.json"),
+            &serde_json::to_string_pretty(&meta).unwrap(),
+        )
+        .await
+        .map_err(|error| StoreError::status(500, error.to_string()))?;
         Ok(FlightRecord { meta, track })
     }
 
@@ -436,11 +460,18 @@ impl Store {
         Ok(())
     }
 
-    pub async fn rename_flight(&self, from_slug: &str, body: RenameBody) -> Result<FlightListItem, StoreError> {
+    pub async fn rename_flight(
+        &self,
+        from_slug: &str,
+        body: RenameBody,
+    ) -> Result<FlightListItem, StoreError> {
         if !self.exists(from_slug) {
             return Err(StoreError::status(404, "Not found"));
         }
-        let next_name = body.name.map(|name| name.trim().to_string()).unwrap_or_default();
+        let next_name = body
+            .name
+            .map(|name| name.trim().to_string())
+            .unwrap_or_default();
         let slug_given = body.slug.is_some();
         let requested = body
             .slug
@@ -469,8 +500,8 @@ impl Store {
         let raw = tokio::fs::read_to_string(&meta_path)
             .await
             .map_err(|error| StoreError::status(500, error.to_string()))?;
-        let mut meta: FlightMeta =
-            serde_json::from_str(&raw).map_err(|error| StoreError::status(500, error.to_string()))?;
+        let mut meta: FlightMeta = serde_json::from_str(&raw)
+            .map_err(|error| StoreError::status(500, error.to_string()))?;
         if !next_name.is_empty() {
             meta.name = next_name;
         }
@@ -508,7 +539,10 @@ impl Store {
         let mut existing = vec![];
         let mut prepared = vec![];
         for file in &files {
-            let file_name = file.file_name.clone().unwrap_or_else(|| "track".to_string());
+            let file_name = file
+                .file_name
+                .clone()
+                .unwrap_or_else(|| "track".to_string());
             let track = file.track.clone().filter(|track| !track.is_empty());
             let Some(track) = track else {
                 return Err(StoreError::status(400, "Track file is required"));
@@ -544,7 +578,10 @@ impl Store {
         if mode == "error" && !existing.is_empty() {
             let unique: Vec<String> = {
                 let mut seen = HashSet::new();
-                existing.into_iter().filter(|slug| seen.insert(slug.clone())).collect()
+                existing
+                    .into_iter()
+                    .filter(|slug| seen.insert(slug.clone()))
+                    .collect()
             };
             let mut error = StoreError::status(409, "exists");
             error.slugs = Some(unique);
@@ -570,7 +607,11 @@ impl Store {
         Ok(items)
     }
 
-    pub async fn seed(&self, samples: Vec<PathBuf>, sample_text: Option<String>) -> Result<(), StoreError> {
+    pub async fn seed(
+        &self,
+        samples: Vec<PathBuf>,
+        sample_text: Option<String>,
+    ) -> Result<(), StoreError> {
         tokio::fs::create_dir_all(&self.flights_dir)
             .await
             .map_err(|error| StoreError::status(500, error.to_string()))?;

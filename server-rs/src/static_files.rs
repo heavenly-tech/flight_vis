@@ -82,20 +82,31 @@ fn ext_of(relative: &str) -> &str {
     relative.rsplit('.').next().unwrap_or("")
 }
 
-async fn file_response(path: &Path, content_type: &str, cache: &str) -> Result<axum::response::Response, StatusCode> {
+async fn file_response(
+    path: &Path,
+    content_type: &str,
+    cache: &str,
+) -> Result<axum::response::Response, StatusCode> {
     let file = File::open(path).await.map_err(|_| StatusCode::NOT_FOUND)?;
     let body = Body::from_stream(ReaderStream::new(file));
-    Ok(axum::response::Response::builder()
+    axum::response::Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CACHE_CONTROL, cache)
         .body(body)
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
-pub async fn serve(dist_dir: &Path, url_path: &str) -> Result<axum::response::Response, StatusCode> {
+pub async fn serve(
+    dist_dir: &Path,
+    url_path: &str,
+) -> Result<axum::response::Response, StatusCode> {
     if let Some(joined) = safe_join(dist_dir, url_path) {
-        if tokio::fs::metadata(&joined).await.map(|m| m.is_file()).unwrap_or(false) {
+        if tokio::fs::metadata(&joined)
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false)
+        {
             let relative = joined
                 .strip_prefix(dist_dir)
                 .ok()
@@ -110,7 +121,11 @@ pub async fn serve(dist_dir: &Path, url_path: &str) -> Result<axum::response::Re
         }
     }
     let index = dist_dir.join("index.html");
-    if tokio::fs::metadata(&index).await.map(|m| m.is_file()).unwrap_or(false) {
+    if tokio::fs::metadata(&index)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+    {
         return file_response(&index, "text/html; charset=UTF-8", "no-cache").await;
     }
     Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -120,16 +135,29 @@ pub async fn serve(dist_dir: &Path, url_path: &str) -> Result<axum::response::Re
 mod tests {
     use super::*;
 
-    fn dist() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist")
-    }
-
     #[test]
     fn join_resolves_subpaths() {
-        let dist = dist();
-        let joined = safe_join(&dist, "/login.html").expect("join must succeed");
-        println!("joined={joined:?} exists={}", joined.is_file());
-        assert!(joined.is_file());
+        let dir = std::env::temp_dir().join(format!(
+            "flight-vis-static-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("login.html"), "login").unwrap();
+        std::fs::write(dir.join("assets/app.js"), "js").unwrap();
+
+        let login = safe_join(&dir, "/login.html").expect("join must succeed");
+        assert_eq!(login, dir.join("login.html"));
+        assert!(login.is_file());
+
+        let asset = safe_join(&dir, "/assets/app.js").expect("subpath must resolve");
+        assert_eq!(asset, dir.join("assets/app.js"));
+        assert!(asset.is_file());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

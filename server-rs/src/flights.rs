@@ -25,9 +25,12 @@ fn store_error(error: StoreError) -> axum::response::Response {
         .into_response()
 }
 
-async fn list_flights(State(state): State<AppState>, headers: HeaderMap) -> axum::response::Response {
+async fn list_flights(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> axum::response::Response {
     if let Err(denied) = require_auth(&state, &headers) {
-        return denied;
+        return *denied;
     }
     Json(state.store.list_flights().await).into_response()
 }
@@ -46,11 +49,7 @@ async fn get_flight(
     }
     match state.store.read_meta(&slug).await {
         Some(record) => Json(record).into_response(),
-        None => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "Not found" })),
-        )
-            .into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response(),
     }
 }
 
@@ -61,7 +60,7 @@ async fn put_flight(
     body: Bytes,
 ) -> axum::response::Response {
     if let Err(denied) = require_auth(&state, &headers) {
-        return denied;
+        return *denied;
     }
     let slug = normalize_slug(&raw);
     if !is_valid_slug(&slug) {
@@ -101,7 +100,7 @@ async fn post_flights(
     body: Bytes,
 ) -> axum::response::Response {
     if let Err(denied) = require_auth(&state, &headers) {
-        return denied;
+        return *denied;
     }
     let parsed: UploadBody = serde_json::from_slice(&body).unwrap_or_default();
     match state
@@ -121,7 +120,7 @@ async fn patch_flight(
     body: Bytes,
 ) -> axum::response::Response {
     if let Err(denied) = require_auth(&state, &headers) {
-        return denied;
+        return *denied;
     }
     let slug = normalize_slug(&raw);
     if !is_valid_slug(&slug) {
@@ -148,7 +147,7 @@ async fn delete_flight(
     Path(raw): Path<String>,
 ) -> axum::response::Response {
     if let Err(denied) = require_auth(&state, &headers) {
-        return denied;
+        return *denied;
     }
     let slug = normalize_slug(&raw);
     if !is_valid_slug(&slug) {
@@ -166,7 +165,10 @@ async fn delete_flight(
 
 pub fn router() -> axum::Router<AppState> {
     axum::Router::new()
-        .route("/api/flights", axum::routing::get(list_flights).post(post_flights))
+        .route(
+            "/api/flights",
+            axum::routing::get(list_flights).post(post_flights),
+        )
         .route(
             "/api/flights/{slug}",
             axum::routing::get(get_flight)
@@ -193,10 +195,8 @@ mod tests {
 
     async fn test_state(password: &str) -> (axum::Router, PathBuf) {
         let id = TEST_DIR_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let data_dir = std::env::temp_dir().join(format!(
-            "flight-vis-rs-test-{}-{id}",
-            std::process::id()
-        ));
+        let data_dir =
+            std::env::temp_dir().join(format!("flight-vis-rs-test-{}-{id}", std::process::id()));
         let dist_dir = data_dir.join("dist");
         tokio::fs::create_dir_all(&dist_dir).await.unwrap();
         tokio::fs::write(dist_dir.join("index.html"), "<html>app</html>")
@@ -206,13 +206,15 @@ mod tests {
             .await
             .unwrap();
         let store = Store::new(&data_dir);
-        let (video_queue, queue_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (video_queue, queue_rx) =
+            tokio::sync::mpsc::channel(crate::video::VIDEO_QUEUE_CAPACITY);
         crate::video::spawn_transcode_worker(store.clone(), queue_rx);
         let state = AppState {
             dist_dir,
             auth: Auth::with_password(password),
             store,
             video_queue,
+            login_throttle: crate::LoginThrottle::default(),
         };
         let router = build_router(state);
         (router, data_dir)
@@ -274,7 +276,12 @@ mod tests {
 
         let put_body = serde_json::json!({ "name": "Demo", "fileName": "demo.gpx", "track": TRACK, "tags": [] }).to_string();
         let (status, _, _) = call(
-            &mut router, "PUT", "/api/flights/demo", None, Some("application/json"), &put_body,
+            &mut router,
+            "PUT",
+            "/api/flights/demo",
+            None,
+            Some("application/json"),
+            &put_body,
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -282,7 +289,12 @@ mod tests {
         let cookie = login_cookie(&mut router, "secret").await;
         assert!(cookie.starts_with("fv_session="));
         let (status, _, _) = call(
-            &mut router, "PUT", "/api/flights/demo", Some(&cookie), Some("application/json"), &put_body,
+            &mut router,
+            "PUT",
+            "/api/flights/demo",
+            Some(&cookie),
+            Some("application/json"),
+            &put_body,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -292,24 +304,44 @@ mod tests {
         assert_eq!(body["slug"], "demo");
         assert!(body["track"].as_str().unwrap().contains("<gpx"));
         // Byte-parity guard: no videos key until videos exist, Node order.
-        let keys: Vec<&str> = body.as_object().unwrap().keys().map(String::as_str).collect();
+        let keys: Vec<&str> = body
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         assert_eq!(
             keys,
             vec![
-                "slug", "name", "fileName", "trimStartMs", "trimEndMs", "tags", "updatedAt",
-                "createdAt", "track",
+                "slug",
+                "name",
+                "fileName",
+                "trimStartMs",
+                "trimEndMs",
+                "tags",
+                "updatedAt",
+                "createdAt",
+                "track",
             ]
         );
 
         let (status, _, _) = call(&mut router, "GET", "/api/flights", None, None, "").await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
 
-        let (status, body, _) = call(&mut router, "GET", "/api/auth/me", Some(&cookie), None, "").await;
+        let (status, body, _) =
+            call(&mut router, "GET", "/api/auth/me", Some(&cookie), None, "").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, serde_json::json!({ "authenticated": true, "configured": true }));
+        assert_eq!(
+            body,
+            serde_json::json!({ "authenticated": true, "configured": true })
+        );
 
         let (status, body, _) = call(
-            &mut router, "POST", "/login", None, Some("application/json"),
+            &mut router,
+            "POST",
+            "/login",
+            None,
+            Some("application/json"),
             "{\"password\":\"wrong\"}",
         )
         .await;
@@ -328,12 +360,20 @@ mod tests {
             .unwrap();
         let response = router.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let set_cookie = response.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap();
+        let set_cookie = response
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap();
         assert!(set_cookie.contains("Max-Age=0"));
 
         let (status, body, _) = call(&mut router, "GET", "/api/auth/me", None, None, "").await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, serde_json::json!({ "authenticated": false, "configured": true }));
+        assert_eq!(
+            body,
+            serde_json::json!({ "authenticated": false, "configured": true })
+        );
         cleanup(&data_dir).await;
     }
 
@@ -349,15 +389,30 @@ mod tests {
             name: &str,
         ) -> (StatusCode, serde_json::Value, String) {
             let body = serde_json::json!({ "name": name, "fileName": format!("{slug}.gpx"), "track": TRACK, "tags": [] }).to_string();
-            call(router, "PUT", &format!("/api/flights/{slug}"), Some(cookie), Some("application/json"), &body).await
+            call(
+                router,
+                "PUT",
+                &format!("/api/flights/{slug}"),
+                Some(cookie),
+                Some("application/json"),
+                &body,
+            )
+            .await
         }
 
         let (status, _, _) = put_flight(&mut router, &cookie, "alpha", "Alpha").await;
         assert_eq!(status, StatusCode::OK);
 
-        let (status, body, _) = call(&mut router, "GET", "/api/flights", Some(&cookie), None, "").await;
+        let (status, body, _) =
+            call(&mut router, "GET", "/api/flights", Some(&cookie), None, "").await;
         assert_eq!(status, StatusCode::OK);
-        let alpha = body.as_array().unwrap().iter().find(|item| item["slug"] == "alpha").unwrap().clone();
+        let alpha = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["slug"] == "alpha")
+            .unwrap()
+            .clone();
         assert_eq!(alpha["name"], "Alpha");
         assert_eq!(alpha["fileName"], "alpha.gpx");
         assert!(alpha["size"].as_u64().unwrap() > 0);
@@ -369,17 +424,38 @@ mod tests {
         ] })
         .to_string();
         let (status, body, _) = call(
-            &mut router, "POST", "/api/flights", Some(&cookie), Some("application/json"), &upload_body,
+            &mut router,
+            "POST",
+            "/api/flights",
+            Some(&cookie),
+            Some("application/json"),
+            &upload_body,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
-        let mut slugs: Vec<String> = body["items"].as_array().unwrap().iter().map(|item| item["slug"].as_str().unwrap().to_string()).collect();
+        let mut slugs: Vec<String> = body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["slug"].as_str().unwrap().to_string())
+            .collect();
         slugs.sort();
-        assert_eq!(slugs, vec!["cerro-provincia".to_string(), "cerro-provincia-2".to_string()]);
+        assert_eq!(
+            slugs,
+            vec![
+                "cerro-provincia".to_string(),
+                "cerro-provincia-2".to_string()
+            ]
+        );
 
         let clash_body = serde_json::json!({ "conflict": "error", "files": [{ "fileName": "cerro-provincia.gpx", "track": TRACK }] }).to_string();
         let (status, body, _) = call(
-            &mut router, "POST", "/api/flights", Some(&cookie), Some("application/json"), &clash_body,
+            &mut router,
+            "POST",
+            "/api/flights",
+            Some(&cookie),
+            Some("application/json"),
+            &clash_body,
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
@@ -392,7 +468,12 @@ mod tests {
 
         let blocked_body = serde_json::json!({ "slug": "taken", "name": "Nope" }).to_string();
         let (status, body, _) = call(
-            &mut router, "PUT", "/api/flights/source", Some(&cookie), Some("application/json"), &blocked_body,
+            &mut router,
+            "PUT",
+            "/api/flights/source",
+            Some(&cookie),
+            Some("application/json"),
+            &blocked_body,
         )
         .await;
         // NOTE: TS test uses PATCH for rename; PUT with a slug body only writes.
@@ -402,19 +483,31 @@ mod tests {
 
         let rename_body = serde_json::json!({ "slug": "taken", "name": "Nope" }).to_string();
         let (status, body, _) = call(
-            &mut router, "PATCH", "/api/flights/source", Some(&cookie), Some("application/json"), &rename_body,
+            &mut router,
+            "PATCH",
+            "/api/flights/source",
+            Some(&cookie),
+            Some("application/json"),
+            &rename_body,
         )
         .await;
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(body["error"], "exists");
 
-        let (status, body, _) = call(&mut router, "GET", "/api/flights/taken", None, None, "").await;
+        let (status, body, _) =
+            call(&mut router, "GET", "/api/flights/taken", None, None, "").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["name"], "Taken");
 
-        let rename_body = serde_json::json!({ "slug": "renamed-source", "name": "Renamed" }).to_string();
+        let rename_body =
+            serde_json::json!({ "slug": "renamed-source", "name": "Renamed" }).to_string();
         let (status, body, _) = call(
-            &mut router, "PATCH", "/api/flights/source", Some(&cookie), Some("application/json"), &rename_body,
+            &mut router,
+            "PATCH",
+            "/api/flights/source",
+            Some(&cookie),
+            Some("application/json"),
+            &rename_body,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -423,36 +516,82 @@ mod tests {
 
         let (status, _, _) = call(&mut router, "GET", "/api/flights/source", None, None, "").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        let (status, body, _) = call(&mut router, "GET", "/api/flights/renamed-source", None, None, "").await;
+        let (status, body, _) = call(
+            &mut router,
+            "GET",
+            "/api/flights/renamed-source",
+            None,
+            None,
+            "",
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert!(body["track"].as_str().unwrap().contains("<gpx"));
 
         let overwrite_body = serde_json::json!({ "slug": "taken", "overwrite": true }).to_string();
         let (status, body, _) = call(
-            &mut router, "PATCH", "/api/flights/renamed-source", Some(&cookie), Some("application/json"), &overwrite_body,
+            &mut router,
+            "PATCH",
+            "/api/flights/renamed-source",
+            Some(&cookie),
+            Some("application/json"),
+            &overwrite_body,
         )
         .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["slug"], "taken");
-        let (status, _, _) = call(&mut router, "GET", "/api/flights/renamed-source", None, None, "").await;
+        let (status, _, _) = call(
+            &mut router,
+            "GET",
+            "/api/flights/renamed-source",
+            None,
+            None,
+            "",
+        )
+        .await;
         assert_eq!(status, StatusCode::NOT_FOUND);
 
         let (status, _, _) = put_flight(&mut router, &cookie, "keep-me", "keep-me").await;
         assert_eq!(status, StatusCode::OK);
         let (status, _, _) = put_flight(&mut router, &cookie, "drop-me", "drop-me").await;
         assert_eq!(status, StatusCode::OK);
-        let (status, body, _) = call(&mut router, "DELETE", "/api/flights/drop-me", Some(&cookie), None, "").await;
+        let (status, body, _) = call(
+            &mut router,
+            "DELETE",
+            "/api/flights/drop-me",
+            Some(&cookie),
+            None,
+            "",
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, serde_json::json!({ "ok": true }));
         let (status, _, _) = call(&mut router, "GET", "/api/flights/drop-me", None, None, "").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        let (status, body, _) = call(&mut router, "GET", "/api/flights/keep-me", None, None, "").await;
+        let (status, body, _) =
+            call(&mut router, "GET", "/api/flights/keep-me", None, None, "").await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["slug"], "keep-me");
 
-        let (status, _, _) = call(&mut router, "POST", "/api/flights", None, Some("application/json"), "{\"files\":[]}").await;
+        let (status, _, _) = call(
+            &mut router,
+            "POST",
+            "/api/flights",
+            None,
+            Some("application/json"),
+            "{\"files\":[]}",
+        )
+        .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
-        let (status, _, _) = call(&mut router, "PATCH", "/api/flights/demo", None, Some("application/json"), "{\"slug\":\"other\"}").await;
+        let (status, _, _) = call(
+            &mut router,
+            "PATCH",
+            "/api/flights/demo",
+            None,
+            Some("application/json"),
+            "{\"slug\":\"other\"}",
+        )
+        .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         let (status, _, _) = call(&mut router, "DELETE", "/api/flights/demo", None, None, "").await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
@@ -462,15 +601,29 @@ mod tests {
     #[tokio::test]
     async fn locked_mode_rejects_writes() {
         let (mut router, data_dir) = test_state("").await;
-        let put_body = serde_json::json!({ "name": "Locked", "fileName": "x.gpx", "track": TRACK }).to_string();
+        let put_body = serde_json::json!({ "name": "Locked", "fileName": "x.gpx", "track": TRACK })
+            .to_string();
         let (status, body, _) = call(
-            &mut router, "PUT", "/api/flights/locked", None, Some("application/json"), &put_body,
+            &mut router,
+            "PUT",
+            "/api/flights/locked",
+            None,
+            Some("application/json"),
+            &put_body,
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["error"], "locked");
 
-        let (status, _, _) = call(&mut router, "DELETE", "/api/flights/keep-me", None, None, "").await;
+        let (status, _, _) = call(
+            &mut router,
+            "DELETE",
+            "/api/flights/keep-me",
+            None,
+            None,
+            "",
+        )
+        .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
 
         let (status, headers_text, _) = {
@@ -487,6 +640,79 @@ mod tests {
         };
         assert_eq!(status, StatusCode::FOUND);
         assert_eq!(headers_text.unwrap().to_str().unwrap(), "/login?locked=1");
+        cleanup(&data_dir).await;
+    }
+
+    #[tokio::test]
+    async fn flight_write_accepts_body_over_two_megabytes() {
+        let (mut router, data_dir) = test_state("secret").await;
+        let cookie = login_cookie(&mut router, "secret").await;
+        let track = "x".repeat(2 * 1024 * 1024 + 1);
+        let body = serde_json::json!({
+            "name": "Big",
+            "fileName": "big.gpx",
+            "track": track,
+            "tags": [],
+        })
+        .to_string();
+        assert!(body.len() > 2 * 1024 * 1024);
+        let (status, parsed, text) = call(
+            &mut router,
+            "PUT",
+            "/api/flights/big-track",
+            Some(&cookie),
+            Some("application/json"),
+            &body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert_eq!(parsed["slug"], "big-track");
+        assert!(parsed["track"].as_str().unwrap().len() > 2 * 1024 * 1024);
+        cleanup(&data_dir).await;
+    }
+
+    #[tokio::test]
+    async fn login_is_throttled_per_ip() {
+        let (mut router, data_dir) = test_state("secret").await;
+        let body = "{\"password\":\"wrong\"}";
+
+        async fn attempt(
+            router: &mut axum::Router,
+            ip: &str,
+            body: &str,
+        ) -> (StatusCode, serde_json::Value) {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json")
+                .header("x-forwarded-for", ip)
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            // Loopback is in the default trusted proxy CIDRs, so the
+            // X-Forwarded-For header above is honored as the client address.
+            request.extensions_mut().insert(axum::extract::ConnectInfo(
+                std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            ));
+            let response = router.clone().oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+            (status, json)
+        }
+
+        for _ in 0..crate::LOGIN_MAX_ATTEMPTS {
+            let (status, parsed) = attempt(&mut router, "203.0.113.10", body).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert_eq!(parsed["error"], "unauthorized");
+        }
+        let (status, parsed) = attempt(&mut router, "203.0.113.10", body).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(parsed["error"], "too many attempts");
+
+        let (status, parsed) = attempt(&mut router, "203.0.113.11", body).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(parsed["error"], "unauthorized");
         cleanup(&data_dir).await;
     }
 }
