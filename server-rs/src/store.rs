@@ -3,13 +3,40 @@
 //! Writes go through temp-file + rename and are serialized by a global
 //! mutex (Node interleaves async handlers the same way; serializing keeps
 //! read-modify-write paths like rename/overwrite race-free).
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
 };
 use tokio::sync::Mutex;
+
+fn deserialize_opt_ms<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(Some(i))
+            } else if let Some(f) = n.as_f64() {
+                if f.is_nan() || f.is_infinite() {
+                    return Err(D::Error::custom("float value is NaN or infinite"));
+                }
+                if f < i64::MIN as f64 || f > i64::MAX as f64 {
+                    return Err(D::Error::custom("float value out of i64 range"));
+                }
+                Ok(Some(f.round() as i64))
+            } else {
+                Err(D::Error::custom("number does not fit in i64"))
+            }
+        }
+        _ => Err(D::Error::custom("expected number or null")),
+    }
+}
 
 const RESERVED: &[&str] = &[
     "api",
@@ -46,9 +73,13 @@ pub struct FlightMeta {
     pub name: String,
     #[serde(rename = "fileName")]
     pub file_name: String,
-    #[serde(rename = "trimStartMs")]
+    #[serde(
+        rename = "trimStartMs",
+        default,
+        deserialize_with = "deserialize_opt_ms"
+    )]
     pub trim_start_ms: Option<i64>,
-    #[serde(rename = "trimEndMs")]
+    #[serde(rename = "trimEndMs", default, deserialize_with = "deserialize_opt_ms")]
     pub trim_end_ms: Option<i64>,
     #[serde(default)]
     pub tags: Vec<serde_json::Value>,
@@ -87,9 +118,13 @@ pub struct WriteFlightBody {
     pub name: Option<String>,
     #[serde(rename = "fileName", alias = "file_name")]
     pub file_name: Option<String>,
-    #[serde(rename = "trimStartMs")]
+    #[serde(
+        rename = "trimStartMs",
+        default,
+        deserialize_with = "deserialize_opt_ms"
+    )]
     pub trim_start_ms: Option<i64>,
-    #[serde(rename = "trimEndMs")]
+    #[serde(rename = "trimEndMs", default, deserialize_with = "deserialize_opt_ms")]
     pub trim_end_ms: Option<i64>,
     pub tags: Option<Vec<serde_json::Value>>,
     pub track: Option<String>,
@@ -688,5 +723,76 @@ mod tests {
         assert!(stamp.ends_with('Z') && stamp.contains('T'));
         assert!(iso_from_unix_ms(0) == "1970-01-01T00:00:00.000Z");
         assert!(iso_from_unix_ms(1_700_000_000_123) == "2023-11-14T22:13:20.123Z");
+    }
+
+    #[test]
+    fn deserialize_opt_ms_fractional_rounds() {
+        let json = r#"{"slug":"t","name":"t","fileName":"t.gpx","trimStartMs": 1791033643687.5378, "trimEndMs": 1791038618395.9102}"#;
+        let meta: FlightMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.trim_start_ms, Some(1791033643688));
+        assert_eq!(meta.trim_end_ms, Some(1791038618396));
+    }
+
+    #[test]
+    fn deserialize_opt_ms_integer() {
+        let json = r#"{"slug":"t","name":"t","fileName":"t.gpx","trimStartMs": 1789310565000, "trimEndMs": 1789315036618}"#;
+        let meta: FlightMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.trim_start_ms, Some(1789310565000));
+        assert_eq!(meta.trim_end_ms, Some(1789315036618));
+    }
+
+    #[test]
+    fn deserialize_opt_ms_null() {
+        let json =
+            r#"{"slug":"t","name":"t","fileName":"t.gpx","trimStartMs": null, "trimEndMs": null}"#;
+        let meta: FlightMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.trim_start_ms, None);
+        assert_eq!(meta.trim_end_ms, None);
+    }
+
+    #[test]
+    fn deserialize_opt_ms_missing_field() {
+        let json = r#"{"slug":"t","name":"t","fileName":"t.gpx"}"#;
+        let meta: FlightMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.trim_start_ms, None);
+        assert_eq!(meta.trim_end_ms, None);
+    }
+
+    #[test]
+    fn deserialize_opt_ms_round_trip_serializes_as_integer() {
+        let json = r#"{"slug":"t","name":"t","fileName":"t.gpx","trimStartMs": 1791033643687.5378, "trimEndMs": 1791038618395.9102}"#;
+        let meta: FlightMeta = serde_json::from_str(json).unwrap();
+        let serialized = serde_json::to_string(&meta).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(parsed["trimStartMs"], 1791033643688_i64);
+        assert_eq!(parsed["trimEndMs"], 1791038618396_i64);
+        assert!(parsed["trimStartMs"].is_i64());
+        assert!(parsed["trimEndMs"].is_i64());
+    }
+
+    #[test]
+    fn deserialize_write_flight_body_fractional() {
+        let json = r#"{"trimStartMs": 1791033643687.5378, "trimEndMs": 1791038618395.9102}"#;
+        let body: WriteFlightBody = serde_json::from_str(json).unwrap();
+        assert_eq!(body.trim_start_ms, Some(1791033643688));
+        assert_eq!(body.trim_end_ms, Some(1791038618396));
+    }
+
+    #[test]
+    fn prod_meta_fixtures_parse_successfully() {
+        let manifest_dir = env!("CARGO_MANIFEST_DIR");
+        let fixtures_dir = format!("{}/tests/fixtures/prod-meta", manifest_dir);
+        let entries = std::fs::read_dir(&fixtures_dir).expect("fixtures dir exists");
+        for entry in entries {
+            let entry = entry.expect("read entry");
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                let content = std::fs::read_to_string(&path)
+                    .unwrap_or_else(|_| panic!("read {}", path.display()));
+                let meta: FlightMeta = serde_json::from_str(&content)
+                    .unwrap_or_else(|e| panic!("parse {}: {}", path.display(), e));
+                assert!(!meta.slug.is_empty(), "slug missing in {}", path.display());
+            }
+        }
     }
 }

@@ -1,0 +1,81 @@
+{
+  "slug": "vuelo-5",
+  "name": "20260913-Vuelo5",
+  "fileName": "vuelo5.gpx",
+  "trimStartMs": 1789310565000,
+  "trimEndMs": 1789315036618.3657,
+  "tags": [
+    {
+      "id": "tag_vmfp4nzy",
+      "timeMs": 1789310701440,
+      "label": "Viraje a entrada Farellones"
+    },
+    {
+      "id": "tag_ngw3j4sw",
+      "timeMs": 1789311330640,
+      "label": "Virajes para ganar altura"
+    },
+    {
+      "id": "tag_17ygxzdx",
+      "timeMs": 1789311744340,
+      "label": "Sobrevuelo La Parva"
+    },
+    {
+      "id": "tag_owoqpocr",
+      "timeMs": 1789311809740,
+      "label": "Viraje para ganar altura El Colorado"
+    },
+    {
+      "id": "tag_zjr6d2xt",
+      "timeMs": 1789311990580,
+      "label": "Sobrevuelo Valle Nevado"
+    },
+    {
+      "id": "tag_61a9mbxx",
+      "timeMs": 1789312543360.3538,
+      "label": "Entrada Cajon del Maipo"
+    },
+    {
+      "id": "tag_em1depei",
+      "timeMs": 1789312790260.3538,
+      "label": "Entrada D11"
+    },
+    {
+      "id": "tag_qlm112c0",
+      "timeMs": 1789312904020.3538,
+      "label": "S sobre camino"
+    },
+    {
+      "id": "tag_ugdz1i9m",
+      "timeMs": 1789313138520.3538,
+      "label": "8 sobre pilones cerrado"
+    },
+    {
+      "id": "tag_215eqmiq",
+      "timeMs": 1789313529200.3538,
+      "label": "8 sobre pilones abierto"
+    },
+    {
+      "id": "tag_htqqd5gt",
+      "timeMs": 1789313766080.3538,
+      "label": "Emergencia sobre potrero"
+    },
+    {
+      "id": "tag_xcz2ccz9",
+      "timeMs": 1789313842140.3538,
+      "label": "Entrada El Principal"
+    },
+    {
+      "id": "tag_k6oychei",
+      "timeMs": 1789313970920.3538,
+      "label": "Aproximacion El Principal"
+    },
+    {
+      "id": "tag_sqqr306o",
+      "timeMs": 1789314079680.3538,
+      "label": "Vuelta a SCTB"
+    }
+  ],
+  "updatedAt": "2026-09-19T02:59:48.038Z",
+  "createdAt": "2026-09-14T02:33:49.577Z"
+}
