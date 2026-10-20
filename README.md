@@ -2,6 +2,8 @@
 
 3D viewer for IGC and GPX tracks. Satellite globe, terrain, altitude-colored path, replay, trim, event tags, and shareable links.
 
+Host your own instance, add to your library, and share tracks as you wish. You can tag along the track, trim the track start and end, and choose coloring for the track based on height, speed, or vertical velocity.
+
 Live: [flight.heavenly.cl](https://flight.heavenly.cl) · sample flight [`/vuelo-5`](https://flight.heavenly.cl/vuelo-5)
 
 Shareable slug pages are public. Saving, uploading, and the library need a login.
