@@ -63,6 +63,13 @@ struct ServerConfig {
     port: u16,
 }
 
+fn port_from_env() -> u16 {
+    std::env::var("PORT")
+        .ok()
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(8080)
+}
+
 fn config_from_env() -> ServerConfig {
     let data_dir = std::env::var("FLIGHT_DATA")
         .map(PathBuf::from)
@@ -73,14 +80,10 @@ fn config_from_env() -> ServerConfig {
     // Normalize so prefix checks behave; fall back to the raw path when the
     // directory does not exist yet (all reads then 404/500).
     let dist_dir = std::fs::canonicalize(&raw_dist).unwrap_or(raw_dist);
-    let port: u16 = std::env::var("PORT")
-        .ok()
-        .and_then(|raw| raw.parse().ok())
-        .unwrap_or(8080);
     ServerConfig {
         dist_dir,
         data_dir,
-        port,
+        port: port_from_env(),
     }
 }
 
@@ -539,8 +542,101 @@ fn build_router(state: AppState) -> Router {
         .with_state(state)
 }
 
+/// Container healthcheck. The runtime image is `FROM scratch`, so there is no
+/// wget/curl/busybox to probe `/api/health`; the binary does it itself over
+/// loopback, honouring the same `PORT` as the server.
+const HEALTHCHECK_ARG: &str = "healthcheck";
+const HEALTHCHECK_HOST: IpAddr = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+const HEALTHCHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn health_response_ok(raw: &[u8]) -> bool {
+    let split = match raw.windows(4).position(|window| window == b"\r\n\r\n") {
+        Some(index) => index,
+        None => return false,
+    };
+    let (head, body) = (&raw[..split], &raw[split + 4..]);
+    let head = match std::str::from_utf8(head) {
+        Ok(head) => head,
+        Err(_) => return false,
+    };
+    let status_ok = head
+        .lines()
+        .next()
+        .map(|line| {
+            let mut parts = line.split_whitespace();
+            matches!(parts.next(), Some(version) if version.starts_with("HTTP/1."))
+                && parts.next() == Some("200")
+        })
+        .unwrap_or(false);
+    status_ok
+        && serde_json::from_slice::<serde_json::Value>(body)
+            .ok()
+            .and_then(|value| value.get("ok").and_then(serde_json::Value::as_bool))
+            == Some(true)
+}
+
+fn healthcheck_at(addr: SocketAddr) -> bool {
+    use std::io::{Read, Write};
+
+    let mut stream = match std::net::TcpStream::connect_timeout(&addr, HEALTHCHECK_TIMEOUT) {
+        Ok(stream) => stream,
+        Err(error) => {
+            eprintln!("healthcheck: connect {addr}: {error}");
+            return false;
+        }
+    };
+    let _ = stream.set_read_timeout(Some(HEALTHCHECK_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(HEALTHCHECK_TIMEOUT));
+    let request = format!("GET /api/health HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n");
+    if let Err(error) = stream.write_all(request.as_bytes()) {
+        eprintln!("healthcheck: write {addr}: {error}");
+        return false;
+    }
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(read) => {
+                raw.extend_from_slice(&buf[..read]);
+                if raw.len() > 16 * 1024 {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => {
+                eprintln!("healthcheck: read {addr}: {error}");
+                return false;
+            }
+        }
+    }
+    if health_response_ok(&raw) {
+        true
+    } else {
+        eprintln!("healthcheck: unhealthy response from {addr}");
+        false
+    }
+}
+
+fn run_healthcheck() -> bool {
+    healthcheck_at(SocketAddr::new(HEALTHCHECK_HOST, port_from_env()))
+}
+
+fn main() {
+    // Any other argument (or none) still starts the server, as before.
+    // `args_os` so a non-UTF-8 argument cannot panic the process.
+    if std::env::args_os()
+        .nth(1)
+        .as_deref()
+        == Some(std::ffi::OsStr::new(HEALTHCHECK_ARG))
+    {
+        std::process::exit(if run_healthcheck() { 0 } else { 1 });
+    }
+    run_server();
+}
+
 #[tokio::main]
-async fn main() {
+async fn run_server() {
     let config = config_from_env();
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let (state, queue_rx) = app_state(
@@ -694,5 +790,51 @@ mod tests {
         assert!(cidrs.iter().any(|c| c.contains(&ip("172.18.0.9"))));
         assert!(cidrs.iter().any(|c| c.contains(&ip("127.0.0.1"))));
         assert!(cidrs.iter().any(|c| c.contains(&ip("::1"))));
+    }
+
+    #[test]
+    fn healthcheck_accepts_ok_response() {
+        assert!(health_response_ok(
+            b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 11\r\n\r\n{\"ok\":true}"
+        ));
+    }
+
+    #[test]
+    fn healthcheck_rejects_unhealthy_responses() {
+        assert!(!health_response_ok(b""));
+        // No header terminator: the response is incomplete.
+        assert!(!health_response_ok(b"HTTP/1.1 200 OK\r\n{\"ok\":true}"));
+        assert!(!health_response_ok(
+            b"HTTP/1.1 503 Service Unavailable\r\n\r\n{\"ok\":false}"
+        ));
+        assert!(!health_response_ok(b"HTTP/1.1 200 OK\r\n\r\nnot json"));
+        assert!(!health_response_ok(b"HTTP/1.1 200 OK\r\n\r\n{\"ok\":false}"));
+    }
+
+    #[test]
+    fn healthcheck_probes_loopback_and_fails_when_closed() {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut request = [0u8; 1024];
+            let read = stream.read(&mut request).expect("read request");
+            assert!(String::from_utf8_lossy(&request[..read]).starts_with("GET /api/health "));
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 11\r\n\r\n{\"ok\":true}",
+                )
+                .expect("write response");
+        });
+        assert!(healthcheck_at(addr));
+        server.join().expect("server thread");
+
+        // A listener that was dropped refuses connections.
+        let gone = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let gone_addr = gone.local_addr().expect("addr");
+        drop(gone);
+        assert!(!healthcheck_at(gone_addr));
     }
 }

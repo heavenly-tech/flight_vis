@@ -36,3 +36,5 @@ docker compose up -d --build
 ```
 
 Run Cargo and npm from the repo root so the default `data` and `dist` paths resolve. The compose host mount `./data` must be writable by uid `10001`, so run `chown -R 10001:10001 ./data` before `docker compose up -d`.
+
+The runtime image is `FROM scratch`: the static musl binary, the built frontend, CA certs, and `ffmpeg`/`ffprobe` with their Alpine library closure. There is no shell, `wget`, or `curl`; the healthcheck is `/app/flight_vis healthcheck` (`GET /api/health` on `PORT`).
