@@ -48,6 +48,8 @@ docker compose up -d --build
 
 Tracks are stored in `./data` (`FLIGHT_DATA` in Docker). The compose file expects an external Docker network named `proxy_network`.
 
+The runtime image is `FROM scratch` and contains only the static Rust binary, the built frontend, CA certs, and `ffmpeg`/`ffprobe` with the libraries they need. There is no shell; the container healthcheck is `/app/flight_vis healthcheck`.
+
 ## License
 
 [MIT](LICENSE)

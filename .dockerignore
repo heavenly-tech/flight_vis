@@ -4,6 +4,7 @@ data
 server-rs/target
 .git
 .github
+.agents
 .env
 .env.*
 *.local
