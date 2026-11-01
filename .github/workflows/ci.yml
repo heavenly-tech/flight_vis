@@ -6,7 +6,7 @@ on:
 
 jobs:
   check:
-    runs-on: [self-hosted, Linux, X64, omarchibald, rust-builder-x64]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
