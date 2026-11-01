@@ -6,7 +6,7 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, X64, omarchibald, rust-builder-x64]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,7 +23,7 @@ jobs:
           cache: npm
 
       - name: ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        run: command -v ffmpeg || (sudo -n apt-get update && sudo -n apt-get install -y ffmpeg)
 
       - name: cargo test
         run: cargo test --manifest-path server-rs/Cargo.toml
