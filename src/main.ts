@@ -42,6 +42,9 @@ const tagsButton = document.querySelector<HTMLButtonElement>("#btn-tags")!;
 const tagsPanel = document.querySelector<HTMLDivElement>("#tags-panel")!;
 const moreButton = document.querySelector<HTMLButtonElement>("#btn-more")!;
 const morePanel = document.querySelector<HTMLDivElement>("#more-panel")!;
+const hudGrid = document.querySelector<HTMLElement>("#hud-grid")!;
+const chromeRestore = document.querySelector<HTMLButtonElement>("#btn-chrome-restore")!;
+const cesiumContainer = document.getElementById("cesiumContainer")!;
 const shareButtonLabel = shareButton.textContent ?? "Save & copy link";
 const authHint = document.querySelector<HTMLParagraphElement>("#auth-hint")!;
 const loginLink = document.querySelector<HTMLAnchorElement>("#btn-login")!;
@@ -254,7 +257,15 @@ function refreshTrimStats(): void {
   summaryEl.textContent = `${(stats.distanceM / 1000).toFixed(1)} km · ${formatDuration(stats.durationMs)} · ${Math.round(stats.maxAlt)} m max`;
 }
 
+function isMobileLayout(): boolean {
+  return window.matchMedia("(max-width: 1023px)").matches;
+}
+
 function layoutHud(): void {
+  if (isMobileLayout()) {
+    hudToggle.hidden = true;
+    return;
+  }
   if (hud.hidden) {
     hudToggle.hidden = true;
     document.body.classList.remove("hud-clipped", "hud-rows-1", "hud-rows-2", "hud-open");
@@ -389,25 +400,78 @@ async function boot(): Promise<void> {
       renderHud();
     }
     lastFrame = now;
-    sampleQuality(now, playing);
+    sampleQuality(now, playing || globeInteracting);
     requestAnimationFrame(tick);
   }
 
-  // Feed the viewer's auto quality governor a 2s rolling fps, but only
-  // while playing: paused frames are free and must not skew the average.
+  // Feed the viewer's auto quality governor a 2s rolling fps, only while the
+  // globe is actively rendering (playback or camera interaction).
   let qualityFrames = 0;
   let qualityWindowStart = 0;
+  let globeInteracting = false;
 
   function sampleQuality(now: number, active: boolean): void {
+    if (!active) {
+      qualityFrames = 0;
+      qualityWindowStart = now;
+      return;
+    }
     if (!qualityWindowStart) qualityWindowStart = now;
     qualityFrames += 1;
     if (now - qualityWindowStart >= 2000) {
       const fps = (qualityFrames * 1000) / Math.max(1, now - qualityWindowStart);
-      if (active) viewer.stepQuality(fps);
+      viewer.stepQuality(fps);
       qualityFrames = 0;
       qualityWindowStart = now;
     }
   }
+
+  cesiumContainer.addEventListener("pointerdown", () => {
+    globeInteracting = true;
+  });
+  window.addEventListener("pointerup", () => {
+    globeInteracting = false;
+  });
+  window.addEventListener("pointercancel", () => {
+    globeInteracting = false;
+  });
+
+  let chromeTap: { x: number; y: number; t: number } | null = null;
+  const TAP_MOVE_PX = 12;
+
+  cesiumContainer.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.target !== event.currentTarget && !(event.target as Element).closest(".cesium-widget")) return;
+      chromeTap = { x: event.clientX, y: event.clientY, t: performance.now() };
+    },
+    true,
+  );
+  cesiumContainer.addEventListener(
+    "pointerup",
+    (event) => {
+      if (!chromeTap) return;
+      const dx = event.clientX - chromeTap.x;
+      const dy = event.clientY - chromeTap.y;
+      const dt = performance.now() - chromeTap.t;
+      chromeTap = null;
+      if (dt > 450 || dx * dx + dy * dy > TAP_MOVE_PX * TAP_MOVE_PX) return;
+      const hidden = document.body.classList.toggle("chrome-hidden");
+      chromeRestore.hidden = !hidden;
+    },
+    true,
+  );
+
+  chromeRestore.addEventListener("click", () => {
+    document.body.classList.remove("chrome-hidden");
+    chromeRestore.hidden = true;
+  });
+
+  hudGrid.addEventListener("click", () => {
+    if (!isMobileLayout()) return;
+    const open = document.body.classList.toggle("hud-strip-expanded");
+    hudGrid.setAttribute("aria-expanded", String(open));
+  });
 
   playButton.addEventListener("click", () => {
     if (!flight || !trim) return;

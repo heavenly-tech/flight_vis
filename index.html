@@ -15,6 +15,9 @@
   <body>
     <div id="cesiumContainer"></div>
     <div id="credits"></div>
+    <button type="button" id="btn-chrome-restore" class="chrome-restore" hidden aria-label="Show controls">
+      UI
+    </button>
 
     <div id="ui">
       <header class="topbar">
@@ -47,23 +50,12 @@
             </div>
           </div>
           <div class="readout-stack">
-            <div class="modes color-modes" role="group" aria-label="Track color">
+            <div class="modes color-modes desktop-color" role="group" aria-label="Track color">
               <span class="group-label">Color</span>
               <button type="button" data-mode="altitude" class="chip active">Alt</button>
               <button type="button" data-mode="speed" class="chip">Speed</button>
               <button type="button" data-mode="vario" class="chip">Vario</button>
             </div>
-            <aside id="hud" class="hud" hidden>
-              <div class="hud-stat"><span>ALT</span><strong id="stat-alt">—</strong></div>
-              <div class="hud-stat"><span>SPD</span><strong id="stat-spd">—</strong></div>
-              <div class="hud-stat"><span>VARIO</span><strong id="stat-vario">—</strong></div>
-              <div class="hud-stat"><span>DIST</span><strong id="stat-dist">—</strong></div>
-              <div class="hud-stat"><span>TIME</span><strong id="stat-time">—</strong></div>
-              <div class="hud-stat"><span>UTC</span><strong id="stat-utc">—</strong></div>
-            </aside>
-            <button type="button" id="btn-hud" class="chip disclosure hud-toggle" hidden aria-expanded="false">
-              Stats <span class="caret" aria-hidden="true">^</span>
-            </button>
           </div>
         </div>
         <aside id="library-panel" class="library-panel" hidden>
@@ -84,22 +76,47 @@
         </aside>
       </header>
 
+      <aside id="hud" class="hud" hidden>
+        <div id="hud-grid" class="hud-grid" role="group" aria-label="Flight stats">
+          <div class="hud-stat hud-primary"><span>ALT</span><strong id="stat-alt">—</strong></div>
+          <div class="hud-stat hud-primary"><span>SPD</span><strong id="stat-spd">—</strong></div>
+          <div class="hud-stat hud-primary"><span>VARIO</span><strong id="stat-vario">—</strong></div>
+          <div class="hud-stat hud-primary"><span>TIME</span><strong id="stat-time">—</strong></div>
+          <div class="hud-stat hud-secondary"><span>DIST</span><strong id="stat-dist">—</strong></div>
+          <div class="hud-stat hud-secondary"><span>UTC</span><strong id="stat-utc">—</strong></div>
+        </div>
+        <button type="button" id="btn-hud" class="chip disclosure hud-toggle" hidden aria-expanded="false">
+          Stats <span class="caret" aria-hidden="true">^</span>
+        </button>
+      </aside>
+
       <p id="status" class="status">Preparing 3D globe…</p>
 
       <footer class="transport">
-        <div class="transport-row transport-primary">
+        <div class="transport-row transport-primary transport-compact">
           <button type="button" id="btn-play" class="play">Play</button>
           <button type="button" id="btn-follow" class="chip" aria-pressed="true">Follow</button>
-          <div class="modes" role="group" aria-label="Follow heading">
+          <button
+            type="button"
+            id="btn-live"
+            class="chip live-slot"
+            disabled
+            aria-hidden="true"
+            tabindex="-1"
+            title="Reserved for Live follow (upcoming)"
+          >
+            Live
+          </button>
+          <div class="modes transport-extra" role="group" aria-label="Follow heading">
             <button type="button" data-follow-mode="fixed" class="chip">Fixed</button>
             <button type="button" data-follow-mode="relative" class="chip active">Relative</button>
           </div>
-          <div class="modes" role="group" aria-label="Path display">
+          <div class="modes transport-extra" role="group" aria-label="Path display">
             <button type="button" data-path-mode="trace" class="chip active">Trace</button>
             <button type="button" data-path-mode="draw" class="chip">Draw</button>
           </div>
           <button type="button" id="btn-overview" class="chip">Overview</button>
-          <button type="button" id="btn-tags" class="chip disclosure" aria-expanded="false" aria-controls="tags-panel">
+          <button type="button" id="btn-tags" class="chip disclosure transport-extra" aria-expanded="false" aria-controls="tags-panel">
             Tags <span class="caret" aria-hidden="true">^</span>
           </button>
           <button type="button" id="btn-more" class="chip disclosure" aria-expanded="false" aria-controls="more-panel">
@@ -107,12 +124,18 @@
           </button>
           <p id="summary" class="summary"></p>
         </div>
-        <div id="tags-panel" class="tags-panel" hidden>
+        <div id="tags-panel" class="tags-panel transport-extra" hidden>
           <button type="button" id="btn-tag" class="chip">Tag</button>
           <div id="tag-list" class="tag-list" hidden></div>
         </div>
         <div id="more-panel" class="more-panel" hidden>
-          <div class="transport-row">
+          <div class="modes color-modes mobile-color" role="group" aria-label="Track color">
+            <span class="group-label">Color</span>
+            <button type="button" data-mode="altitude" class="chip active">Alt</button>
+            <button type="button" data-mode="speed" class="chip">Speed</button>
+            <button type="button" data-mode="vario" class="chip">Vario</button>
+          </div>
+          <div class="transport-row transport-extra">
             <label class="speed">
               <span>Speed</span>
               <select id="play-speed">
@@ -128,7 +151,12 @@
             <button type="button" id="btn-start-here" class="chip">Start here</button>
             <button type="button" id="btn-end-here" class="chip">End here</button>
           </div>
-          <canvas id="profile" height="100" aria-label="Altitude profile and trim"></canvas>
+          <div id="timeline-scrub" class="timeline-scrub" data-live-timeline-reserved>
+            <canvas id="profile" height="100" aria-label="Altitude profile and trim"></canvas>
+            <div id="timeline-live-edge" class="timeline-live-edge" aria-hidden="true">
+              <span class="timeline-live-mark"></span>
+            </div>
+          </div>
         </div>
       </footer>
     </div>

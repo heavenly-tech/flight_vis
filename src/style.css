@@ -6,6 +6,8 @@
   --text: #f4f7fb;
   --muted: #9aa6b5;
   --cyan: #67e8f9;
+  /* Right gutter on the profile scrub for a future live “now” edge marker. */
+  --timeline-live-inset: 14px;
 }
 
 * {
@@ -64,11 +66,41 @@ body.more-open #credits {
   pointer-events: none;
   height: 100%;
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 12px;
   padding: 16px;
   padding-top: max(16px, env(safe-area-inset-top));
   padding-bottom: max(16px, env(safe-area-inset-bottom));
+}
+
+body.chrome-hidden #ui {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.chrome-restore {
+  position: fixed;
+  z-index: 20;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  min-width: 44px;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font: 600 12px Outfit, sans-serif;
+  backdrop-filter: blur(18px);
+  pointer-events: auto;
+}
+
+body:not(.chrome-hidden) .chrome-restore {
+  display: none !important;
+}
+
+.mobile-color {
+  display: none;
 }
 
 .brand-block,
@@ -436,6 +468,16 @@ select,
 }
 
 .hud {
+  grid-row: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  pointer-events: auto;
+}
+
+.hud-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(110px, 1fr));
   gap: 8px;
@@ -451,22 +493,23 @@ body.hud-clipped:not(.hud-open).hud-rows-1 .hud-stat:nth-child(n + 3) {
   display: none;
 }
 
-.hud div {
+.hud-stat {
   background: var(--panel);
   border: 1px solid var(--stroke);
   border-radius: 14px;
   padding: 10px 12px;
   backdrop-filter: blur(16px);
+  min-height: 44px;
 }
 
-.hud span {
+.hud-stat > span {
   display: block;
   color: var(--muted);
-  font-size: 10px;
+  font-size: 12px;
   letter-spacing: 0.14em;
 }
 
-.hud strong {
+.hud-stat strong {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 18px;
   font-weight: 500;
@@ -497,7 +540,7 @@ body.hud-clipped:not(.hud-open).hud-rows-1 .hud-stat:nth-child(n + 3) {
 
 .transport {
   position: relative;
-  grid-row: 2;
+  grid-row: 4;
   z-index: 10;
   background: var(--panel);
   border: 1px solid var(--stroke);
@@ -520,12 +563,64 @@ body.hud-clipped:not(.hud-open).hud-rows-1 .hud-stat:nth-child(n + 3) {
   font-size: 13px;
 }
 
+.timeline-scrub {
+  position: relative;
+  width: 100%;
+  padding-right: var(--timeline-live-inset);
+}
+
+.timeline-live-edge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--timeline-live-inset);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  pointer-events: none;
+}
+
+.timeline-live-mark {
+  display: block;
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  right: 3px;
+  width: 2px;
+  border-radius: 1px;
+  background: transparent;
+  box-shadow: none;
+}
+
+body.live-session .timeline-live-mark {
+  background: rgba(103, 232, 249, 0.65);
+  box-shadow: 0 0 8px rgba(103, 232, 249, 0.35);
+}
+
 #profile {
   width: 100%;
   height: 96px;
   display: block;
   cursor: ew-resize;
   border-radius: 12px;
+}
+
+.live-slot {
+  flex: 0 0 auto;
+  min-width: 44px;
+}
+
+.live-slot:disabled {
+  visibility: hidden;
+  pointer-events: none;
+  padding-left: 0;
+  padding-right: 0;
+  border-color: transparent;
+  background: transparent;
+  min-width: 44px;
+  max-width: 44px;
+  overflow: hidden;
 }
 
 .tags-panel .tag-list {
@@ -590,12 +685,17 @@ dialog input {
   justify-content: flex-end;
 }
 
-@media (max-width: 720px) {
+.status {
+  grid-row: 3;
+}
+
+@media (max-width: 1023px) {
   #ui {
-    gap: 8px;
-    padding: 10px;
+    gap: 6px;
+    padding: 8px;
     padding-top: max(8px, env(safe-area-inset-top));
     padding-bottom: max(8px, env(safe-area-inset-bottom));
+    grid-template-rows: auto auto minmax(75dvh, 1fr) auto;
   }
 
   .topbar {
@@ -603,17 +703,19 @@ dialog input {
     grid-template-areas:
       "brand actions"
       "library library";
-    gap: 8px;
+    gap: 6px;
+    max-height: 20vh;
+    overflow: hidden;
   }
 
   .brand {
-    font-size: 10px;
+    font-size: 12px;
   }
 
   .flight-name {
     font-size: 16px;
     margin: 0;
-    max-width: 42vw;
+    max-width: 55vw;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -621,33 +723,102 @@ dialog input {
 
   .library-panel {
     max-width: none;
+    max-height: 24vh;
   }
 
   .top-actions {
     justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .readout-stack,
+  .desktop-color {
+    display: none !important;
+  }
+
+  .mobile-color {
+    display: flex;
   }
 
   .menu-panel {
     right: 0;
     left: auto;
-  }
-
-  .readout-stack {
-    min-width: min(220px, calc(100vw - 24px));
+    max-width: calc(100vw - 16px);
   }
 
   .hud {
-    grid-template-columns: repeat(2, minmax(90px, 1fr));
-    gap: 6px;
+    max-height: 44px;
+    overflow: visible;
+  }
+
+  body.hud-strip-expanded .hud {
+    max-height: min(20vh, 88px);
+  }
+
+  .hud-grid {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 4px;
+    max-height: 44px;
+    cursor: pointer;
+    border: 0;
+    padding: 0;
+    background: transparent;
+  }
+
+  body.hud-strip-expanded .hud-grid {
+    flex-wrap: wrap;
+    max-height: none;
   }
 
   .hud-stat {
-    padding: 6px 8px;
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 4px 6px;
     border-radius: 10px;
   }
 
-  .hud strong {
+  .hud-stat strong {
     font-size: 13px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .hud-stat.hud-secondary {
+    display: none;
+  }
+
+  body.hud-strip-expanded .hud-stat.hud-secondary {
+    display: block;
+    flex: 1 1 calc(50% - 4px);
+  }
+
+  .hud-toggle {
+    display: none !important;
+  }
+
+  .transport-compact .transport-extra {
+    display: none !important;
+  }
+
+  .transport-row {
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .transport-compact .live-slot:disabled {
+    visibility: visible;
+    opacity: 0;
+  }
+
+  .transport .play,
+  .transport .chip {
+    min-height: 44px;
+    min-width: 44px;
+    padding: 10px 14px;
+    font-size: 12px;
   }
 
   .summary {
@@ -657,16 +828,33 @@ dialog input {
   .transport {
     padding: 8px;
     border-radius: 14px;
+    max-height: 20vh;
+    overflow: hidden;
+  }
+
+  body.more-open .transport,
+  body.tags-open .transport {
+    max-height: min(48vh, calc(20vh + 240px));
+    overflow: auto;
   }
 
   body.more-open .more-panel,
   body.tags-open .tags-panel {
-    max-height: 42vh;
-    overflow: auto;
+    position: relative;
+    max-height: none;
+    overflow: visible;
+  }
+
+  body.more-open .more-panel {
+    padding-top: 4px;
+    border-top: 1px solid var(--stroke);
+    margin-top: 8px;
   }
 
   #profile {
-    height: 72px;
+    height: 88px;
+    min-height: 72px;
+    touch-action: none;
   }
 
   #credits {
@@ -678,12 +866,97 @@ dialog input {
   .play,
   .speed,
   .slug {
-    padding: 7px 11px;
+    min-height: 44px;
+    padding: 10px 14px;
     font-size: 12px;
   }
+}
 
-  .color-modes .chip {
-    padding: 6px 10px;
+@media (max-width: 1023px) and (orientation: landscape) {
+  #ui {
+    grid-template-columns: minmax(120px, 22vw) minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    grid-template-areas:
+      "hud topbar"
+      "hud globe"
+      "transport transport";
+    max-height: 100dvh;
+  }
+
+  .topbar {
+    grid-area: topbar;
+    max-height: 18vh;
+  }
+
+  .hud {
+    grid-area: hud;
+    grid-row: 1 / span 2;
+    max-width: 22vw;
+    max-height: 40vh;
+  }
+
+  body.hud-strip-expanded .hud {
+    max-height: 40vh;
+  }
+
+  .hud-grid {
+    flex-direction: column;
+    max-height: 100%;
+    overflow-y: auto;
+  }
+
+  .hud-stat {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+
+  .status {
+    grid-area: globe;
+    align-self: center;
+    justify-self: center;
+  }
+
+  .transport {
+    grid-area: transport;
+    max-height: 18vh;
+  }
+}
+
+@media (min-width: 1024px) {
+  .transport-compact .live-slot {
+    display: none;
+  }
+
+  #ui {
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+
+  .hud {
+    position: absolute;
+    top: max(72px, calc(env(safe-area-inset-top) + 56px));
+    right: 16px;
+    width: min(25vw, 20rem);
+    max-width: 25vw;
+    grid-row: auto;
+    z-index: 6;
+    max-height: none;
+  }
+
+  .hud-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hud-stat.hud-secondary {
+    display: block;
+  }
+
+  .status {
+    grid-row: auto;
+  }
+
+  .transport {
+    grid-row: 2;
   }
 }
 

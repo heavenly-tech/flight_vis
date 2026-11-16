@@ -40,6 +40,7 @@ import { sampleAt } from "../track/parse";
 import { fullRange, pointsInTrim } from "../track/trim";
 import { colorForUnit, normalizeValue, valueForMode } from "./colors";
 import { lerpAngle, wrapAngle, type FollowMode } from "./follow";
+import { QUALITY_LEVELS, resolutionScaleForLevel } from "./resolution";
 
 const ESRI_IMAGERY =
   "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
@@ -59,7 +60,14 @@ export type FlightViewer = {
   setOnTagPick: (handler: (timeMs: number) => void) => void;
   setPathMode: (mode: PathMode, timeMs: number) => void;
   flyOverview: () => void;
-  getPerfStats: () => { commands: number; triangles: number; quality: number; farKm: number; tilesLoaded: boolean };
+  getPerfStats: () => {
+    commands: number;
+    triangles: number;
+    quality: number;
+    farKm: number;
+    tilesLoaded: boolean;
+    resolutionScale: number;
+  };
   stepQuality: (fps: number) => void;
   destroy: () => void;
 };
@@ -69,12 +77,6 @@ export type FlightViewer = {
 export type PathMode = "trace" | "draw";
 
 export type { FollowMode };
-
-const QUALITY_LEVELS = [
-  { pixelCap: 1.5, sse: 4 },
-  { pixelCap: 1.25, sse: 6 },
-  { pixelCap: 1.0, sse: 8 },
-] as const;
 
 export async function createFlightViewer(container: HTMLElement): Promise<FlightViewer> {
   const ionToken = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
@@ -106,6 +108,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     // Render on demand instead of every frame: the globe idles the GPU while
     // paused, and every mutation below ends with an explicit requestRender().
     requestRenderMode: true,
+    useBrowserRecommendedResolution: true,
   });
 
   viewer.scene.globe.enableLighting = true;
@@ -127,7 +130,6 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   // pixel and terrain density where flight altitudes make it invisible.
   // The auto quality governor below steps these down only while fps sags.
   // (Applied inline: applyQuality() reads closure state declared further down.)
-  viewer.resolutionScale = Math.min(1, QUALITY_LEVELS[0].pixelCap / (window.devicePixelRatio || 1));
   viewer.scene.globe.maximumScreenSpaceError = QUALITY_LEVELS[0].sse;
   // 2x MSAA instead of 4x: lines stay smooth, multisample fill halves.
   viewer.scene.msaaSamples = 2;
@@ -254,8 +256,9 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
 
   function applyQuality(): void {
     const q = QUALITY_LEVELS[qualityLevel];
-    viewer.resolutionScale = Math.min(1, q.pixelCap / (window.devicePixelRatio || 1));
+    viewer.resolutionScale = resolutionScaleForLevel(q.pixelCap);
     viewer.scene.globe.maximumScreenSpaceError = q.sse;
+    viewer.resize();
     requestRender();
   }
 
@@ -283,6 +286,8 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     lowStreak = 0;
     highStreak = 0;
   }
+
+  applyQuality();
 
   function trackHeading(sample: Sample): number {
     if (!flight) return 0;
@@ -744,6 +749,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
         quality: qualityLevel,
         farKm: rangeLimited ? rangeLimitM / 1000 : 0,
         tilesLoaded: viewer.scene.globe.tilesLoaded,
+        resolutionScale: viewer.resolutionScale,
       };
     },
     stepQuality,
