@@ -16,5 +16,8 @@ describe("HUD layout CSS", () => {
     expect(style).toMatch(
       /@media \(max-width: 1023px\) and \(orientation: landscape\) \{[\s\S]*grid-column: auto;/,
     );
+    expect(style).toMatch(
+      /@media \(max-width: 1023px\) and \(orientation: landscape\) \{[\s\S]*body\.hud-strip-expanded \.hud \{[\s\S]*max-height: none;/,
+    );
   });
 });

@@ -946,7 +946,7 @@ dialog input {
   }
 
   body.hud-strip-expanded .hud {
-    max-height: min(56vh, 13rem);
+    max-height: none;
   }
 
   .hud-grid {
