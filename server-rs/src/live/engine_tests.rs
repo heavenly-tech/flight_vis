@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn subscribe_before_snapshot_sees_post_subscribe_fix() {
+    async fn stream_snapshot_is_atomic_with_phase_and_fixes() {
         let dir = test_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let start = 1_700_000_000_000;
@@ -296,20 +296,39 @@ mod tests {
             .await
             .unwrap();
         let id = engine.list_sessions().await[0].id.clone();
-        let mut rx = engine.subscribe(&id).await.unwrap();
+        let snap = engine.stream_snapshot(&id).await.unwrap();
+        assert_eq!(snap.phase, SessionPhase::Active);
+        assert_eq!(snap.fixes.len(), 1);
+        assert!(snap.live_rx.is_some());
+
         engine
             .ingest_fixes("dev", vec![sample_fix(start + 1000, -33.41)])
             .await
             .unwrap();
-        let fixes = engine.get_fixes(&id).await.unwrap();
-        assert_eq!(fixes.len(), 2);
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+        let snap = engine.stream_snapshot(&id).await.unwrap();
+        assert_eq!(snap.fixes.len(), 2);
+
+        engine.stop_session(&id).await;
+        let snap = engine.stream_snapshot(&id).await.unwrap();
+        assert_eq!(snap.phase, SessionPhase::Ended);
+        assert_eq!(snap.fixes.len(), 2);
+        assert!(snap.live_rx.is_none());
+    }
+
+    #[tokio::test]
+    async fn stream_snapshot_sees_end_before_subscribe_would_race() {
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let start = 1_700_000_000_000;
+        let (engine, _) = engine_at(start, &dir);
+        engine
+            .ingest_fixes("dev", vec![sample_fix(start, -33.4)])
             .await
-            .expect("event")
-            .expect("open");
-        match msg {
-            super::super::engine::SseSessionEvent::Fix(ev) => assert_eq!(ev.fix.t, start + 1000),
-            other => panic!("expected fix event, got {other:?}"),
-        }
+            .unwrap();
+        let id = engine.list_sessions().await[0].id.clone();
+        engine.stop_session(&id).await;
+        let snap = engine.stream_snapshot(&id).await.unwrap();
+        assert_eq!(snap.phase, SessionPhase::Ended);
+        assert!(snap.live_rx.is_none());
     }
 }

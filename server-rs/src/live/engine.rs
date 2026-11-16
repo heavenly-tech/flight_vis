@@ -28,8 +28,14 @@ pub struct SseFixEvent {
 #[derive(Clone, Debug)]
 pub enum SseSessionEvent {
     Fix(SseFixEvent),
-    #[allow(dead_code)]
-    End { id: String },
+    End,
+}
+
+#[derive(Debug)]
+pub struct LiveStreamSnapshot {
+    pub phase: SessionPhase,
+    pub fixes: Vec<LiveFix>,
+    pub live_rx: Option<broadcast::Receiver<SseSessionEvent>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -80,7 +86,10 @@ impl LiveEngine {
         self.persist.ensure_dir().await?;
         let mut index = match self.persist.load_index().await {
             Ok(index) => index,
-            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => HashMap::new(),
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                self.persist.archive_corrupt_index().await?;
+                HashMap::new()
+            }
             Err(error) => return Err(error),
         };
         let orphan_ids = self.persist.list_orphan_log_ids(&index).await?;
@@ -206,6 +215,7 @@ impl LiveEngine {
             }
 
             let mut remaining = Vec::new();
+            let mut disk_appends = Vec::new();
             let rx_now = self.now_ms();
             for fix in batch {
                 if runtime.record.fix_count >= MAX_FIXES_PER_SESSION {
@@ -228,7 +238,7 @@ impl LiveEngine {
                         .unwrap_or(fix.t),
                 );
                 accepted += 1;
-                let _ = self.persist.append_fix(&session_id, &fix).await;
+                disk_appends.push(fix.clone());
                 let _ = runtime.bus.send(SseSessionEvent::Fix(SseFixEvent {
                     id: fix.t.to_string(),
                     fix: fix.clone(),
@@ -238,6 +248,10 @@ impl LiveEngine {
             let at_cap = runtime.record.fix_count >= MAX_FIXES_PER_SESSION;
             let record = runtime.record.clone();
             drop(sessions);
+
+            for fix in &disk_appends {
+                let _ = self.persist.append_fix(&session_id, fix).await;
+            }
 
             let index = self.snapshot_index().await;
             let _ = self.persist.upsert_session(&index, &record).await;
@@ -342,17 +356,19 @@ impl LiveEngine {
         sessions.get(session_id).map(|s| s.fixes.clone())
     }
 
-    pub async fn subscribe(
-        &self,
-        session_id: &str,
-    ) -> Option<broadcast::Receiver<SseSessionEvent>> {
+    pub async fn stream_snapshot(&self, session_id: &str) -> Option<LiveStreamSnapshot> {
         let sessions = self.sessions.read().await;
-        sessions.get(session_id).map(|s| s.bus.subscribe())
-    }
-
-    pub async fn session_phase(&self, session_id: &str) -> Option<SessionPhase> {
-        let sessions = self.sessions.read().await;
-        sessions.get(session_id).map(|s| s.record.phase)
+        let runtime = sessions.get(session_id)?;
+        let live_rx = if runtime.record.phase == SessionPhase::Active {
+            Some(runtime.bus.subscribe())
+        } else {
+            None
+        };
+        Some(LiveStreamSnapshot {
+            phase: runtime.record.phase,
+            fixes: runtime.fixes.clone(),
+            live_rx,
+        })
     }
 
     pub async fn stop_session(&self, session_id: &str) -> bool {
@@ -372,9 +388,7 @@ impl LiveEngine {
         runtime.record.ended_at = Some(now);
         let device = runtime.record.device.clone();
         let record = runtime.record.clone();
-        let _ = runtime.bus.send(SseSessionEvent::End {
-            id: session_id.to_string(),
-        });
+        let _ = runtime.bus.send(SseSessionEvent::End);
         drop(sessions);
         let mut device_active = self.device_active.write().await;
         if device_active.get(&device) == Some(&session_id.to_string()) {

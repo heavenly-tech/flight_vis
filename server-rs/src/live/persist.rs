@@ -68,6 +68,19 @@ impl LivePersist {
         fs::create_dir_all(&self.root).await
     }
 
+    pub async fn archive_corrupt_index(&self) -> std::io::Result<()> {
+        let path = self.index_path();
+        if !path.exists() {
+            return Ok(());
+        }
+        let broken = self.broken_index_path();
+        if broken.exists() {
+            // Keep prior broken hints; the corrupt file is not usable.
+            return fs::remove_file(&path).await;
+        }
+        fs::rename(&path, &broken).await
+    }
+
     pub async fn load_index(&self) -> std::io::Result<HashMap<String, SessionRecord>> {
         let path = self.index_path();
         if !path.exists() {

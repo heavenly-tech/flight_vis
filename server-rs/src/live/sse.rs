@@ -61,19 +61,8 @@ pub async fn live_stream(
         return denied.into_response();
     }
 
-    let phase = match state.live.session_phase(&id).await {
-        Some(phase) => phase,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                axum::Json(json!({ "error": "not found" })),
-            )
-                .into_response();
-        }
-    };
-
-    let fixes = match state.live.get_fixes(&id).await {
-        Some(f) => f,
+    let snapshot = match state.live.stream_snapshot(&id).await {
+        Some(snapshot) => snapshot,
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -88,23 +77,23 @@ pub async fn live_stream(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<i64>().ok());
 
-    let backfill = backfill_events(&fixes, last_event_id);
+    let backfill = backfill_events(&snapshot.fixes, last_event_id);
 
-    if phase == SessionPhase::Ended {
+    if snapshot.phase == SessionPhase::Ended {
         let merged: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> = Box::pin(
             stream::iter(backfill.into_iter().map(Ok)).chain(stream::iter([Ok(end_event(&id))])),
         );
         return Sse::new(merged).into_response();
     }
 
-    let rx = match state.live.subscribe(&id).await {
+    let rx = match snapshot.live_rx {
         Some(rx) => rx,
         None => {
-            return (
-                StatusCode::NOT_FOUND,
-                axum::Json(json!({ "error": "not found" })),
-            )
-                .into_response();
+            let merged: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> = Box::pin(
+                stream::iter(backfill.into_iter().map(Ok))
+                    .chain(stream::iter([Ok(end_event(&id))])),
+            );
+            return Sse::new(merged).into_response();
         }
     };
 
@@ -123,7 +112,7 @@ pub async fn live_stream(
                         .ok()?,
                     Some(rx),
                 ),
-                Ok(SseSessionEvent::End { .. }) => (end_event(&stream_id), None),
+                Ok(SseSessionEvent::End) => (end_event(&stream_id), None),
                 Err(BroadcastStreamRecvError::Lagged(_)) => return None,
             };
             Some((Ok(event), next_rx))
