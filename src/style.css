@@ -760,7 +760,8 @@ dialog input {
   }
 
   body.hud-strip-expanded .hud {
-    max-height: 92px;
+    max-height: none;
+    overflow: visible;
   }
 
   .hud-grid {
@@ -775,7 +776,6 @@ dialog input {
   }
 
   body.hud-strip-expanded .hud-grid {
-    grid-template-rows: auto auto;
     max-height: none;
   }
 
@@ -785,14 +785,20 @@ dialog input {
     border-radius: 10px;
   }
 
-  body.hud-strip-expanded .hud-stat.hud-secondary:nth-child(5) {
-    grid-row: 2;
-    grid-column: 1 / span 2;
-  }
+  @media (orientation: portrait) {
+    body.hud-strip-expanded .hud-grid {
+      grid-template-rows: auto auto;
+    }
 
-  body.hud-strip-expanded .hud-stat.hud-secondary:nth-child(6) {
-    grid-row: 2;
-    grid-column: 3 / span 2;
+    body.hud-strip-expanded .hud-stat.hud-secondary:nth-child(5) {
+      grid-row: 2;
+      grid-column: 1 / span 2;
+    }
+
+    body.hud-strip-expanded .hud-stat.hud-secondary:nth-child(6) {
+      grid-row: 2;
+      grid-column: 3 / span 2;
+    }
   }
 
   .hud-stat strong {
@@ -946,8 +952,15 @@ dialog input {
   .hud-grid {
     display: grid;
     grid-template-columns: 1fr;
+    grid-template-rows: none;
     max-height: 100%;
     overflow-y: auto;
+  }
+
+  body.hud-strip-expanded .hud-stat.hud-secondary:nth-child(5),
+  body.hud-strip-expanded .hud-stat.hud-secondary:nth-child(6) {
+    grid-row: auto;
+    grid-column: auto;
   }
 
   .hud-stat {

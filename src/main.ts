@@ -8,6 +8,7 @@ import { isValidSlug, normalizeSlug, slugFromFileName, slugFromPath } from "./tr
 import type { ColorMode, Flight, FlightTag, TrimRange } from "./track/types";
 import { clampTrim, fullRange, newTagId, rangeStats, suggestTrim } from "./track/trim";
 import { cssForUnit } from "./viz/colors";
+import { nextChromeTap, shouldToggleChrome, type ChromeTap } from "./viz/globeChrome";
 import { createFlightViewer, type PathMode } from "./viz/viewer";
 
 const SAMPLE_URL = `${import.meta.env.BASE_URL}samples/vuelo5.gpx`;
@@ -426,9 +427,8 @@ async function boot(): Promise<void> {
     }
   }
 
-  let globePointerId: number | null = null;
-  let chromeTap: { x: number; y: number; t: number; pointerId: number } | null = null;
-  const TAP_MOVE_PX = 12;
+  const globePointers = new Set<number>();
+  let chromeTap: ChromeTap | null = null;
 
   cesiumContainer.addEventListener(
     "pointerdown",
@@ -436,36 +436,35 @@ async function boot(): Promise<void> {
       const onGlobe =
         event.target === event.currentTarget || Boolean((event.target as Element).closest(".cesium-widget"));
       if (!onGlobe) return;
-      globePointerId = event.pointerId;
-      globeInteracting = true;
-      chromeTap = {
-        x: event.clientX,
-        y: event.clientY,
-        t: performance.now(),
-        pointerId: event.pointerId,
-      };
+      chromeTap = nextChromeTap(chromeTap, globePointers.size, event, performance.now());
+      globePointers.add(event.pointerId);
+      globeInteracting = globePointers.size > 0;
     },
     true,
   );
 
   function endGlobePointer(event: PointerEvent): void {
-    if (globePointerId !== null && event.pointerId === globePointerId) {
-      globePointerId = null;
-      globeInteracting = false;
-    }
-    if (!chromeTap || event.pointerId !== chromeTap.pointerId) return;
-    const dx = event.clientX - chromeTap.x;
-    const dy = event.clientY - chromeTap.y;
-    const dt = performance.now() - chromeTap.t;
-    chromeTap = null;
-    if (event.type === "pointerup" && dt <= 450 && dx * dx + dy * dy <= TAP_MOVE_PX * TAP_MOVE_PX) {
-      const hidden = document.body.classList.toggle("chrome-hidden");
-      chromeRestore.hidden = !hidden;
+    if (globePointers.delete(event.pointerId)) {
+      globeInteracting = globePointers.size > 0;
     }
   }
 
-  window.addEventListener("pointerup", endGlobePointer);
-  window.addEventListener("pointercancel", endGlobePointer);
+  function endGlobePointerChrome(event: PointerEvent): void {
+    endGlobePointer(event);
+    const tap = chromeTap;
+    if (tap?.pointerId === event.pointerId) chromeTap = null;
+    if (!shouldToggleChrome(tap, event, performance.now())) return;
+    const hidden = document.body.classList.toggle("chrome-hidden");
+    chromeRestore.hidden = !hidden;
+  }
+
+  function cancelChromeTap(event: PointerEvent): void {
+    endGlobePointer(event);
+    if (chromeTap?.pointerId === event.pointerId) chromeTap = null;
+  }
+
+  window.addEventListener("pointerup", endGlobePointerChrome, true);
+  window.addEventListener("pointercancel", cancelChromeTap, true);
 
   chromeRestore.addEventListener("click", () => {
     document.body.classList.remove("chrome-hidden");
