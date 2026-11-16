@@ -4,8 +4,8 @@ import { QUALITY_LEVELS, resolutionScaleForLevel } from "./resolution";
 describe("resolutionScaleForLevel", () => {
   it("matches prod 393×852 @3× top quality (~1.5× CSS)", () => {
     expect(resolutionScaleForLevel(QUALITY_LEVELS[0].pixelCap, 3)).toBe(1.5);
-    expect(Math.round(393 * resolutionScaleForLevel(1.5, 3))).toBe(590);
-    expect(Math.round(852 * resolutionScaleForLevel(1.5, 3))).toBe(1278);
+    expect(Math.floor(393 * resolutionScaleForLevel(1.5, 3))).toBe(589);
+    expect(Math.floor(852 * resolutionScaleForLevel(1.5, 3))).toBe(1278);
   });
 
   it("does not double-divide DPR (broken formula would yield ~0.5×)", () => {

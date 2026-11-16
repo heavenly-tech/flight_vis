@@ -426,41 +426,46 @@ async function boot(): Promise<void> {
     }
   }
 
-  cesiumContainer.addEventListener("pointerdown", () => {
-    globeInteracting = true;
-  });
-  window.addEventListener("pointerup", () => {
-    globeInteracting = false;
-  });
-  window.addEventListener("pointercancel", () => {
-    globeInteracting = false;
-  });
-
-  let chromeTap: { x: number; y: number; t: number } | null = null;
+  let globePointerId: number | null = null;
+  let chromeTap: { x: number; y: number; t: number; pointerId: number } | null = null;
   const TAP_MOVE_PX = 12;
 
   cesiumContainer.addEventListener(
     "pointerdown",
     (event) => {
-      if (event.target !== event.currentTarget && !(event.target as Element).closest(".cesium-widget")) return;
-      chromeTap = { x: event.clientX, y: event.clientY, t: performance.now() };
+      const onGlobe =
+        event.target === event.currentTarget || Boolean((event.target as Element).closest(".cesium-widget"));
+      if (!onGlobe) return;
+      globePointerId = event.pointerId;
+      globeInteracting = true;
+      chromeTap = {
+        x: event.clientX,
+        y: event.clientY,
+        t: performance.now(),
+        pointerId: event.pointerId,
+      };
     },
     true,
   );
-  cesiumContainer.addEventListener(
-    "pointerup",
-    (event) => {
-      if (!chromeTap) return;
-      const dx = event.clientX - chromeTap.x;
-      const dy = event.clientY - chromeTap.y;
-      const dt = performance.now() - chromeTap.t;
-      chromeTap = null;
-      if (dt > 450 || dx * dx + dy * dy > TAP_MOVE_PX * TAP_MOVE_PX) return;
+
+  function endGlobePointer(event: PointerEvent): void {
+    if (globePointerId !== null && event.pointerId === globePointerId) {
+      globePointerId = null;
+      globeInteracting = false;
+    }
+    if (!chromeTap || event.pointerId !== chromeTap.pointerId) return;
+    const dx = event.clientX - chromeTap.x;
+    const dy = event.clientY - chromeTap.y;
+    const dt = performance.now() - chromeTap.t;
+    chromeTap = null;
+    if (event.type === "pointerup" && dt <= 450 && dx * dx + dy * dy <= TAP_MOVE_PX * TAP_MOVE_PX) {
       const hidden = document.body.classList.toggle("chrome-hidden");
       chromeRestore.hidden = !hidden;
-    },
-    true,
-  );
+    }
+  }
+
+  window.addEventListener("pointerup", endGlobePointer);
+  window.addEventListener("pointercancel", endGlobePointer);
 
   chromeRestore.addEventListener("click", () => {
     document.body.classList.remove("chrome-hidden");
@@ -665,10 +670,16 @@ async function boot(): Promise<void> {
     }
   });
 
+  function syncColorModeUi(): void {
+    document.querySelectorAll<HTMLElement>("[data-mode]").forEach((el) => {
+      el.classList.toggle("active", el.dataset.mode === colorMode);
+    });
+  }
+
   document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((button) => {
     button.addEventListener("click", async () => {
       colorMode = button.dataset.mode as ColorMode;
-      document.querySelectorAll("[data-mode]").forEach((el) => el.classList.toggle("active", el === button));
+      syncColorModeUi();
       if (flight) await viewer.setColorMode(colorMode);
     });
   });

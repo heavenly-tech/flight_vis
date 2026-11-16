@@ -70,7 +70,9 @@ body.more-open #credits {
   gap: 12px;
   padding: 16px;
   padding-top: max(16px, env(safe-area-inset-top));
+  padding-right: max(16px, env(safe-area-inset-right));
   padding-bottom: max(16px, env(safe-area-inset-bottom));
+  padding-left: max(16px, env(safe-area-inset-left));
 }
 
 body.chrome-hidden #ui {
@@ -566,6 +568,9 @@ body.hud-clipped:not(.hud-open).hud-rows-1 .hud-stat:nth-child(n + 3) {
 .timeline-scrub {
   position: relative;
   width: 100%;
+}
+
+body.live-session .timeline-scrub {
   padding-right: var(--timeline-live-inset);
 }
 
@@ -694,8 +699,10 @@ dialog input {
     gap: 6px;
     padding: 8px;
     padding-top: max(8px, env(safe-area-inset-top));
+    padding-right: max(8px, env(safe-area-inset-right));
     padding-bottom: max(8px, env(safe-area-inset-bottom));
-    grid-template-rows: auto auto minmax(75dvh, 1fr) auto;
+    padding-left: max(8px, env(safe-area-inset-left));
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
   }
 
   .topbar {
@@ -753,12 +760,12 @@ dialog input {
   }
 
   body.hud-strip-expanded .hud {
-    max-height: min(20vh, 88px);
+    max-height: 92px;
   }
 
   .hud-grid {
-    display: flex;
-    flex-wrap: nowrap;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 4px;
     max-height: 44px;
     cursor: pointer;
@@ -768,15 +775,24 @@ dialog input {
   }
 
   body.hud-strip-expanded .hud-grid {
-    flex-wrap: wrap;
+    grid-template-rows: auto auto;
     max-height: none;
   }
 
   .hud-stat {
-    flex: 1 1 0;
     min-width: 0;
     padding: 4px 6px;
     border-radius: 10px;
+  }
+
+  body.hud-strip-expanded .hud-stat.hud-secondary:nth-child(5) {
+    grid-row: 2;
+    grid-column: 1 / span 2;
+  }
+
+  body.hud-strip-expanded .hud-stat.hud-secondary:nth-child(6) {
+    grid-row: 2;
+    grid-column: 3 / span 2;
   }
 
   .hud-stat strong {
@@ -792,7 +808,6 @@ dialog input {
 
   body.hud-strip-expanded .hud-stat.hud-secondary {
     display: block;
-    flex: 1 1 calc(50% - 4px);
   }
 
   .hud-toggle {
@@ -828,19 +843,32 @@ dialog input {
   .transport {
     padding: 8px;
     border-radius: 14px;
-    max-height: 20vh;
-    overflow: hidden;
+    overflow: visible;
   }
 
   body.more-open .transport,
   body.tags-open .transport {
-    max-height: min(48vh, calc(20vh + 240px));
-    overflow: auto;
+    position: fixed;
+    z-index: 12;
+    left: max(8px, env(safe-area-inset-left));
+    right: max(8px, env(safe-area-inset-right));
+    bottom: max(8px, env(safe-area-inset-bottom));
+    max-height: min(78dvh, calc(100dvh - max(8px, env(safe-area-inset-top)) - 48px));
+    display: flex;
+    flex-direction: column;
+    overflow: visible;
+    box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.45);
+  }
+
+  body.more-open .transport-primary,
+  body.tags-open .transport-primary {
+    flex-shrink: 0;
   }
 
   body.more-open .more-panel,
   body.tags-open .tags-panel {
     position: relative;
+    flex: 0 0 auto;
     max-height: none;
     overflow: visible;
   }
@@ -849,11 +877,27 @@ dialog input {
     padding-top: 4px;
     border-top: 1px solid var(--stroke);
     margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .more-panel .group-label,
+  .more-panel .speed span {
+    font-size: 12px;
+  }
+
+  .more-panel select,
+  #play-speed {
+    min-height: 44px;
+    padding: 8px 12px;
+    font-size: 12px;
   }
 
   #profile {
-    height: 88px;
-    min-height: 72px;
+    height: 96px;
+    min-height: 88px;
+    flex-shrink: 0;
     touch-action: none;
   }
 
@@ -892,22 +936,33 @@ dialog input {
     grid-area: hud;
     grid-row: 1 / span 2;
     max-width: 22vw;
-    max-height: 40vh;
+    max-height: min(50vh, 11.5rem);
   }
 
   body.hud-strip-expanded .hud {
-    max-height: 40vh;
+    max-height: min(56vh, 13rem);
   }
 
   .hud-grid {
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: 1fr;
     max-height: 100%;
     overflow-y: auto;
   }
 
   .hud-stat {
-    flex: 0 0 auto;
     width: 100%;
+    min-height: 34px;
+    padding: 2px 5px;
+  }
+
+  .hud-stat > span {
+    font-size: 12px;
+    letter-spacing: 0.1em;
+  }
+
+  .hud-stat strong {
+    font-size: 12px;
   }
 
   .status {
@@ -918,7 +973,13 @@ dialog input {
 
   .transport {
     grid-area: transport;
-    max-height: 18vh;
+  }
+
+  body.more-open .transport,
+  body.tags-open .transport {
+    left: max(8px, env(safe-area-inset-left));
+    right: max(8px, env(safe-area-inset-right));
+    max-height: min(85dvh, calc(100dvh - 8px));
   }
 }
 
