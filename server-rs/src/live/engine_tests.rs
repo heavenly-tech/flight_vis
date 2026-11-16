@@ -4,6 +4,7 @@ mod tests {
         AckResult, LiveEngine, TestClock, MAX_FIXES_PER_SESSION, SESSION_IDLE_END_MS,
         SESSION_RETAIN_MS,
     };
+    use super::super::persist::LivePersist;
     use super::super::types::{LiveFix, SessionPhase, ALT_REF_WGS84_ELLIPSOID};
     use std::sync::{
         atomic::{AtomicU64, Ordering},
@@ -225,6 +226,63 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(engine.get_fixes(&id).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn empty_index_recovers_orphan_logs_as_ended() {
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let start = 1_700_000_000_000;
+        let (engine, _) = engine_at(start, &dir);
+        let session_id = "abc123deadbeef01";
+        let persist = LivePersist::new(&dir);
+        persist.ensure_dir().await.unwrap();
+        persist.write_raw_index(b"[]").await.unwrap();
+        let fix = sample_fix(start, -33.4);
+        persist.write_fix_line(session_id, &fix).await.unwrap();
+        engine.load_from_disk().await.unwrap();
+        let sessions = engine.list_sessions().await;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].phase, SessionPhase::Ended);
+        assert_eq!(sessions[0].device, "recovered");
+        assert_eq!(engine.get_fixes(session_id).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn corrupt_index_recovers_device_from_broken_file() {
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let start = 1_700_000_000_000;
+        let (engine, _) = engine_at(start, &dir);
+        let session_id = "def456deadbeef02";
+        let persist = LivePersist::new(&dir);
+        persist.ensure_dir().await.unwrap();
+        let broken = serde_json::json!([{
+            "id": session_id,
+            "device": "pilot-phone",
+            "phase": "active",
+            "started_at": start,
+            "ended_at": null,
+            "last_fix_at": start,
+            "last_rx_at": start,
+            "fix_count": 1,
+            "acked": false
+        }]);
+        tokio::fs::write(
+            dir.join("live/sessions.json.broken"),
+            serde_json::to_string(&broken).unwrap(),
+        )
+        .await
+        .unwrap();
+        persist.write_raw_index(b"not valid json").await.unwrap();
+        persist
+            .write_fix_line(session_id, &sample_fix(start, -33.5))
+            .await
+            .unwrap();
+        engine.load_from_disk().await.unwrap();
+        let sessions = engine.list_sessions().await;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].device, "pilot-phone");
     }
 
     #[tokio::test]

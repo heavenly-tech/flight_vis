@@ -2,7 +2,7 @@
 
 use crate::live::types::{LiveFix, LiveSessionSummary, SessionPhase};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 use tokio::{
@@ -56,6 +56,10 @@ impl LivePersist {
         self.root.join("sessions.json")
     }
 
+    fn broken_index_path(&self) -> PathBuf {
+        self.root.join("sessions.json.broken")
+    }
+
     fn log_path(&self, session_id: &str) -> PathBuf {
         self.root.join(format!("{session_id}.ndjson"))
     }
@@ -78,6 +82,44 @@ impl LivePersist {
         Ok(list.into_iter().map(|r| (r.id.clone(), r)).collect())
     }
 
+    pub async fn device_hints_from_broken_index(&self) -> HashMap<String, String> {
+        let path = self.broken_index_path();
+        let Ok(raw) = fs::read_to_string(&path).await else {
+            return HashMap::new();
+        };
+        if raw.trim().is_empty() {
+            return HashMap::new();
+        }
+        let list: Vec<SessionRecord> = match serde_json::from_str(&raw) {
+            Ok(list) => list,
+            Err(_) => return HashMap::new(),
+        };
+        list.into_iter().map(|r| (r.id, r.device)).collect()
+    }
+
+    pub async fn list_orphan_log_ids(
+        &self,
+        known: &HashMap<String, SessionRecord>,
+    ) -> std::io::Result<Vec<String>> {
+        let known: HashSet<&str> = known.keys().map(String::as_str).collect();
+        let Ok(mut dir) = fs::read_dir(&self.root).await else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        while let Ok(Some(entry)) = dir.next_entry().await {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".ndjson") {
+                continue;
+            }
+            let id = name.trim_end_matches(".ndjson").to_string();
+            if !known.contains(id.as_str()) {
+                out.push(id);
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
     async fn save_index(&self, sessions: &HashMap<String, SessionRecord>) -> std::io::Result<()> {
         let _g = self.index_lock.lock().await;
         self.ensure_dir().await?;
@@ -87,8 +129,18 @@ impl LivePersist {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let path = self.index_path();
         let tmp = self.root.join("sessions.json.tmp");
-        fs::write(&tmp, json).await?;
-        fs::rename(&tmp, &path).await
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&tmp)
+            .await?;
+        file.write_all(json.as_bytes()).await?;
+        file.sync_all().await?;
+        drop(file);
+        fs::rename(&tmp, &path).await?;
+        sync_dir_best_effort(&self.root);
+        Ok(())
     }
 
     pub async fn upsert_session(
@@ -120,7 +172,8 @@ impl LivePersist {
             .await?;
         file.write_all(line.as_bytes()).await?;
         file.write_all(b"\n").await?;
-        file.flush().await
+        file.flush().await?;
+        file.sync_data().await
     }
 
     pub async fn read_fixes(&self, session_id: &str) -> std::io::Result<Vec<LiveFix>> {
@@ -151,19 +204,24 @@ impl LivePersist {
         Ok(())
     }
 
-    pub async fn remove_orphan_logs(&self, known_ids: &std::collections::HashSet<String>) {
-        let Ok(mut dir) = fs::read_dir(&self.root).await else {
-            return;
-        };
-        while let Ok(Some(entry)) = dir.next_entry().await {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if !name.ends_with(".ndjson") {
-                continue;
-            }
-            let id = name.trim_end_matches(".ndjson");
-            if !known_ids.contains(id) {
-                let _ = fs::remove_file(entry.path()).await;
-            }
+    #[cfg(test)]
+    pub async fn write_raw_index(&self, bytes: &[u8]) -> std::io::Result<()> {
+        self.ensure_dir().await?;
+        fs::write(self.index_path(), bytes).await
+    }
+
+    #[cfg(test)]
+    pub async fn write_fix_line(&self, session_id: &str, fix: &LiveFix) -> std::io::Result<()> {
+        self.append_fix(session_id, fix).await
+    }
+}
+
+fn sync_dir_best_effort(dir: &Path) {
+    #[cfg(unix)]
+    {
+        if let Ok(open) = std::fs::File::open(dir) {
+            let _ = open.sync_all();
         }
     }
+    let _ = dir;
 }

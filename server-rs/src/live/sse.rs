@@ -1,4 +1,7 @@
-use crate::{live::engine::SseSessionEvent, AppState};
+use crate::{
+    live::{engine::SseSessionEvent, types::SessionPhase},
+    AppState,
+};
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
@@ -26,6 +29,29 @@ pub(crate) fn backfill_after(
         .collect()
 }
 
+fn backfill_events(
+    fixes: &[crate::live::types::LiveFix],
+    last_event_id: Option<i64>,
+) -> Vec<Event> {
+    fixes
+        .iter()
+        .filter(|f| last_event_id.is_none_or(|last| f.t > last))
+        .map(|f| {
+            Event::default()
+                .event("fix")
+                .id(f.t.to_string())
+                .json_data(f)
+                .expect("fix json")
+        })
+        .collect()
+}
+
+fn end_event(session_id: &str) -> Event {
+    Event::default()
+        .event("end")
+        .data(json!({ "id": session_id }).to_string())
+}
+
 pub async fn live_stream(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -35,8 +61,8 @@ pub async fn live_stream(
         return denied.into_response();
     }
 
-    let rx = match state.live.subscribe(&id).await {
-        Some(rx) => rx,
+    let phase = match state.live.session_phase(&id).await {
+        Some(phase) => phase,
         None => {
             return (
                 StatusCode::NOT_FOUND,
@@ -62,32 +88,46 @@ pub async fn live_stream(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<i64>().ok());
 
-    let backfill: Vec<Event> = fixes
-        .iter()
-        .filter(|f| last_event_id.is_none_or(|last| f.t > last))
-        .map(|f| {
-            Event::default()
-                .event("fix")
-                .id(f.t.to_string())
-                .json_data(f)
-                .expect("fix json")
-        })
-        .collect();
+    let backfill = backfill_events(&fixes, last_event_id);
 
-    let live = stream::unfold(BroadcastStream::new(rx), |mut rx| async move {
-        let msg = rx.next().await?;
-        let event = match msg {
-            Ok(SseSessionEvent::Fix(fix)) => Event::default()
-                .event("fix")
-                .id(fix.id)
-                .json_data(fix.fix)
-                .ok()?,
-            Ok(SseSessionEvent::End { id }) => Event::default()
-                .event("end")
-                .data(json!({ "id": id }).to_string()),
-            Err(BroadcastStreamRecvError::Lagged(_)) => return None,
-        };
-        Some((Ok(event), rx))
+    if phase == SessionPhase::Ended {
+        let merged: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> = Box::pin(
+            stream::iter(backfill.into_iter().map(Ok)).chain(stream::iter([Ok(end_event(&id))])),
+        );
+        return Sse::new(merged).into_response();
+    }
+
+    let rx = match state.live.subscribe(&id).await {
+        Some(rx) => rx,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                axum::Json(json!({ "error": "not found" })),
+            )
+                .into_response();
+        }
+    };
+
+    let stream_id = id.clone();
+    let live = stream::unfold(Some(BroadcastStream::new(rx)), move |rx_opt| {
+        let stream_id = stream_id.clone();
+        async move {
+            let mut rx = rx_opt?;
+            let msg = rx.next().await?;
+            let (event, next_rx) = match msg {
+                Ok(SseSessionEvent::Fix(fix)) => (
+                    Event::default()
+                        .event("fix")
+                        .id(fix.id)
+                        .json_data(fix.fix)
+                        .ok()?,
+                    Some(rx),
+                ),
+                Ok(SseSessionEvent::End { .. }) => (end_event(&stream_id), None),
+                Err(BroadcastStreamRecvError::Lagged(_)) => return None,
+            };
+            Some((Ok(event), next_rx))
+        }
     });
 
     let merged: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =

@@ -69,7 +69,11 @@ impl DeviceAuth {
             };
             let token = token.trim();
             let name = name.trim();
-            if token.is_empty() || name.is_empty() {
+            if token.is_empty() {
+                continue;
+            }
+            if name.is_empty() {
+                eprintln!("warn: device token entry missing device name");
                 continue;
             }
             if token.len() < MIN_TOKEN_LEN {

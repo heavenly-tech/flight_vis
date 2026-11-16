@@ -28,6 +28,7 @@ pub struct SseFixEvent {
 #[derive(Clone, Debug)]
 pub enum SseSessionEvent {
     Fix(SseFixEvent),
+    #[allow(dead_code)]
     End { id: String },
 }
 
@@ -77,14 +78,48 @@ impl LiveEngine {
 
     pub async fn load_from_disk(&self) -> std::io::Result<()> {
         self.persist.ensure_dir().await?;
-        let index = self.persist.load_index().await?;
-        let known: HashSet<String> = index.keys().cloned().collect();
-        self.persist.remove_orphan_logs(&known).await;
+        let mut index = match self.persist.load_index().await {
+            Ok(index) => index,
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => HashMap::new(),
+            Err(error) => return Err(error),
+        };
+        let orphan_ids = self.persist.list_orphan_log_ids(&index).await?;
+        if !orphan_ids.is_empty() {
+            let hints = self.persist.device_hints_from_broken_index().await;
+            let now = self.now_ms();
+            for id in orphan_ids {
+                let fixes = self.persist.read_fixes(&id).await?;
+                if fixes.is_empty() {
+                    continue;
+                }
+                let started_at = fixes.first().map(|f| f.t).unwrap_or(now);
+                let last_fix_at = fixes.last().map(|f| f.t);
+                let device = hints
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or_else(|| "recovered".to_string());
+                index.insert(
+                    id.clone(),
+                    SessionRecord {
+                        id,
+                        device,
+                        phase: SessionPhase::Ended,
+                        started_at,
+                        ended_at: Some(now),
+                        last_fix_at,
+                        last_rx_at: Some(now),
+                        fix_count: fixes.len(),
+                        acked: false,
+                    },
+                );
+            }
+            self.persist.replace_index(&index).await?;
+        }
         let mut sessions = self.sessions.write().await;
         let mut device_active = self.device_active.write().await;
         sessions.clear();
         device_active.clear();
-        for (id, mut record) in index {
+        for (id, mut record) in index.clone() {
             let fixes = self.persist.read_fixes(&id).await?;
             let mut seen_t = HashSet::with_capacity(fixes.len());
             for f in &fixes {
@@ -165,6 +200,10 @@ impl LiveEngine {
             let Some(runtime) = sessions.get_mut(&session_id) else {
                 return Err("session missing");
             };
+            if runtime.record.phase != SessionPhase::Active {
+                drop(sessions);
+                continue;
+            }
 
             let mut remaining = Vec::new();
             let rx_now = self.now_ms();
@@ -309,6 +348,11 @@ impl LiveEngine {
     ) -> Option<broadcast::Receiver<SseSessionEvent>> {
         let sessions = self.sessions.read().await;
         sessions.get(session_id).map(|s| s.bus.subscribe())
+    }
+
+    pub async fn session_phase(&self, session_id: &str) -> Option<SessionPhase> {
+        let sessions = self.sessions.read().await;
+        sessions.get(session_id).map(|s| s.record.phase)
     }
 
     pub async fn stop_session(&self, session_id: &str) -> bool {

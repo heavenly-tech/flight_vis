@@ -155,17 +155,96 @@ mod tests {
             .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(
-                r#"{"fixes":[{"t":1000,"lat":-33.40,"lon":-70.6}]}"#,
+                r#"{"fixes":[{"t":1700000000000,"lat":-33.40,"lon":-70.6}]}"#,
             ))
             .unwrap();
         router.clone().oneshot(ingest).await.unwrap();
         let list_req = Request::builder()
             .method("GET")
             .uri("/api/live")
+            .header(header::ACCEPT, "application/json")
             .body(Body::empty())
             .unwrap();
         let list_resp = router.clone().oneshot(list_req).await.unwrap();
         assert_eq!(list_resp.status(), StatusCode::UNAUTHORIZED);
+
+        let stream_req = Request::builder()
+            .method("GET")
+            .uri("/api/live/not-a-real-session/stream")
+            .body(Body::empty())
+            .unwrap();
+        let stream_resp = router.clone().oneshot(stream_req).await.unwrap();
+        assert_eq!(stream_resp.status(), StatusCode::UNAUTHORIZED);
+        let _ = tokio::fs::remove_dir_all(data_dir).await;
+    }
+
+    #[tokio::test]
+    async fn sse_ended_session_emits_end_and_closes() {
+        use http_body_util::BodyExt;
+
+        let (router, data_dir) = test_router().await;
+        let ingest = Request::builder()
+            .method("POST")
+            .uri("/api/ingest")
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"fixes":[{"t":1700000000000,"lat":-33.40,"lon":-70.6}]}"#,
+            ))
+            .unwrap();
+        router.clone().oneshot(ingest).await.unwrap();
+
+        let login = Request::builder()
+            .method("POST")
+            .uri("/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT, "application/json")
+            .body(Body::from(format!("{{\"password\":\"{PASS}\"}}")))
+            .unwrap();
+        let login_resp = router.clone().oneshot(login).await.unwrap();
+        let cookie = login_resp
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_string();
+
+        let list_req = Request::builder()
+            .method("GET")
+            .uri("/api/live")
+            .header(header::COOKIE, &cookie)
+            .header(header::ACCEPT, "application/json")
+            .body(Body::empty())
+            .unwrap();
+        let list_resp = router.clone().oneshot(list_req).await.unwrap();
+        let body = list_resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let id = json["sessions"][0]["id"].as_str().unwrap();
+
+        let stop_req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/live/{id}/stop"))
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap();
+        router.clone().oneshot(stop_req).await.unwrap();
+
+        let stream_req = Request::builder()
+            .method("GET")
+            .uri(format!("/api/live/{id}/stream"))
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap();
+        let stream_resp = router.clone().oneshot(stream_req).await.unwrap();
+        assert_eq!(stream_resp.status(), StatusCode::OK);
+        let body_bytes = stream_resp.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8_lossy(&body_bytes);
+        assert!(text.contains("event: end"));
+        assert!(text.contains("event: fix") || text.contains("\"lat\""));
         let _ = tokio::fs::remove_dir_all(data_dir).await;
     }
 }
