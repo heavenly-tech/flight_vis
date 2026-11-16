@@ -19,6 +19,8 @@ pub struct SessionRecord {
     pub started_at: i64,
     pub ended_at: Option<i64>,
     pub last_fix_at: Option<i64>,
+    #[serde(default)]
+    pub last_rx_at: Option<i64>,
     pub fix_count: usize,
     pub acked: bool,
 }
@@ -147,5 +149,21 @@ impl LivePersist {
             fs::remove_file(&path).await?;
         }
         Ok(())
+    }
+
+    pub async fn remove_orphan_logs(&self, known_ids: &std::collections::HashSet<String>) {
+        let Ok(mut dir) = fs::read_dir(&self.root).await else {
+            return;
+        };
+        while let Ok(Some(entry)) = dir.next_entry().await {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".ndjson") {
+                continue;
+            }
+            let id = name.trim_end_matches(".ndjson");
+            if !known_ids.contains(id) {
+                let _ = fs::remove_file(entry.path()).await;
+            }
+        }
     }
 }

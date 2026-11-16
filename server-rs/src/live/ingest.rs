@@ -71,7 +71,7 @@ pub async fn post_ingest(
     }
 }
 
-#[derive(Debug, Deserialize, Default)]
+#[derive(Debug, Deserialize, Default, Clone)]
 pub struct OsmAndQuery {
     #[serde(default)]
     pub id: Option<String>,
@@ -93,6 +93,54 @@ pub struct OsmAndQuery {
     pub altitude: Option<String>,
     #[serde(default)]
     pub accuracy: Option<String>,
+}
+
+fn merge_osmand(mut base: OsmAndQuery, overlay: OsmAndQuery) -> OsmAndQuery {
+    macro_rules! pick {
+        ($field:ident) => {
+            if overlay.$field.is_some() {
+                base.$field = overlay.$field;
+            }
+        };
+    }
+    pick!(id);
+    pick!(deviceid);
+    pick!(lat);
+    pick!(lon);
+    pick!(timestamp);
+    pick!(speed);
+    pick!(bearing);
+    pick!(heading);
+    pick!(altitude);
+    pick!(accuracy);
+    base
+}
+
+fn is_form_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|ct| {
+            ct.split(';')
+                .next()
+                .unwrap_or(ct)
+                .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+        })
+        .unwrap_or(false)
+}
+
+pub fn parse_osmand_request(
+    headers: &HeaderMap,
+    query: OsmAndQuery,
+    body: &[u8],
+) -> Result<OsmAndQuery, &'static str> {
+    let mut q = query;
+    if is_form_content_type(headers) || (!body.is_empty() && q.id.is_none() && q.lat.is_none()) {
+        let from_body: OsmAndQuery =
+            serde_urlencoded::from_bytes(body).map_err(|_| "invalid form body")?;
+        q = merge_osmand(q, from_body);
+    }
+    Ok(q)
 }
 
 fn parse_f64(raw: Option<&String>) -> Option<f64> {
@@ -143,12 +191,20 @@ pub fn osmand_fix_from_query(q: &OsmAndQuery) -> Result<(String, LiveFix), &'sta
     Ok((token.to_string(), fix))
 }
 
-/// Traccar Client Android sends **POST** with every field in the query string (empty body).
-/// See `ProtocolFormatter.kt` and `RequestManager.kt` in traccar-client-android.
+/// Traccar Client (Flutter, [traccar-client-sdk]) POSTs `application/x-www-form-urlencoded`
+/// with fields `id`, `lat`, `lon`, `timestamp` (unix s), `speed` (knots), `bearing`, `altitude`,
+/// `accuracy`, `batt`, `charge`, `alarm` — see `HttpUploader.kt`. Legacy native Android builds
+/// used query strings on POST instead ([traccar-client-android] `ProtocolFormatter.kt`).
 pub async fn osmand_ingest(
     State(state): State<AppState>,
-    Query(q): Query<OsmAndQuery>,
+    headers: HeaderMap,
+    Query(query): Query<OsmAndQuery>,
+    body: Bytes,
 ) -> impl IntoResponse {
+    let q = match parse_osmand_request(&headers, query, &body) {
+        Ok(q) => q,
+        Err(msg) => return bad_request(msg).into_response(),
+    };
     let (token, mut fix) = match osmand_fix_from_query(&q) {
         Ok(v) => v,
         Err(msg) => return bad_request(msg).into_response(),
@@ -176,9 +232,25 @@ pub async fn osmand_ingest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
 
     #[test]
-    fn traccar_fixture_parses_like_android_client() {
+    fn traccar_sdk_form_fixture() {
+        let body = b"id=0123456789abcdef0123456789abcdef&lat=48.8566&lon=2.3522&timestamp=1609459200&speed=15&bearing=270&altitude=35&accuracy=10&batt=75";
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/x-www-form-urlencoded"),
+        );
+        let q = parse_osmand_request(&headers, OsmAndQuery::default(), body).unwrap();
+        let (token, fix) = osmand_fix_from_query(&q).expect("parse");
+        assert_eq!(token, "0123456789abcdef0123456789abcdef");
+        assert_eq!(fix.t, 1_609_459_200_000);
+        assert!((fix.speed.unwrap() - knots_to_mps(15.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn legacy_query_string_fixture() {
         let q = OsmAndQuery {
             id: Some("0123456789abcdef0123456789abcdef".to_string()),
             lat: Some("48.8566".to_string()),
@@ -190,11 +262,10 @@ mod tests {
             accuracy: Some("10".to_string()),
             ..Default::default()
         };
-        let (token, fix) = osmand_fix_from_query(&q).expect("parse");
-        assert_eq!(token, "0123456789abcdef0123456789abcdef");
+        let headers = HeaderMap::new();
+        let merged = parse_osmand_request(&headers, q, b"").unwrap();
+        let (_, fix) = osmand_fix_from_query(&merged).expect("parse");
         assert_eq!(fix.t, 1_609_459_200_000);
-        assert!((fix.speed.unwrap() - knots_to_mps(15.0)).abs() < 0.001);
-        assert_eq!(fix.course, Some(270.0));
         assert_eq!(fix.alt, Some(35.0));
         assert_eq!(fix.alt_ref.as_deref(), Some(ALT_REF_WGS84_ELLIPSOID));
     }

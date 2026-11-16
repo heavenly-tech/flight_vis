@@ -2,8 +2,10 @@
 //! tokens are never logged.
 
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, fs, path::Path};
+use std::{collections::HashMap, fs, io, path::Path};
 use subtle::ConstantTimeEq;
+
+pub const MIN_TOKEN_LEN: usize = 32;
 
 #[derive(Clone)]
 pub struct DeviceAuth {
@@ -16,6 +18,21 @@ struct DeviceEntry {
     name: String,
 }
 
+#[derive(Debug)]
+pub enum DeviceAuthError {
+    Io(io::Error),
+    Parse(String),
+}
+
+impl std::fmt::Display for DeviceAuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DeviceAuthError::Io(e) => write!(f, "{e}"),
+            DeviceAuthError::Parse(msg) => f.write_str(msg),
+        }
+    }
+}
+
 impl DeviceAuth {
     pub fn empty() -> Self {
         Self {
@@ -23,21 +40,21 @@ impl DeviceAuth {
         }
     }
 
-    pub fn from_env() -> Self {
-        if let Ok(path) = std::env::var("FLIGHT_VIS_DEVICE_TOKENS_FILE") {
-            let path = Path::new(path.trim());
-            if let Ok(raw) = fs::read_to_string(path) {
-                return Self::parse_lines(&raw);
-            }
+    pub fn from_env() -> Result<Self, DeviceAuthError> {
+        if let Ok(path_var) = std::env::var("FLIGHT_VIS_DEVICE_TOKENS_FILE") {
+            let path = Path::new(path_var.trim());
+            let raw = fs::read_to_string(path).map_err(DeviceAuthError::Io)?;
+            return Self::parse_lines(&raw);
         }
         if let Ok(raw) = std::env::var("FLIGHT_VIS_DEVICE_TOKENS") {
             return Self::parse_lines(&raw);
         }
-        Self::empty()
+        Ok(Self::empty())
     }
 
-    fn parse_lines(raw: &str) -> Self {
-        let mut map: HashMap<[u8; 32], String> = HashMap::new();
+    fn parse_lines(raw: &str) -> Result<Self, DeviceAuthError> {
+        let mut token_map: HashMap<[u8; 32], String> = HashMap::new();
+        let mut names = HashMap::new();
         for line in raw.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
@@ -55,13 +72,26 @@ impl DeviceAuth {
             if token.is_empty() || name.is_empty() {
                 continue;
             }
-            map.insert(digest_token(token), name.to_string());
+            if token.len() < MIN_TOKEN_LEN {
+                return Err(DeviceAuthError::Parse(format!(
+                    "device token must be at least {MIN_TOKEN_LEN} bytes"
+                )));
+            }
+            if names.insert(name.to_string(), true).is_some() {
+                return Err(DeviceAuthError::Parse(format!(
+                    "duplicate device name: {name}"
+                )));
+            }
+            let digest = digest_token(token);
+            if token_map.insert(digest, name.to_string()).is_some() {
+                return Err(DeviceAuthError::Parse("duplicate device token".to_string()));
+            }
         }
-        let entries = map
+        let entries = token_map
             .into_iter()
             .map(|(token_digest, name)| DeviceEntry { token_digest, name })
             .collect();
-        Self { entries }
+        Ok(Self { entries })
     }
 
     pub fn verify(&self, token: &str) -> Option<&str> {
@@ -86,7 +116,7 @@ impl DeviceAuth {
             lines.push_str(name);
             lines.push('\n');
         }
-        Self::parse_lines(&lines)
+        Self::parse_lines(&lines).expect("test tokens")
     }
 }
 
@@ -107,5 +137,15 @@ mod tests {
             auth.verify("0123456789abcdef0123456789abcdef"),
             Some("pilot-phone")
         );
+    }
+
+    #[test]
+    fn rejects_short_and_duplicate_names() {
+        let short = DeviceAuth::parse_lines("short=name\n");
+        assert!(matches!(short, Err(DeviceAuthError::Parse(_))));
+        let dup = DeviceAuth::parse_lines(
+            "0123456789abcdef0123456789abcdef=a\n0123456789abcdef0123456789abcde0=a\n",
+        );
+        assert!(matches!(dup, Err(DeviceAuthError::Parse(_))));
     }
 }

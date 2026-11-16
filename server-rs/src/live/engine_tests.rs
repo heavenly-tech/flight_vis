@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests {
     use super::super::engine::{
-        LiveEngine, TestClock, MAX_FIXES_PER_SESSION, SESSION_IDLE_END_MS, SESSION_RETAIN_MS,
+        AckResult, LiveEngine, TestClock, MAX_FIXES_PER_SESSION, SESSION_IDLE_END_MS,
+        SESSION_RETAIN_MS,
     };
     use super::super::types::{LiveFix, SessionPhase, ALT_REF_WGS84_ELLIPSOID};
     use std::sync::{
@@ -49,11 +50,12 @@ mod tests {
         let dir = test_dir();
         std::fs::create_dir_all(&dir).unwrap();
         let (engine, _clock) = engine_at(1_700_000_000_000, &dir);
+        let base = 1_700_000_000_000_i64;
         let fixes = vec![
-            sample_fix(3000, -33.4),
-            sample_fix(1000, -33.41),
-            sample_fix(2000, -33.42),
-            sample_fix(2000, -33.99),
+            sample_fix(base + 3000, -33.4),
+            sample_fix(base + 1000, -33.41),
+            sample_fix(base + 2000, -33.42),
+            sample_fix(base + 2000, -33.99),
         ];
         let n = engine.ingest_fixes("dev", fixes).await.unwrap();
         assert_eq!(n, 3);
@@ -62,8 +64,8 @@ mod tests {
         let id = sessions[0].id.clone();
         let stored = engine.get_fixes(&id).await.unwrap();
         assert_eq!(stored.len(), 3);
-        assert_eq!(stored[0].t, 1000);
-        assert_eq!(stored[2].t, 3000);
+        assert_eq!(stored[0].t, base + 1000);
+        assert_eq!(stored[2].t, base + 3000);
         assert!((stored[1].lat + 33.42).abs() < 0.001);
     }
 
@@ -114,7 +116,7 @@ mod tests {
         let id2 = engine2.list_sessions().await[0].id.clone();
         clock2.advance(SESSION_IDLE_END_MS + 1);
         engine2.tick_idle_and_prune().await;
-        assert!(engine2.ack_session(&id2).await);
+        assert_eq!(engine2.ack_session(&id2).await, AckResult::Ok);
         engine2.tick_idle_and_prune().await;
         assert!(engine2.get_fixes(&id2).await.is_none());
     }
@@ -154,15 +156,102 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fix_cap_per_session() {
+    async fn fix_cap_rolls_to_new_session() {
         let dir = test_dir();
         std::fs::create_dir_all(&dir).unwrap();
-        let (engine, _) = engine_at(1_000_000, &dir);
-        let mut batch = Vec::new();
-        for i in 0..=MAX_FIXES_PER_SESSION {
-            batch.push(sample_fix(i as i64 * 1000, -33.0));
+        let start = 1_700_000_000_000;
+        let (engine, _) = engine_at(start, &dir);
+        let mut total = 0usize;
+        for chunk_start in (0..=MAX_FIXES_PER_SESSION).step_by(120) {
+            let chunk_end = (chunk_start + 120).min(MAX_FIXES_PER_SESSION + 1);
+            let batch: Vec<_> = (chunk_start..chunk_end)
+                .map(|i| {
+                    sample_fix(
+                        start - (MAX_FIXES_PER_SESSION as i64 - i as i64) * 1000,
+                        -33.0,
+                    )
+                })
+                .collect();
+            total += engine.ingest_fixes("dev", batch).await.unwrap();
         }
-        let err = engine.ingest_fixes("dev", batch).await;
-        assert!(err.is_err() || engine.list_sessions().await[0].fix_count <= MAX_FIXES_PER_SESSION);
+        assert_eq!(total, MAX_FIXES_PER_SESSION + 1);
+        let listed = engine.list_sessions().await;
+        assert_eq!(listed.len(), 2);
+        assert!(listed.iter().any(|s| s.phase == SessionPhase::Active));
+    }
+
+    #[tokio::test]
+    async fn backlog_drain_stays_one_session() {
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let start = 1_700_000_000_000;
+        let (engine, clock) = engine_at(start, &dir);
+        engine
+            .ingest_fixes("dev", vec![sample_fix(start - 15 * 60 * 1000, -33.0)])
+            .await
+            .unwrap();
+        clock.advance(15 * 60 * 1000);
+        engine
+            .ingest_fixes(
+                "dev",
+                vec![
+                    sample_fix(start - 14 * 60 * 1000, -33.1),
+                    sample_fix(start - 13 * 60 * 1000, -33.2),
+                ],
+            )
+            .await
+            .unwrap();
+        engine.tick_idle_and_prune().await;
+        let sessions = engine.list_sessions().await;
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].phase, SessionPhase::Active);
+        assert!(engine.get_fixes(&sessions[0].id).await.unwrap().len() >= 3);
+    }
+
+    #[tokio::test]
+    async fn ack_on_active_session_rejected_and_ingest_continues() {
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let start = 1_700_000_000_000;
+        let (engine, _) = engine_at(start, &dir);
+        engine
+            .ingest_fixes("dev", vec![sample_fix(start, -33.4)])
+            .await
+            .unwrap();
+        let id = engine.list_sessions().await[0].id.clone();
+        assert_eq!(engine.ack_session(&id).await, AckResult::StillActive);
+        engine
+            .ingest_fixes("dev", vec![sample_fix(start + 1000, -33.41)])
+            .await
+            .unwrap();
+        assert_eq!(engine.get_fixes(&id).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn subscribe_before_snapshot_sees_post_subscribe_fix() {
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let start = 1_700_000_000_000;
+        let (engine, _) = engine_at(start, &dir);
+        engine
+            .ingest_fixes("dev", vec![sample_fix(start, -33.4)])
+            .await
+            .unwrap();
+        let id = engine.list_sessions().await[0].id.clone();
+        let mut rx = engine.subscribe(&id).await.unwrap();
+        engine
+            .ingest_fixes("dev", vec![sample_fix(start + 1000, -33.41)])
+            .await
+            .unwrap();
+        let fixes = engine.get_fixes(&id).await.unwrap();
+        assert_eq!(fixes.len(), 2);
+        let msg = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("event")
+            .expect("open");
+        match msg {
+            super::super::engine::SseSessionEvent::Fix(ev) => assert_eq!(ev.fix.t, start + 1000),
+            other => panic!("expected fix event, got {other:?}"),
+        }
     }
 }

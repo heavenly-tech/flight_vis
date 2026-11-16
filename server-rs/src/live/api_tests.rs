@@ -74,12 +74,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn osmand_post_fixture_matches_traccar_client() {
+    async fn osmand_sdk_form_body_upload() {
         let (router, data_dir) = test_router().await;
-        // Captured shape from Traccar Client Android ProtocolFormatter + RequestManager (POST, query on URL).
+        let body = format!(
+            "id={TOKEN}&lat=48.8566&lon=2.3522&timestamp=1609459200&speed=15&bearing=270&altitude=35&accuracy=10&batt=75"
+        );
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/osmand")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = tokio::fs::remove_dir_all(data_dir).await;
+    }
+
+    #[tokio::test]
+    async fn osmand_legacy_query_on_post() {
+        let (router, data_dir) = test_router().await;
         let uri = format!(
-      "/api/osmand?id={TOKEN}&timestamp=1609459200&lat=48.8566&lon=2.3522&speed=15&bearing=270&altitude=35&accuracy=10"
-    );
+            "/api/osmand?id={TOKEN}&timestamp=1609459200&lat=48.8566&lon=2.3522&speed=15&bearing=270&altitude=35&accuracy=10"
+        );
         let request = Request::builder()
             .method("POST")
             .uri(uri)

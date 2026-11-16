@@ -15,8 +15,9 @@ pub const SESSION_RETAIN_MS: i64 = 24 * 60 * 60 * 1000;
 pub const MAX_FIXES_PER_SESSION: usize = 12 * 60 * 60; // 12 h at 1 Hz
 pub const MAX_CONCURRENT_SESSIONS: usize = 32;
 pub const MAX_FUTURE_MS: i64 = 60 * 1000;
+pub const MIN_FIX_MS: i64 = 1_577_836_800_000; // 2020-01-01 UTC
 pub const MAX_INGEST_BATCH: usize = 120;
-pub const MAX_INGEST_PER_MINUTE: usize = 180;
+pub const MAX_INGEST_PER_MINUTE: usize = 600;
 
 #[derive(Clone, Debug)]
 pub struct SseFixEvent {
@@ -28,6 +29,13 @@ pub struct SseFixEvent {
 pub enum SseSessionEvent {
     Fix(SseFixEvent),
     End { id: String },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum AckResult {
+    Ok,
+    NotFound,
+    StillActive,
 }
 
 struct SessionRuntime {
@@ -70,15 +78,21 @@ impl LiveEngine {
     pub async fn load_from_disk(&self) -> std::io::Result<()> {
         self.persist.ensure_dir().await?;
         let index = self.persist.load_index().await?;
+        let known: HashSet<String> = index.keys().cloned().collect();
+        self.persist.remove_orphan_logs(&known).await;
         let mut sessions = self.sessions.write().await;
         let mut device_active = self.device_active.write().await;
         sessions.clear();
         device_active.clear();
-        for (id, record) in index {
+        for (id, mut record) in index {
             let fixes = self.persist.read_fixes(&id).await?;
             let mut seen_t = HashSet::with_capacity(fixes.len());
             for f in &fixes {
                 seen_t.insert(f.t);
+            }
+            record.fix_count = fixes.len();
+            if record.last_rx_at.is_none() {
+                record.last_rx_at = record.last_fix_at.or(Some(record.started_at));
             }
             let (bus, _) = broadcast::channel(256);
             let runtime = SessionRuntime {
@@ -121,6 +135,9 @@ impl LiveEngine {
         if !valid_lat_lon(fix.lat, fix.lon) {
             return Err("invalid lat/lon");
         }
+        if fix.t < MIN_FIX_MS {
+            return Err("timestamp too old");
+        }
         let now = self.now_ms();
         if fix.t > now + MAX_FUTURE_MS {
             return Err("timestamp too far in future");
@@ -140,57 +157,79 @@ impl LiveEngine {
             self.validate_fix(fix)?;
         }
 
-        let session_id = self.ensure_active_session(device_name).await?;
-        let mut sessions = self.sessions.write().await;
-        let runtime = sessions.get_mut(&session_id).ok_or("session missing")?;
-
-        if runtime.record.fix_count >= MAX_FIXES_PER_SESSION {
-            return Err("session fix cap");
-        }
-
         let mut accepted = 0usize;
-        for fix in inputs {
-            if runtime.record.fix_count >= MAX_FIXES_PER_SESSION {
-                break;
-            }
-            if !runtime.seen_t.insert(fix.t) {
-                continue;
-            }
-            let pos = runtime.fixes.partition_point(|f| f.t < fix.t);
-            runtime.fixes.insert(pos, fix.clone());
-            runtime.record.fix_count += 1;
-            runtime.record.last_fix_at = Some(fix.t);
-            accepted += 1;
-            let _ = self.persist.append_fix(&session_id, &fix).await;
-            let _ = runtime.bus.send(SseSessionEvent::Fix(SseFixEvent {
-                id: format!("{}", fix.t),
-                fix: fix.clone(),
-            }));
-        }
+        let mut batch = inputs;
+        while !batch.is_empty() {
+            let session_id = self.ensure_active_session(device_name).await?;
+            let mut sessions = self.sessions.write().await;
+            let Some(runtime) = sessions.get_mut(&session_id) else {
+                return Err("session missing");
+            };
 
-        if accepted > 0 {
+            let mut remaining = Vec::new();
+            let rx_now = self.now_ms();
+            for fix in batch {
+                if runtime.record.fix_count >= MAX_FIXES_PER_SESSION {
+                    remaining.push(fix);
+                    continue;
+                }
+                if !runtime.seen_t.insert(fix.t) {
+                    runtime.record.last_rx_at = Some(rx_now);
+                    continue;
+                }
+                let pos = runtime.fixes.partition_point(|f| f.t < fix.t);
+                runtime.fixes.insert(pos, fix.clone());
+                runtime.record.fix_count += 1;
+                runtime.record.last_rx_at = Some(rx_now);
+                runtime.record.last_fix_at = Some(
+                    runtime
+                        .record
+                        .last_fix_at
+                        .map(|prev| prev.max(fix.t))
+                        .unwrap_or(fix.t),
+                );
+                accepted += 1;
+                let _ = self.persist.append_fix(&session_id, &fix).await;
+                let _ = runtime.bus.send(SseSessionEvent::Fix(SseFixEvent {
+                    id: fix.t.to_string(),
+                    fix: fix.clone(),
+                }));
+            }
+
+            let at_cap = runtime.record.fix_count >= MAX_FIXES_PER_SESSION;
             let record = runtime.record.clone();
             drop(sessions);
+
             let index = self.snapshot_index().await;
             let _ = self.persist.upsert_session(&index, &record).await;
+
+            if at_cap && !remaining.is_empty() {
+                let _ = self.end_session(&session_id).await;
+                batch = remaining;
+                continue;
+            }
+            break;
         }
         Ok(accepted)
     }
 
     async fn ensure_active_session(&self, device_name: &str) -> Result<String, &'static str> {
-        {
-            let device_active = self.device_active.read().await;
-            if let Some(id) = device_active.get(device_name) {
-                return Ok(id.clone());
+        let mut sessions = self.sessions.write().await;
+        let mut device_active = self.device_active.write().await;
+
+        if let Some(id) = device_active.get(device_name) {
+            if let Some(runtime) = sessions.get(id) {
+                if runtime.record.phase == SessionPhase::Active {
+                    return Ok(id.clone());
+                }
             }
+            device_active.remove(device_name);
         }
 
-        let sessions = self.sessions.read().await;
         let active_count = sessions
             .values()
             .filter(|s| s.record.phase == SessionPhase::Active)
             .count();
-        drop(sessions);
         if active_count >= MAX_CONCURRENT_SESSIONS {
             return Err("too many concurrent sessions");
         }
@@ -204,6 +243,7 @@ impl LiveEngine {
             started_at: now,
             ended_at: None,
             last_fix_at: None,
+            last_rx_at: None,
             fix_count: 0,
             acked: false,
         };
@@ -216,13 +256,12 @@ impl LiveEngine {
             bus,
         };
 
-        let mut sessions = self.sessions.write().await;
-        let mut device_active = self.device_active.write().await;
         sessions.insert(id.clone(), runtime);
         device_active.insert(device_name.to_string(), id.clone());
 
         let index = self.snapshot_index_from_map(&sessions).await;
         drop(sessions);
+        drop(device_active);
         let _ = self.persist.upsert_session(&index, &record).await;
 
         Ok(id)
@@ -273,10 +312,10 @@ impl LiveEngine {
     }
 
     pub async fn stop_session(&self, session_id: &str) -> bool {
-        self.end_session(session_id, true).await
+        self.end_session(session_id).await
     }
 
-    async fn end_session(&self, session_id: &str, operator: bool) -> bool {
+    async fn end_session(&self, session_id: &str) -> bool {
         let mut sessions = self.sessions.write().await;
         let Some(runtime) = sessions.get_mut(session_id) else {
             return false;
@@ -286,7 +325,7 @@ impl LiveEngine {
         }
         let now = self.now_ms();
         runtime.record.phase = SessionPhase::Ended;
-        runtime.record.ended_at = Some(runtime.record.last_fix_at.unwrap_or(now));
+        runtime.record.ended_at = Some(now);
         let device = runtime.record.device.clone();
         let record = runtime.record.clone();
         let _ = runtime.bus.send(SseSessionEvent::End {
@@ -300,20 +339,22 @@ impl LiveEngine {
         drop(device_active);
         let index = self.snapshot_index().await;
         let _ = self.persist.upsert_session(&index, &record).await;
-        let _ = operator;
         true
     }
 
-    pub async fn ack_session(&self, session_id: &str) -> bool {
+    pub async fn ack_session(&self, session_id: &str) -> AckResult {
         let mut sessions = self.sessions.write().await;
         let Some(runtime) = sessions.get_mut(session_id) else {
-            return false;
+            return AckResult::NotFound;
         };
+        if runtime.record.phase == SessionPhase::Active {
+            return AckResult::StillActive;
+        }
         runtime.record.acked = true;
         let record = runtime.record.clone();
         drop(sessions);
         self.prune_session(session_id, &record).await;
-        true
+        AckResult::Ok
     }
 
     pub async fn tick_idle_and_prune(&self) {
@@ -324,7 +365,7 @@ impl LiveEngine {
                 .values()
                 .filter(|s| s.record.phase == SessionPhase::Active)
                 .filter_map(|s| {
-                    let last = s.record.last_fix_at.unwrap_or(s.record.started_at);
+                    let last = s.record.last_rx_at.unwrap_or(s.record.started_at);
                     if now - last >= SESSION_IDLE_END_MS {
                         Some(s.record.id.clone())
                     } else {
@@ -334,7 +375,7 @@ impl LiveEngine {
                 .collect()
         };
         for id in to_end {
-            let _ = self.end_session(&id, false).await;
+            let _ = self.end_session(&id).await;
         }
 
         let to_prune: Vec<(String, SessionRecord)> = {
@@ -357,12 +398,17 @@ impl LiveEngine {
         }
     }
 
-    async fn prune_session(&self, session_id: &str, _record: &SessionRecord) {
+    async fn prune_session(&self, session_id: &str, record: &SessionRecord) {
         let _ = self.persist.delete_session_files(session_id).await;
         let mut sessions = self.sessions.write().await;
         sessions.remove(session_id);
+        let mut device_active = self.device_active.write().await;
+        if device_active.get(&record.device) == Some(&session_id.to_string()) {
+            device_active.remove(&record.device);
+        }
         let index = self.snapshot_index_from_map(&sessions).await;
         drop(sessions);
+        drop(device_active);
         let _ = self.persist.replace_index(&index).await;
     }
 
@@ -404,7 +450,6 @@ impl TestClock {
     }
 }
 
-/// Small hex helper without adding a crate dependency on `hex` in production — use inline.
 mod hex {
     pub fn encode(bytes: &[u8]) -> String {
         const HEX: &[u8; 16] = b"0123456789abcdef";

@@ -1,4 +1,13 @@
-# Captured Traccar Client Android request shape (HTTP POST, params in query string, empty body).
-# Source: https://github.com/traccar/traccar-client-android/blob/master/app/src/main/java/org/traccar/client/ProtocolFormatter.kt
-#         https://github.com/traccar/traccar-client-android/blob/master/app/src/main/java/org/traccar/client/RequestManager.kt
-POST /api/osmand?id=DEVICE_TOKEN&timestamp=1609459200&lat=48.8566&lon=2.3522&speed=15&bearing=270&altitude=35&accuracy=10&batt=75
+# Traccar Client (Flutter, traccar-client-sdk v10.x) — HttpUploader.kt submitForm:
+# POST /api/osmand
+# Content-Type: application/x-www-form-urlencoded
+# Body: id, lat, lon, timestamp (unix s), speed (knots), bearing, altitude, accuracy, batt, charge, alarm
+# Source: https://github.com/traccar/traccar-client-sdk/blob/master/core/src/commonMain/kotlin/org/traccar/client/HttpUploader.kt
+
+POST /api/osmand
+Content-Type: application/x-www-form-urlencoded
+
+id=DEVICE_TOKEN&lat=48.8566&lon=2.3522&timestamp=1609459200&speed=15&bearing=270&altitude=35&accuracy=10&batt=75
+
+# Legacy native Android (traccar-client-android) — query string on POST, empty body:
+# GET|POST /api/osmand?id=...&timestamp=...&lat=...&lon=...&speed=...&bearing=...&altitude=...&accuracy=...

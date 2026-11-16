@@ -647,9 +647,15 @@ async fn run_server() {
     let config = config_from_env();
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let live = Arc::new(LiveEngine::new(&config.data_dir));
-    live.load_from_disk()
-        .await
-        .expect("load live sessions from disk");
+    if let Err(error) = live.load_from_disk().await {
+        let invalid = error.kind() == std::io::ErrorKind::InvalidData;
+        eprintln!("warn: could not load live sessions: {error}");
+        if invalid {
+            let broken = config.data_dir.join("live/sessions.json.broken");
+            let index = config.data_dir.join("live/sessions.json");
+            let _ = tokio::fs::rename(&index, &broken).await;
+        }
+    }
     let live_task = Arc::clone(&live);
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -661,7 +667,10 @@ async fn run_server() {
     let (state, queue_rx) = app_state(
         config.dist_dir,
         Auth::from_env(),
-        DeviceAuth::from_env(),
+        DeviceAuth::from_env().unwrap_or_else(|error| {
+            eprintln!("device token config error: {error}");
+            std::process::exit(1);
+        }),
         live,
         Store::new(&config.data_dir),
     );

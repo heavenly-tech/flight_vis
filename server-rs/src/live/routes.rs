@@ -1,4 +1,4 @@
-use crate::{require_auth, AppState};
+use crate::{live::engine::AckResult, require_auth, AppState};
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
@@ -56,10 +56,16 @@ async fn ack_live(
     if let Err(denied) = require_auth(&state, &headers) {
         return *denied;
     }
-    if state.live.ack_session(&id).await {
-        Json(json!({ "ok": true })).into_response()
-    } else {
-        (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+    match state.live.ack_session(&id).await {
+        AckResult::Ok => Json(json!({ "ok": true })).into_response(),
+        AckResult::StillActive => (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "session still active" })),
+        )
+            .into_response(),
+        AckResult::NotFound => {
+            (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+        }
     }
 }
 

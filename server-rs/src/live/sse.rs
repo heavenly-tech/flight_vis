@@ -10,11 +10,11 @@ use axum::{
 use futures_util::stream::{self, Stream, StreamExt};
 use serde_json::json;
 use std::{convert::Infallible, pin::Pin, time::Duration};
-use tokio::time;
-use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream, IntervalStream};
+use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
 const HEARTBEAT_SECS: u64 = 15;
 
+#[cfg(test)]
 pub(crate) fn backfill_after(
     fixes: &[crate::live::types::LiveFix],
     last_event_id: Option<i64>,
@@ -35,6 +35,17 @@ pub async fn live_stream(
         return denied.into_response();
     }
 
+    let rx = match state.live.subscribe(&id).await {
+        Some(rx) => rx,
+        None => {
+            return (
+                StatusCode::NOT_FOUND,
+                axum::Json(json!({ "error": "not found" })),
+            )
+                .into_response();
+        }
+    };
+
     let fixes = match state.live.get_fixes(&id).await {
         Some(f) => f,
         None => {
@@ -51,10 +62,9 @@ pub async fn live_stream(
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse::<i64>().ok());
 
-    let backfill_ts = backfill_after(&fixes, last_event_id);
     let backfill: Vec<Event> = fixes
         .iter()
-        .filter(|f| backfill_ts.contains(&f.t))
+        .filter(|f| last_event_id.is_none_or(|last| f.t > last))
         .map(|f| {
             Event::default()
                 .event("fix")
@@ -64,42 +74,24 @@ pub async fn live_stream(
         })
         .collect();
 
-    let rx = match state.live.subscribe(&id).await {
-        Some(rx) => rx,
-        None => {
-            return (
-                StatusCode::NOT_FOUND,
-                axum::Json(json!({ "error": "not found" })),
-            )
-                .into_response();
-        }
-    };
-
-    let live = BroadcastStream::new(rx).filter_map(|msg| {
+    let live = stream::unfold(BroadcastStream::new(rx), |mut rx| async move {
+        let msg = rx.next().await?;
         let event = match msg {
             Ok(SseSessionEvent::Fix(fix)) => Event::default()
                 .event("fix")
                 .id(fix.id)
                 .json_data(fix.fix)
-                .ok(),
-            Ok(SseSessionEvent::End { id }) => Some(
-                Event::default()
-                    .event("end")
-                    .data(json!({ "id": id }).to_string()),
-            ),
-            Err(BroadcastStreamRecvError::Lagged(_)) => None,
+                .ok()?,
+            Ok(SseSessionEvent::End { id }) => Event::default()
+                .event("end")
+                .data(json!({ "id": id }).to_string()),
+            Err(BroadcastStreamRecvError::Lagged(_)) => return None,
         };
-        async move { event.map(Ok) }
+        Some((Ok(event), rx))
     });
 
-    let heartbeat = IntervalStream::new(time::interval(Duration::from_secs(HEARTBEAT_SECS)))
-        .map(|_| Ok(Event::default().comment("heartbeat")));
-
     let merged: Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>> =
-        Box::pin(stream::select(
-            stream::iter(backfill.into_iter().map(Ok)),
-            stream::select(live, heartbeat),
-        ));
+        Box::pin(stream::iter(backfill.into_iter().map(Ok)).chain(live));
 
     Sse::new(merged)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(HEARTBEAT_SECS)))
