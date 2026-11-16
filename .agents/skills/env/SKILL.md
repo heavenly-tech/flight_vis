@@ -15,6 +15,8 @@ Copy `.env.example` to `.env`. Do not commit `.env`.
 | `PORT` | API | `8080` | Listen port. Non-numeric values fall back to 8080. |
 | `TRUSTED_PROXY_CIDRS` | API | `172.18.0.0/16,127.0.0.1/32,::1/128` | Comma-separated IPv4/IPv6 CIDRs whose socket peers may set the login client IP via `X-Real-IP` / `X-Forwarded-For`. Missing, empty, or unparseable values fall back to the default. |
 | `VITE_CESIUM_ION_TOKEN` | Vite | unset | Optional Cesium ion token for the globe. |
+| `FLIGHT_VIS_DEVICE_TOKENS` | API | empty | Live ingest: `token=name` lines or entries separated by newlines. Tokens are never logged. |
+| `FLIGHT_VIS_DEVICE_TOKENS_FILE` | API | unset | Optional path to a token map file (same `token=name` format). Used when set instead of inlining in the env var. |
 
 Docker sets `PORT`, `FLIGHT_DATA=/data`, and `FLIGHT_VIS_DIST=/app/dist`. Compose also sets `FLIGHT_VIS_PASSWORD` from the host and the proxy hostnames `VIRTUAL_HOST`, `LETSENCRYPT_HOST`, and `VIRTUAL_PORT` (those three are for the reverse proxy, not read by the binary).
 

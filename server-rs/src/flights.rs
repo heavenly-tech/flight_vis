@@ -209,9 +209,13 @@ mod tests {
         let (video_queue, queue_rx) =
             tokio::sync::mpsc::channel(crate::video::VIDEO_QUEUE_CAPACITY);
         crate::video::spawn_transcode_worker(store.clone(), queue_rx);
+        let live = std::sync::Arc::new(crate::live::LiveEngine::new(&data_dir));
+        live.load_from_disk().await.unwrap();
         let state = AppState {
             dist_dir,
             auth: Auth::with_password(password),
+            device_auth: crate::device_auth::DeviceAuth::empty(),
+            live,
             store,
             video_queue,
             login_throttle: crate::LoginThrottle::default(),

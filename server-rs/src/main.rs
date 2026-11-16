@@ -1,5 +1,7 @@
 mod auth;
+mod device_auth;
 mod flights;
+mod live;
 mod static_files;
 mod store;
 mod video;
@@ -13,6 +15,8 @@ use axum::{
     routing::get,
     Router,
 };
+use device_auth::DeviceAuth;
+use live::LiveEngine;
 use serde_json::json;
 use std::{
     collections::HashMap,
@@ -27,6 +31,8 @@ use store::Store;
 pub(crate) struct AppState {
     pub(crate) dist_dir: PathBuf,
     pub(crate) auth: Auth,
+    pub(crate) device_auth: DeviceAuth,
+    pub(crate) live: Arc<LiveEngine>,
     pub(crate) store: Store,
     pub(crate) video_queue: tokio::sync::mpsc::Sender<video::VideoJob>,
     pub(crate) login_throttle: LoginThrottle,
@@ -35,6 +41,8 @@ pub(crate) struct AppState {
 fn app_state(
     dist_dir: PathBuf,
     auth: Auth,
+    device_auth: DeviceAuth,
+    live: Arc<LiveEngine>,
     store: Store,
 ) -> (AppState, tokio::sync::mpsc::Receiver<video::VideoJob>) {
     let (video_queue, queue_rx) = tokio::sync::mpsc::channel(video::VIDEO_QUEUE_CAPACITY);
@@ -42,6 +50,8 @@ fn app_state(
         AppState {
             dist_dir,
             auth,
+            device_auth,
+            live,
             store,
             video_queue,
             login_throttle: LoginThrottle::default(),
@@ -538,6 +548,7 @@ fn build_router(state: AppState) -> Router {
         .route("/logout", get(logout).post(logout))
         .merge(flights::router().layer(DefaultBodyLimit::max(64 * 1024 * 1024)))
         .merge(video::router())
+        .merge(live::router().layer(DefaultBodyLimit::max(256 * 1024)))
         .fallback(fallback)
         .with_state(state)
 }
@@ -625,11 +636,7 @@ fn run_healthcheck() -> bool {
 fn main() {
     // Any other argument (or none) still starts the server, as before.
     // `args_os` so a non-UTF-8 argument cannot panic the process.
-    if std::env::args_os()
-        .nth(1)
-        .as_deref()
-        == Some(std::ffi::OsStr::new(HEALTHCHECK_ARG))
-    {
+    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(HEALTHCHECK_ARG)) {
         std::process::exit(if run_healthcheck() { 0 } else { 1 });
     }
     run_server();
@@ -639,9 +646,23 @@ fn main() {
 async fn run_server() {
     let config = config_from_env();
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let live = Arc::new(LiveEngine::new(&config.data_dir));
+    live.load_from_disk()
+        .await
+        .expect("load live sessions from disk");
+    let live_task = Arc::clone(&live);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            live_task.tick_idle_and_prune().await;
+        }
+    });
     let (state, queue_rx) = app_state(
         config.dist_dir,
         Auth::from_env(),
+        DeviceAuth::from_env(),
+        live,
         Store::new(&config.data_dir),
     );
     state
@@ -808,7 +829,9 @@ mod tests {
             b"HTTP/1.1 503 Service Unavailable\r\n\r\n{\"ok\":false}"
         ));
         assert!(!health_response_ok(b"HTTP/1.1 200 OK\r\n\r\nnot json"));
-        assert!(!health_response_ok(b"HTTP/1.1 200 OK\r\n\r\n{\"ok\":false}"));
+        assert!(!health_response_ok(
+            b"HTTP/1.1 200 OK\r\n\r\n{\"ok\":false}"
+        ));
     }
 
     #[test]
