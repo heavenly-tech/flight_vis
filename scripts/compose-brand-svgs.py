@@ -10,7 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 COAST = ROOT / "assets" / "brand" / "coastlines.paths.json"
 
-OCEAN = "#1E90FF"
+OCEAN_HI = "#4EB0FF"
+OCEAN_LO = "#156BBF"
 LAND = "#6DB33F"
 GRID = "#0D3A8C"
 BORDER = "#0D3A8C"
@@ -21,65 +22,72 @@ T = (610.0, 425.0)
 TAIL_SRC = (672.0, 450.0)
 TIP_SRC = (982.0, 118.0)
 AXIS = (TIP_SRC[0] - TAIL_SRC[0], TIP_SRC[1] - TAIL_SRC[1])
-U = (AXIS[0] / math.hypot(*AXIS), AXIS[1] / math.hypot(*AXIS))
+ANG = math.atan2(AXIS[1], AXIS[0])
+U = (math.cos(ANG), math.sin(ANG))
 P = (T[0] - 60 * U[0], T[1] - 60 * U[1])
 C2 = (P[0] - 100 * U[0], P[1] - 100 * U[1])
+T_END = (T[0] + 4 * U[0], T[1] + 4 * U[1])
 
 TRACK_FULL = (
     "M 150,885 C 330,895 590,850 640,740 "
     "C 680,655 660,640 590,640 "
     "C 400,640 212,630 212,520 "
-    f"C 205,195 {C2[0]:.2f},{C2[1]:.2f} {P[0]:.2f},{P[1]:.2f} "
-    f"L {T[0]:.0f},{T[1]:.0f}"
+    f"C 205,195 {C2[0]:.0f},{C2[1]:.0f} {P[0]:.0f},{P[1]:.0f} "
+    f"L {T_END[0]:.0f},{T_END[1]:.0f}"
 )
 
-TRACK_SMALL = (
-    "M 150,885 C 330,895 590,850 640,740 "
-    "C 680,655 660,640 590,640 "
-    "C 400,640 212,630 212,520 "
-    f"C 205,195 {C2[0]:.1f},{C2[1]:.1f} {P[0]:.1f},{P[1]:.1f} "
-    f"L {T[0]:.0f},{T[1]:.0f}"
-)
+TRACK_SMALL = TRACK_FULL
 
 PLANE_XF = f"translate({T[0]} {T[1]}) scale({S_PLANE}) translate({-TAIL_SRC[0]} {-TAIL_SRC[1]})"
 
-# Paper plane in base.jpg space: large white top, navy lower fold, thick outline.
-PLANE_TOP = "M 672 450 L 702 278 L 982 118 L 812 215 L 672 450 Z"
-PLANE_BOTTOM = "M 672 450 L 812 215 L 912 432 L 692 438 Z"
-PLANE_KEEL = "M 672 450 L 905 188"
+# Owner polygon from flightvis-logo-final.py / base.jpg, split into fill regions.
+PLANE_WHITE_TOP = "M 672 450 L 650 328 L 536 280 L 982 118 L 745 398 Z"
+PLANE_WHITE_LOWER = "M 672 450 L 745 398 L 815 446 L 650 328 Z"
+PLANE_NAVY_KEEL = "M 672 450 L 815 446 L 745 398 Z"
+PLANE_OUTLINE = "M 536 280 L 982 118 L 815 446 L 745 398 L 672 450 L 650 328 Z"
 
 
 def load_map() -> dict:
     return json.loads(COAST.read_text(encoding="utf-8"))
 
 
-def graticule_lines(affine: dict, mx: float, my: float, mw: float, mh: float) -> str:
-    a, b, c, d, e, f = (
-        affine["a"],
-        affine["b"],
-        affine["c"],
-        affine["d"],
-        affine["e"],
-        affine["f"],
-    )
+def ortho_lonlat(lon: float, lat: float, lon0: float, lat0: float) -> tuple[float, float]:
+    lam = math.radians(lon)
+    phi = math.radians(lat)
+    lam0 = math.radians(lon0)
+    phi0 = math.radians(lat0)
+    x = math.cos(phi) * math.sin(lam - lam0)
+    y = math.cos(phi0) * math.sin(phi) - math.sin(phi0) * math.cos(phi) * math.cos(lam - lam0)
+    return x, y
 
-    def proj(lon: float, lat: float) -> tuple[float, float]:
-        return a * lon + b * lat + c, d * lon + e * lat + f
+
+def graticule_lines(proj: dict, mx: float, my: float, mw: float, mh: float) -> str:
+    lon0, lat0 = proj["lon0"], proj["lat0"]
+    aff = proj.get("aff")
+    if aff:
+        a, b, c, d, e, f = aff["a"], aff["b"], aff["c"], aff["d"], aff["e"], aff["f"]
+    else:
+        sx, sy, ox, oy = proj["sx"], proj["sy"], proj["ox"], proj["oy"]
+        a, b, c, d, e, f = sx, 0.0, ox, 0.0, -sy, oy
+
+    def scr(lon: float, lat: float) -> tuple[float, float]:
+        gx, gy = ortho_lonlat(lon, lat, lon0, lat0)
+        return a * gx + b * gy + c, d * gx + e * gy + f
 
     lines: list[str] = []
-    for lon in range(-150, 31, 30):
+    for lon in range(-150, 41, 30):
         pts: list[str] = []
-        for lat in range(-60, 81, 5):
-            x, y = proj(lon, lat)
-            if mx - 5 <= x <= mx + mw + 5 and my - 5 <= y <= my + mh + 5:
+        for lat in range(-58, 82, 2):
+            x, y = scr(lon, lat)
+            if mx - 8 <= x <= mx + mw + 8 and my - 8 <= y <= my + mh + 8:
                 pts.append(f"{x:.1f},{y:.1f}")
         if len(pts) >= 2:
             lines.append(f"M {pts[0]} L {' L '.join(pts[1:])}")
-    for lat in range(-60, 61, 30):
+    for lat in range(-60, 61, 20):
         pts = []
-        for lon in range(-165, 26, 5):
-            x, y = proj(lon, lat)
-            if mx - 5 <= x <= mx + mw + 5 and my - 5 <= y <= my + mh + 5:
+        for lon in range(-175, 43, 2):
+            x, y = scr(lon, lat)
+            if mx - 8 <= x <= mx + mw + 8 and my - 8 <= y <= my + mh + 8:
                 pts.append(f"{x:.1f},{y:.1f}")
         if len(pts) >= 2:
             lines.append(f"M {pts[0]} L {' L '.join(pts[1:])}")
@@ -114,7 +122,7 @@ def svg_doc(
     grid_block = ""
     if include_grid and graticule:
         grid_block = f"""
-    <g clip-path="url(#mapClip)" stroke="{GRID}" stroke-opacity="0.12" stroke-width="2" fill="none">
+    <g stroke="{GRID}" stroke-opacity="0.42" stroke-width="2.8" fill="none">
       {graticule}
     </g>"""
 
@@ -126,27 +134,33 @@ def svg_doc(
         )
         outer_close = "</g>"
 
-    plane_stroke = 12 if maskable_pad != 1.0 else 11
+    plane_stroke = 10
+    halo_stroke = 16
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="flight_vis">
   <defs>
     <clipPath id="mapClip">
       <rect x="{mx}" y="{my}" width="{mw}" height="{mh}" rx="{rx}" ry="{rx}"/>
     </clipPath>
+    <radialGradient id="oceanGrad" cx="46%" cy="42%" r="68%" fx="40%" fy="36%">
+      <stop offset="0%" stop-color="{OCEAN_HI}"/>
+      <stop offset="100%" stop-color="{OCEAN_LO}"/>
+    </radialGradient>
   </defs>
   {inner_scale}
   <g clip-path="url(#mapClip)">
-    <rect x="{mx}" y="{my}" width="{mw}" height="{mh}" fill="{OCEAN}"/>
+    <rect x="{mx}" y="{my}" width="{mw}" height="{mh}" fill="url(#oceanGrad)"/>
+    {grid_block}
     {coast_html}
-  </g>{grid_block}
+  </g>
   <rect x="{mx}" y="{my}" width="{mw}" height="{mh}" rx="{rx}" ry="{rx}" fill="none" stroke="{BORDER}" stroke-width="14"/>
   <path fill="none" stroke="{TRACK_COLOR}" stroke-width="{track_w}" stroke-linecap="butt" stroke-dasharray="{track_dash}" d="{track_d}"/>
   <g transform="{PLANE_XF}">
-    <path fill="#FFFFFF" stroke="none" d="{PLANE_TOP}"/>
-    <path fill="{BORDER}" stroke="none" d="{PLANE_BOTTOM}"/>
-    <path fill="none" stroke="{BORDER}" stroke-width="{plane_stroke + 2}" stroke-linejoin="round" d="{PLANE_TOP}"/>
-    <path fill="none" stroke="{BORDER}" stroke-width="{plane_stroke + 2}" stroke-linejoin="round" d="{PLANE_BOTTOM}"/>
-    <path fill="none" stroke="#FFFFFF" stroke-width="{max(plane_stroke - 4, 5)}" stroke-linecap="round" opacity="0.85" d="{PLANE_KEEL}"/>
+    <path fill="#FFFFFF" stroke="none" d="{PLANE_WHITE_TOP}"/>
+    <path fill="#FFFFFF" stroke="none" d="{PLANE_WHITE_LOWER}"/>
+    <path fill="{BORDER}" stroke="none" d="{PLANE_NAVY_KEEL}"/>
+    <path fill="none" stroke="#FFFFFF" stroke-width="{halo_stroke}" stroke-linejoin="round" d="{PLANE_OUTLINE}"/>
+    <path fill="none" stroke="{BORDER}" stroke-width="{plane_stroke}" stroke-linejoin="round" d="{PLANE_OUTLINE}"/>
   </g>
   {outer_close}
 </svg>
@@ -156,7 +170,8 @@ def svg_doc(
 def main() -> None:
     data = load_map()
     map_meta = data["map"]
-    graticule = graticule_lines(data["affine"], map_meta["x"], map_meta["y"], map_meta["w"], map_meta["h"])
+    proj = data["projection"]
+    graticule = graticule_lines(proj, map_meta["x"], map_meta["y"], map_meta["w"], map_meta["h"])
     out = ROOT / "assets" / "brand"
 
     full = svg_doc(
