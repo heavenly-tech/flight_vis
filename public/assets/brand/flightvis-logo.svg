@@ -5,8 +5,8 @@
       <rect x="72" y="88" width="880" height="848" rx="56" ry="56"/>
     </clipPath>
     <radialGradient id="oceanGrad" cx="48%" cy="44%" r="62%" fx="44%" fy="40%">
-      <stop offset="0%" stop-color="#0068E0"/>
-      <stop offset="100%" stop-color="#0091FE"/>
+      <stop offset="0%" stop-color="#4EB0FF"/>
+      <stop offset="100%" stop-color="#1E90FF"/>
     </radialGradient>
   </defs>
   

@@ -172,8 +172,12 @@ def ocean_colors(chart: np.ndarray, land: np.ndarray) -> tuple[str, str]:
     # Gradient center must be the lighter azure.
     if sum(int(hi[i : i + 2], 16) for i in (1, 3, 5)) < sum(int(lo[i : i + 2], 16) for i in (1, 3, 5)):
         hi, lo = lo, hi
-    if hi.lower() in ("#0068e0",) or int(hi[5:7], 16) < 160:
-        hi, lo = "#4EB0FF", "#1E90FF"
+    lum_hi = sum(int(hi[i : i + 2], 16) for i in (1, 3, 5))
+    lum_lo = sum(int(lo[i : i + 2], 16) for i in (1, 3, 5))
+    if lum_hi < lum_lo:
+        hi, lo = lo, hi
+    if int(hi[3:5], 16) < 170 or int(hi[5:7], 16) < 200:
+        return "#4EB0FF", "#1E90FF"
     return hi, lo
 
 
