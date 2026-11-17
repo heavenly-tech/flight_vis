@@ -367,6 +367,11 @@ pub async fn post_club_flight_start(
             Json(json!({ "error": "active flight exists" })),
         )
             .into_response(),
+        Err(StartFlightError::DeviceMismatch) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "device mismatch" })),
+        )
+            .into_response(),
         Err(StartFlightError::NoCheckin) => (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "check-in required" })),

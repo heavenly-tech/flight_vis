@@ -256,7 +256,7 @@ impl ClubDb {
             return Err(LoginError::Invalid);
         }
         let session_id = auth::new_session_id();
-        let exp = now + SESSION_TTL_SEC;
+        let exp = now + SESSION_TTL_SEC * 1000;
         self.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO pilot_sessions (id, pilot_id, expires_at) VALUES (?1, ?2, ?3)",
@@ -468,6 +468,9 @@ impl ClubDb {
                 )
             })
             .map_err(|_| StartFlightError::NoTail)?;
+        if self.device_pilot_id(device_id).as_deref() != Some(pilot_id) {
+            return Err(StartFlightError::DeviceMismatch);
+        }
         if !self
             .consume_checkin(pilot_id, device_id, &club_id, now)
             .map_err(|_| StartFlightError::NoCheckin)?
@@ -1027,12 +1030,20 @@ impl ClubDb {
                 |r| r.get(0),
             )?;
             let aircraft_id: Option<String> = if let Some(tail) = tail {
-                conn.query_row(
-                    "SELECT id FROM aircraft WHERE club_id = ?1 AND tail = ?2",
-                    params![club_id, tail],
-                    |r| r.get(0),
-                )
-                .optional()?
+                let id = conn
+                    .query_row(
+                        "SELECT id FROM aircraft WHERE club_id = ?1 AND tail = ?2",
+                        params![club_id, tail],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if id.is_none() {
+                    return Err(rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+                        Some("unknown tail".into()),
+                    ));
+                }
+                id
             } else {
                 None
             };
@@ -1495,9 +1506,26 @@ impl ClubDb {
     }
 
     pub fn display_map(&self, admin_creator_id: &str) -> Vec<TailLivePosition> {
-        let rows = self.admin_map(admin_creator_id);
+        let rows: Vec<DeviceFix> = self
+            .latest_device_fixes()
+            .into_iter()
+            .filter(|r| {
+                let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
+                matches!(vis, FlightVisibility::Club | FlightVisibility::Public)
+            })
+            .collect();
+        let mut positions = dedupe_by_tail(rows);
+        for pos in &mut positions {
+            if let Some(f) = self.get_flight(&pos.flight_id) {
+                if show_pilot_name(&Viewer::Anonymous, &f.pilot_id, f.show_pilot_name_public) {
+                    pos.pilot_name = Some(f.pilot_name);
+                } else {
+                    pos.pilot_name = None;
+                }
+            }
+        }
         let prefs = self.admin_map_tails(admin_creator_id);
-        filter_admin_tails(rows, &prefs)
+        filter_admin_tails(positions, &prefs)
     }
 
     pub fn seed_demo_if_empty(&self) -> Result<(), rusqlite::Error> {
@@ -1601,12 +1629,13 @@ pub enum LoginError {
     Invalid,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StartFlightError {
     NoTail,
     NoCheckout,
     NoCheckin,
     AlreadyActive,
+    DeviceMismatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2064,5 +2093,76 @@ mod tests {
             })
             .unwrap();
         assert_eq!(stored.0 + 45 * 60_000, stored.1);
+    }
+
+    #[test]
+    fn pilot_session_ttl_is_milliseconds() {
+        let db = ClubDb::open_in_memory().unwrap();
+        let (club, _, _, _) = seed(&db);
+        let t = now_ms();
+        let (_, row) = db.login(&club, "a@test", "password12", t).unwrap();
+        let exp: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT expires_at FROM pilot_sessions WHERE pilot_id = ?1",
+                    params![row.id],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap();
+        assert!(exp >= t + SESSION_TTL_SEC * 1000);
+        assert!(exp < t + SESSION_TTL_SEC * 1000 + 60_000);
+    }
+
+    #[test]
+    fn start_flight_rejects_foreign_device() {
+        let db = ClubDb::open_in_memory().unwrap();
+        let (club, a, b, _) = seed(&db);
+        let dev_a = db.create_device(&a, "a-phone").unwrap().0;
+        let dev_b = db.create_device(&b, "b-phone").unwrap().0;
+        let t = now_ms();
+        let qr = db.mint_checkin_qr_token(&club, t).unwrap();
+        db.submit_checkin(&b, Some(&dev_b), &qr, t).unwrap();
+        assert_eq!(
+            db.start_flight(&b, &dev_a, "N123", FlightVisibility::Club, false, t),
+            Err(StartFlightError::DeviceMismatch)
+        );
+    }
+
+    #[test]
+    fn display_map_omits_private_flights() {
+        let db = ClubDb::open_in_memory().unwrap();
+        let (club, a, _, _) = seed(&db);
+        let admin = a.clone();
+        let dev = db.create_device(&a, "phone").unwrap().0;
+        let t = now_ms();
+        let qr = db.mint_checkin_qr_token(&club, t).unwrap();
+        db.submit_checkin(&a, Some(&dev), &qr, t).unwrap();
+        let fid = db
+            .start_flight(&a, &dev, "N123", FlightVisibility::Private, false, t)
+            .unwrap();
+        db.append_fix(
+            &fid,
+            &dev,
+            &LiveFix {
+                t,
+                lat: -33.4,
+                lon: -70.6,
+                alt: Some(500.0),
+                speed: None,
+                course: None,
+                accuracy: None,
+                alt_ref: None,
+            },
+        )
+        .unwrap();
+        assert!(db.display_map(&admin).is_empty());
+    }
+
+    #[test]
+    fn add_checkout_unknown_tail_errors() {
+        let db = ClubDb::open_in_memory().unwrap();
+        let (_, a, _, _) = seed(&db);
+        assert!(db.add_checkout(&a, "C152", Some("NOPE"), None).is_err());
     }
 }
