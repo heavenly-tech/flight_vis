@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REF = ROOT / "assets/brand/reference/flightvis-logo-final.png"
+REF = ROOT / "branding" / "source" / "flightvis-logo-final.png"
 SVG = ROOT / "assets/brand/flightvis-logo.svg"
 OUT_DIR = Path("/opt/cursor/artifacts")
 RENDER = OUT_DIR / "pr-logo-render-1024.png"
@@ -48,6 +48,21 @@ def main() -> int:
     r1 = np.asarray(ref.convert("RGB"), dtype=np.float32)
     r2 = np.asarray(ren.convert("RGB"), dtype=np.float32)
     mae = float(np.mean(np.abs(r1 - r2)))
+    # Land-mask IoU (reference green vs render green)
+    ref_full = np.array(Image.open(REF).convert("RGB"))
+    R, G, B = ref_full[..., 0], ref_full[..., 1], ref_full[..., 2]
+    magenta = (R > 150) & (B > 140) & (G < 130)
+    white = (R > 205) & (G > 205) & (B > 205)
+    ref_land = (
+        (G > 150) & (G > R + 25) & (G > B + 45) & (R < 145) & ~magenta & ~white
+    )
+    rR, rG, rB = ren.convert("RGB").split()
+    rnp = np.asarray(ren.convert("RGB"))
+    rR, rG, rB = rnp[..., 0], rnp[..., 1], rnp[..., 2]
+    ren_land = (rG > 120) & (rG > rR + 10) & (rG > rB + 20)
+    inter = np.logical_and(ref_land, ren_land).sum()
+    union = np.logical_or(ref_land, ren_land).sum()
+    land_iou = float(inter) / float(union) if union else 0.0
     side = Image.new("RGBA", (ref.width * 2 + 20, ref.height + 40), (18, 24, 38, 255))
     side.paste(ref, (10, 30))
     side.paste(ren, (ref.width + 20, 30))
@@ -56,7 +71,12 @@ def main() -> int:
     draw.text((ref.width + 26, 6), "SVG render", fill=(240, 248, 255))
     COMPARE.parent.mkdir(parents=True, exist_ok=True)
     side.save(COMPARE)
-    stats = {"mae_rgb": round(mae, 2), "render": str(RENDER), "compare": str(COMPARE)}
+    stats = {
+        "mae_rgb": round(mae, 2),
+        "land_iou": round(land_iou, 4),
+        "render": str(RENDER),
+        "compare": str(COMPARE),
+    }
     (OUT_DIR / "pr-logo-compare-stats.json").write_text(json.dumps(stats, indent=2))
     print(json.dumps(stats, indent=2))
     return 0

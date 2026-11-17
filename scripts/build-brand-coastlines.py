@@ -1,110 +1,66 @@
 #!/usr/bin/env python3
-"""Project Natural Earth 110m land (orthographic, Americas) into logo map space."""
+"""Project Natural Earth land (equal-scale orthographic) into logo map space."""
 
 from __future__ import annotations
 
 import json
 import math
+import subprocess
 import urllib.request
 from pathlib import Path
 
+import numpy as np
+from PIL import Image
+from skimage import measure
+
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "scripts" / "data"
-NE_URL = (
+FIT_PATH = ROOT / "assets/brand/projection.fit.json"
+NE_110 = DATA_DIR / "ne_110m_land.geojson"
+NE_URL_110 = (
     "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/"
     "master/geojson/ne_110m_land.geojson"
 )
-NE_PATH = DATA_DIR / "ne_110m_land.geojson"
 OUT_PATH = ROOT / "assets" / "brand" / "coastlines.paths.json"
+BRAND_SOURCE = ROOT / "branding" / "source"
+REF_PNG = BRAND_SOURCE / "flightvis-logo-final.png"
 
 MAP_X, MAP_Y, MAP_W, MAP_H, MAP_RX = 72, 88, 880, 848, 56
-LON0_DEG, LAT0_DEG = -75.0, 10.0
-LON0, LAT0 = math.radians(LON0_DEG), math.radians(LAT0_DEG)
-
-# lon, lat -> canvas x,y (chart.jpg / owner anchors; weight via repeats)
-ANCHORS: list[tuple[tuple[float, float], tuple[float, float]]] = [
-    ((-168.0, 64.0), (118.0, 248.0)),
-    ((-168.0, 64.0), (118.0, 248.0)),
-    ((-178.0, 52.0), (120.0, 260.0)),
-    ((-66.0, -54.0), (510.0, 918.0)),
-    ((-66.0, -54.0), (510.0, 918.0)),
-    ((-66.0, -54.0), (510.0, 918.0)),
-    ((-35.0, -5.0), (665.0, 670.0)),
-    ((-5.0, 50.0), (872.0, 228.0)),
-    ((-5.0, 50.0), (872.0, 228.0)),
-    ((-5.0, 50.0), (872.0, 228.0)),
-    ((5.0, 36.0), (912.0, 348.0)),
-    ((10.0, -15.0), (890.0, 720.0)),
-    ((-45.0, 72.0), (720.0, 128.0)),
-]
 
 
-def download_land() -> None:
+def download_land() -> Path:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    if not NE_PATH.exists() or NE_PATH.stat().st_size < 10_000:
-        print(f"fetch {NE_URL}")
-        urllib.request.urlretrieve(NE_URL, NE_PATH)
+    path = NE_110
+    if not path.exists() or path.stat().st_size < 10_000:
+        print(f"fetch {NE_URL_110}")
+        urllib.request.urlretrieve(NE_URL_110, path)
+    return path
 
 
-def ortho_xy(lon: float, lat: float) -> tuple[float, float]:
+def load_projection() -> dict:
+    if not FIT_PATH.exists() or (REF_PNG.exists() and FIT_PATH.stat().st_mtime < REF_PNG.stat().st_mtime):
+        subprocess.run(
+            [str(ROOT / "scripts/fit-brand-map-projection.py")],
+            cwd=ROOT,
+            check=True,
+        )
+    return json.loads(FIT_PATH.read_text(encoding="utf-8"))
+
+
+def ortho_xy(lon: float, lat: float, lon0_deg: float, lat0_deg: float) -> tuple[float, float]:
     lam = math.radians(lon)
     phi = math.radians(lat)
-    x = math.cos(phi) * math.sin(lam - LON0)
-    y = math.cos(LAT0) * math.sin(phi) - math.sin(LAT0) * math.cos(phi) * math.cos(lam - LON0)
+    lon0 = math.radians(lon0_deg)
+    lat0 = math.radians(lat0_deg)
+    x = math.cos(phi) * math.sin(lam - lon0)
+    y = math.cos(lat0) * math.sin(phi) - math.sin(lat0) * math.cos(phi) * math.cos(lam - lon0)
     return x, y
 
 
-def lstsq_3(rows: list[tuple[float, float, float]], targets: list[float]) -> tuple[float, float, float]:
-    ata = [[0.0] * 3 for _ in range(3)]
-    atb = [0.0, 0.0, 0.0]
-    for (a, b, c), t in zip(rows, targets):
-        v = (a, b, c)
-        for i in range(3):
-            atb[i] += v[i] * t
-            for j in range(3):
-                ata[i][j] += v[i] * v[j]
-    # Gaussian elimination
-    n = 3
-    aug = [row[:] + [atb[i]] for i, row in enumerate(ata)]
-    for col in range(n):
-        pivot = max(range(col, n), key=lambda r: abs(aug[r][col]))
-        aug[col], aug[pivot] = aug[pivot], aug[col]
-        div = aug[col][col]
-        if abs(div) < 1e-12:
-            continue
-        aug[col] = [v / div for v in aug[col]]
-        for row in range(n):
-            if row == col:
-                continue
-            factor = aug[row][col]
-            aug[row] = [aug[row][j] - factor * aug[col][j] for j in range(n + 1)]
-    return aug[0][3], aug[1][3], aug[2][3]
-
-
-def fit_affine(
-    anchors: list[tuple[tuple[float, float], tuple[float, float]]],
-) -> tuple[float, float, float, float, float, float]:
-    rows: list[tuple[float, float, float]] = []
-    xs: list[float] = []
-    ys: list[float] = []
-    for (lon, lat), (tx, ty) in anchors:
-        gx, gy = ortho_xy(lon, lat)
-        rows.append((gx, gy, 1.0))
-        xs.append(tx)
-        ys.append(ty)
-    a, b, c = lstsq_3(rows, xs)
-    d, e, f = lstsq_3(rows, ys)
-    return a, b, c, d, e, f
-
-
-def project(
-    lon: float,
-    lat: float,
-    aff: tuple[float, float, float, float, float, float],
-) -> tuple[float, float]:
-    gx, gy = ortho_xy(lon, lat)
-    a, b, c, d, e, f = aff
-    return a * gx + b * gy + c, d * gx + e * gy + f
+def project(lon: float, lat: float, proj: dict) -> tuple[float, float]:
+    gx, gy = ortho_xy(lon, lat, proj["lon0"], proj["lat0"])
+    s, ox, oy = proj["scale"], proj["ox"], proj["oy"]
+    return ox + s * gx, oy - s * gy
 
 
 def perp_dist(point: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -145,12 +101,130 @@ def ring_area(coords: list[tuple[float, float]]) -> float:
 
 
 def in_view(lon: float, lat: float) -> bool:
-    return -175.0 <= lon <= 42.0 and -58.0 <= lat <= 85.0
+    return -175.0 <= lon <= 45.0 and -58.0 <= lat <= 85.0
 
 
 def fmt(n: float) -> str:
     s = f"{n:.1f}".rstrip("0").rstrip(".")
     return s if s != "-0" else "0"
+
+
+def reference_land_mask_crop() -> np.ndarray:
+    ref = np.array(Image.open(REF_PNG).convert("RGB"))
+    r, g, b = ref[..., 0], ref[..., 1], ref[..., 2]
+    magenta = (r > 150) & (b > 140) & (g < 130)
+    white = (r > 205) & (g > 205) & (b > 205)
+    land = (g > 150) & (g > r + 25) & (g > b + 45) & (r < 145) & ~magenta & ~white
+    return land[MAP_Y : MAP_Y + MAP_H, MAP_X : MAP_X + MAP_W]
+
+
+def raster_paths_mask(paths: list[str]) -> np.ndarray:
+    from PIL import ImageDraw
+
+    img = Image.new("L", (1024, 1024), 0)
+    draw = ImageDraw.Draw(img)
+    for d in paths:
+        if not d:
+            continue
+        pts = []
+        tokens = d.replace("M ", "").replace("Z", "").split(" L ")
+        for tok in tokens:
+            x, y = tok.split(",")
+            pts.append((float(x), float(y)))
+        if len(pts) >= 3:
+            draw.polygon(pts, fill=255)
+    crop = img.crop((MAP_X, MAP_Y, MAP_X + MAP_W, MAP_Y + MAP_H))
+    return np.array(crop) > 127
+
+
+def mask_iou(a: np.ndarray, b: np.ndarray) -> float:
+    u = np.logical_or(a, b).sum()
+    return float(np.logical_and(a, b).sum()) / float(u) if u else 0.0
+
+
+def trace_chart_paths() -> tuple[list[str], float]:
+    rgb = np.array(Image.open(REF_PNG).convert("RGB"))
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    magenta = (r > 150) & (b > 140) & (g < 130)
+    white = (r > 205) & (g > 205) & (b > 205)
+    mask = (
+        (g > 150) & (g > r + 25) & (g > b + 45) & (r < 145) & ~magenta & ~white
+    ).astype(np.uint8)
+    ref_crop = reference_land_mask_crop()
+    candidates: list[tuple[float, float, list[str]]] = []
+    for eps in (1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.3, 2.6, 3.0):
+        paths: list[str] = []
+        for cont in measure.find_contours(mask, 0.5):
+            pts = [(float(col), float(row)) for row, col in cont]
+            if ring_area(pts) < 900.0:
+                continue
+            simp = rdp(pts, eps)
+            d = path_d(simp)
+            if d:
+                paths.append(d)
+        paths.sort(key=len, reverse=True)
+        score = mask_iou(raster_paths_mask(paths), ref_crop)
+        if score >= 0.85:
+            candidates.append((score, eps, paths))
+    if candidates:
+        candidates.sort(key=lambda t: (-t[0], t[1]))
+        for score, _eps, paths in candidates:
+            if sum(len(p) for p in paths) < 42_000:
+                return paths, score
+        return candidates[0][2], candidates[0][0]
+    # fallback: best overall
+    best = (0.0, 1.0, [])
+    for eps in (1.0, 1.4, 1.8, 2.2, 2.8):
+        paths = []
+        for cont in measure.find_contours(mask, 0.5):
+            pts = [(float(col), float(row)) for row, col in cont]
+            if ring_area(pts) < 900.0:
+                continue
+            simp = rdp(pts, eps)
+            d = path_d(simp)
+            if d:
+                paths.append(d)
+        paths.sort(key=len, reverse=True)
+        score = mask_iou(raster_paths_mask(paths), ref_crop)
+        if score > best[0]:
+            best = (score, eps, paths)
+    return best[2], best[0]
+
+
+def paths_from_natural_earth(gj: dict, proj: dict) -> list[str]:
+    eps = 1.35
+    min_area = 120.0
+    paths: list[str] = []
+    for feat in gj.get("features", []):
+        geom = feat.get("geometry") or {}
+        gtype = geom.get("type")
+        polys: list[list[list[float]]] = []
+        if gtype == "Polygon":
+            polys.append(geom["coordinates"])
+        elif gtype == "MultiPolygon":
+            polys.extend(geom["coordinates"])
+        else:
+            continue
+        for poly in polys:
+            for ring in poly:
+                if len(ring) < 4:
+                    continue
+                if not in_view(ring[0][0], ring[0][1]):
+                    continue
+                projected = [project(lo, la, proj) for lo, la in ring]
+                if abs(ring_area(projected)) < min_area:
+                    continue
+                simp = rdp(projected, eps)
+                if not any(
+                    MAP_X - 40 <= x <= MAP_X + MAP_W + 40 and MAP_Y - 40 <= y <= MAP_Y + MAP_H + 40
+                    for x, y in simp
+                ):
+                    continue
+                dpath = path_d(simp)
+                if dpath:
+                    paths.append(dpath)
+    paths.sort(key=len, reverse=True)
+    return paths
 
 
 def path_d(points: list[tuple[float, float]]) -> str:
@@ -164,68 +238,41 @@ def path_d(points: list[tuple[float, float]]) -> str:
 
 
 def main() -> None:
-    download_land()
-    with NE_PATH.open(encoding="utf-8") as fh:
+    ne_path = download_land()
+    proj = load_projection()
+    with ne_path.open(encoding="utf-8") as fh:
         gj = json.load(fh)
 
-    aff = fit_affine(ANCHORS)
-    eps = 1.9
-    min_area = 180.0
-    paths: list[str] = []
+    ne_paths = paths_from_natural_earth(gj, proj)
+    ne_iou = mask_iou(raster_paths_mask(ne_paths), reference_land_mask_crop())
+    paths, trace_iou = trace_chart_paths()
+    coast_source = "chart-trace"
+    land_iou = trace_iou
+    if ne_iou >= 0.85:
+        paths, coast_source, land_iou = ne_paths, "natural-earth-110m", ne_iou
 
-    for feat in gj.get("features", []):
-        geom = feat.get("geometry") or {}
-        gtype = geom.get("type")
-        polys: list[list[list[float]]] = []
-        if gtype == "Polygon":
-            polys.append(geom["coordinates"])
-        elif gtype == "MultiPolygon":
-            polys.extend(geom["coordinates"])
-        else:
-            continue
-
-        for poly in polys:
-            for ring in poly:
-                if len(ring) < 4:
-                    continue
-                if not in_view(ring[0][0], ring[0][1]):
-                    continue
-                projected = [project(lo, la, aff) for lo, la in ring]
-                if abs(ring_area(projected)) < min_area:
-                    continue
-                simp = rdp(projected, eps)
-                if not any(
-                    MAP_X - 40 <= x <= MAP_X + MAP_W + 40 and MAP_Y - 40 <= y <= MAP_Y + MAP_H + 40
-                    for x, y in simp
-                ):
-                    continue
-                dpath = path_d(simp)
-                if dpath:
-                    paths.append(dpath)
-
-    paths.sort(key=len, reverse=True)
     payload = {
         "map": {"x": MAP_X, "y": MAP_Y, "w": MAP_W, "h": MAP_H, "rx": MAP_RX},
         "projection": {
             "kind": "orthographic",
-            "lon0": LON0_DEG,
-            "lat0": LAT0_DEG,
-            "aff": {"a": aff[0], "b": aff[1], "c": aff[2], "d": aff[3], "e": aff[4], "f": aff[5]},
+            "lon0": proj["lon0"],
+            "lat0": proj["lat0"],
+            "scale": proj["scale"],
+            "ox": proj["ox"],
+            "oy": proj["oy"],
+            "iou_ne_full": ne_iou,
+            "iou_full": land_iou,
+            "coast_source": coast_source,
         },
         "paths": paths,
     }
     OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     OUT_PATH.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
     total_chars = sum(len(p) for p in paths)
-    print(f"wrote {OUT_PATH} ({len(paths)} paths, {total_chars} chars)")
-    for label, lon, lat, target in (
-        ("Alaska", -168, 64, (118, 248)),
-        ("Patagonia", -66, -54, (510, 918)),
-        ("Brazil NE", -35, -5, (665, 670)),
-        ("Europe", -5, 50, (872, 228)),
-    ):
-        bx, by = project(lon, lat, aff)
-        print(f"{label} -> ({bx:.1f},{by:.1f}) target {target}")
+    print(
+        f"wrote {OUT_PATH} ({len(paths)} paths, {total_chars} chars, "
+        f"land_IoU={land_iou:.4f}, NE_IoU={ne_iou:.4f}, source={coast_source})"
+    )
 
 
 if __name__ == "__main__":

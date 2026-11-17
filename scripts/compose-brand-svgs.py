@@ -13,7 +13,7 @@ COAST = ROOT / "assets" / "brand" / "coastlines.paths.json"
 OCEAN_HI = "#4EB0FF"
 OCEAN_LO = "#156BBF"
 LAND = "#6DB33F"
-GRID = "#0D3A8C"
+GRID = "#0B3378"
 BORDER = "#0D3A8C"
 TRACK_COLOR = "#FF00CC"
 
@@ -63,19 +63,14 @@ def ortho_lonlat(lon: float, lat: float, lon0: float, lat0: float) -> tuple[floa
 
 def graticule_lines(proj: dict, mx: float, my: float, mw: float, mh: float) -> str:
     lon0, lat0 = proj["lon0"], proj["lat0"]
-    aff = proj.get("aff")
-    if aff:
-        a, b, c, d, e, f = aff["a"], aff["b"], aff["c"], aff["d"], aff["e"], aff["f"]
-    else:
-        sx, sy, ox, oy = proj["sx"], proj["sy"], proj["ox"], proj["oy"]
-        a, b, c, d, e, f = sx, 0.0, ox, 0.0, -sy, oy
+    scale, ox, oy = proj["scale"], proj["ox"], proj["oy"]
 
     def scr(lon: float, lat: float) -> tuple[float, float]:
         gx, gy = ortho_lonlat(lon, lat, lon0, lat0)
-        return a * gx + b * gy + c, d * gx + e * gy + f
+        return ox + scale * gx, oy - scale * gy
 
     lines: list[str] = []
-    for lon in range(-150, 41, 30):
+    for lon in range(-160, 41, 20):
         pts: list[str] = []
         for lat in range(-58, 82, 2):
             x, y = scr(lon, lat)
@@ -122,7 +117,7 @@ def svg_doc(
     grid_block = ""
     if include_grid and graticule:
         grid_block = f"""
-    <g stroke="{GRID}" stroke-opacity="0.42" stroke-width="2.8" fill="none">
+    <g stroke="{GRID}" stroke-opacity="0.35" stroke-width="3" fill="none">
       {graticule}
     </g>"""
 
