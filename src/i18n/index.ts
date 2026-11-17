@@ -172,7 +172,7 @@ export function apiErrorMessage(raw: string, vars?: Record<string, string>): str
 }
 
 export function applyI18nDocument(root: ParentNode = document): void {
-  const titleEl = document.querySelector("title[data-i18n]");
+  const titleEl = document.querySelector<HTMLTitleElement>("title[data-i18n]");
   if (titleEl?.dataset.i18n) {
     document.title = t(titleEl.dataset.i18n);
   }

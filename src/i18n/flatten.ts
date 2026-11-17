@@ -1,4 +1,4 @@
-export type MessageTree = Record<string, string | MessageTree>;
+export type MessageTree = { [key: string]: string | MessageTree };
 
 export function flattenMessages(tree: MessageTree, prefix = ""): Record<string, string> {
   const out: Record<string, string> = {};
