@@ -8,7 +8,7 @@
     "dev": "vite",
     "dev:api": "cargo run --manifest-path server-rs/Cargo.toml",
     "prebuild": "node scripts/build-egm96-grid.mjs",
-    "brand:compose": "python3 scripts/fit-brand-map-projection.py && python3 scripts/build-brand-coastlines.py && python3 scripts/compose-brand-svgs.py",
+    "brand:compose": "python3 branding/source/extract-chart-vector.py && python3 scripts/compose-brand-svgs.py",
     "export:icons": "python3 scripts/compose-brand-svgs.py && node scripts/export-icons.mjs",
     "build": "tsc --noEmit && vitest run && vite build",
     "lint": "tsc --noEmit",

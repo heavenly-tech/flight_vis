@@ -61,10 +61,13 @@ Vector SVG (`assets/brand/flightvis-logo*.svg`) uses the same polygon split (whi
 
 | Step | Script |
 |------|--------|
-| Fit orthographic (equal scale) to reference land mask | `scripts/fit-brand-map-projection.py` |
-| Coastlines + projection JSON | `scripts/build-brand-coastlines.py` |
-| Compose SVGs (track/plane/grid from spec) | `scripts/compose-brand-svgs.py` |
+| Extract land + graticule + colours from `chart.jpg` | `branding/source/extract-chart-vector.py` |
+| Compose SVGs (track/plane unchanged) | `scripts/compose-brand-svgs.py` |
 | PNG icons / favicon | `npm run export:icons` |
+
+Land is traced from **`chart.jpg`** (HSV green 70–140° + int16-safe RGB, morph open/close, specks &lt; 40 px dropped, `approxPolyDP` paths at 1024). IoU is reported against `flightvis-logo-final.png` green mask and the chart land mask.
+
+Natural Earth / projection scripts under `scripts/` remain for experiments but are not used by `npm run brand:compose`.
 
 Regenerate everything:
 

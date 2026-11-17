@@ -61,7 +61,7 @@ def main() -> int:
     rR, rG, rB = ren.convert("RGB").split()
     rnp = np.asarray(ren.convert("RGB"))
     rR, rG, rB = rnp[..., 0], rnp[..., 1], rnp[..., 2]
-    ren_land = (rG > 120) & (rG > rR + 10) & (rG > rB + 20)
+    ren_land = (rG > 100) & (rG > rR + 12) & (rG > rB + 18)
     ren_land = ren_land[MAP_Y : MAP_Y + MAP_H, MAP_X : MAP_X + MAP_W]
     inter = np.logical_and(ref_land, ren_land).sum()
     union = np.logical_or(ref_land, ren_land).sum()

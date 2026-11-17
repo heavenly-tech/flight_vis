@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
-"""Assemble owner-approved brand SVGs from Natural Earth coastlines + fixed track/plane geometry."""
+"""Assemble brand SVGs from chart.jpg vector extraction + fixed track/plane geometry."""
 
 from __future__ import annotations
 
 import json
-import math
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-COAST = ROOT / "assets" / "brand" / "coastlines.paths.json"
+CHART_VEC = ROOT / "assets/brand/chart-vector.json"
+EXTRACT = ROOT / "branding/source/extract-chart-vector.py"
 
-OCEAN_HI = "#4EB0FF"
-OCEAN_LO = "#156BBF"
-LAND = "#6DB33F"
-GRID = "#0B3378"
 BORDER = "#0D3A8C"
 TRACK_COLOR = "#FF00CC"
 
@@ -22,6 +20,8 @@ T = (610.0, 425.0)
 TAIL_SRC = (672.0, 450.0)
 TIP_SRC = (982.0, 118.0)
 AXIS = (TIP_SRC[0] - TAIL_SRC[0], TIP_SRC[1] - TAIL_SRC[1])
+import math
+
 ANG = math.atan2(AXIS[1], AXIS[0])
 U = (math.cos(ANG), math.sin(ANG))
 P = (T[0] - 60 * U[0], T[1] - 60 * U[1])
@@ -40,7 +40,6 @@ TRACK_SMALL = TRACK_FULL
 
 PLANE_XF = f"translate({T[0]} {T[1]}) scale({S_PLANE}) translate({-TAIL_SRC[0]} {-TAIL_SRC[1]})"
 
-# Owner polygon from flightvis-logo-final.py / base.jpg, split into fill regions.
 PLANE_WHITE_TOP = "M 672 450 L 650 328 L 536 280 L 982 118 L 745 398 Z"
 PLANE_WHITE_LOWER = "M 536 280 L 672 450 L 815 446 L 982 118 L 745 398 Z"
 PLANE_WHITE_UNDER = "M 538 295 L 978 125 L 828 458 L 662 462 Z"
@@ -49,54 +48,25 @@ PLANE_OUTLINE = "M 536 280 L 982 118 L 815 446 L 745 398 L 672 450 L 650 328 Z"
 PLANE_WHITE_BODY = PLANE_OUTLINE
 
 
-def load_map() -> dict:
-    return json.loads(COAST.read_text(encoding="utf-8"))
+def ensure_chart_vector() -> dict:
+    chart_jpg = ROOT / "branding/source/chart.jpg"
+    if not CHART_VEC.exists() or (
+        chart_jpg.exists() and CHART_VEC.stat().st_mtime < chart_jpg.stat().st_mtime
+    ):
+        subprocess.run([sys.executable, str(EXTRACT)], cwd=ROOT, check=True)
+    return json.loads(CHART_VEC.read_text(encoding="utf-8"))
 
 
-def ortho_lonlat(lon: float, lat: float, lon0: float, lat0: float) -> tuple[float, float]:
-    lam = math.radians(lon)
-    phi = math.radians(lat)
-    lam0 = math.radians(lon0)
-    phi0 = math.radians(lat0)
-    x = math.cos(phi) * math.sin(lam - lam0)
-    y = math.cos(phi0) * math.sin(phi) - math.sin(phi0) * math.cos(phi) * math.cos(lam - lam0)
-    return x, y
-
-
-def graticule_lines(proj: dict, mx: float, my: float, mw: float, mh: float) -> str:
-    lon0, lat0 = proj["lon0"], proj["lat0"]
-    scale, ox, oy = proj["scale"], proj["ox"], proj["oy"]
-
-    def scr(lon: float, lat: float) -> tuple[float, float]:
-        gx, gy = ortho_lonlat(lon, lat, lon0, lat0)
-        return ox + scale * gx, oy - scale * gy
-
-    lines: list[str] = []
-    for lon in range(-160, 41, 20):
-        pts: list[str] = []
-        for lat in range(-58, 82, 2):
-            x, y = scr(lon, lat)
-            if mx - 8 <= x <= mx + mw + 8 and my - 8 <= y <= my + mh + 8:
-                pts.append(f"{x:.1f},{y:.1f}")
-        if len(pts) >= 2:
-            lines.append(f"M {pts[0]} L {' L '.join(pts[1:])}")
-    for lat in range(-60, 61, 20):
-        pts = []
-        for lon in range(-175, 43, 2):
-            x, y = scr(lon, lat)
-            if mx - 8 <= x <= mx + mw + 8 and my - 8 <= y <= my + mh + 8:
-                pts.append(f"{x:.1f},{y:.1f}")
-        if len(pts) >= 2:
-            lines.append(f"M {pts[0]} L {' L '.join(pts[1:])}")
-    return "\n      ".join(lines)
-
-
-def coast_paths(map_data: dict, *, top_n: int | None = None) -> str:
-    paths = map_data["paths"]
-    if top_n:
-        paths = sorted(paths, key=len, reverse=True)[:top_n]
+def land_paths(paths: list[str], color: str) -> str:
     return "\n    ".join(
-        f'<path fill="{LAND}" fill-rule="nonzero" d="{p}"/>' for p in paths
+        f'<path fill="{color}" fill-rule="nonzero" d="{p}"/>' for p in paths
+    )
+
+
+def grid_paths(paths: list[str], color: str) -> str:
+    return "\n      ".join(
+        f'<path fill="none" stroke="{color}" stroke-width="3" stroke-opacity="0.35" d="{p}"/>'
+        for p in paths
     )
 
 
@@ -106,9 +76,10 @@ def svg_doc(
     track_d: str,
     track_w: int,
     track_dash: str,
-    coast_html: str,
-    graticule: str,
+    land: list[str],
+    graticule: list[str],
     map_meta: dict,
+    colors: dict,
     maskable_pad: float = 1.0,
 ) -> str:
     mx, my, mw, mh, rx = (
@@ -118,11 +89,16 @@ def svg_doc(
         map_meta["h"],
         map_meta["rx"],
     )
+    ocean_hi = colors["ocean_hi"]
+    ocean_lo = colors["ocean_lo"]
+    land_c = colors["land"]
+    grid_c = colors["grid"]
+    coast_html = land_paths(land, land_c)
     grid_block = ""
     if include_grid and graticule:
         grid_block = f"""
-    <g stroke="{GRID}" stroke-opacity="0.35" stroke-width="3" fill="none">
-      {graticule}
+    <g>
+      {grid_paths(graticule, grid_c)}
     </g>"""
 
     inner_scale = ""
@@ -142,8 +118,8 @@ def svg_doc(
       <rect x="{mx}" y="{my}" width="{mw}" height="{mh}" rx="{rx}" ry="{rx}"/>
     </clipPath>
     <radialGradient id="oceanGrad" cx="46%" cy="42%" r="68%" fx="40%" fy="36%">
-      <stop offset="0%" stop-color="{OCEAN_HI}"/>
-      <stop offset="100%" stop-color="{OCEAN_LO}"/>
+      <stop offset="0%" stop-color="{ocean_hi}"/>
+      <stop offset="100%" stop-color="{ocean_lo}"/>
     </radialGradient>
   </defs>
   {inner_scale}
@@ -169,38 +145,42 @@ def svg_doc(
 
 
 def main() -> None:
-    data = load_map()
+    data = ensure_chart_vector()
     map_meta = data["map"]
-    proj = data["projection"]
-    graticule = graticule_lines(proj, map_meta["x"], map_meta["y"], map_meta["w"], map_meta["h"])
-    out = ROOT / "assets" / "brand"
+    colors = data["colors"]
+    metrics = data.get("metrics", {})
+    out = ROOT / "assets/brand"
+    grids = data.get("graticule_paths") or []
 
     full = svg_doc(
         include_grid=True,
         track_d=TRACK_FULL,
         track_w=26,
         track_dash="46 24",
-        coast_html=coast_paths(data),
-        graticule=graticule,
+        land=data["land_paths"],
+        graticule=grids,
         map_meta=map_meta,
+        colors=colors,
     )
     small = svg_doc(
         include_grid=False,
         track_d=TRACK_SMALL,
         track_w=34,
         track_dash="140 80",
-        coast_html=coast_paths(data, top_n=10),
-        graticule="",
+        land=data.get("land_paths_small") or data["land_paths"][:10],
+        graticule=[],
         map_meta=map_meta,
+        colors=colors,
     )
     mask = svg_doc(
         include_grid=False,
         track_d=TRACK_FULL,
         track_w=22,
         track_dash="46 24",
-        coast_html=coast_paths(data, top_n=12),
-        graticule="",
+        land=data.get("land_paths_small") or data["land_paths"][:12],
+        graticule=[],
         map_meta=map_meta,
+        colors=colors,
         maskable_pad=0.82,
     )
 
@@ -212,6 +192,10 @@ def main() -> None:
         path = out / name
         path.write_text(body, encoding="utf-8")
         print(f"wrote {path} ({path.stat().st_size} bytes)")
+    print(
+        f"land IoU vs ref mask: {metrics.get('land_iou_ref')}, "
+        f"vs chart mask: {metrics.get('land_iou_chart_mask')}"
+    )
 
 
 if __name__ == "__main__":
