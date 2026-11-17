@@ -1,25 +1,29 @@
 <!doctype html>
-<html lang="en">
+<html lang="es-CL">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Club register</title>
+    <title data-i18n="club.register.title">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
-    <style>main{max-width:24rem;margin:2rem auto;padding:1rem} input,button{width:100%;padding:.6rem;margin:.35rem 0;font:inherit}</style>
+    <style>main{max-width:24rem;margin:2rem auto;padding:1rem} input,button{width:100%;padding:.6rem;margin:.35rem 0;font:inherit} #lang-slot{margin-bottom:.75rem;font-size:.9rem}</style>
   </head>
   <body>
     <main>
-      <h1>Register</h1>
+      <div id="lang-slot"></div>
+      <h1 data-i18n="club.register.title"></h1>
       <form id="form">
-        <input name="name" required placeholder="Name" />
-        <input name="email" type="email" required placeholder="Email" />
-        <input name="license_no" placeholder="Licence no." />
-        <input name="password" type="password" minlength="8" required placeholder="Password" />
-        <button type="submit">Register (pending approval)</button>
+        <input name="name" required data-i18n-placeholder="club.register.name" />
+        <input name="email" type="email" required data-i18n-placeholder="club.register.email" />
+        <input name="license_no" data-i18n-placeholder="club.register.license" />
+        <input name="password" type="password" minlength="8" required data-i18n-placeholder="club.register.password" />
+        <button type="submit" data-i18n="club.register.submit"></button>
       </form>
       <p id="msg" class="muted"></p>
     </main>
     <script type="module">
+      import { startClubPage } from "/src/club/i18nPage.ts";
+      import { t, apiErrorMessage } from "/src/i18n/boot.ts";
+      await startClubPage({ persistUser: false });
       document.getElementById("form").addEventListener("submit", async (e) => {
         e.preventDefault();
         const body = Object.fromEntries(new FormData(e.target));
@@ -29,8 +33,8 @@
           body: JSON.stringify(body),
         });
         document.getElementById("msg").textContent = res.ok
-          ? "Registered — wait for admin approval."
-          : "Registration failed.";
+          ? t("club.register.success")
+          : apiErrorMessage((await res.json().catch(() => ({}))).error ?? "register failed");
       });
     </script>
   </body>

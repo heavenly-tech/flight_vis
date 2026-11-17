@@ -104,6 +104,26 @@ impl Mailer {
         }
     }
 
+  /// Send (capture) an email using locale catalogs (`mail.{stem}.*` keys).
+    pub fn capture_localized(
+        &self,
+        to: &str,
+        locale: &str,
+        stem: &str,
+        vars: &[(&str, &str)],
+    ) {
+        let Some(cat) = crate::i18n::global() else {
+            return;
+        };
+        let loc = if cat.is_known(locale) {
+            locale.to_string()
+        } else {
+            cat.canonical.clone()
+        };
+        let (subject, plain, _html) = cat.mail(&loc, stem, vars);
+        self.capture(to, &subject, &plain);
+    }
+
     pub fn verify_postal_signature(&self, body: &[u8], signature: &str) -> bool {
         let Some(secret) = &self.bounce_secret else {
             return false;
@@ -131,6 +151,21 @@ mod tests {
             assert!(mailer.allow_send("a@test", "1.2.3.4"));
         }
         assert!(!mailer.allow_send("a@test", "1.2.3.4"));
+    }
+
+    #[test]
+    fn capture_localized_spanish_magic_link() {
+        let dir = crate::i18n::Catalogs::resolve_dir(std::path::Path::new("dist"));
+        let _ = crate::i18n::init_global(&dir);
+        let mailer = Mailer::from_env(MailOutbox::default());
+        mailer.capture_localized(
+            "p@test",
+            "es",
+            "magicLink",
+            &[("minutes", "15"), ("url", "https://example.invalid/x")],
+        );
+        let m = mailer.captured().pop().unwrap();
+        assert!(m.subject.contains("flight_vis") || m.subject.contains("acceso"));
     }
 
     #[test]

@@ -1,4 +1,5 @@
-export {};
+import { startClubPage } from "./i18nPage";
+import { t } from "../i18n/index";
 
 const who = document.querySelector<HTMLParagraphElement>("#who")!;
 const profile = document.querySelector<HTMLParagraphElement>("#profile")!;
@@ -27,12 +28,12 @@ async function boot(): Promise<void> {
     } | null;
   }>("/api/club/me");
   if (!me.pilot) {
-    who.textContent = "Not signed in.";
-    profile.textContent = "Log in at /club-login.html";
+    who.textContent = t("pilot.notSignedIn");
+    profile.textContent = t("pilot.logInLink");
     return;
   }
   who.textContent = `${me.pilot.name} · ${me.pilot.status} · ${me.pilot.role}`;
-  profile.textContent = `Email: ${me.pilot.email} · Licence: ${me.pilot.licenseNo || "—"}`;
+  profile.textContent = `${me.pilot.email} · ${me.pilot.licenseNo || "—"}`;
   const devs = await api<{ devices: { id: string; label: string }[] }>("/api/me/devices");
   devices.replaceChildren(
     ...devs.devices.map((d) => {
@@ -56,10 +57,10 @@ async function boot(): Promise<void> {
       gpx.style.marginLeft = ".5rem";
       const del = document.createElement("button");
       del.type = "button";
-      del.textContent = "Delete";
+      del.textContent = t("common.delete");
       del.style.marginLeft = ".5rem";
       del.addEventListener("click", async () => {
-        if (!confirm("Delete this track?")) return;
+        if (!confirm(t("pilot.deleteTrackConfirm"))) return;
         await api(`/api/me/flights/${encodeURIComponent(f.id)}`, { method: "DELETE" });
         await boot();
       });
@@ -85,4 +86,7 @@ logoutBtn?.addEventListener("click", async () => {
   location.href = "/club-login.html";
 });
 
-void boot();
+void (async () => {
+  await startClubPage();
+  await boot();
+})();

@@ -1,3 +1,5 @@
+import { bootI18n, t } from "../i18n/boot";
+
 type AppRelease = {
   available: boolean;
   version: string | null;
@@ -11,6 +13,7 @@ const versionEl = document.querySelector<HTMLParagraphElement>("#version")!;
 const shaWrap = document.querySelector<HTMLParagraphElement>("#sha")!;
 const shaVal = document.querySelector<HTMLElement>("#sha-val")!;
 const download = document.querySelector<HTMLAnchorElement>("#download")!;
+const sideloadSteps = document.querySelector<HTMLOListElement>("#sideload-steps")!;
 
 async function loadRelease(): Promise<void> {
   try {
@@ -22,14 +25,14 @@ async function loadRelease(): Promise<void> {
     const apkProbe = await fetch(data.apkUrl, { method: "HEAD" });
     const hasApk = apkProbe.ok && data.available;
     if (!hasApk) {
-      status.textContent = data.message ?? "App coming soon";
+      status.textContent = data.message ?? t("app.releaseSoon");
       download.hidden = true;
       return;
     }
-    status.textContent = "Release ready to install.";
+    status.textContent = t("app.releaseReady");
     if (data.version) {
       versionEl.hidden = false;
-      versionEl.textContent = `Version ${data.version}`;
+      versionEl.textContent = t("app.versionLabel", { version: data.version });
     }
     if (data.sha256) {
       shaWrap.hidden = false;
@@ -38,9 +41,19 @@ async function loadRelease(): Promise<void> {
     download.href = data.apkUrl;
     download.hidden = false;
   } catch {
-    status.textContent = "App coming soon";
+    status.textContent = t("app.releaseSoon");
     download.hidden = true;
   }
 }
 
-void loadRelease();
+void (async () => {
+  await bootI18n({ switcher: "#lang-slot", persistUser: false });
+  sideloadSteps.replaceChildren(
+    ...[1, 2, 3, 4, 5].map((n) => {
+      const li = document.createElement("li");
+      li.textContent = t(`app.sideloadStep${n}`);
+      return li;
+    }),
+  );
+  await loadRelease();
+})();

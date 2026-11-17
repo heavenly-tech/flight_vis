@@ -6,7 +6,7 @@ use crate::club::{
         RegisterError, StartFlightError,
     },
     db_access::{AdminPendingCounts, ApprovePilotCheckout},
-    db::{DeviceRegisterError, MAX_DEVICES_PER_PILOT},
+    db_devices::{DeviceRegisterError, MAX_DEVICES_PER_PILOT},
     map::TailLivePosition,
     visibility::{FlightVisibility, PilotRole, PilotStatus, Viewer},
 };
@@ -232,18 +232,149 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
     let now = now_ms();
     let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now);
     match pilot {
-        Some(p) => Json(json!({
-            "pilot": {
-                "id": p.id,
-                "name": p.name,
-                "email": p.email,
-                "status": p.status,
-                "role": p.role,
-                "licenseNo": p.license_no,
-            }
-        }))
+        Some(p) => {
+            let club_default = db
+                .club_default_locale(&p.club_id)
+                .unwrap_or_else(|_| "es".to_string());
+            Json(json!({
+                "pilot": {
+                    "id": p.id,
+                    "name": p.name,
+                    "email": p.email,
+                    "status": p.status,
+                    "role": p.role,
+                    "licenseNo": p.license_no,
+                    "locale": p.locale,
+                },
+                "clubDefaultLocale": club_default,
+            }))
+        }
         .into_response(),
         None => Json(json!({ "pilot": null })).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct LocaleBody {
+    locale: String,
+}
+
+fn accept_locale(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::ACCEPT_LANGUAGE)
+        .and_then(|v| v.to_str().ok())
+}
+
+async fn club_i18n_context(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let accept = accept_locale(&headers);
+    let Some(db) = club_db(&state) else {
+        let resolved = crate::i18n::global()
+            .map(|c| c.resolve_locale(None, None, accept))
+            .unwrap_or_else(|| "es".to_string());
+        return Json(json!({
+            "userLocale": null,
+            "clubDefaultLocale": null,
+            "resolvedLocale": resolved,
+        }))
+        .into_response();
+    };
+    let session = parse_session_cookie(&headers);
+    let now = now_ms();
+    let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now);
+    let (user_locale, club_default) = match pilot {
+        Some(p) => (
+            Some(p.locale),
+            db.club_default_locale(&p.club_id)
+                .ok()
+                .or(Some("es".to_string())),
+        ),
+        None => (None, None),
+    };
+    let resolved = crate::i18n::global()
+        .map(|c| {
+            c.resolve_locale(
+                user_locale.as_deref(),
+                club_default.as_deref(),
+                accept,
+            )
+        })
+        .unwrap_or_else(|| "es".to_string());
+    Json(json!({
+        "userLocale": user_locale,
+        "clubDefaultLocale": club_default,
+        "resolvedLocale": resolved,
+    }))
+    .into_response()
+}
+
+async fn patch_me_locale(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<LocaleBody>,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let session = parse_session_cookie(&headers);
+    let Some(session) = session else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    };
+    let now = now_ms();
+    let Some(pilot) = db.pilot_from_session(&session, now) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    };
+    match db.set_pilot_locale(&pilot.id, &body.locale) {
+        Ok(()) => Json(json!({ "locale": body.locale })).into_response(),
+        Err(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid locale" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn patch_admin_club_locale(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<LocaleBody>,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    if require_admin(&viewer(&state, &headers)).is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    }
+    let club_id = db.default_club_id().unwrap_or_default();
+    match db.set_club_default_locale(&club_id, &body.locale) {
+        Ok(()) => Json(json!({ "locale": body.locale })).into_response(),
+        Err(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid locale" })),
+        )
+            .into_response(),
     }
 }
 
@@ -2151,6 +2282,12 @@ pub fn router() -> Router<AppState> {
         .route("/api/club/login", post(club_login))
         .route("/api/club/logout", post(club_logout).get(club_logout))
         .route("/api/club/me", get(club_me))
+        .route("/api/club/me/locale", axum::routing::patch(patch_me_locale))
+        .route("/api/club/i18n/context", get(club_i18n_context))
+        .route(
+            "/api/admin/club/locale",
+            axum::routing::patch(patch_admin_club_locale),
+        )
         .route("/api/me/tails", get(me_tails))
         .route("/api/me/flights", get(my_flights))
         .route(

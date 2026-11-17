@@ -1,0 +1,229 @@
+{
+  "_meta": { "locale": "en", "dir": "ltr" },
+  "common": {
+    "appName": "flight_vis",
+    "cancel": "Cancel",
+    "save": "Save",
+    "delete": "Delete",
+    "loading": "Loading…",
+    "home": "Home",
+    "language": "Language",
+    "copied": "Copied",
+    "backPilot": "← Pilot",
+    "backHome": "← Back to flight_vis"
+  },
+  "format": {
+    "dateShort": "MM/dd/yyyy",
+    "dateTimeShort": "MM/dd/yyyy h:mm a"
+  },
+  "nav": {
+    "types": "Types",
+    "tails": "Tails",
+    "pilots": "Pilots",
+    "requests": "Requests",
+    "checkouts": "Checkouts",
+    "adminMap": "Admin map",
+    "kioskQr": "Kiosk QR",
+    "login": "Log in",
+    "clubMap": "Club map",
+    "globe": "Globe viewer",
+    "register": "Register",
+    "pilotProfile": "Pilot profile",
+    "androidApp": "Android app"
+  },
+  "api": {
+    "unauthorized": "Unauthorized",
+    "adminOnly": "Admin only",
+    "pendingApproval": "Pending approval",
+    "clubDisabled": "Club disabled",
+    "clubMissing": "Club not found",
+    "emailExists": "Email already registered",
+    "weakPassword": "Password too weak (minimum 8 characters)",
+    "registerFailed": "Registration failed",
+    "invalidJson": "Invalid JSON",
+    "deviceTokenRequired": "Device token required",
+    "invalidDeviceToken": "Invalid device token",
+    "unknownTail": "Unknown or inactive tail",
+    "activeFlightExists": "Active flight already exists",
+    "deviceMismatch": "Device mismatch",
+    "checkinRequired": "Check-in required",
+    "notFound": "Not found",
+    "forbidden": "Forbidden",
+    "notCleared": "Not cleared for {tail} / {type}",
+    "dbError": "Database error",
+    "invalidLocale": "Locale not available"
+  },
+  "club": {
+    "login": {
+      "title": "Club login",
+      "email": "Email",
+      "password": "Password",
+      "submit": "Log in",
+      "success": "Signed in.",
+      "failed": "Login failed.",
+      "links": "Register · Pilot profile · Android app"
+    },
+    "register": {
+      "title": "Register",
+      "name": "Name",
+      "email": "Email",
+      "license": "Licence no.",
+      "password": "Password",
+      "submit": "Register (pending approval)",
+      "success": "Registered — wait for admin approval.",
+      "failed": "Registration failed."
+    },
+    "map": {
+      "title": "Club map",
+      "membersOnly": "Approved members only. Visibility enforced server-side.",
+      "signInApproved": "Sign in as an approved pilot",
+      "publicLink": "Public map: anonymous",
+      "publicHint": "uses /api/club/map/public"
+    },
+    "publicMap": {
+      "title": "Public live map",
+      "subtitle": "Anonymous — public flights only. Pilot names only when allowed.",
+      "membersLink": "Club map (members)"
+    }
+  },
+  "pilot": {
+    "title": "Pilot",
+    "checking": "Checking session…",
+    "notSignedIn": "Not signed in.",
+    "logInLink": "Log in at /club-login.html",
+    "logOut": "Log out",
+    "downloadApp": "Download Android tracker app",
+    "deviceToken": "Device token",
+    "deviceTokenHelp": "Scan the QR into the Traccar/OsmAnd client. The token stays on the server.",
+    "phoneLabel": "Phone label",
+    "createDevice": "Create device",
+    "myFlights": "My flights",
+    "deleteTrackConfirm": "Delete this track?",
+    "delete": "Delete",
+    "enableFlight": "Enable flight",
+    "startFlight": "Start",
+    "endFlight": "End"
+  },
+  "flight": {
+    "liveTitle": "Live flight",
+    "missingId": "Missing flight id",
+    "followHint": "Follows your club flight via SSE. Trim and save from the main viewer after landing.",
+    "shareHeading": "Share flight",
+    "shareCreate": "Share flight",
+    "shareCopy": "Copy link",
+    "shareRevoke": "Revoke",
+    "shareLinkAt": "Link · {at}",
+    "statusLive": "Live",
+    "statusReplay": "Recording"
+  },
+  "sharePage": {
+    "title": "Shared flight",
+    "invalidLink": "Invalid link",
+    "unavailable": "Flight unavailable"
+  },
+  "checkin": {
+    "landingTitle": "Club check-in",
+    "landingLead": "Open or install the app to complete check-in. This link does not consume the QR.",
+    "downloadApp": "Download the app",
+    "installSteps": "(sideload instructions).",
+    "openApp": "Open the app",
+    "publicMapTitle": "Live map (public)",
+    "expiredTitle": "Invalid QR",
+    "expiredBody": "The code expired or is invalid. Ask the club for a new QR and scan again."
+  },
+  "app": {
+    "badge": "flight_vis · Android",
+    "title": "Sideload the tracker app",
+    "subtitle": "Install the heavenly.cl flight tracker on your phone. No Play Store required.",
+    "loadingRelease": "Loading release info…",
+    "downloadApk": "Download APK",
+    "sideloadTitle": "Sideloading steps",
+    "sideloadStep1": "On Android, open Settings → Apps → Special access → Install unknown apps and allow your browser to install packages.",
+    "sideloadStep2": "Download the APK using the button above (when available) and open it to install.",
+    "sideloadStep3": "After install, grant location Allow all the time so fixes continue in the background.",
+    "sideloadStep4": "Set battery usage for the app to Unrestricted so Android does not kill tracking during flight.",
+    "sideloadStep5": "Copy your per-device token from the pilot profile into the app.",
+    "releaseSoon": "App coming soon",
+    "releaseReady": "Release ready to install.",
+    "versionLabel": "Version {version}"
+  },
+  "admin": {
+    "liveMapTitle": "Admin live map",
+    "tailFilterHint": "Tail ticks filter this view only (persisted).",
+    "showTails": "Show tails",
+    "saveSelection": "Save selection",
+    "kioskSession": "Create kiosk session",
+    "liveAircraft": "Live aircraft",
+    "adminRequired": "Admin login required.",
+    "approve": "Approve",
+    "reject": "Reject",
+    "rejectPrompt": "Reason for pilot",
+    "rejectDefault": "rejected",
+    "activate": "Activate",
+    "deactivate": "Deactivate",
+    "enableFlight": "Enable flight",
+    "clubDefaultLanguage": "Club default language",
+    "clubDefaultLanguageHelp": "Club screen, /c/{slug} landing and QR fallback page.",
+    "clubDefaultLanguageSaved": "Club language saved.",
+    "kioskQrTitle": "Kiosk screen QR",
+    "kioskQrHint": "Drag to move; bottom corner to resize (square). Preview matches aspect ratio.",
+    "aspectRatio": "Aspect ratio",
+    "reset": "Reset",
+    "saving": "Saving…",
+    "saved": "Saved",
+    "resetDone": "Reset",
+    "kioskOpenUrl": "Open on the kiosk:",
+    "kioskActivationToken": "Activation token (paste on that page, not in the URL):"
+  },
+  "kiosk": {
+    "screenTitle": "Club check-in screen",
+    "invalidToken": "Invalid display token.",
+    "activated": "Display activated.",
+    "pasteToken": "Paste the display activation token from the admin map page."
+  },
+  "viewer": {
+    "connecting": "Connecting to live stream…",
+    "reconnecting": "Reconnecting…",
+    "sessionEnded": "Live session ended",
+    "notFound": "Live session not found",
+    "loginRequired": "Log in to watch this live session",
+    "followLive": "Live",
+    "recordOn": "Recording",
+    "recordOff": "Record",
+    "liveSessions": "Live",
+    "saveRecording": "Save recording",
+    "trimTitle": "Edit saved recording (trim optional)",
+    "recorded": "Saved to device library",
+    "noLiveSessions": "No active live sessions",
+    "pickSession": "Choose a live session",
+    "accuracyLabel": "GPS accuracy",
+    "geoidPending": "MSL altitude unavailable — geoid model still loading (showing ellipsoid height)."
+  },
+  "mail": {
+    "magicLink": {
+      "subject": "Your flight_vis sign-in link",
+      "bodyPlain": "Hello,\n\nUse this link to sign in (expires in {minutes} minutes):\n{url}\n\nIf you did not request this email, ignore it.",
+      "bodyHtml": "<p>Hello,</p><p><a href=\"{url}\">Sign in to flight_vis</a> (expires in {minutes} minutes).</p><p>If you did not request this email, ignore it.</p>"
+    },
+    "verifyEmail": {
+      "subject": "Confirm your email for flight_vis",
+      "bodyPlain": "Hello {name},\n\nConfirm your email with this link:\n{url}\n",
+      "bodyHtml": "<p>Hello {name},</p><p><a href=\"{url}\">Confirm email</a></p>"
+    },
+    "pilotApproved": {
+      "subject": "Your pilot account was approved",
+      "bodyPlain": "Hello {name},\n\nYou can now sign in and fly with the club.\n{loginUrl}\n",
+      "bodyHtml": "<p>Hello {name},</p><p>You can now <a href=\"{loginUrl}\">sign in</a> and fly with the club.</p>"
+    },
+    "accessApproved": {
+      "subject": "Access request approved",
+      "bodyPlain": "Your access request for {tail} was approved.",
+      "bodyHtml": "<p>Your access request for <strong>{tail}</strong> was approved.</p>"
+    },
+    "accessRejected": {
+      "subject": "Access request rejected",
+      "bodyPlain": "Your request was rejected. Reason: {reason}",
+      "bodyHtml": "<p>Your request was rejected.</p><p>Reason: {reason}</p>"
+    }
+  }
+}

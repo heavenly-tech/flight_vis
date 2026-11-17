@@ -1,26 +1,27 @@
 <!doctype html>
-<html lang="en">
+<html lang="es-CL">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>flight_vis · live flight</title>
+    <title data-i18n="flight.liveTitle">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
     <link rel="stylesheet" href="/node_modules/cesium/Build/Cesium/Widgets/widgets.css" />
-    <style>#cesiumContainer { width: 100%; height: min(70vh, 560px); }</style>
+    <style>#cesiumContainer { width: 100%; height: min(70vh, 560px); } #lang-slot{font-size:.9rem;margin-bottom:.5rem}</style>
   </head>
   <body>
     <main style="padding:1rem">
-      <h1 id="title">Live flight</h1>
+      <div id="lang-slot"></div>
+      <h1 id="title" data-i18n="flight.liveTitle"></h1>
       <section id="share-panel" hidden style="margin:.75rem 0;padding:.75rem;border:1px solid rgba(255,255,255,.12);border-radius:8px">
-        <p><strong>Compartir vuelo</strong></p>
-        <button type="button" id="btn-share-create">Compartir vuelo</button>
-        <button type="button" id="btn-share-copy" hidden>Copiar enlace</button>
+        <p><strong data-i18n="flight.shareHeading"></strong></p>
+        <button type="button" id="btn-share-create" data-i18n="flight.shareCreate"></button>
+        <button type="button" id="btn-share-copy" hidden data-i18n="flight.shareCopy"></button>
         <ul id="share-list"></ul>
         <div id="share-qr" hidden></div>
       </section>
       <div id="cesiumContainer"></div>
-      <p class="muted">Follows your club flight via SSE. Trim and save from the main viewer after landing.</p>
-      <p><a href="/club-pilot.html">← Pilot</a></p>
+      <p class="muted" data-i18n="flight.followHint"></p>
+      <p><a href="/club-pilot.html" data-i18n="common.backPilot"></a></p>
     </main>
     <script type="module" src="/src/club/flightLive.ts"></script>
   </body>

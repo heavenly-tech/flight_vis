@@ -95,6 +95,23 @@ async fn checkin_landing_config(
         )
             .into_response();
     }
+    let ctx = db.resolve_club_context(&slug).ok();
+    let club_default_locale = ctx
+        .as_ref()
+        .and_then(|c| db.club_default_locale(&c.club_id).ok())
+        .unwrap_or_else(|| "es".to_string());
+    let accept = headers
+        .get(axum::http::header::ACCEPT_LANGUAGE)
+        .and_then(|v| v.to_str().ok());
+    let resolved_locale = crate::i18n::global()
+        .map(|c| {
+            c.resolve_locale(
+                None,
+                Some(club_default_locale.as_str()),
+                accept,
+            )
+        })
+        .unwrap_or(club_default_locale.clone());
     let https_path = checkin_qr_path(&slug, &token);
     let https_url = absolute_https_url(&headers, &https_path);
     let intent = intent_url_for_https(&https_url, ANDROID_PACKAGE);
@@ -103,6 +120,8 @@ async fn checkin_landing_config(
         "intentUrl": intent,
         "slug": slug,
         "appPath": "/app.html",
+        "clubDefaultLocale": club_default_locale,
+        "resolvedLocale": resolved_locale,
     }))
     .into_response()
 }

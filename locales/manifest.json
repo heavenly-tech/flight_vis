@@ -1,0 +1,7 @@
+{
+  "canonical": "es",
+  "locales": {
+    "es": { "label": "Español", "bcp47": "es-CL" },
+    "en": { "label": "English", "bcp47": "en" }
+  }
+}

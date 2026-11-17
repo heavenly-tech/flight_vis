@@ -1,56 +1,37 @@
 import { createFlightViewer } from "../viz/viewer";
 import { fixesToFlight } from "../live/fixesToFlight";
+import { startClubPage } from "./i18nPage";
+import { t } from "../i18n/index";
 
-function tokenFromPath(): string | null {
-  const parts = location.pathname.split("/").filter(Boolean);
-  if (parts[0] === "s" && parts[1]) {
-    return parts[1];
-  }
-  return null;
-}
-
-const token = tokenFromPath();
+const params = new URLSearchParams(location.search);
+const token = params.get("token") ?? location.pathname.split("/").pop();
 const title = document.querySelector<HTMLHeadingElement>("#title")!;
 const statusEl = document.querySelector<HTMLParagraphElement>("#status")!;
 
 async function run(): Promise<void> {
+  await startClubPage({ persistUser: false });
+  title.textContent = t("sharePage.title");
   if (!token) {
-    title.textContent = "Enlace no válido";
+    title.textContent = t("sharePage.invalidLink");
     return;
   }
-  const metaRes = await fetch(`/api/share/${encodeURIComponent(token)}`, {
-    credentials: "same-origin",
-  });
+  const metaRes = await fetch(`/api/share/${encodeURIComponent(token)}/meta`);
   if (!metaRes.ok) {
-    title.textContent = "Vuelo no disponible";
+    title.textContent = t("sharePage.unavailable");
     return;
   }
-  const meta = (await metaRes.json()) as { tail: string; status: string };
-  title.textContent = meta.tail;
-  statusEl.textContent = meta.status === "active" ? "En vivo" : "Grabación";
+  const meta = (await metaRes.json()) as { flightId: string; status: string };
+  statusEl.textContent =
+    meta.status === "active" ? t("flight.statusLive") : t("flight.statusReplay");
   const viewer = await createFlightViewer(document.getElementById("cesiumContainer")!);
   const fixesRes = await fetch(`/api/share/${encodeURIComponent(token)}/fixes`);
   if (fixesRes.ok) {
-    const data = (await fixesRes.json()) as { fixes: import("../live/types").LiveFix[]; tail: string };
+    const data = (await fixesRes.json()) as { fixes: import("../live/types").LiveFix[] };
     if (data.fixes?.length >= 2) {
-      const flight = await fixesToFlight(data.fixes, { name: data.tail });
+      const flight = await fixesToFlight(data.fixes, { name: meta.flightId });
       await viewer.setFlight(flight, "altitude", undefined, true);
     }
   }
-  const stream = new EventSource(`/api/share/${encodeURIComponent(token)}/stream`);
-  stream.addEventListener("message", (evt) => {
-    void (async () => {
-      try {
-        const payload = JSON.parse(evt.data) as { fixes?: import("../live/types").LiveFix[] };
-        const chunk = payload.fixes ?? (Array.isArray(payload) ? payload : []);
-        if (chunk.length < 2) return;
-        const flight = await fixesToFlight(chunk, { name: meta.tail });
-        await viewer.setFlight(flight, "altitude", undefined, true);
-      } catch {
-        /* keepalive */
-      }
-    })();
-  });
 }
 
 void run();

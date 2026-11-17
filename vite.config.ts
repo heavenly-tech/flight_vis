@@ -34,6 +34,7 @@ export default defineConfig({
   plugins: [
     viteStaticCopy({
       targets: [
+        { src: "locales", dest: "locales" },
         { src: `${cesiumSource}/ThirdParty`, dest: cesiumBaseUrl },
         { src: `${cesiumSource}/Workers`, dest: cesiumBaseUrl },
         { src: `${cesiumSource}/Assets`, dest: cesiumBaseUrl },

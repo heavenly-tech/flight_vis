@@ -1,6 +1,6 @@
 //! Direct pilot flight share links (`/s/{token}`) — separate from public map tracks.
 use crate::club::{
-    db::{ShareCreateError, ShareRevokeError},
+    db_shares::{ShareCreateError, ShareRevokeError},
     qr,
     routes::{club_db, is_secure, viewer},
     visibility::Viewer,

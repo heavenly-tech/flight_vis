@@ -1,6 +1,8 @@
 import { createFlightViewer } from "../viz/viewer";
 import { fixesToFlight } from "../live/fixesToFlight";
 import { createShare, listShares, revokeShare } from "./flightSharePanel";
+import { startClubPage } from "./i18nPage";
+import { formatDate, t } from "../i18n/index";
 
 const params = new URLSearchParams(location.search);
 const id = params.get("id");
@@ -22,12 +24,15 @@ async function refreshShares(flightId: string): Promise<void> {
         const li = document.createElement("li");
         const btn = document.createElement("button");
         btn.type = "button";
-        btn.textContent = "Revocar";
+        btn.textContent = t("flight.shareRevoke");
         btn.addEventListener("click", async () => {
           await revokeShare(flightId, s.id);
           await refreshShares(flightId);
         });
-        li.append(document.createTextNode(`Enlace · ${new Date(s.createdAt).toLocaleString()} `), btn);
+        li.append(
+          document.createTextNode(`${t("flight.shareLinkAt", { at: formatDate(s.createdAt, true) })} `),
+          btn,
+        );
         return li;
       }),
   );
@@ -46,15 +51,19 @@ shareCreate.addEventListener("click", async () => {
 shareCopy.addEventListener("click", async () => {
   if (!lastShareUrl) return;
   await navigator.clipboard.writeText(lastShareUrl);
-  shareCopy.textContent = "Copiado";
+  shareCopy.textContent = t("common.copied");
 });
 
 async function run(): Promise<void> {
+  await startClubPage({ persistUser: true });
   if (!id) {
-    title.textContent = "Missing flight id";
+    title.textContent = t("flight.missingId");
     return;
   }
+  title.textContent = t("flight.liveTitle");
   sharePanel.hidden = false;
+  shareCreate.textContent = t("flight.shareCreate");
+  shareCopy.textContent = t("flight.shareCopy");
   await refreshShares(id);
   const viewer = await createFlightViewer(document.getElementById("cesiumContainer")!);
   const fixesRes = await fetch(`/api/flights/${id}/fixes`, { credentials: "same-origin" });

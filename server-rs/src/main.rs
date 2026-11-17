@@ -1,6 +1,7 @@
 mod auth;
 mod club;
 mod device_auth;
+mod i18n;
 mod flights;
 mod live;
 mod static_files;
@@ -664,6 +665,10 @@ fn main() {
 #[tokio::main]
 async fn run_server() {
     let config = config_from_env();
+    let locale_dir = i18n::Catalogs::resolve_dir(&config.dist_dir);
+    if let Err(error) = i18n::init_global(&locale_dir) {
+        eprintln!("warn: i18n catalogs: {error}");
+    }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let live = Arc::new(LiveEngine::new(&config.data_dir));
     if let Err(error) = live.load_from_disk().await {
@@ -677,10 +682,18 @@ async fn run_server() {
             live_task.tick_idle_and_prune().await;
         }
     });
-    let club = match club::ClubDb::connect().await {
+    if club::database::resolve_database_url().is_ok() {
+        if let Ok(pg) = club::database::connect_pool().await {
+            if let Err(error) = club::sqlite_import::import_if_present(&config.data_dir, &pg).await
+            {
+                eprintln!("warn: club sqlite import failed: {error}");
+            }
+        }
+    }
+    let club = match club::ClubDb::open(&config.data_dir) {
         Ok(db) => {
             if std::env::var("FLIGHT_CLUB_SEED_DEMO").as_deref() == Ok("1") {
-                if let Err(error) = db.seed_demo_if_empty().await {
+                if let Err(error) = db.seed_demo_if_empty() {
                     eprintln!("warn: demo seed failed: {error}");
                 }
             }
@@ -709,7 +722,7 @@ async fn run_server() {
             loop {
                 interval.tick().await;
                 let now = club::now_ms();
-                let _ = db.auto_end_idle(10 * 60 * 1000, now).await;
+                let _ = db.auto_end_idle(10 * 60 * 1000, now);
             }
         });
     }
