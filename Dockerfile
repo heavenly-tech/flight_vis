@@ -17,7 +17,7 @@ RUN cargo chef prepare --recipe-path /recipe.json
 
 FROM rust:1.98.0-alpine AS backend
 WORKDIR /app/server-rs
-RUN apk add --no-cache musl-dev
+RUN apk add --no-cache musl-dev openssl-dev pkgconfig
 COPY --from=chef /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
 COPY --from=chef /recipe.json /recipe.json
 RUN cargo chef cook --release --recipe-path /recipe.json

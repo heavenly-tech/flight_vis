@@ -82,7 +82,7 @@ impl ClubDb {
     }
 
     pub async fn ensure_kiosk_qr_defaults(&self, club_id: &str) -> Result<(), DbError> {
-        let needs: Option<i64> =
+        let needs: Option<i32> =
             sqlx::query_scalar("SELECT 1 FROM clubs WHERE id = $1 AND kiosk_qr_x IS NULL")
                 .bind(club_id)
                 .fetch_optional(&self.pool)

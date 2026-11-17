@@ -10,8 +10,8 @@ const api = "http://127.0.0.1:8080";
 
 const authProxy: Record<string, string | ProxyOptions> = {
   "/.well-known": api,
-  "/c": api,
-  "/s": api,
+  "/c/": api,
+  "/s/": api,
   "/api": api,
   "/logout": api,
   "/login": {
@@ -33,6 +33,9 @@ export default defineConfig({
   base: "/",
   define: {
     CESIUM_BASE_URL: JSON.stringify(`/${cesiumBaseUrl}/`),
+    "import.meta.env.VITE_E2E_SKIP_GLOBE": JSON.stringify(
+      process.env.VITE_E2E_SKIP_GLOBE ?? "",
+    ),
   },
   plugins: [
     viteStaticCopy({
@@ -78,6 +81,7 @@ export default defineConfig({
         clubCheckinLanding: path.resolve(root, "club-checkin-landing.html"),
         clubCheckinExpired: path.resolve(root, "club-checkin-expired.html"),
         shareFlight: path.resolve(root, "share-flight.html"),
+        e2eLive: path.resolve(root, "e2e-live.html"),
       },
     },
   },

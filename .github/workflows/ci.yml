@@ -38,8 +38,11 @@ jobs:
           node-version: "22"
           cache: npm
 
-      - name: ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - name: native deps
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg libssl-dev pkg-config
+
+      - name: e2e database seed note
+        run: node scripts/e2e-seed.mjs
 
       - name: cargo fmt
         run: cargo fmt --manifest-path server-rs/Cargo.toml -- --check
@@ -67,5 +70,17 @@ jobs:
       - name: playwright e2e
         run: npx playwright install --with-deps && npm run test:e2e
 
-      - name: docker build
+      - name: docker build amd64
         run: docker build .
+
+  docker-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: docker build arm64
+        run: docker buildx build --platform linux/arm64 -o type=docker,dest=- . > /tmp/flight_vis-arm64.tar

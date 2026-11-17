@@ -28,9 +28,8 @@ mod routes;
 mod share_routes;
 mod visibility;
 
-// HTTP API tests need follow-up async/port fixes after the Postgres migration.
-// #[cfg(test)]
-// mod api_tests;
+#[cfg(test)]
+mod api_tests;
 #[cfg(test)]
 mod load_test;
 

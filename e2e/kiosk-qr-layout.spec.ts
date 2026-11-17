@@ -1,12 +1,13 @@
 import { expect, test } from "@playwright/test";
 
 test("kiosk layout math stays inside preview box", async ({ page }) => {
-  await page.goto("/club-admin-kiosk-layout.html");
+  await page.goto("/club-admin-kiosk-layout.html", { waitUntil: "networkidle" });
   const frame = page.locator("#preview-frame");
   await expect(frame).toBeVisible();
+  await expect(page.locator("#preview-qr img")).toBeVisible();
   const box = await frame.boundingBox();
   expect(box).not.toBeNull();
-  const qr = page.locator("#preview-qr");
+  const qr = page.locator("#preview-qr img");
   const qrBox = await qr.boundingBox();
   expect(qrBox).not.toBeNull();
   if (box && qrBox) {

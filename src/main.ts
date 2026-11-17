@@ -12,6 +12,7 @@ import { cssForUnit } from "./viz/colors";
 import { nextChromeTap, shouldToggleChrome, type ChromeTap } from "./viz/globeChrome";
 import { getLocalFlight, isLocalSlug } from "./live/localFlights";
 import { ACC_DIM_M, createLiveRuntime, parseLivePath } from "./live/runtime";
+import { createE2eFlightViewer } from "./viz/e2eViewerStub";
 import { createFlightViewer, type PathMode } from "./viz/viewer";
 
 const SAMPLE_URL = `${import.meta.env.BASE_URL}samples/vuelo5.gpx`;
@@ -335,7 +336,10 @@ async function boot(): Promise<void> {
   if (liveRouteEarly.sessionId) {
     nameEl.textContent = "Live session";
   }
-  const viewer = await createFlightViewer(document.getElementById("cesiumContainer")!);
+  const skipGlobe = import.meta.env.VITE_E2E_SKIP_GLOBE === "1";
+  const viewer = skipGlobe
+    ? createE2eFlightViewer()
+    : await createFlightViewer(document.getElementById("cesiumContainer")!);
   if (liveRouteEarly.sessionId) {
     setStatus(null);
   }
