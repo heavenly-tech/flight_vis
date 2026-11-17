@@ -701,3 +701,71 @@ async fn contract_client_api_aliases() {
         .unwrap();
     assert_eq!(anon.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+#[serial]
+async fn postal_bounce_webhook_requires_and_verifies_rsa256() {
+    use base64::Engine;
+    use rsa::pkcs1v15::SigningKey;
+    use rsa::pkcs8::EncodePublicKey;
+    use rsa::signature::{SignatureEncoding, Signer};
+    use rsa::RsaPrivateKey;
+    use sha2::Sha256;
+    let mut rng = rand::thread_rng();
+    let private = RsaPrivateKey::new(&mut rng, 2048).unwrap();
+    let pem = private
+        .to_public_key()
+        .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = dir.path().join("postal-pub.pem");
+    std::fs::write(&key_path, &pem).unwrap();
+    std::env::set_var("POSTAL_WEBHOOK_PUBLIC_KEY_FILE", key_path);
+    let mut fx = setup().await;
+    let body = br#"{"to":"bounced@test"}"#;
+    let signing = SigningKey::<Sha256>::new(private);
+    let sig =
+        base64::engine::general_purpose::STANDARD.encode(signing.sign(body).to_bytes());
+    let missing = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/webhooks/postal/bounce")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+    let bad = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/webhooks/postal/bounce")
+                .header("X-Postal-Signature-256", "not-valid")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), StatusCode::UNAUTHORIZED);
+    let ok = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/webhooks/postal/bounce")
+                .header("X-Postal-Signature-256", &sig)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_vec()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+    std::env::remove_var("POSTAL_WEBHOOK_PUBLIC_KEY_FILE");
+}

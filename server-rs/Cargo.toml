@@ -28,8 +28,7 @@ lettre = { version = "0.10", default-features = false, features = ["smtp-transpo
 base64 = "0.22"
 serde_cbor = "0.11"
 url = "2"
-rsa = { version = "0.9", features = ["sha1", "pem"] }
-sha1 = "0.10"
+rsa = { version = "0.9", features = ["sha2", "pem"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

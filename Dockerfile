@@ -46,11 +46,11 @@ RUN set -eux; \
     mkdir -p /out/etc/ssl; \
     cp -a /etc/ssl/certs /out/etc/ssl/; \
     cp -a /etc/ssl/cert.pem /out/etc/ssl/; \
-    printf 'root:x:0:0:root:/root:/sbin/nologin\napp:x:10001:10001:app:/home/app:/sbin/nologin\n' > /out/etc/passwd; \
-    printf 'root:x:0:\napp:x:10001:\n' > /out/etc/group; \
+    printf 'root:x:0:0:root:/root:/sbin/nologin\nnobody:x:65534:65534:nobody:/:/sbin/nologin\n' > /out/etc/passwd; \
+    printf 'root:x:0:\nnobody:x:65534:\n' > /out/etc/group; \
     chmod 1777 /out/tmp; \
     touch /out/data/.keep; \
-    chown -R 10001:10001 /out/data
+    chown -R 65534:65534 /out/data
 
 # Runtime: scratch. Static musl binary + frontend bundle + CA certs, ffmpeg and
 # the exact shared-library closure it needs. No shell, package manager or
@@ -65,12 +65,12 @@ COPY --from=runtime-deps /out/bin /usr/bin
 COPY --from=runtime-deps /out/lib /lib
 COPY --from=runtime-deps /out/usr /usr
 COPY --from=runtime-deps /out/etc /etc
-COPY --from=runtime-deps --chown=10001:10001 /out/data /data
+COPY --from=runtime-deps --chown=65534:65534 /out/data /data
 COPY --from=runtime-deps --chmod=1777 /out/tmp /tmp
 COPY --from=frontend /app/dist ./dist
 COPY --from=backend /app/server-rs/target/release/flight_vis ./flight_vis
 EXPOSE 8080
-USER 10001:10001
+USER 65534:65534
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD ["/app/flight_vis", "healthcheck"]
 CMD ["/app/flight_vis"]

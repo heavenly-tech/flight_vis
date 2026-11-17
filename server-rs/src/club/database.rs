@@ -4,7 +4,7 @@ use std::{env, path::Path, time::Duration};
 
 /// Minimum Postgres major version supported in production and CI (no extensions required).
 #[allow(dead_code)]
-pub const MIN_POSTGRES_MAJOR: u32 = 14;
+pub const MIN_POSTGRES_MAJOR: u32 = 18;
 
 #[derive(Debug)]
 pub enum DbConnectError {
@@ -233,5 +233,24 @@ mod tests {
         } else {
             env::remove_var(key);
         }
+    }
+
+    /// CI runs this with `DATABASE_URL=postgres://flightvis:…/flight_vis_owner_test` after creating the NOSUPERUSER role.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn flightvis_owner_migrations() {
+        let pool = connect_pool().await.expect("database url for owner smoke test");
+        run_migrations(&pool).await.expect("migrations as flightvis owner");
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name = 'pilots'
+             )",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("query");
+        assert!(exists);
+        pool.close().await;
     }
 }

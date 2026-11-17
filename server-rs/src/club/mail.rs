@@ -1,14 +1,10 @@
 #![allow(dead_code)]
 
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
-
-type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Clone, Default)]
 pub struct MailOutbox {
@@ -34,11 +30,9 @@ fn now_secs() -> u64 {
 pub struct Mailer {
     pub smtp_host: Option<String>,
     smtp_port: u16,
-    smtp_user: Option<String>,
     smtp_password: Option<String>,
     pub smtp_from: String,
     pub public_url: String,
-    bounce_secret: Option<Vec<u8>>,
     postal_public_key_pem: Option<String>,
     outbox: MailOutbox,
     per_email_limit: usize,
@@ -53,14 +47,10 @@ impl Mailer {
         let smtp_port = std::env::var("SMTP_PORT")
             .ok()
             .and_then(|p| p.parse().ok())
-            .unwrap_or(587);
-        let smtp_user = std::env::var("SMTP_USER").ok().filter(|s| !s.is_empty());
-        let smtp_password = std::env::var("SMTP_PASS_FILE")
+            .unwrap_or(25);
+        let smtp_password = std::env::var("SMTP_PASS")
             .ok()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .or_else(|| std::env::var("SMTP_PASS").ok().filter(|s| !s.is_empty()));
+            .filter(|s| !s.is_empty());
         let smtp_from =
             std::env::var("SMTP_FROM").unwrap_or_else(|_| "noreply@heavenly.cl".to_string());
         let public_url = std::env::var("FLIGHT_CLUB_PUBLIC_URL")
@@ -69,22 +59,12 @@ impl Mailer {
             .ok()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .filter(|s| !s.is_empty());
-        let bounce_secret = std::env::var("POSTAL_WEBHOOK_SECRET_FILE")
-            .ok()
-            .and_then(|p| std::fs::read(p).ok())
-            .or_else(|| {
-                std::env::var("POSTAL_WEBHOOK_SECRET")
-                    .ok()
-                    .map(|s| s.into_bytes())
-            });
         Self {
             smtp_host,
             smtp_port,
-            smtp_user,
             smtp_password,
             smtp_from,
             public_url,
-            bounce_secret,
             postal_public_key_pem,
             outbox,
             per_email_limit: 5,
@@ -194,34 +174,33 @@ impl Mailer {
             .to(to_mail)
             .subject(subject)
             .multipart(body)?;
-        let mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)?;
-        let mut mailer = mailer.port(self.smtp_port);
-        if let (Some(user), Some(pass)) = (&self.smtp_user, &self.smtp_password) {
-            mailer = mailer.credentials(Credentials::new(user.clone(), pass.clone()));
+        // Postal on the internal network: port 25, AUTH password = server credential key (username ignored).
+        let mut builder = if self.smtp_port == 25 {
+            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)
+        } else {
+            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)?
+        };
+        builder = builder.port(self.smtp_port);
+        if let Some(pass) = &self.smtp_password {
+            builder = builder.credentials(Credentials::new(String::new(), pass.clone()));
         }
-        let mailer = mailer.build();
+        let mailer = builder.build();
         mailer.send(email).await?;
         Ok(())
     }
 
-    pub fn verify_postal_signature(&self, body: &[u8], signature: &str) -> bool {
-        if let Some(pem) = &self.postal_public_key_pem {
-            return verify_postal_rsa(pem, body, signature);
-        }
-        let Some(secret) = &self.bounce_secret else {
+    /// Verify Postal webhook RSA signature (`X-Postal-Signature-256`, base64 PKCS#1 v1.5 over SHA-256(body)).
+    pub fn verify_postal_signature(&self, body: &[u8], signature_b64: &str) -> bool {
+        let Some(pem) = &self.postal_public_key_pem else {
             return false;
         };
-        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
-        mac.update(body);
-        let expected = hex::encode(mac.finalize().into_bytes());
-        subtle::ConstantTimeEq::ct_eq(expected.as_bytes(), signature.as_bytes()).into()
+        verify_postal_rsa(pem, body, signature_b64)
     }
 
-    /// Live Postal webhooks need RSA public key + SMTP credentials from secrets (not in-repo).
+    /// Live Postal needs `SMTP_HOST`, `SMTP_PASS`, and `POSTAL_WEBHOOK_PUBLIC_KEY_FILE`.
     pub fn postal_live_configured(&self) -> bool {
         self.postal_public_key_pem.is_some()
             && self.smtp_host.is_some()
-            && self.smtp_user.is_some()
             && self.smtp_password.is_some()
     }
 }
@@ -232,15 +211,17 @@ fn verify_postal_rsa(pem: &str, body: &[u8], signature_b64: &str) -> bool {
     use rsa::pkcs8::DecodePublicKey;
     use rsa::signature::Verifier;
     use rsa::RsaPublicKey;
-    use sha1::Sha1;
-    let Ok(sig_bytes) = base64::engine::general_purpose::STANDARD.decode(signature_b64.trim())
-    else {
+    use sha2::Sha256;
+    if signature_b64.trim().is_empty() {
+        return false;
+    }
+    let Ok(sig_bytes) = base64::engine::general_purpose::STANDARD.decode(signature_b64.trim()) else {
         return false;
     };
     let Ok(key) = RsaPublicKey::from_public_key_pem(pem) else {
         return false;
     };
-    let verifying_key = VerifyingKey::<Sha1>::new(key);
+    let verifying_key = VerifyingKey::<Sha256>::new(key);
     let Ok(sig) = rsa::pkcs1v15::Signature::try_from(sig_bytes.as_slice()) else {
         return false;
     };
@@ -252,11 +233,25 @@ impl Mailer {
     pub fn captured(&self) -> Vec<CapturedMail> {
         self.outbox.inner.lock().unwrap().clone()
     }
+
+    #[cfg(test)]
+    pub(crate) fn with_postal_pubkey_pem(mut self, pem: String) -> Self {
+        self.postal_public_key_pem = Some(pem);
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Postal production RSA public key (parse-only; no secrets).
+    const POSTAL_PROD_PUBLIC_KEY_PEM: &str = "-----BEGIN PUBLIC KEY-----
+MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC7bC011pQQFvlLR8gby2vfJWhj
+Lv3DKNlKI7q+nRGJyJNHApi1ahe9zJ0dUWbx64jWzOPnAW5WC+cSmsbvyy7qgeXv
+0Rv2OtKWqmBZ5q6JXne5h1NWb0J7k7SHTYPyLitVjAOoth1MABuKT5M00g8vkCer
+FdfgleEWxIJ9soS53wIDAQAB
+-----END PUBLIC KEY-----";
 
     #[test]
     fn send_rate_limit_per_email() {
@@ -283,43 +278,44 @@ mod tests {
     }
 
     #[test]
-    fn postal_signature_roundtrip() {
-        std::env::set_var("POSTAL_WEBHOOK_SECRET", "postal-test-secret");
-        let mailer = Mailer::from_env(MailOutbox::default());
-        let body = br#"{"email":"x@test"}"#;
-        let mut mac = HmacSha256::new_from_slice(b"postal-test-secret").unwrap();
-        mac.update(body);
-        let sig = hex::encode(mac.finalize().into_bytes());
-        assert!(mailer.verify_postal_signature(body, &sig));
-        assert!(!mailer.verify_postal_signature(body, &sig.replacen('a', "b", 1)));
-        std::env::remove_var("POSTAL_WEBHOOK_SECRET");
+    fn postal_production_public_key_parses() {
+        use rsa::pkcs8::DecodePublicKey;
+        use rsa::RsaPublicKey;
+        RsaPublicKey::from_public_key_pem(POSTAL_PROD_PUBLIC_KEY_PEM).expect("postal pubkey");
+    }
+
+    fn sign_postal_body_sha256(private: &rsa::RsaPrivateKey, body: &[u8]) -> String {
+        use base64::Engine;
+        use rsa::pkcs1v15::SigningKey;
+        use rsa::signature::{SignatureEncoding, Signer};
+        use sha2::Sha256;
+        let signing = SigningKey::<Sha256>::new(private.clone());
+        let signature = signing.sign(body);
+        base64::engine::general_purpose::STANDARD.encode(signature.to_bytes())
     }
 
     #[test]
-    fn postal_rsa_signature_roundtrip() {
-        use base64::Engine;
-        use rsa::pkcs1v15::SigningKey;
+    fn postal_rsa_webhook_signature_roundtrip() {
         use rsa::pkcs8::EncodePublicKey;
-        use rsa::signature::{SignatureEncoding, Signer};
         use rsa::RsaPrivateKey;
-        use sha1::Sha1;
         let mut rng = rand::thread_rng();
         let private = RsaPrivateKey::new(&mut rng, 2048).expect("rsa key");
         let pem = private
             .to_public_key()
             .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
             .expect("pem");
-        let dir = tempfile::tempdir().unwrap();
-        let key_path = dir.path().join("postal-pub.pem");
-        std::fs::write(&key_path, &pem).unwrap();
-        std::env::set_var("POSTAL_WEBHOOK_PUBLIC_KEY_FILE", key_path);
+        let mailer = Mailer::from_env(MailOutbox::default()).with_postal_pubkey_pem(pem);
+        let body = br#"{"to":"x@test"}"#;
+        let sig = sign_postal_body_sha256(&private, body);
+        assert!(mailer.verify_postal_signature(body, &sig));
+        assert!(!mailer.verify_postal_signature(b"tampered", &sig));
+        assert!(!mailer.verify_postal_signature(body, "not-valid-base64!!!"));
+        assert!(!mailer.verify_postal_signature(body, ""));
+    }
+
+    #[test]
+    fn postal_verify_rejects_without_configured_key() {
         let mailer = Mailer::from_env(MailOutbox::default());
-        let body = br#"{"email":"x@test"}"#;
-        let signing = SigningKey::<Sha1>::new(private);
-        let signature = signing.sign(body);
-        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
-        assert!(mailer.verify_postal_signature(body, &sig_b64));
-        assert!(!mailer.postal_live_configured());
-        std::env::remove_var("POSTAL_WEBHOOK_PUBLIC_KEY_FILE");
+        assert!(!mailer.verify_postal_signature(b"{}", "abc"));
     }
 }

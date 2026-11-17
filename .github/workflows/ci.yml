@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:14-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -39,10 +39,21 @@ jobs:
           cache: npm
 
       - name: native deps
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg libssl-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg libssl-dev pkg-config postgresql-client
 
       - name: e2e database seed note
         run: node scripts/e2e-seed.mjs
+
+      - name: Postgres flightvis owner migration smoke
+        run: |
+          PGPASSWORD=postgres psql -h localhost -U postgres -v ON_ERROR_STOP=1 <<'SQL'
+          DROP DATABASE IF EXISTS flight_vis_owner_test;
+          DROP ROLE IF EXISTS flightvis;
+          CREATE ROLE flightvis LOGIN NOSUPERUSER PASSWORD 'flightvis_ci_test';
+          CREATE DATABASE flight_vis_owner_test OWNER flightvis;
+          SQL
+          DATABASE_URL=postgres://flightvis:flightvis_ci_test@localhost:5432/flight_vis_owner_test \
+            cargo test --manifest-path server-rs/Cargo.toml flightvis_owner_migrations -- --exact --nocapture
 
       - name: cargo fmt
         run: cargo fmt --manifest-path server-rs/Cargo.toml -- --check

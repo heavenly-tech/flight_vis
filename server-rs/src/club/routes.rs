@@ -2398,10 +2398,17 @@ async fn postal_bounce_webhook(
     body: Bytes,
 ) -> impl IntoResponse {
     let sig = headers
-        .get("x-postal-signature")
-        .or_else(|| headers.get("X-Postal-Signature"))
+        .get("x-postal-signature-256")
+        .or_else(|| headers.get("X-Postal-Signature-256"))
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
+    if sig.is_empty() {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "missing signature" })),
+        )
+            .into_response();
+    }
     if !state.mailer.verify_postal_signature(&body, sig) {
         return (
             StatusCode::UNAUTHORIZED,
