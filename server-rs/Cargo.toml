@@ -23,6 +23,11 @@ hex = "0.4"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "migrate", "macros"] }
 time = { version = "0.3", features = ["formatting"] }
 qrcode-generator = "6.1.2"
+webauthn-rs = { version = "0.4", features = ["danger-allow-state-serialisation"] }
+lettre = { version = "0.10", default-features = false, features = ["smtp-transport", "tokio1-rustls-tls", "builder"] }
+base64 = "0.22"
+serde_cbor = "0.11"
+url = "2"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

@@ -2,6 +2,10 @@
 mod access_request;
 pub mod android_assetlinks;
 mod auth;
+mod auth_routes;
+mod db_auth_pg;
+mod device_tokens_import;
+pub mod webauthn;
 pub mod checkin;
 mod checkin_landing;
 mod club_scope;

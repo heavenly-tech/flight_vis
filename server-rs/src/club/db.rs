@@ -1,5 +1,7 @@
+pub use crate::club::db_auth_pg::{GuestClaimError, MagicConsumeError};
+
 use crate::club::{
-    auth::{self, digest_token, new_device_token, new_id, SESSION_TTL_SEC},
+    auth::{self, digest_token, new_device_token, new_id},
     checkin::{self, CheckinTokenError},
     database::{self, DbConnectError},
     map::{dedupe_by_tail, filter_admin_tails, DeviceFix, TailLivePosition},
@@ -123,6 +125,7 @@ impl ClubDb {
         database::run_migrations(&pool).await?;
         let db = Self { pool };
         db.bootstrap().await?;
+        let _ = db.import_device_tokens_from_env().await;
         Ok(db)
     }
 
@@ -139,9 +142,10 @@ impl ClubDb {
     #[cfg_attr(not(test), allow(dead_code))]
     async fn truncate_all(&self) -> Result<(), DbError> {
         sqlx::query(
-            "TRUNCATE TABLE audit_log, access_requests, checkins, device_pair_tokens, flight_devices, fixes, flights, \
-             devices, checkouts, pilot_sessions, admin_map_prefs, display_sessions, \
-             pilots, aircraft, aircraft_types, clubs RESTART IDENTITY CASCADE",
+            "TRUNCATE TABLE login_attempts, magic_send_log, guest_sessions, magic_login_tokens, \
+             webauthn_credentials, email_suppressions, audit_log, access_requests, checkins, \
+             device_pair_tokens, flight_devices, fixes, flights, devices, checkouts, pilot_sessions, \
+             admin_map_prefs, display_sessions, pilots, aircraft, aircraft_types, clubs RESTART IDENTITY CASCADE",
         )
         .execute(&self.pool)
         .await?;
@@ -265,6 +269,7 @@ impl ClubDb {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn login(
         &self,
         club_id: &str,
@@ -272,52 +277,8 @@ impl ClubDb {
         password: &str,
         now: i64,
     ) -> Result<(String, PilotRow), LoginError> {
-        let row = sqlx::query(
-            "SELECT id, club_id, name, email, license_no, status, role, locale, password_hash
-             FROM pilots WHERE club_id = $1 AND email = $2",
-        )
-        .bind(club_id)
-        .bind(email)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|_| LoginError::Invalid)?;
-        let Some(row) = row else {
-            return Err(LoginError::Invalid);
-        };
-        let id: String = row.try_get(0).map_err(|_| LoginError::Invalid)?;
-        let club_id: String = row.try_get(1).map_err(|_| LoginError::Invalid)?;
-        let name: String = row.try_get(2).map_err(|_| LoginError::Invalid)?;
-        let email: String = row.try_get(3).map_err(|_| LoginError::Invalid)?;
-        let license_no: String = row.try_get(4).map_err(|_| LoginError::Invalid)?;
-        let status: String = row.try_get(5).map_err(|_| LoginError::Invalid)?;
-        let role: String = row.try_get(6).map_err(|_| LoginError::Invalid)?;
-        let locale: String = row.try_get(7).map_err(|_| LoginError::Invalid)?;
-        let hash: String = row.try_get(8).map_err(|_| LoginError::Invalid)?;
-        if !auth::verify_password(password, &hash) {
-            return Err(LoginError::Invalid);
-        }
-        let session_id = auth::new_session_id();
-        let exp = now + SESSION_TTL_SEC * 1000;
-        sqlx::query("INSERT INTO pilot_sessions (id, pilot_id, expires_at) VALUES ($1, $2, $3)")
-            .bind(&session_id)
-            .bind(&id)
-            .bind(exp)
-            .execute(&self.pool)
+        self.login_password(club_id, email, password, now, "127.0.0.1")
             .await
-            .map_err(|_| LoginError::Invalid)?;
-        Ok((
-            session_id,
-            PilotRow {
-                id,
-                club_id,
-                name,
-                email,
-                license_no,
-                status,
-                role,
-                locale,
-            },
-        ))
     }
 
     pub async fn logout(&self, session_id: &str) -> Result<(), DbError> {
@@ -1746,6 +1707,7 @@ pub enum RegisterError {
 #[derive(Debug)]
 pub enum LoginError {
     Invalid,
+    Throttled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1867,6 +1829,7 @@ pub struct FlightSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::club::auth::SESSION_TTL_SEC;
     use crate::club::visibility::{FlightVisibility, PilotRole, PilotStatus, Viewer};
     use serial_test::serial;
 

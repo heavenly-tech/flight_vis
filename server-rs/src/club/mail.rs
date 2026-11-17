@@ -106,16 +106,82 @@ impl Mailer {
 
     /// Send (capture) an email using locale catalogs (`mail.{stem}.*` keys).
     pub fn capture_localized(&self, to: &str, locale: &str, stem: &str, vars: &[(&str, &str)]) {
-        let Some(cat) = crate::i18n::global() else {
+        let Some((subject, plain, _html)) = self.localized_parts(locale, stem, vars) else {
             return;
         };
+        self.capture(to, &subject, &plain);
+    }
+
+    fn localized_parts(
+        &self,
+        locale: &str,
+        stem: &str,
+        vars: &[(&str, &str)],
+    ) -> Option<(String, String, String)> {
+        let cat = crate::i18n::global()?;
         let loc = if cat.is_known(locale) {
             locale.to_string()
         } else {
             cat.canonical.clone()
         };
-        let (subject, plain, _html) = cat.mail(&loc, stem, vars);
-        self.capture(to, &subject, &plain);
+        Some(cat.mail(&loc, stem, vars))
+    }
+
+    /// Capture when SMTP is unset; send plain+html when `SMTP_HOST` is configured.
+    pub async fn send_localized(
+        &self,
+        to: &str,
+        locale: &str,
+        stem: &str,
+        vars: &[(&str, &str)],
+    ) {
+        let Some((subject, plain, html)) = self.localized_parts(locale, stem, vars) else {
+            return;
+        };
+        if self.smtp_host.is_none() {
+            self.capture(to, &subject, &plain);
+            return;
+        }
+        if let Err(e) = self.smtp_send(to, &subject, &plain, &html).await {
+            eprintln!("mail: smtp send failed for {to}: {e}");
+            self.capture(to, &subject, &plain);
+        }
+    }
+
+    async fn smtp_send(
+        &self,
+        to: &str,
+        subject: &str,
+        plain: &str,
+        html: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use lettre::message::{header::ContentType, MultiPart, SinglePart};
+        use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+        let host = self
+            .smtp_host
+            .as_deref()
+            .ok_or("smtp host missing")?;
+        let from: lettre::message::Mailbox = self.smtp_from.parse()?;
+        let to_mail: lettre::message::Mailbox = to.parse()?;
+        let body = MultiPart::alternative()
+            .singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_PLAIN)
+                    .body(plain.to_string()),
+            )
+            .singlepart(
+                SinglePart::builder()
+                    .header(ContentType::TEXT_HTML)
+                    .body(html.to_string()),
+            );
+        let email = Message::builder()
+            .from(from)
+            .to(to_mail)
+            .subject(subject)
+            .multipart(body)?;
+        let mailer = AsyncSmtpTransport::<Tokio1Executor>::relay(host)?.build();
+        mailer.send(email).await?;
+        Ok(())
     }
 
     pub fn verify_postal_signature(&self, body: &[u8], signature: &str) -> bool {

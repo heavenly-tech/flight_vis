@@ -42,6 +42,7 @@ pub(crate) struct AppState {
     pub(crate) device_register_throttle: LoginThrottle,
     pub(crate) share_lookup_throttle: LoginThrottle,
     pub(crate) mailer: club::mail::Mailer,
+    pub(crate) webauthn: Option<club::webauthn::WebauthnState>,
 }
 
 fn app_state(
@@ -65,6 +66,7 @@ fn app_state(
             device_register_throttle: LoginThrottle::default(),
             share_lookup_throttle: LoginThrottle::default(),
             mailer: club::mail::Mailer::from_env(club::mail::MailOutbox::default()),
+            webauthn: club::webauthn::WebauthnState::from_env(),
         },
         queue_rx,
     )

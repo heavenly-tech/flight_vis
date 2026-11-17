@@ -151,11 +151,18 @@ async fn register(
 struct LoginBody {
     email: String,
     password: String,
+    #[serde(rename = "installId", default)]
+    install_id: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 async fn club_login(
     State(state): State<AppState>,
     headers: HeaderMap,
+    client_ip: ClientIp,
     Json(body): Json<LoginBody>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
@@ -168,10 +175,31 @@ async fn club_login(
     let club_id = db.default_club_id().await.unwrap_or_default();
     let now = now_ms();
     match db
-        .login(&club_id, body.email.trim(), &body.password, now)
+        .login_password(
+            &club_id,
+            body.email.trim(),
+            &body.password,
+            now,
+            &client_ip.0,
+        )
         .await
     {
         Ok((session_id, pilot)) => {
+            if let Some(install_id) = body.install_id.as_deref().filter(|s| !s.is_empty()) {
+                let label = body
+                    .label
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or("Dispositivo");
+                let _ = db
+                    .register_device_for_install(
+                        &pilot.id,
+                        label,
+                        body.model.as_deref(),
+                        install_id,
+                    )
+                    .await;
+            }
             let cookie = auth::set_session_cookie(&session_id, is_secure(&headers));
             (
                 StatusCode::OK,
@@ -189,6 +217,11 @@ async fn club_login(
             )
                 .into_response()
         }
+        Err(crate::club::db::LoginError::Throttled) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "too many attempts" })),
+        )
+            .into_response(),
         Err(_) => (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "unauthorized" })),
@@ -209,12 +242,16 @@ async fn club_logout(
     body: Option<Json<LogoutBody>>,
 ) -> impl IntoResponse {
     if let (Some(db), Some(session)) = (club_db(&state), parse_session_cookie(&headers)) {
-        if let Some(Json(body)) = body {
-            if let Some(install_id) = body.install_id.as_deref().filter(|s| !s.is_empty()) {
-                let v = viewer(&state, &headers).await;
-                if let Viewer::Pilot { id, .. } = v {
-                    let _ = db.revoke_device_by_install(&id, install_id).await;
+        let now = now_ms();
+        if let Some(pilot) = db.pilot_from_session(&session, now).await {
+            if let Some(Json(body)) = body {
+                if let Some(install_id) = body.install_id.as_deref().filter(|s| !s.is_empty()) {
+                    let _ = db.revoke_device_by_install(&pilot.id, install_id).await;
+                } else {
+                    let _ = db.revoke_all_devices(&pilot.id).await;
                 }
+            } else {
+                let _ = db.revoke_all_devices(&pilot.id).await;
             }
         }
         let _ = db.logout(&session).await;
@@ -2301,6 +2338,7 @@ async fn postal_bounce_webhook(
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .merge(crate::club::auth_routes::router())
         .route("/api/webhooks/postal/bounce", post(postal_bounce_webhook))
         .route("/club/screen", get(club_screen_page))
         .route("/c/{slug}/screen", get(club_slug_screen_page))

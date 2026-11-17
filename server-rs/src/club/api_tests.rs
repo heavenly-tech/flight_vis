@@ -55,6 +55,7 @@ async fn setup() -> Fixture {
         device_register_throttle: crate::LoginThrottle::default(),
         share_lookup_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+        webauthn: None,
     };
     Fixture {
         _dir: data_dir,
