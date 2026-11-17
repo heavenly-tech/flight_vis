@@ -53,7 +53,7 @@ jobs:
           CREATE DATABASE flight_vis_owner_test OWNER flightvis;
           SQL
           DATABASE_URL=postgres://flightvis:flightvis_ci_test@localhost:5432/flight_vis_owner_test \
-            cargo test --manifest-path server-rs/Cargo.toml flightvis_owner_migrations -- --exact --nocapture
+            cargo test --manifest-path server-rs/Cargo.toml club::database::tests::flightvis_owner_migrations -- --exact --nocapture
 
       - name: cargo fmt
         run: cargo fmt --manifest-path server-rs/Cargo.toml -- --check

@@ -724,8 +724,7 @@ async fn postal_bounce_webhook_requires_and_verifies_rsa256() {
     let mut fx = setup().await;
     let body = br#"{"to":"bounced@test"}"#;
     let signing = SigningKey::<Sha256>::new(private);
-    let sig =
-        base64::engine::general_purpose::STANDARD.encode(signing.sign(body).to_bytes());
+    let sig = base64::engine::general_purpose::STANDARD.encode(signing.sign(body).to_bytes());
     let missing = fx
         .router
         .call(

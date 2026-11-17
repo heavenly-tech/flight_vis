@@ -48,9 +48,7 @@ impl Mailer {
             .ok()
             .and_then(|p| p.parse().ok())
             .unwrap_or(25);
-        let smtp_password = std::env::var("SMTP_PASS")
-            .ok()
-            .filter(|s| !s.is_empty());
+        let smtp_password = std::env::var("SMTP_PASS").ok().filter(|s| !s.is_empty());
         let smtp_from =
             std::env::var("SMTP_FROM").unwrap_or_else(|_| "noreply@heavenly.cl".to_string());
         let public_url = std::env::var("FLIGHT_CLUB_PUBLIC_URL")
@@ -215,7 +213,8 @@ fn verify_postal_rsa(pem: &str, body: &[u8], signature_b64: &str) -> bool {
     if signature_b64.trim().is_empty() {
         return false;
     }
-    let Ok(sig_bytes) = base64::engine::general_purpose::STANDARD.decode(signature_b64.trim()) else {
+    let Ok(sig_bytes) = base64::engine::general_purpose::STANDARD.decode(signature_b64.trim())
+    else {
         return false;
     };
     let Ok(key) = RsaPublicKey::from_public_key_pem(pem) else {

@@ -239,8 +239,12 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn flightvis_owner_migrations() {
-        let pool = connect_pool().await.expect("database url for owner smoke test");
-        run_migrations(&pool).await.expect("migrations as flightvis owner");
+        let pool = connect_pool()
+            .await
+            .expect("database url for owner smoke test");
+        run_migrations(&pool)
+            .await
+            .expect("migrations as flightvis owner");
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(
                 SELECT 1 FROM information_schema.tables
