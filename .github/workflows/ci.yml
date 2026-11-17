@@ -14,7 +14,7 @@ jobs:
       - name: Rust
         uses: dtolnay/rust-toolchain@1.98.0
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - name: Node
         uses: actions/setup-node@v4
@@ -24,6 +24,9 @@ jobs:
 
       - name: ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: cargo fmt
+        run: cargo fmt --manifest-path server-rs/Cargo.toml -- --check
 
       - name: cargo test
         run: cargo test --manifest-path server-rs/Cargo.toml

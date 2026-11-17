@@ -40,6 +40,25 @@ Needs a Rust toolchain for the API (`dev:api`, `test`, `start`). `npm test` runs
 
 Open `http://localhost:5173/vuelo-5`. Drag the profile handles to crop the track, **Skip ground** to auto-trim, **Tag** to mark events, **Save** to keep the current slug.
 
+## Live location (Traccar Client)
+
+Phase 1 server relay: stream a flight from your phone and watch it in the globe UI (PR B adds the client). Configure device tokens on the host, then point **Traccar Client** for Android (Flutter app, [traccar-client-sdk](https://github.com/traccar/traccar-client-sdk)) at this instance.
+
+1. Generate a long random string (32+ hex chars) and map it to a display name:
+
+   ```bash
+   # in .env or a file pointed to by FLIGHT_VIS_DEVICE_TOKENS_FILE
+   FLIGHT_VIS_DEVICE_TOKENS=a1b2c3d4e5f6...=My Pixel
+   ```
+
+2. In Traccar Client → **Settings**:
+   - **Device identifier**: paste the same token (uploaded as form field `id`).
+   - **Server URL**: `https://your-host/api/osmand` (the app POSTs `application/x-www-form-urlencoded` to this path).
+   - **Frequency**: **1 second** (Settings → Accuracy / reporting interval).
+   - **Battery**: allow background location, disable battery optimization for Traccar Client, and enable the foreground service option so fixes keep flowing in flight.
+
+The server opens a live session on the first fix, relays over `GET /api/live/{id}/stream` (SSE) after operator login, keeps buffers 24 hours after stop, and auto-ends a session after 10 minutes without fixes. `POST /api/ingest` with `Authorization: Bearer <token>` accepts JSON batches from other clients.
+
 ## Deploy
 
 ```bash
