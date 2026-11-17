@@ -65,7 +65,7 @@ def land_paths(paths: list[str], color: str) -> str:
 
 def grid_paths(paths: list[str], color: str) -> str:
     return "\n      ".join(
-        f'<path fill="none" stroke="{color}" stroke-width="3" stroke-opacity="0.35" d="{p}"/>'
+        f'<path fill="none" stroke="{color}" stroke-width="2.5" stroke-opacity="0.35" d="{p}"/>'
         for p in paths
     )
 

@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 from PIL import Image
 from scipy.ndimage import label as nd_label
+from scipy.signal import find_peaks
 from skimage.morphology import remove_small_holes, remove_small_objects
 
 HERE = Path(__file__).resolve().parent
@@ -20,7 +21,7 @@ OUT = ROOT / "assets" / "brand" / "chart-vector.json"
 
 MAP_X, MAP_Y, MAP_W, MAP_H, MAP_RX = 72, 88, 880, 848, 56
 LAND_COLOR = "#6DB33F"
-GRID_COLOR = "#0B3378"
+GRID_COLOR = "#0B5FC4"
 BORDER_COLOR = "#0D3A8C"
 HOLE_AREA = 30
 MIN_ISLAND = 30
@@ -105,8 +106,8 @@ def contours_to_paths(mask: np.ndarray, eps: float, min_area: float = 80.0) -> l
     return paths
 
 
-def graticule_paths(chart: np.ndarray, land: np.ndarray) -> list[str]:
-    """Darker blue lines: B > G+60 and ~15–25% darker than local ocean."""
+def grid_line_mask(chart: np.ndarray, land: np.ndarray) -> np.ndarray:
+    """Darker blue graticule pixels in ocean (same rule as legacy Canny trace)."""
     r, g, b = (
         chart[..., 0].astype(np.int16),
         chart[..., 1].astype(np.int16),
@@ -119,28 +120,105 @@ def graticule_paths(chart: np.ndarray, land: np.ndarray) -> list[str]:
     num = cv2.blur(lum * ocean_f, (31, 31))
     local_lum = np.where(denom > 0.05, num / (denom + 1e-6), lum)
     rel_drop = (local_lum - lum) / np.maximum(local_lum, 1.0)
-    grid = ocean & (b > g + 60) & (rel_drop >= 0.12) & (rel_drop <= 0.32)
-    thin = cv2.Canny(grid.astype(np.uint8) * 255, 15, 55)
-    thin = cv2.dilate(thin, np.ones((2, 2), np.uint8), 1)
-    contours, _ = cv2.findContours(thin, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+    return ocean & (rel_drop >= 0.12) & (rel_drop <= 0.32)
+
+
+def _trim_peaks(
+    idx: np.ndarray, strength: np.ndarray, want: int, margin: int, span: int
+) -> list[int]:
+    keep = [int(i) for i in idx if margin <= i <= span - margin]
+    if len(keep) <= want:
+        return keep
+    scored = sorted(keep, key=lambda i: strength[i], reverse=True)
+    while len(scored) > want:
+        scored.pop()
+    return sorted(scored)
+
+
+def graticule_paths(chart: np.ndarray, land: np.ndarray) -> list[str]:
+    """Fit ~7 parallels and ~8 meridians from chart grid pixels → smooth SVG curves."""
+    grid = grid_line_mask(chart, land)
+    crop = grid[MAP_Y : MAP_Y + MAP_H, MAP_X : MAP_X + MAP_W].astype(np.float32)
+    kern_h = np.ones((1, 40), np.float32) / 40.0
+    kern_v = np.ones((40, 1), np.float32) / 40.0
+    hrun = cv2.filter2D(crop, -1, kern_h).max(axis=1)
+    vrun = cv2.filter2D(crop, -1, kern_v).max(axis=0)
+    h_idx, _ = find_peaks(hrun, distance=55, prominence=0.1)
+    v_idx, _ = find_peaks(vrun, distance=55, prominence=0.1)
+    h_local = _trim_peaks(h_idx, hrun, 7, 36, MAP_H)
+    v_local = _trim_peaks(v_idx, vrun, 8, 36, MAP_W)
+    if len(h_local) < 6:
+        h_local = list(np.linspace(80, MAP_H - 80, 7, dtype=int))
+    if len(v_local) < 7:
+        v_local = list(np.linspace(80, MAP_W - 80, 8, dtype=int))
+
+    x0, x1 = float(MAP_X), float(MAP_X + MAP_W)
+    y0, y1 = float(MAP_Y), float(MAP_Y + MAP_H)
+    cx = float(MAP_X + MAP_W / 2)
+    cy = float(MAP_Y + MAP_H / 2)
+    converge = 0.16
+    band = 5
     paths: list[str] = []
-    for cnt in contours:
-        if len(cnt) < 8:
-            continue
-        length = cv2.arcLength(cnt, False)
-        if length < 35 or length > 2000:
-            continue
-        approx = cv2.approxPolyDP(cnt, 1.8, False)
-        if len(approx) < 2:
-            continue
-        pts = [(float(p[0][0]), float(p[0][1])) for p in approx]
-        if not all(MAP_X - 6 <= x <= MAP_X + MAP_W + 6 for x, _ in pts):
-            continue
-        if not all(MAP_Y - 6 <= y <= MAP_Y + MAP_H + 6 for _, y in pts):
-            continue
-        path = f"M {fmt(pts[0][0])},{fmt(pts[0][1])}"
-        path += "".join(f" L {fmt(x)},{fmt(y)}" for x, y in pts[1:])
-        paths.append(path)
+
+    for row in h_local:
+        y_abs = MAP_Y + row
+        samples: list[tuple[float, float]] = []
+        for col in range(0, MAP_W, 36):
+            y0c = max(0, row - band)
+            y1c = min(MAP_H, row + band + 1)
+            patch = crop[y0c:y1c, col : col + 28]
+            if not patch.any():
+                continue
+            rows_hit = np.where(patch.any(axis=1))[0]
+            if len(rows_hit) == 0:
+                continue
+            y_fit = MAP_Y + y0c + float(rows_hit.mean())
+            samples.append((MAP_X + col + 14, y_fit))
+        if len(samples) >= 4:
+            xs = np.array([s[0] for s in samples], dtype=np.float64)
+            ys = np.array([s[1] for s in samples], dtype=np.float64)
+            coef = np.polyfit(xs, ys, 2)
+            bow = abs(coef[0]) * (MAP_W**2) / 4
+            if bow > 1.2:
+                ym = float(np.polyval(coef, x0))
+                yc = float(np.polyval(coef, cx))
+                ye = float(np.polyval(coef, x1))
+                paths.append(
+                    f"M {fmt(x0)},{fmt(ym)} Q {fmt(cx)},{fmt(yc)} {fmt(x1)},{fmt(ye)}"
+                )
+            else:
+                y_mid = float(np.median(ys))
+                paths.append(f"M {fmt(x0)},{fmt(y_mid)} L {fmt(x1)},{fmt(y_mid)}")
+        else:
+            paths.append(f"M {fmt(x0)},{fmt(y_abs)} L {fmt(x1)},{fmt(y_abs)}")
+
+    for col in v_local:
+        x_abs = MAP_X + col
+        dx = (x_abs - cx) * converge
+        x_top = x_abs - dx
+        x_bot = x_abs - dx
+        samples: list[tuple[float, float]] = []
+        for row in range(0, MAP_H, 40):
+            x0c = max(0, col - band)
+            x1c = min(MAP_W, col + band + 1)
+            patch = crop[row : row + 32, x0c:x1c]
+            if not patch.any():
+                continue
+            cols_hit = np.where(patch.any(axis=0))[0]
+            if len(cols_hit) == 0:
+                continue
+            x_fit = MAP_X + x0c + float(cols_hit.mean())
+            samples.append((x_fit, MAP_Y + row + 16))
+        if len(samples) >= 4:
+            xs = np.array([s[0] for s in samples], dtype=np.float64)
+            mid_i = int(np.argmin(np.abs(np.array([s[1] for s in samples]) - cy)))
+            x_mid = float(xs[mid_i])
+        else:
+            x_mid = float(x_abs)
+        paths.append(
+            f"M {fmt(x_top)},{fmt(y0)} Q {fmt(x_mid)},{fmt(cy)} {fmt(x_bot)},{fmt(y1)}"
+        )
+
     return paths
 
 
