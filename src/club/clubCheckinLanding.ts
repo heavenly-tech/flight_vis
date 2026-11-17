@@ -1,56 +1,103 @@
 import { initI18n, applyI18nDocument, t } from "../i18n/index";
 
-function slugAndToken(): { slug: string; token: string } | null {
-  const m = location.pathname.match(/^\/c\/([^/]+)\/q\/([^/]+)/);
-  if (!m) return null;
-  return { slug: decodeURIComponent(m[1]), token: decodeURIComponent(m[2]) };
+type LandingConfig = {
+  intentUrl?: string;
+  clubName?: string;
+  logoUrl?: string | null;
+  slug?: string;
+  clubDefaultLocale?: string;
+  resolvedLocale?: string;
+  releaseAvailable?: boolean;
+  apkUrl?: string;
+  publicMapPath?: string;
+};
+
+function landingPaths(): { slug: string; token: string | null } | null {
+  const withToken = location.pathname.match(/^\/c\/([^/]+)\/q\/([^/]+)/);
+  if (withToken) {
+    return {
+      slug: decodeURIComponent(withToken[1]),
+      token: decodeURIComponent(withToken[2]),
+    };
+  }
+  const slugOnly = location.pathname.match(/^\/c\/([^/]+)\/?$/);
+  if (slugOnly) {
+    return { slug: decodeURIComponent(slugOnly[1]), token: null };
+  }
+  return null;
 }
 
-const pair = slugAndToken();
+const paths = landingPaths();
 const intentBtn = document.querySelector<HTMLAnchorElement>("#btn-intent")!;
-const mapList = document.querySelector<HTMLUListElement>("#map-list")!;
+const mapLink = document.querySelector<HTMLAnchorElement>("#view-live-map")!;
+const clubNameEl = document.querySelector<HTMLHeadingElement>("#club-name")!;
+const logoEl = document.querySelector<HTMLImageElement>("#club-logo")!;
+const downloadSlot = document.querySelector<HTMLDivElement>("#download-primary")!;
+const androidSteps = document.querySelector<HTMLOListElement>("#android-steps")!;
 
-async function boot(): Promise<void> {
-  if (!pair) return;
-  const cfgRes = await fetch(
-    `/api/c/${encodeURIComponent(pair.slug)}/q/${encodeURIComponent(pair.token)}/landing`,
+function renderDownload(available: boolean, apkUrl: string): void {
+  downloadSlot.replaceChildren();
+  if (available) {
+    const a = document.createElement("a");
+    a.className = "dl-primary";
+    a.id = "btn-download-primary";
+    a.href = apkUrl;
+    a.setAttribute("download", "");
+    a.textContent = t("checkin.downloadApp");
+    downloadSlot.appendChild(a);
+  } else {
+    const span = document.createElement("span");
+    span.className = "coming-soon";
+    span.id = "btn-download-primary";
+    span.textContent = t("checkin.comingSoon");
+    downloadSlot.appendChild(span);
+  }
+}
+
+function renderAndroidSteps(): void {
+  androidSteps.replaceChildren(
+    ...[1, 2, 3].map((n) => {
+      const li = document.createElement("li");
+      li.textContent = t(`checkin.androidStep${n}`);
+      return li;
+    }),
   );
-  let clubDefault: string | null = null;
+}
+
+async function loadConfig(): Promise<void> {
+  if (!paths) return;
+  const cfgUrl = paths.token
+    ? `/api/c/${encodeURIComponent(paths.slug)}/q/${encodeURIComponent(paths.token)}/landing`
+  : `/api/c/${encodeURIComponent(paths.slug)}/qr-landing`;
+  const cfgRes = await fetch(cfgUrl);
+  let cfg: LandingConfig = {};
   if (cfgRes.ok) {
-    const cfg = (await cfgRes.json()) as {
-      intentUrl: string;
-      appPath: string;
-      clubDefaultLocale?: string;
-      resolvedLocale?: string;
-    };
-    clubDefault = cfg.clubDefaultLocale ?? null;
-    initI18n({
-      clubDefaultLocale: cfg.resolvedLocale ?? cfg.clubDefaultLocale,
-    });
-    applyI18nDocument();
+    cfg = (await cfgRes.json()) as LandingConfig;
+  }
+  initI18n({
+    clubDefaultLocale: cfg.resolvedLocale ?? cfg.clubDefaultLocale,
+  });
+  applyI18nDocument();
+  if (cfg.clubName) {
+    clubNameEl.textContent = cfg.clubName;
+  }
+  if (cfg.logoUrl) {
+    logoEl.src = cfg.logoUrl;
+    logoEl.hidden = false;
+    logoEl.alt = cfg.clubName ?? "";
+  }
+  if (cfg.intentUrl) {
     intentBtn.href = cfg.intentUrl;
     intentBtn.textContent = t("checkin.openApp");
-    const dl = document.querySelector<HTMLAnchorElement>("#btn-download");
-    if (dl) {
-      dl.href = cfg.appPath;
-      dl.textContent = t("checkin.downloadApp");
-    }
-  } else {
-    initI18n({ clubDefaultLocale: clubDefault });
-    applyI18nDocument();
+  } else if (!paths.token) {
+    intentBtn.hidden = true;
   }
-  const mapRes = await fetch("/api/club/map/public");
-  if (mapRes.ok) {
-    const data = (await mapRes.json()) as { aircraft?: { tail: string; pilotName?: string }[] };
-    mapList.replaceChildren(
-      ...(data.aircraft ?? []).map((row) => {
-        const li = document.createElement("li");
-        const name = row.pilotName ? ` · ${row.pilotName}` : "";
-        li.textContent = `${row.tail}${name}`;
-        return li;
-      }),
-    );
-  }
+  mapLink.href = cfg.publicMapPath ?? "/public-map.html";
+  mapLink.textContent = t("checkin.viewLiveMap");
+  const releaseAvailable =
+    cfg.releaseAvailable === true && typeof cfg.apkUrl === "string" && cfg.apkUrl.length > 0;
+  renderDownload(releaseAvailable, cfg.apkUrl ?? "/app/flightvis.apk");
+  renderAndroidSteps();
 }
 
-void boot();
+void loadConfig();
