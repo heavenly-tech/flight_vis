@@ -42,9 +42,11 @@ PLANE_XF = f"translate({T[0]} {T[1]}) scale({S_PLANE}) translate({-TAIL_SRC[0]} 
 
 # Owner polygon from flightvis-logo-final.py / base.jpg, split into fill regions.
 PLANE_WHITE_TOP = "M 672 450 L 650 328 L 536 280 L 982 118 L 745 398 Z"
-PLANE_WHITE_LOWER = "M 672 450 L 745 398 L 815 446 L 650 328 Z"
+PLANE_WHITE_LOWER = "M 536 280 L 672 450 L 815 446 L 982 118 L 745 398 Z"
+PLANE_WHITE_UNDER = "M 538 295 L 978 125 L 828 458 L 662 462 Z"
 PLANE_NAVY_KEEL = "M 672 450 L 815 446 L 745 398 Z"
 PLANE_OUTLINE = "M 536 280 L 982 118 L 815 446 L 745 398 L 672 450 L 650 328 Z"
+PLANE_WHITE_BODY = PLANE_OUTLINE
 
 
 def load_map() -> dict:
@@ -93,7 +95,9 @@ def coast_paths(map_data: dict, *, top_n: int | None = None) -> str:
     paths = map_data["paths"]
     if top_n:
         paths = sorted(paths, key=len, reverse=True)[:top_n]
-    return "\n    ".join(f'<path fill="{LAND}" d="{p}"/>' for p in paths)
+    return "\n    ".join(
+        f'<path fill="{LAND}" fill-rule="nonzero" d="{p}"/>' for p in paths
+    )
 
 
 def svg_doc(
@@ -151,6 +155,8 @@ def svg_doc(
   <rect x="{mx}" y="{my}" width="{mw}" height="{mh}" rx="{rx}" ry="{rx}" fill="none" stroke="{BORDER}" stroke-width="14"/>
   <path fill="none" stroke="{TRACK_COLOR}" stroke-width="{track_w}" stroke-linecap="butt" stroke-dasharray="{track_dash}" d="{track_d}"/>
   <g transform="{PLANE_XF}">
+    <path fill="#FFFFFF" stroke="none" d="{PLANE_WHITE_BODY}"/>
+    <path fill="#FFFFFF" stroke="none" d="{PLANE_WHITE_UNDER}"/>
     <path fill="#FFFFFF" stroke="none" d="{PLANE_WHITE_TOP}"/>
     <path fill="#FFFFFF" stroke="none" d="{PLANE_WHITE_LOWER}"/>
     <path fill="{BORDER}" stroke="none" d="{PLANE_NAVY_KEEL}"/>

@@ -53,13 +53,16 @@ def main() -> int:
     R, G, B = ref_full[..., 0], ref_full[..., 1], ref_full[..., 2]
     magenta = (R > 150) & (B > 140) & (G < 130)
     white = (R > 205) & (G > 205) & (B > 205)
+    MAP_X, MAP_Y, MAP_W, MAP_H = 72, 88, 880, 848
     ref_land = (
         (G > 150) & (G > R + 25) & (G > B + 45) & (R < 145) & ~magenta & ~white
     )
+    ref_land = ref_land[MAP_Y : MAP_Y + MAP_H, MAP_X : MAP_X + MAP_W]
     rR, rG, rB = ren.convert("RGB").split()
     rnp = np.asarray(ren.convert("RGB"))
     rR, rG, rB = rnp[..., 0], rnp[..., 1], rnp[..., 2]
     ren_land = (rG > 120) & (rG > rR + 10) & (rG > rB + 20)
+    ren_land = ren_land[MAP_Y : MAP_Y + MAP_H, MAP_X : MAP_X + MAP_W]
     inter = np.logical_and(ref_land, ren_land).sum()
     union = np.logical_or(ref_land, ren_land).sum()
     land_iou = float(inter) / float(union) if union else 0.0
