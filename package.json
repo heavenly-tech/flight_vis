@@ -18,9 +18,13 @@
   "devDependencies": {
     "@playwright/test": "^1.56.0",
     "cesium": "^1.134.0",
+    "jsdom": "^26.1.0",
     "typescript": "^5.9.2",
     "vite": "^7.1.5",
     "vite-plugin-static-copy": "^3.1.2",
     "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "egm96-universal": "^1.1.1"
   }
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyFixDedupe,
+  classifyStreamError,
   dedupeFixes,
   parseFixEventData,
   replayFixes,
@@ -89,5 +90,15 @@ describe("connectLiveStream", () => {
     expect(fixes).toEqual([10, 11]);
     expect(instance).toBe(1);
     handle.close();
+  });
+
+});
+
+describe("classifyStreamError", () => {
+  it("maps HTTP 404 to notfound", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response("not found", { status: 404 });
+    expect(await classifyStreamError("/api/live/missing/stream")).toBe("notfound");
+    globalThis.fetch = originalFetch;
   });
 });

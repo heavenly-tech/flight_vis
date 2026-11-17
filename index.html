@@ -199,17 +199,17 @@
           <button type="button" class="chip" data-tail-min="30">30m</button>
         </div>
         <div class="live-trim-manual">
+          <p id="live-trim-tz" class="dialog-hint"></p>
           <label class="dialog-field">
-            <span>Start (UTC)</span>
+            <span>Start (local)</span>
             <input id="live-trim-start" type="datetime-local" step="1" />
           </label>
           <label class="dialog-field">
-            <span>End (UTC)</span>
+            <span>End (local)</span>
             <input id="live-trim-end" type="datetime-local" step="1" />
           </label>
         </div>
-        <div class="dialog-actions">
-          <button type="button" id="live-trim-record" class="chip">Record</button>
+        <div class="dialog-actions live-trim-actions">
           <button type="submit" value="save" class="play">Save</button>
           <button type="submit" value="cancel" class="chip" formnovalidate>Cancel</button>
         </div>

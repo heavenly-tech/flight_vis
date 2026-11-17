@@ -685,6 +685,36 @@ body.live-session #btn-record {
   gap: 8px;
 }
 
+.live-trim-dialog .dialog-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.live-trim-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 420px) {
+  .live-trim-dialog {
+    max-width: min(100vw - 24px, 22rem);
+  }
+
+  .live-trim-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+  }
+
+  .live-trim-actions .play,
+  .live-trim-actions .chip {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
 #hud.hud-low-accuracy .hud-stat strong {
   opacity: 0.45;
 }

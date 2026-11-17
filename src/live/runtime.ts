@@ -7,7 +7,8 @@ import { fetchLiveFixes, listLiveSessions, loginUrl } from "./api";
 import { fixesToFlight } from "./fixesToFlight";
 import { flightToGpx } from "./flightToGpx";
 import { dedupeFixes } from "./sseClient";
-import { putLocalFlight } from "./localFlights";
+import { getLocalFlight, putLocalFlight } from "./localFlights";
+import { liveFixesFromGpx } from "./gpxLive";
 import { detectLang, msg, setLiveLang, type LiveLang } from "./messages";
 import { openLiveStream, type LiveStreamHandle } from "./sseClient";
 import type { LiveFix } from "./types";
@@ -41,6 +42,8 @@ export type LiveHost = {
   refreshHud: () => void;
   refreshProfile: () => void;
   setStatus: (text: string | null) => void;
+  setFlightName: (text: string) => void;
+  enableFollow: () => void;
   refreshLibrary: () => Promise<void>;
   getColorMode: () => ColorMode;
   loadRecording: (
@@ -72,8 +75,8 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
   let sessionId: string | null = null;
   let stream: LiveStreamHandle | null = null;
   let followingLive = true;
-  let recording = false;
-  let pendingSave: { flight: Flight; trim: TrimRange } | null = null;
+  let pendingSave: { flight: Flight; trim: TrimRange; localId: string } | null = null;
+  let recordingId: string | null = null;
   const allFixes: LiveFix[] = [];
   const seenFixTimes = new Set<number>();
 
@@ -87,6 +90,7 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
   const trimTitle = document.querySelector<HTMLParagraphElement>("#live-trim-title")!;
   const trimStart = document.querySelector<HTMLInputElement>("#live-trim-start")!;
   const trimEnd = document.querySelector<HTMLInputElement>("#live-trim-end")!;
+  const trimTz = document.querySelector<HTMLParagraphElement>("#live-trim-tz")!;
   const timelineEdge = document.querySelector<HTMLElement>("#timeline-live-edge")!;
 
   function setLiveStatus(text: string | null): void {
@@ -104,7 +108,10 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     sessionsBtn.textContent = msg("liveSessions", lang);
     trimTitle.textContent = msg("trimTitle", lang);
     liveBtn.title = msg("followLive", lang);
-    recordBtn.textContent = recording ? msg("recordOn", lang) : msg("recordOff", lang);
+  }
+
+  function recordingLocalId(): string | null {
+    return sessionId ? `local:${sessionId}` : null;
   }
 
   function syncLiveButton(): void {
@@ -142,19 +149,16 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     return Math.min(Math.max(ms, trim.startMs), edgeMs());
   }
 
-  async function ingestFixes(fixes: LiveFix[]): Promise<void> {
-    const fresh = dedupeFixes(fixes, seenFixTimes);
-    if (fresh.length === 0) return;
-    allFixes.push(...fresh);
-    allFixes.sort((a, b) => a.t - b.t);
+  async function rebuildFromAllFixes(): Promise<void> {
     if (allFixes.length < 2 || !sessionId) return;
-
     const prevLen = host.getFlight()?.points.length ?? 0;
     const next = fixesToFlight(allFixes, { name: `Live ${sessionId.slice(0, 8)}`, fileName: `${sessionId}.gpx` });
     host.setFlight(next);
     const range = host.getTrim() ?? fullRange(next);
     host.setTrim({ startMs: range.startMs, endMs: edgeMs() });
 
+    host.setFlightName(next.name);
+    host.setStatus(null);
     if (prevLen === 0) {
       await host.viewer.setFlight(next, host.getColorMode(), host.getTrim() ?? fullRange(next), false);
       host.viewer.setAccuracyDim(ACC_DIM_M);
@@ -173,30 +177,63 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     }
     syncLiveButton();
     host.refreshProfile();
-    if (recording) await flushRecording();
+    await flushRecording();
+  }
+
+  async function ingestFixes(fixes: LiveFix[]): Promise<void> {
+    const fresh = dedupeFixes(fixes, seenFixTimes);
+    if (fresh.length === 0) return;
+    allFixes.push(...fresh);
+    allFixes.sort((a, b) => a.t - b.t);
+    await rebuildFromAllFixes();
+  }
+
+  async function seedBufferedFixes(serverFixes: LiveFix[] | null): Promise<void> {
+    const localId = recordingLocalId();
+    const local = localId ? await getLocalFlight(localId) : null;
+    const localFixes = local ? liveFixesFromGpx(local.track) : [];
+    const combined = [...localFixes, ...(serverFixes ?? [])].sort((a, b) => a.t - b.t);
+    allFixes.length = 0;
+    seenFixTimes.clear();
+    const merged: LiveFix[] = [];
+    for (const fix of combined) {
+      if (seenFixTimes.has(fix.t)) continue;
+      seenFixTimes.add(fix.t);
+      merged.push(fix);
+    }
+    allFixes.push(...merged);
+    await rebuildFromAllFixes();
   }
 
   async function flushRecording(): Promise<void> {
     const flight = host.getFlight();
     const trim = host.getTrim();
-    if (!flight || !trim || !sessionId) return;
+    const id = recordingLocalId();
+    if (!flight || !trim || !id) return;
     const track = flightToGpx(flight);
+    recordingId = id;
     await putLocalFlight({
-      id: `local:${sessionId}`,
+      id,
       name: flight.name,
       fileName: flight.fileName,
       track,
       trim,
       tags: [],
     });
+    await host.refreshLibrary();
   }
 
-  function openTrimDialog(flight: Flight): void {
-    pendingSave = { flight, trim: fullRange(flight) };
+  function openTrimDialog(flight: Flight, localId: string): void {
+    pendingSave = { flight, trim: fullRange(flight), localId };
     const end = flight.points[flight.points.length - 1].time;
     const start = flight.points[0].time;
     trimEnd.value = msToLocalInput(end);
     trimStart.value = msToLocalInput(start);
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    trimTz.textContent =
+      lang === "es"
+        ? `Zona horaria del dispositivo: ${zone}`
+        : `Device time zone: ${zone}`;
     trimDialog.showModal();
   }
 
@@ -219,6 +256,7 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     const trim: TrimRange = { startMs: start, endMs: end };
     const track = flightToGpx(pendingSave.flight);
     const saved = await putLocalFlight({
+      id: pendingSave.localId,
       name: pendingSave.flight.name,
       fileName: pendingSave.flight.fileName,
       track,
@@ -250,9 +288,10 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     }
     if (initial === null) {
       host.setStatus(msg("notFound", lang));
+      setLiveStatus(null);
       return;
     }
-    if (initial.length) await ingestFixes(initial);
+    await seedBufferedFixes(initial);
 
     stream = openLiveStream(id, {
       onOpen: () => setLiveStatus(null),
@@ -261,6 +300,16 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
         if (status === 401) {
           host.setStatus(msg("loginRequired", lang));
           setLiveStatus(null);
+          stream?.close();
+          stream = null;
+          return;
+        }
+        if (status === 404) {
+          host.setStatus(msg("notFound", lang));
+          setLiveStatus(null);
+          active = false;
+          stream?.close();
+          stream = null;
           return;
         }
         setLiveStatus(msg("reconnecting", lang));
@@ -268,15 +317,18 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
       onFix: (fix) => {
         void ingestFixes([fix]);
       },
-      onEnd: () => {
+      onEnd: async () => {
         active = false;
         stream = null;
         document.body.classList.remove("live-session");
-        recordBtn.hidden = true;
         liveBtn.hidden = true;
         setLiveStatus(msg("sessionEnded", lang));
         const flight = host.getFlight();
-        if (flight) openTrimDialog(flight);
+        if (flight) {
+          await flushRecording();
+          const id = recordingId ?? recordingLocalId();
+          if (id) openTrimDialog(flight, id);
+        }
       },
     });
   }
@@ -284,21 +336,17 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
   liveBtn.addEventListener("click", () => {
     followingLive = true;
     host.setFollowingLive(true);
+    host.enableFollow();
     host.setCursor(edgeMs());
     const flight = host.getFlight();
     if (flight) {
-      host.viewer.setSample(sampleAt(flight, host.getCursor()), host.isFollow());
+      host.viewer.setSample(sampleAt(flight, host.getCursor()), true);
     }
     host.afterSeek();
     syncLiveButton();
   });
 
-  recordBtn.addEventListener("click", () => {
-    recording = !recording;
-    recordBtn.classList.toggle("recording", recording);
-    applyLangUi();
-    if (recording) void flushRecording();
-  });
+  recordBtn.hidden = true;
 
   sessionsBtn.addEventListener("click", () => {
     void startList();
@@ -365,6 +413,9 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
   async function startSession(id: string): Promise<void> {
     allFixes.length = 0;
     seenFixTimes.clear();
+    recordingId = `local:${id}`;
+    host.setStatus(null);
+    host.setFlightName(`Live ${id.slice(0, 8)}`);
     const auth = host.getAuth();
     if (!auth.authenticated) {
       host.setStatus(msg("loginRequired", lang));
@@ -379,7 +430,6 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     host.setFollowingLive(true);
     document.body.classList.add("live-session");
     liveBtn.hidden = false;
-    recordBtn.hidden = false;
     sessionsBtn.hidden = false;
     host.viewer.setAccuracyDim(ACC_DIM_M);
     history.replaceState({ live: id }, "", `/live/${id}`);

@@ -25,6 +25,7 @@ const authProxy: Record<string, string | ProxyOptions> = {
 export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
+    environment: "jsdom",
   },
   base: "/",
   define: {

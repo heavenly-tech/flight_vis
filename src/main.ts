@@ -232,8 +232,7 @@ function renderHud(): void {
   if (!flight || !trim) return;
   const sample = sampleAt(flight, cursorMs);
   const p = sample.point;
-  const displayAlt = p.positionAlt ?? p.alt;
-  document.querySelector("#stat-alt")!.textContent = `${Math.round(displayAlt)} m`;
+  document.querySelector("#stat-alt")!.textContent = `${Math.round(p.alt)} m`;
   document.querySelector("#stat-spd")!.textContent = `${(p.speedMps * 3.6).toFixed(0)} km/h`;
   document.querySelector("#stat-vario")!.textContent = `${p.varioMps >= 0 ? "+" : ""}${p.varioMps.toFixed(1)} m/s`;
   document.querySelector("#stat-dist")!.textContent = `${(p.distanceM / 1000).toFixed(1)} km`;
@@ -325,8 +324,15 @@ function hitHandle(x: number, width: number): "start" | "end" | null {
 }
 
 async function boot(): Promise<void> {
+  const liveRouteEarly = parseLivePath(window.location.pathname);
   setStatus("Preparing 3D globe…");
+  if (liveRouteEarly.sessionId) {
+    nameEl.textContent = "Live session";
+  }
   const viewer = await createFlightViewer(document.getElementById("cesiumContainer")!);
+  if (liveRouteEarly.sessionId) {
+    setStatus(null);
+  }
   (window as unknown as { __fv: typeof viewer }).__fv = viewer;
 
   if (new URLSearchParams(window.location.search).has("perf")) {
@@ -882,6 +888,13 @@ async function boot(): Promise<void> {
     refreshHud: () => renderHud(),
     refreshProfile: () => maybeDrawProfile(true),
     setStatus,
+    setFlightName: (text) => {
+      nameEl.textContent = text;
+    },
+    enableFollow: () => {
+      follow = true;
+      followButton.setAttribute("aria-pressed", "true");
+    },
     refreshLibrary: async () => library?.refresh(),
     getColorMode: () => colorMode,
     loadRecording: async (track, fileName, nextTrim, name, localId) => {
@@ -917,9 +930,12 @@ async function boot(): Promise<void> {
     setStatus,
   });
   syncAuthUi();
-  if (auth.authenticated) library.setOpen(true);
 
   const liveRoute = parseLivePath(window.location.pathname);
+  if (auth.authenticated && !liveRoute.sessionId && !liveRoute.listOnly) {
+    library.setOpen(true);
+  }
+
   if (liveRoute.sessionId) {
     await liveRuntime.startSession(liveRoute.sessionId);
     return;
