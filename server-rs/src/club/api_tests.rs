@@ -24,23 +24,23 @@ struct Fixture {
     device_token: String,
 }
 
-fn setup() -> Fixture {
+async fn setup() -> Fixture {
     let data_dir = tempfile::tempdir().expect("tempdir");
-    let club = ClubDb::open(data_dir.path()).expect("club db");
-    let club_id = club.default_club_id().unwrap();
-    club.upsert_type(&club_id, "C152").unwrap();
-    club.upsert_aircraft(&club_id, "N1", "C152", true).unwrap();
+    let club = ClubDb::open_test().await.expect("club db");
+    let club_id = club.default_club_id().awaitunwrap();
+    club.upsert_type(&club_id, "C152").awaitunwrap();
+    club.upsert_aircraft(&club_id, "N1", "C152", true).awaitunwrap();
     let pilot_a = club
-        .register(&club_id, "A", "a@test", "", "password12")
+        .register(&club_id, "A", "a@test", "", "password12").await
         .unwrap();
     let pilot_b = club
-        .register(&club_id, "B", "b@test", "", "password12")
+        .register(&club_id, "B", "b@test", "", "password12").await
         .unwrap();
-    club.approve_pilot(&pilot_a).unwrap();
-    club.approve_pilot(&pilot_b).unwrap();
-    club.add_checkout(&pilot_a, "C152", None, None).unwrap();
-    club.add_checkout(&pilot_b, "C152", None, None).unwrap();
-    let (_dev, device_token) = club.create_device(&pilot_a, "phone").unwrap();
+    club.approve_pilot(&pilot_a).awaitunwrap();
+    club.approve_pilot(&pilot_b).awaitunwrap();
+    club.add_checkout(&pilot_a, "C152", None, None).awaitunwrap();
+    club.add_checkout(&pilot_b, "C152", None, None).awaitunwrap();
+    let (_dev, device_token) = club.create_device(&pilot_a, "phone").awaitunwrap();
     let live = Arc::new(LiveEngine::new(data_dir.path()));
     let (video_queue, _) = tokio::sync::mpsc::channel(4);
     let state = AppState {
@@ -75,7 +75,7 @@ async fn login_cookie(router: &mut axum::Router, email: &str) -> String {
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(format!(
                     r#"{{"email":"{email}","password":"password12"}}"#
-                )))
+                ))).await
                 .unwrap(),
         )
         .await
@@ -83,7 +83,7 @@ async fn login_cookie(router: &mut axum::Router, email: &str) -> String {
     res.headers()
         .get(header::SET_COOKIE)
         .and_then(|v| v.to_str().ok())
-        .map(String::from)
+        .map(String::from).await
         .expect("set-cookie")
 }
 
@@ -104,7 +104,7 @@ async fn start_flight(
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .header(header::COOKIE, cookie)
-                .body(Body::from(format!(r#"{{"token":"{qr}"}}"#)))
+                .body(Body::from(format!(r#"{{"token":"{qr}"}}"#))).await
                 .unwrap(),
         )
         .await
@@ -120,25 +120,25 @@ async fn start_flight(
                 .header(header::COOKIE, cookie)
                 .body(Body::from(format!(
                     r#"{{"tail":"N1","visibility":"{visibility}"}}"#
-                )))
+                ))).await
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
     let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
-    serde_json::from_slice::<serde_json::Value>(&body)
+    serde_json::from_slice::<serde_json::Value>(&body).await
         .unwrap()
-        .get("id")
+        .get("id").await
         .unwrap()
-        .as_str()
+        .as_str().await
         .unwrap()
         .to_string()
 }
 
 #[tokio::test]
 async fn fixes_denied_after_mid_flight_private() {
-    let mut fx = setup();
+    let mut fx = setup().await;
     let cookie_a = login_cookie(&mut fx.router, "a@test").await;
     let cookie_b = login_cookie(&mut fx.router, "b@test").await;
     let flight_id = start_flight(
@@ -156,7 +156,7 @@ async fn fixes_denied_after_mid_flight_private() {
             Request::builder()
                 .uri(format!("/api/flights/{flight_id}/fixes"))
                 .header(header::COOKIE, cookie_b.clone())
-                .body(Body::empty())
+                .body(Body::empty()).await
                 .unwrap(),
         )
         .await
@@ -169,7 +169,7 @@ async fn fixes_denied_after_mid_flight_private() {
             &flight_id,
             Some(FlightVisibility::Private),
             None,
-        )
+        ).await
         .unwrap();
 
     let hidden = fx
@@ -178,7 +178,7 @@ async fn fixes_denied_after_mid_flight_private() {
             Request::builder()
                 .uri(format!("/api/flights/{flight_id}/fixes"))
                 .header(header::COOKIE, cookie_b)
-                .body(Body::empty())
+                .body(Body::empty()).await
                 .unwrap(),
         )
         .await
@@ -188,7 +188,7 @@ async fn fixes_denied_after_mid_flight_private() {
 
 #[tokio::test]
 async fn anonymous_public_map_and_name_flag() {
-    let mut fx = setup();
+    let mut fx = setup().await;
     let cookie_a = login_cookie(&mut fx.router, "a@test").await;
     let flight_id = start_flight(
         &mut fx.router,
@@ -209,7 +209,7 @@ async fn anonymous_public_map_and_name_flag() {
             Request::builder()
                 .method("POST")
                 .uri(format!("/api/osmand?{q}"))
-                .body(Body::empty())
+                .body(Body::empty()).await
                 .unwrap(),
         )
         .await
@@ -219,17 +219,17 @@ async fn anonymous_public_map_and_name_flag() {
         .call(
             Request::builder()
                 .uri("/api/club/map/public")
-                .body(Body::empty())
+                .body(Body::empty()).await
                 .unwrap(),
         )
         .await
         .unwrap();
     let bytes = to_bytes(empty.into_body(), usize::MAX).await.unwrap();
-    let n = serde_json::from_slice::<serde_json::Value>(&bytes)
+    let n = serde_json::from_slice::<serde_json::Value>(&bytes).await
         .unwrap()
-        .get("aircraft")
+        .get("aircraft").await
         .unwrap()
-        .as_array()
+        .as_array().await
         .unwrap()
         .len();
     assert_eq!(n, 0);
@@ -240,7 +240,7 @@ async fn anonymous_public_map_and_name_flag() {
             &flight_id,
             Some(FlightVisibility::Public),
             Some(true),
-        )
+        ).await
         .unwrap();
 
     let res = fx
@@ -248,36 +248,36 @@ async fn anonymous_public_map_and_name_flag() {
         .call(
             Request::builder()
                 .uri("/api/club/map/public")
-                .body(Body::empty())
+                .body(Body::empty()).await
                 .unwrap(),
         )
         .await
         .unwrap();
     let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
-    let row = serde_json::from_slice::<serde_json::Value>(&body)
+    let row = serde_json::from_slice::<serde_json::Value>(&body).await
         .unwrap()
-        .get("aircraft")
+        .get("aircraft").await
         .unwrap()
-        .as_array()
+        .as_array().await
         .unwrap()
         .first()
-        .cloned()
+        .cloned().await
         .expect("row");
     assert!(row.get("pilotName").and_then(|v| v.as_str()).is_some());
 }
 
 #[tokio::test]
 async fn server_qr_svg_endpoints() {
-    let mut fx = setup();
+    let mut fx = setup().await;
     let cookie_a = login_cookie(&mut fx.router, "a@test").await;
-    let (device_id, _) = fx.club.create_device(&fx.pilot_a, "qr-phone").unwrap();
+    let (device_id, _) = fx.club.create_device(&fx.pilot_a, "qr-phone").awaitunwrap();
 
     let unauth = fx
         .router
         .call(
             Request::builder()
                 .uri(format!("/api/devices/pair/{device_id}/qr.svg"))
-                .body(Body::empty())
+                .body(Body::empty()).await
                 .unwrap(),
         )
         .await
@@ -290,7 +290,7 @@ async fn server_qr_svg_endpoints() {
             Request::builder()
                 .uri(format!("/api/devices/pair/{device_id}/qr.svg"))
                 .header(header::COOKIE, cookie_a.clone())
-                .body(Body::empty())
+                .body(Body::empty()).await
                 .unwrap(),
         )
         .await
@@ -313,14 +313,14 @@ async fn server_qr_svg_endpoints() {
             .await
             .unwrap()
             .to_vec(),
-    )
+    ).await
     .unwrap();
     assert!(svg.contains("<svg"));
     assert!(!svg.contains("qrserver"));
 
     let (_sess, display_token) = fx
         .club
-        .create_display_session(&fx.pilot_a, "kiosk")
+        .create_display_session(&fx.pilot_a, "kiosk").await
         .unwrap();
     let display_cookie = format!("{}={}", crate::club::auth::DISPLAY_COOKIE, display_token);
 
@@ -330,7 +330,7 @@ async fn server_qr_svg_endpoints() {
             Request::builder()
                 .uri("/api/club/screen/qr.svg")
                 .header(header::COOKIE, display_cookie)
-                .body(Body::empty())
+                .body(Body::empty()).await
                 .unwrap(),
         )
         .await
@@ -341,7 +341,7 @@ async fn server_qr_svg_endpoints() {
             .await
             .unwrap()
             .to_vec(),
-    )
+    ).await
     .unwrap();
     assert!(screen_svg.contains("<svg"));
     assert!(!screen_svg.contains("qrserver"));
@@ -349,7 +349,7 @@ async fn server_qr_svg_endpoints() {
 
 #[tokio::test]
 async fn api_me_devices_auto_register_idempotent_and_revoke_on_logout() {
-    let mut fx = setup();
+    let mut fx = setup().await;
     let cookie = login_cookie(&mut fx.router, "a@test").await;
     let reg = fx
         .router
@@ -361,17 +361,17 @@ async fn api_me_devices_auto_register_idempotent_and_revoke_on_logout() {
                 .header(header::COOKIE, cookie.clone())
                 .body(Body::from(
                     r#"{"label":"Pixel","model":"Google Pixel","installId":"install-api-test-01"}"#,
-                ))
+                )).await
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(reg.status(), StatusCode::OK);
     let body = to_bytes(reg.into_body(), usize::MAX).await.unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).awaitunwrap();
     assert_eq!(json.get("created").and_then(|v| v.as_bool()), Some(true));
-    let device_id = json.get("id").and_then(|v| v.as_str()).expect("id");
-    let token = json.get("token").and_then(|v| v.as_str()).expect("token");
+    let device_id = json.get("id").and_then(|v| v.as_str())("id");
+    let token = json.get("token").and_then(|v| v.as_str())("token");
 
     let flight_id = start_flight(
         &mut fx.router,
@@ -393,17 +393,17 @@ async fn api_me_devices_auto_register_idempotent_and_revoke_on_logout() {
                 .header(header::COOKIE, cookie.clone())
                 .body(Body::from(
                     r#"{"label":"Pixel","installId":"install-api-test-01"}"#,
-                ))
+                )).await
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(reg2.status(), StatusCode::OK);
     let body2 = to_bytes(reg2.into_body(), usize::MAX).await.unwrap();
-    let json2: serde_json::Value = serde_json::from_slice(&body2).unwrap();
+    let json2: serde_json::Value = serde_json::from_slice(&body2).awaitunwrap();
     assert_eq!(json2.get("created").and_then(|v| v.as_bool()), Some(false));
     assert_eq!(json2.get("id").and_then(|v| v.as_str()), Some(device_id));
-    let token2 = json2.get("token").and_then(|v| v.as_str()).expect("token2");
+    let token2 = json2.get("token").and_then(|v| v.as_str())("token2");
     assert_ne!(token, token2);
 
     let del = fx
@@ -413,7 +413,7 @@ async fn api_me_devices_auto_register_idempotent_and_revoke_on_logout() {
                 .method("DELETE")
                 .uri("/api/me/devices/install-api-test-01")
                 .header(header::COOKIE, cookie.clone())
-                .body(Body::empty())
+                .body(Body::empty()).await
                 .unwrap(),
         )
         .await
@@ -431,15 +431,15 @@ async fn api_me_devices_auto_register_idempotent_and_revoke_on_logout() {
                 .header(header::COOKIE, cookie.clone())
                 .body(Body::from(
                     r#"{"label":"Pixel","installId":"install-api-test-01"}"#,
-                ))
+                )).await
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(reg3.status(), StatusCode::OK);
     let body3 = to_bytes(reg3.into_body(), usize::MAX).await.unwrap();
-    let json3: serde_json::Value = serde_json::from_slice(&body3).unwrap();
-    let token3 = json3.get("token").and_then(|v| v.as_str()).expect("token3");
+    let json3: serde_json::Value = serde_json::from_slice(&body3).awaitunwrap();
+    let token3 = json3.get("token").and_then(|v| v.as_str())("token3");
 
     let logout = fx
         .router
@@ -449,7 +449,7 @@ async fn api_me_devices_auto_register_idempotent_and_revoke_on_logout() {
                 .uri("/api/club/logout")
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::COOKIE, cookie)
-                .body(Body::from(r#"{"installId":"install-api-test-01"}"#))
+                .body(Body::from(r#"{"installId":"install-api-test-01"}"#)).await
                 .unwrap(),
         )
         .await
@@ -460,11 +460,11 @@ async fn api_me_devices_auto_register_idempotent_and_revoke_on_logout() {
 
 #[tokio::test]
 async fn pending_pilot_cannot_load_club_map() {
-    let mut fx = setup();
-    let club_id = fx.club.default_club_id().unwrap();
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().awaitunwrap();
     let pending = fx
         .club
-        .register(&club_id, "P", "p@test", "", "password12")
+        .register(&club_id, "P", "p@test", "", "password12").await
         .unwrap();
     let cookie = login_cookie(&mut fx.router, "p@test").await;
     let _ = pending;
@@ -474,7 +474,7 @@ async fn pending_pilot_cannot_load_club_map() {
             Request::builder()
                 .uri("/api/club/map")
                 .header(header::COOKIE, cookie)
-                .body(Body::empty())
+                .body(Body::empty()).await
                 .unwrap(),
         )
         .await
@@ -484,16 +484,13 @@ async fn pending_pilot_cannot_load_club_map() {
 
 #[tokio::test]
 async fn kiosk_layout_admin_clamps_and_display_sse_rev() {
-    let mut fx = setup();
-    let club_id = fx.club.default_club_id().unwrap();
-    fx.club.ensure_kiosk_qr_defaults(&club_id).unwrap();
-    fx.club
-        .with_conn(|conn| {
-            conn.execute(
-                "UPDATE pilots SET role = 'admin' WHERE id = ?1",
-                rusqlite::params![fx.pilot_a],
-            )
-        })
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().awaitunwrap();
+    fx.club.ensure_kiosk_qr_defaults(&club_id).awaitunwrap();
+    sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
+        .bind(&fx.pilot_a)
+        .execute(&fx.club.pool)
+        .await
         .unwrap();
     let cookie = login_cookie(&mut fx.router, "a@test").await;
     let patch = fx
@@ -506,19 +503,19 @@ async fn kiosk_layout_admin_clamps_and_display_sse_rev() {
                 .header(header::COOKIE, cookie.clone())
                 .body(Body::from(
                     r#"{"x":0.99,"y":0.99,"size":0.9,"aspect":1.7777777778}"#,
-                ))
+                )).await
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(patch.status(), StatusCode::OK);
     let body = to_bytes(patch.into_body(), usize::MAX).await.unwrap();
-    let layout: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let size = layout.get("size").and_then(|v| v.as_f64()).unwrap();
+    let layout: serde_json::Value = serde_json::from_slice(&body).awaitunwrap();
+    let size = layout.get("size").and_then(|v| v.as_f64()).awaitunwrap();
     assert!(size <= 0.5 + 1e-9);
-    let rev1 = layout.get("rev").and_then(|v| v.as_i64()).unwrap();
+    let rev1 = layout.get("rev").and_then(|v| v.as_i64()).awaitunwrap();
 
-    let (session_id, display_token) = fx.club.create_display_session(&fx.pilot_a, "k").unwrap();
+    let (session_id, display_token) = fx.club.create_display_session(&fx.pilot_a, "k").awaitunwrap();
     let _ = session_id;
     let display_cookie = format!(
         "{}={display_token}; Path=/",
@@ -530,13 +527,13 @@ async fn kiosk_layout_admin_clamps_and_display_sse_rev() {
             Request::builder()
                 .uri("/api/display/kiosk-layout")
                 .header(header::COOKIE, display_cookie.clone())
-                .body(Body::empty())
+                .body(Body::empty()).await
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(disp.status(), StatusCode::OK);
     let disp_body = to_bytes(disp.into_body(), usize::MAX).await.unwrap();
-    let disp_layout: serde_json::Value = serde_json::from_slice(&disp_body).unwrap();
+    let disp_layout: serde_json::Value = serde_json::from_slice(&disp_body).awaitunwrap();
     assert_eq!(disp_layout.get("rev").and_then(|v| v.as_i64()), Some(rev1));
 }

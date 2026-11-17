@@ -48,8 +48,8 @@ pub enum AccessRequestError {
     Db,
 }
 
-impl From<rusqlite::Error> for AccessRequestError {
-    fn from(_: rusqlite::Error) -> Self {
+impl From<sqlx::Error> for AccessRequestError {
+    fn from(_: sqlx::Error) -> Self {
         Self::Db
     }
 }

@@ -1,4 +1,5 @@
 //! Android App Links: `/.well-known/assetlinks.json` (cacheable, no auth).
+#![allow(dead_code)]
 use axum::{
     http::{header, HeaderMap},
     response::{IntoResponse, Json},

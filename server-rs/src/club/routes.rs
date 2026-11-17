@@ -41,14 +41,13 @@ pub(crate) fn is_secure(headers: &HeaderMap) -> bool {
     crate::auth::is_secure_request(forwarded)
 }
 
-pub(crate) fn viewer(state: &AppState, headers: &HeaderMap) -> Viewer {
+pub(crate) async fn viewer(state: &AppState, headers: &HeaderMap) -> Viewer {
     let session = parse_session_cookie(headers);
     let now = now_ms();
-    state
-        .club
-        .as_ref()
-        .map(|db| db.viewer_from_session(session.as_deref(), now))
-        .unwrap_or(Viewer::Anonymous)
+    match state.club.as_ref() {
+        Some(db) => db.viewer_from_session(session.as_deref(), now).await,
+        None => Viewer::Anonymous,
+    }
 }
 
 fn require_approved(viewer: &Viewer) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
@@ -105,7 +104,7 @@ async fn register(
         )
             .into_response();
     };
-    let club_id = match db.default_club_id() {
+    let club_id = match db.default_club_id().await {
         Ok(id) => id,
         Err(_) => {
             return (
@@ -121,7 +120,7 @@ async fn register(
         body.email.trim(),
         body.license_no.trim(),
         &body.password,
-    ) {
+    ).await {
         Ok(id) => (
             StatusCode::CREATED,
             Json(json!({ "ok": true, "pilotId": id })),
@@ -163,9 +162,9 @@ async fn club_login(
         )
             .into_response();
     };
-    let club_id = db.default_club_id().unwrap_or_default();
+    let club_id = db.default_club_id().await.unwrap_or_default();
     let now = now_ms();
-    match db.login(&club_id, body.email.trim(), &body.password, now) {
+    match db.login(&club_id, body.email.trim(), &body.password, now).await {
         Ok((session_id, pilot)) => {
             let cookie = auth::set_session_cookie(&session_id, is_secure(&headers));
             (
@@ -206,13 +205,13 @@ async fn club_logout(
     if let (Some(db), Some(session)) = (club_db(&state), parse_session_cookie(&headers)) {
         if let Some(Json(body)) = body {
             if let Some(install_id) = body.install_id.as_deref().filter(|s| !s.is_empty()) {
-                let v = viewer(&state, &headers);
+                let v = viewer(&state, &headers).await;
                 if let Viewer::Pilot { id, .. } = v {
-                    let _ = db.revoke_device_by_install(&id, install_id);
+                    let _ = db.revoke_device_by_install(&id, install_id).await;
                 }
             }
         }
-        let _ = db.logout(&session);
+        let _ = db.logout(&session).await;
     }
     let cookie = auth::clear_session_cookie(is_secure(&headers));
     (
@@ -229,11 +228,12 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
     };
     let session = parse_session_cookie(&headers);
     let now = now_ms();
-    let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now);
+    let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
     match pilot {
         Some(p) => {
             let club_default = db
                 .club_default_locale(&p.club_id)
+                .await
                 .unwrap_or_else(|_| "es".to_string());
             Json(json!({
                 "pilot": {
@@ -279,11 +279,11 @@ async fn club_i18n_context(State(state): State<AppState>, headers: HeaderMap) ->
     };
     let session = parse_session_cookie(&headers);
     let now = now_ms();
-    let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now);
+    let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
     let (user_locale, club_default) = match pilot {
         Some(p) => (
             Some(p.locale),
-            db.club_default_locale(&p.club_id)
+            db.club_default_locale(&p.club_id).await
                 .ok()
                 .or(Some("es".to_string())),
         ),
@@ -321,14 +321,14 @@ async fn patch_me_locale(
             .into_response();
     };
     let now = now_ms();
-    let Some(pilot) = db.pilot_from_session(&session, now) else {
+    let Some(pilot) = db.pilot_from_session(&session, now).await else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "unauthorized" })),
         )
             .into_response();
     };
-    match db.set_pilot_locale(&pilot.id, &body.locale) {
+    match db.set_pilot_locale(&pilot.id, &body.locale).await {
         Ok(()) => Json(json!({ "locale": body.locale })).into_response(),
         Err(_) => (
             StatusCode::BAD_REQUEST,
@@ -350,15 +350,15 @@ async fn patch_admin_club_locale(
         )
             .into_response();
     };
-    if require_admin(&viewer(&state, &headers)).is_err() {
+    if require_admin(&viewer(&state, &headers).await).is_err() {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "admin only" })),
         )
             .into_response();
     }
-    let club_id = db.default_club_id().unwrap_or_default();
-    match db.set_club_default_locale(&club_id, &body.locale) {
+    let club_id = db.default_club_id().await.unwrap_or_default();
+    match db.set_club_default_locale(&club_id, &body.locale).await {
         Ok(()) => Json(json!({ "locale": body.locale })).into_response(),
         Err(_) => (
             StatusCode::BAD_REQUEST,
@@ -369,7 +369,7 @@ async fn patch_admin_club_locale(
 }
 
 async fn me_tails(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
         id,
         status: PilotStatus::Approved,
@@ -385,7 +385,7 @@ async fn me_tails(State(state): State<AppState>, headers: HeaderMap) -> impl Int
     let Some(db) = club_db(&state) else {
         return Json(json!({ "tails": [] })).into_response();
     };
-    match db.me_tails(&id, now_ms()) {
+    match db.me_tails(&id, now_ms()).await {
         Ok(tails) => Json(json!({ "tails": tails })).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -436,7 +436,7 @@ pub async fn post_club_flight_start(
                 .into_response();
         }
     };
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
         id: pilot_id,
         status: PilotStatus::Approved,
@@ -466,7 +466,7 @@ pub async fn post_club_flight_start(
         )
             .into_response();
     };
-    let device_id = match db.resolve_device_token(&token) {
+    let device_id = match db.resolve_device_token(&token).await {
         Some(id) => id,
         None => {
             return (
@@ -490,7 +490,7 @@ pub async fn post_club_flight_start(
         visibility,
         show_name,
         now_ms(),
-    ) {
+    ).await {
         Ok(flight_id) => Json(json!({
             "id": flight_id,
             "visibility": visibility.as_str(),
@@ -537,7 +537,7 @@ pub async fn patch_club_flight_by_id(
     Path(flight_id): Path<String>,
     Json(body): Json<PatchFlightBody>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot { id, .. } = v else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -561,7 +561,7 @@ pub async fn patch_club_flight_by_id(
             }
         },
     };
-    match db.patch_flight(&id, &flight_id, visibility, body.show_pilot_name_public) {
+    match db.patch_flight(&id, &flight_id, visibility, body.show_pilot_name_public).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(PatchError::NotFound) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
@@ -577,7 +577,7 @@ async fn end_club_flight(
     headers: HeaderMap,
     Path(flight_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot { id, .. } = v else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -592,7 +592,7 @@ async fn end_club_flight(
         )
             .into_response();
     };
-    match db.end_flight(&id, &flight_id, now_ms()) {
+    match db.end_flight(&id, &flight_id, now_ms()).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(EndError::NotFound) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
@@ -607,7 +607,7 @@ async fn end_club_flight(
 }
 
 async fn club_map(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     if require_approved(&v).is_err() {
         return (
             StatusCode::UNAUTHORIZED,
@@ -618,7 +618,7 @@ async fn club_map(State(state): State<AppState>, headers: HeaderMap) -> impl Int
     let Some(db) = club_db(&state) else {
         return Json(json!({ "aircraft": [] })).into_response();
     };
-    let positions: Vec<TailLivePosition> = db.club_map_for_viewer(&v);
+    let positions: Vec<TailLivePosition> = db.club_map_for_viewer(&v).await;
     Json(json!({ "aircraft": positions })).into_response()
 }
 
@@ -626,11 +626,12 @@ async fn public_map(State(state): State<AppState>) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
         return Json(json!({ "aircraft": [] })).into_response();
     };
-    Json(json!({ "aircraft": db.public_map() })).into_response()
+    let aircraft = db.public_map().await;
+    Json(json!({ "aircraft": aircraft })).into_response()
 }
 
 async fn admin_map(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     if require_admin(&v).is_err() {
         return (
             StatusCode::FORBIDDEN,
@@ -648,7 +649,8 @@ async fn admin_map(State(state): State<AppState>, headers: HeaderMap) -> impl In
     let Some(db) = club_db(&state) else {
         return Json(json!({ "aircraft": [] })).into_response();
     };
-    Json(json!({ "aircraft": db.admin_map(&id) })).into_response()
+    let aircraft = db.admin_map(&id).await;
+    Json(json!({ "aircraft": aircraft })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -660,7 +662,7 @@ async fn get_admin_map_tails(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     if require_admin(&v).is_err() {
         return (
             StatusCode::FORBIDDEN,
@@ -678,7 +680,8 @@ async fn get_admin_map_tails(
     let Some(db) = club_db(&state) else {
         return Json(json!({ "tails": [] })).into_response();
     };
-    Json(json!({ "tails": db.admin_map_tails(&id) })).into_response()
+    let tails = db.admin_map_tails(&id).await;
+    Json(json!({ "tails": tails })).into_response()
 }
 
 async fn put_admin_map_tails(
@@ -686,7 +689,7 @@ async fn put_admin_map_tails(
     headers: HeaderMap,
     Json(body): Json<AdminTailsBody>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     if require_admin(&v).is_err() {
         return (
             StatusCode::FORBIDDEN,
@@ -708,7 +711,7 @@ async fn put_admin_map_tails(
         )
             .into_response();
     };
-    match db.set_admin_map_tails(&id, &body.tails) {
+    match db.set_admin_map_tails(&id, &body.tails).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -723,7 +726,7 @@ async fn club_flight_fixes(
     headers: HeaderMap,
     Path(flight_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -731,10 +734,10 @@ async fn club_flight_fixes(
         )
             .into_response();
     };
-    if db.flight_visible_to(&v, &flight_id).is_none() {
+    if db.flight_visible_to(&v, &flight_id).await.is_none() {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     }
-    let fixes = db.fixes_for_flight(&flight_id);
+    let fixes = db.fixes_for_flight(&flight_id).await;
     Json(json!({ "fixes": fixes })).into_response()
 }
 
@@ -743,7 +746,7 @@ async fn club_flight_gpx(
     headers: HeaderMap,
     Path(flight_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -751,10 +754,10 @@ async fn club_flight_gpx(
         )
             .into_response();
     };
-    let Some(flight) = db.flight_visible_to(&v, &flight_id) else {
+    let Some(flight) = db.flight_visible_to(&v, &flight_id).await else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     };
-    let fixes = db.fixes_for_flight(&flight_id);
+    let fixes = db.fixes_for_flight(&flight_id).await;
     let gpx = fixes_to_gpx(&flight.tail, &fixes);
     (
         StatusCode::OK,
@@ -797,7 +800,7 @@ async fn club_flight_stream(
     headers: HeaderMap,
     Path(flight_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -805,13 +808,13 @@ async fn club_flight_stream(
         )
             .into_response();
     };
-    if db.flight_visible_to(&v, &flight_id).is_none() {
+    if db.flight_visible_to(&v, &flight_id).await.is_none() {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     }
     let db = state.club.clone().unwrap();
     let viewer = v;
     let flight_id_capture = flight_id.clone();
-    let backfill: Vec<_> = db.fixes_for_flight(&flight_id);
+    let backfill: Vec<_> = db.fixes_for_flight(&flight_id).await;
     let stream = stream::iter(backfill.into_iter().enumerate().map(move |(i, fix)| {
         Ok::<Event, Infallible>(Event::default().id(i.to_string()).json_data(fix).unwrap())
     }))
@@ -820,10 +823,10 @@ async fn club_flight_stream(
         #[allow(clippy::question_mark)]
         |(db, fid, viewer, mut last_t)| async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            if db.flight_visible_to(&viewer, &fid).is_none() {
+            if db.flight_visible_to(&viewer, &fid).await.is_none() {
                 return None;
             }
-            let fixes = db.fixes_for_flight(&fid);
+            let fixes = db.fixes_for_flight(&fid).await;
             let fresh: Vec<_> = fixes.into_iter().filter(|f| f.t > last_t).collect();
             if let Some(t) = fresh.last().map(|f| f.t) {
                 last_t = t;
@@ -844,7 +847,7 @@ async fn club_flight_stream(
 }
 
 async fn my_flights(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot { id, .. } = v else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -855,7 +858,7 @@ async fn my_flights(State(state): State<AppState>, headers: HeaderMap) -> impl I
     let Some(db) = club_db(&state) else {
         return Json(json!({ "flights": [] })).into_response();
     };
-    Json(json!({ "flights": db.list_my_flights(&id) })).into_response()
+    Json(json!({ "flights": db.list_my_flights(&id).await })).into_response()
 }
 
 async fn delete_my_flight(
@@ -863,7 +866,7 @@ async fn delete_my_flight(
     headers: HeaderMap,
     Path(flight_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot { id, .. } = v else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -878,7 +881,7 @@ async fn delete_my_flight(
         )
             .into_response();
     };
-    match db.delete_my_flight(&id, &flight_id) {
+    match db.delete_my_flight(&id, &flight_id).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(DeleteError::NotFound) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
@@ -901,7 +904,7 @@ struct TypeBody {
 }
 
 async fn list_types(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     if require_admin(&v).is_err() {
         return (
             StatusCode::FORBIDDEN,
@@ -912,8 +915,8 @@ async fn list_types(State(state): State<AppState>, headers: HeaderMap) -> impl I
     let Some(db) = club_db(&state) else {
         return Json(json!({ "types": [] })).into_response();
     };
-    let club = db.default_club_id().unwrap_or_default();
-    Json(json!({ "types": db.list_types(&club) })).into_response()
+    let club = db.default_club_id().await.unwrap_or_default();
+    Json(json!({ "types": db.list_types(&club).await })).into_response()
 }
 
 async fn admin_add_type(
@@ -921,7 +924,7 @@ async fn admin_add_type(
     headers: HeaderMap,
     Json(body): Json<TypeBody>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     if require_admin(&v).is_err() {
         return (
             StatusCode::FORBIDDEN,
@@ -936,8 +939,8 @@ async fn admin_add_type(
         )
             .into_response();
     };
-    let club = db.default_club_id().unwrap_or_default();
-    match db.upsert_type(&club, body.code.trim()) {
+    let club = db.default_club_id().await.unwrap_or_default();
+    match db.upsert_type(&club, body.code.trim()).await {
         Ok(id) => Json(json!({ "id": id })).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -961,7 +964,7 @@ fn default_true() -> bool {
 }
 
 async fn list_aircraft(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     if require_admin(&v).is_err() {
         return (
             StatusCode::FORBIDDEN,
@@ -972,8 +975,8 @@ async fn list_aircraft(State(state): State<AppState>, headers: HeaderMap) -> imp
     let Some(db) = club_db(&state) else {
         return Json(json!({ "aircraft": [] })).into_response();
     };
-    let club = db.default_club_id().unwrap_or_default();
-    Json(json!({ "aircraft": db.list_aircraft(&club) })).into_response()
+    let club = db.default_club_id().await.unwrap_or_default();
+    Json(json!({ "aircraft": db.list_aircraft(&club).await })).into_response()
 }
 
 async fn admin_add_aircraft(
@@ -981,7 +984,7 @@ async fn admin_add_aircraft(
     headers: HeaderMap,
     Json(body): Json<AircraftBody>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     if require_admin(&v).is_err() {
         return (
             StatusCode::FORBIDDEN,
@@ -996,8 +999,8 @@ async fn admin_add_aircraft(
         )
             .into_response();
     };
-    let club = db.default_club_id().unwrap_or_default();
-    match db.upsert_aircraft(&club, body.tail.trim(), body.type_code.trim(), body.active) {
+    let club = db.default_club_id().await.unwrap_or_default();
+    match db.upsert_aircraft(&club, body.tail.trim(), body.type_code.trim(), body.active).await {
         Ok(id) => Json(json!({ "id": id })).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1008,7 +1011,7 @@ async fn admin_add_aircraft(
 }
 
 async fn list_pilots_admin(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     if require_admin(&v).is_err() {
         return (
             StatusCode::FORBIDDEN,
@@ -1019,11 +1022,11 @@ async fn list_pilots_admin(State(state): State<AppState>, headers: HeaderMap) ->
     let Some(db) = club_db(&state) else {
         return Json(json!({ "pilots": [] })).into_response();
     };
-    Json(json!({ "pilots": db.list_all_pilots() })).into_response()
+    Json(json!({ "pilots": db.list_all_pilots().await })).into_response()
 }
 
 async fn admin_pending(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     if require_admin(&v).is_err() {
         return (
             StatusCode::FORBIDDEN,
@@ -1034,7 +1037,7 @@ async fn admin_pending(State(state): State<AppState>, headers: HeaderMap) -> imp
     let Some(db) = club_db(&state) else {
         return Json(json!({ "pilots": [] })).into_response();
     };
-    Json(json!({ "pilots": db.list_pending_pilots() })).into_response()
+    Json(json!({ "pilots": db.list_pending_pilots().await })).into_response()
 }
 
 #[derive(Deserialize, Default)]
@@ -1049,7 +1052,7 @@ async fn admin_approve(
     Path(pilot_id): Path<String>,
     Json(body): Json<ApprovePilotBody>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
         id: admin_id, role, ..
     } = v
@@ -1075,7 +1078,7 @@ async fn admin_approve(
             .into_response();
     };
     let checkout = body.checkout;
-    match db.approve_pilot_with_checkout(&admin_id, &pilot_id, checkout) {
+    match db.approve_pilot_with_checkout(&admin_id, &pilot_id, checkout).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1098,7 +1101,7 @@ async fn list_checkouts_admin(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     if require_admin(&v).is_err() {
         return (
             StatusCode::FORBIDDEN,
@@ -1109,7 +1112,7 @@ async fn list_checkouts_admin(
     let Some(db) = club_db(&state) else {
         return Json(json!({ "checkouts": [] })).into_response();
     };
-    Json(json!({ "checkouts": db.list_checkouts() })).into_response()
+    Json(json!({ "checkouts": db.list_checkouts().await })).into_response()
 }
 
 async fn admin_checkout(
@@ -1117,7 +1120,7 @@ async fn admin_checkout(
     headers: HeaderMap,
     Json(body): Json<CheckoutBody>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     if require_admin(&v).is_err() {
         return (
             StatusCode::FORBIDDEN,
@@ -1137,7 +1140,7 @@ async fn admin_checkout(
         &body.type_code,
         body.tail.as_deref(),
         body.expires_at,
-    ) {
+    ).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(CheckoutError::UnknownTail) => (
             StatusCode::BAD_REQUEST,
@@ -1170,7 +1173,7 @@ async fn me_access_requests(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot { id, .. } = v else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -1181,14 +1184,14 @@ async fn me_access_requests(
     let Some(db) = club_db(&state) else {
         return Json(json!({ "requests": [] })).into_response();
     };
-    Json(json!({ "requests": db.list_pilot_access_requests(&id) })).into_response()
+    Json(json!({ "requests": db.list_pilot_access_requests(&id).await })).into_response()
 }
 
 async fn me_access_requests_stream(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot { id, .. } = v else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -1209,7 +1212,7 @@ async fn me_access_requests_stream(
         let pid = pilot_id.clone();
         async move {
             tokio::time::sleep(Duration::from_secs(2)).await;
-            let rows = db.list_pilot_access_requests(&pid);
+            let rows = db.list_pilot_access_requests(&pid).await;
             let payload = serde_json::to_string(&json!({ "requests": rows })).ok()?;
             Some((Ok::<_, Infallible>(Event::default().data(payload)), 0u64))
         }
@@ -1224,7 +1227,7 @@ async fn post_access_request(
     headers: HeaderMap,
     Json(body): Json<AccessRequestBody>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot { id, .. } = v else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -1245,7 +1248,7 @@ async fn post_access_request(
         body.type_id.as_deref(),
         body.new_type_name.as_deref(),
         now_ms(),
-    ) {
+    ).await {
         Ok(req_id) => Json(json!({ "ok": true, "id": req_id })).into_response(),
         Err(err) => {
             let status = match err {
@@ -1264,7 +1267,7 @@ async fn admin_pending_counts(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     if require_admin(&v).is_err() {
         return (
             StatusCode::FORBIDDEN,
@@ -1275,11 +1278,11 @@ async fn admin_pending_counts(
     let Some(db) = club_db(&state) else {
         return Json(json!({ "pilots": 0, "accessRequests": 0 })).into_response();
     };
-    let club_id = db.default_club_id().unwrap_or_default();
+    let club_id = db.default_club_id().await.unwrap_or_default();
     let AdminPendingCounts {
         pilots,
         access_requests,
-    } = db.admin_pending_counts(&club_id);
+    } = db.admin_pending_counts(&club_id).await;
     Json(json!({ "pilots": pilots, "accessRequests": access_requests })).into_response()
 }
 
@@ -1288,7 +1291,7 @@ async fn admin_list_access_requests(
     headers: HeaderMap,
     Query(q): Query<AccessRequestQuery>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     if require_admin(&v).is_err() {
         return (
             StatusCode::FORBIDDEN,
@@ -1299,11 +1302,11 @@ async fn admin_list_access_requests(
     let Some(db) = club_db(&state) else {
         return Json(json!({ "requests": [] })).into_response();
     };
-    let club_id = db.default_club_id().unwrap_or_default();
-    Json(json!({
-        "requests": db.list_admin_access_requests(&club_id, q.status.as_deref())
-    }))
-    .into_response()
+    let club_id = db.default_club_id().await.unwrap_or_default();
+    let requests = db
+        .list_admin_access_requests(&club_id, q.status.as_deref())
+        .await;
+    Json(json!({ "requests": requests })).into_response()
 }
 
 #[derive(Deserialize, Default)]
@@ -1325,7 +1328,7 @@ async fn admin_approve_access(
     Path(id): Path<String>,
     body: Option<Json<DecideAccessBody>>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
         id: admin_id, role, ..
     } = v
@@ -1351,7 +1354,7 @@ async fn admin_approve_access(
             .into_response();
     };
     let expires = body.as_ref().and_then(|Json(b)| b.expires_at);
-    match db.approve_access_request(&admin_id, &id, expires, now_ms()) {
+    match db.approve_access_request(&admin_id, &id, expires, now_ms()).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(err) => (
             StatusCode::BAD_REQUEST,
@@ -1367,7 +1370,7 @@ async fn admin_reject_access(
     Path(id): Path<String>,
     Json(body): Json<DecideAccessBody>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
         id: admin_id, role, ..
     } = v
@@ -1393,7 +1396,7 @@ async fn admin_reject_access(
             .into_response();
     };
     let reason = body.reason.unwrap_or_else(|| "rejected".to_string());
-    match db.reject_access_request(&admin_id, &id, &reason, now_ms()) {
+    match db.reject_access_request(&admin_id, &id, &reason, now_ms()).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(err) => (
             StatusCode::BAD_REQUEST,
@@ -1419,7 +1422,7 @@ async fn create_device(
     client_ip: ClientIp,
     Json(body): Json<DeviceBody>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
         id,
         status: PilotStatus::Approved,
@@ -1456,7 +1459,7 @@ async fn create_device(
         .filter(|s| !s.is_empty())
     {
         let label = body.label.trim();
-        match db.register_device_for_install(&id, label, body.model.as_deref(), install_id) {
+        match db.register_device_for_install(&id, label, body.model.as_deref(), install_id).await {
             Ok(reg) => return Json(reg).into_response(),
             Err(DeviceRegisterError::CapExceeded) => {
                 return (
@@ -1483,7 +1486,7 @@ async fn create_device(
             }
         }
     }
-    match db.create_device(&id, body.label.trim()) {
+    match db.create_device(&id, body.label.trim()).await {
         Ok((device_id, _token)) => Json(json!({
             "id": device_id,
             "label": body.label,
@@ -1502,7 +1505,7 @@ async fn delete_device(
     headers: HeaderMap,
     Path(install_or_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
         id,
         status: PilotStatus::Approved,
@@ -1524,8 +1527,12 @@ async fn delete_device(
     };
     let revoked = db
         .revoke_device_by_install(&id, &install_or_id)
+        .await
         .unwrap_or(false)
-        || db.revoke_device_by_id(&id, &install_or_id).unwrap_or(false);
+        || db
+            .revoke_device_by_id(&id, &install_or_id)
+            .await
+            .unwrap_or(false);
     if revoked {
         Json(json!({ "ok": true })).into_response()
     } else {
@@ -1534,7 +1541,7 @@ async fn delete_device(
 }
 
 async fn list_devices(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot { id, .. } = v else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -1545,7 +1552,7 @@ async fn list_devices(State(state): State<AppState>, headers: HeaderMap) -> impl
     let Some(db) = club_db(&state) else {
         return Json(json!({ "devices": [] })).into_response();
     };
-    Json(json!({ "devices": db.list_my_devices(&id) })).into_response()
+    Json(json!({ "devices": db.list_my_devices(&id).await })).into_response()
 }
 
 fn expires_at_iso_utc(ms: i64) -> Option<String> {
@@ -1561,9 +1568,10 @@ fn expires_at_iso_utc(ms: i64) -> Option<String> {
         .ok()
 }
 
-fn display_context(headers: &HeaderMap, db: &ClubDb) -> Option<(String, String)> {
+async fn display_context(headers: &HeaderMap, db: &ClubDb) -> Option<(String, String)> {
     let raw = parse_display_cookie(headers)?;
     db.resolve_display_session(&raw)
+        .await
         .map(|(_id, club_id, admin_id)| (club_id, admin_id))
 }
 
@@ -1588,13 +1596,13 @@ async fn post_checkin(
     let mut pilot_id: Option<String> = None;
     let mut device_id: Option<String> = None;
     if let Some(bearer) = bearer_token(&headers) {
-        if let Some(dev) = db.resolve_device_token(&bearer) {
+        if let Some(dev) = db.resolve_device_token(&bearer).await {
             device_id = Some(dev.clone());
-            pilot_id = db.device_pilot_id(&dev);
+            pilot_id = db.device_pilot_id(&dev).await;
         }
     }
     if pilot_id.is_none() {
-        let v = viewer(&state, &headers);
+        let v = viewer(&state, &headers).await;
         if let Viewer::Pilot {
             id,
             status: PilotStatus::Approved,
@@ -1612,7 +1620,7 @@ async fn post_checkin(
             .into_response();
     };
     if let Some(dev) = &device_id {
-        if db.device_pilot_id(dev).as_deref() != Some(pilot_id.as_str()) {
+        if db.device_pilot_id(dev).await.as_deref() != Some(pilot_id.as_str()) {
             return (
                 StatusCode::FORBIDDEN,
                 Json(json!({ "error": "device mismatch" })),
@@ -1620,7 +1628,7 @@ async fn post_checkin(
                 .into_response();
         }
     }
-    match db.submit_checkin(&pilot_id, device_id.as_deref(), body.token.trim(), now) {
+    match db.submit_checkin(&pilot_id, device_id.as_deref(), body.token.trim(), now).await {
         Ok(record) => {
             let Some(expires_at) = expires_at_iso_utc(record.expires_at) else {
                 return (
@@ -1682,7 +1690,7 @@ async fn display_activate(
             .into_response();
     };
     let token = body.token.trim();
-    let Some(_ctx) = db.resolve_display_session(token) else {
+    let Some(_ctx) = db.resolve_display_session(token).await else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "invalid display token" })),
@@ -1705,7 +1713,7 @@ async fn display_checkin_qr(
     let Some(db) = club_db(&state) else {
         return Json(json!({ "error": "club disabled" })).into_response();
     };
-    let Some((club_id, _admin)) = display_context(&headers, db) else {
+    let Some((club_id, _admin)) = display_context(&headers, db).await else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "display session required" })),
@@ -1713,7 +1721,7 @@ async fn display_checkin_qr(
             .into_response();
     };
     let now = now_ms();
-    match db.mint_checkin_qr_token(&club_id, now) {
+    match db.mint_checkin_qr_token(&club_id, now).await {
         Ok(_token) => {
             let step = crate::club::checkin::current_step(now);
             Json(json!({
@@ -1735,14 +1743,14 @@ async fn display_map(State(state): State<AppState>, headers: HeaderMap) -> impl 
     let Some(db) = club_db(&state) else {
         return Json(json!({ "aircraft": [] })).into_response();
     };
-    let Some((_club_id, admin_id)) = display_context(&headers, db) else {
+    let Some((_club_id, admin_id)) = display_context(&headers, db).await else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "display session required" })),
         )
             .into_response();
     };
-    let rows = db.display_map(&admin_id);
+    let rows = db.display_map(&admin_id).await;
     Json(json!({ "aircraft": rows })).into_response()
 }
 
@@ -1756,7 +1764,7 @@ async fn admin_create_display(
     headers: HeaderMap,
     Json(body): Json<DisplaySessionBody>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
         id,
         role: PilotRole::Admin,
@@ -1776,13 +1784,15 @@ async fn admin_create_display(
         )
             .into_response();
     };
-    let screen_url = db
-        .pilot_club_id(&id)
-        .ok()
-        .and_then(|cid| db.club_slug(&cid))
-        .map(|slug| format!("/c/{slug}/screen"))
-        .unwrap_or_else(|| "/club/screen".to_string());
-    match db.create_display_session(&id, body.label.trim()) {
+    let screen_url = match db.pilot_club_id(&id).await {
+        Ok(cid) => db
+            .club_slug(&cid)
+            .await
+            .map(|slug| format!("/c/{slug}/screen"))
+            .unwrap_or_else(|| "/club/screen".to_string()),
+        Err(_) => "/club/screen".to_string(),
+    };
+    match db.create_display_session(&id, body.label.trim()).await {
         Ok((session_id, token)) => Json(json!({
             "id": session_id,
             "token": token,
@@ -1801,7 +1811,7 @@ async fn admin_list_display(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
         id,
         role: PilotRole::Admin,
@@ -1817,7 +1827,7 @@ async fn admin_list_display(
     let Some(db) = club_db(&state) else {
         return Json(json!({ "sessions": [] })).into_response();
     };
-    Json(json!({ "sessions": db.list_display_sessions(&id) })).into_response()
+    Json(json!({ "sessions": db.list_display_sessions(&id).await })).into_response()
 }
 
 async fn admin_revoke_display(
@@ -1825,7 +1835,7 @@ async fn admin_revoke_display(
     headers: HeaderMap,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
         id,
         role: PilotRole::Admin,
@@ -1845,7 +1855,7 @@ async fn admin_revoke_display(
         )
             .into_response();
     };
-    match db.revoke_display_session(&id, &session_id) {
+    match db.revoke_display_session(&id, &session_id).await {
         Ok(true) => Json(json!({ "ok": true })).into_response(),
         Ok(false) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
         Err(_) => (
@@ -1882,7 +1892,7 @@ async fn club_slug_screen_page(
     let Some(db) = club_db(&state) else {
         return (StatusCode::SERVICE_UNAVAILABLE, "Club disabled").into_response();
     };
-    if db.club_id_for_slug(&slug).is_none() {
+    if db.club_id_for_slug(&slug).await.is_none() {
         return (StatusCode::NOT_FOUND, "Club not found").into_response();
     }
     let path = state.dist_dir.join("club-screen.html");
@@ -1915,7 +1925,7 @@ async fn admin_get_kiosk_layout(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
         id,
         role: PilotRole::Admin,
@@ -1935,7 +1945,7 @@ async fn admin_get_kiosk_layout(
         )
             .into_response();
     };
-    let club_id = match db.pilot_club_id(&id) {
+    let club_id = match db.pilot_club_id(&id).await {
         Ok(c) => c,
         Err(_) => {
             return (
@@ -1945,8 +1955,8 @@ async fn admin_get_kiosk_layout(
                 .into_response();
         }
     };
-    let _ = db.ensure_kiosk_qr_defaults(&club_id);
-    match db.kiosk_qr_layout(&club_id) {
+    let _ = db.ensure_kiosk_qr_defaults(&club_id).await;
+    match db.kiosk_qr_layout(&club_id).await {
         Ok(row) => Json(row).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1961,7 +1971,7 @@ async fn admin_patch_kiosk_layout(
     headers: HeaderMap,
     Json(body): Json<KioskLayoutBody>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
         id,
         role: PilotRole::Admin,
@@ -1981,7 +1991,7 @@ async fn admin_patch_kiosk_layout(
         )
             .into_response();
     };
-    let club_id = match db.pilot_club_id(&id) {
+    let club_id = match db.pilot_club_id(&id).await {
         Ok(c) => c,
         Err(_) => {
             return (
@@ -1999,7 +2009,7 @@ async fn admin_patch_kiosk_layout(
             .into_response();
     }
     let aspect = layout_aspect(&body);
-    match db.set_kiosk_qr_layout(&club_id, body.x, body.y, body.size, aspect) {
+    match db.set_kiosk_qr_layout(&club_id, body.x, body.y, body.size, aspect).await {
         Ok(row) => Json(row).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2014,7 +2024,7 @@ async fn admin_reset_kiosk_layout(
     headers: HeaderMap,
     body: Option<Json<KioskLayoutBody>>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
         id,
         role: PilotRole::Admin,
@@ -2034,7 +2044,7 @@ async fn admin_reset_kiosk_layout(
         )
             .into_response();
     };
-    let club_id = match db.pilot_club_id(&id) {
+    let club_id = match db.pilot_club_id(&id).await {
         Ok(c) => c,
         Err(_) => {
             return (
@@ -2048,7 +2058,7 @@ async fn admin_reset_kiosk_layout(
         .as_ref()
         .map(|b| layout_aspect(b))
         .unwrap_or(crate::club::kiosk_qr::DEFAULT_PREVIEW_ASPECT);
-    match db.reset_kiosk_qr_layout(&club_id, aspect) {
+    match db.reset_kiosk_qr_layout(&club_id, aspect).await {
         Ok(row) => Json(row).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2069,15 +2079,15 @@ async fn display_kiosk_layout(
         )
             .into_response();
     };
-    let Some((club_id, _admin)) = display_context(&headers, db) else {
+    let Some((club_id, _admin)) = display_context(&headers, db).await else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "display session required" })),
         )
             .into_response();
     };
-    let _ = db.ensure_kiosk_qr_defaults(&club_id);
-    match db.kiosk_qr_layout(&club_id) {
+    let _ = db.ensure_kiosk_qr_defaults(&club_id).await;
+    match db.kiosk_qr_layout(&club_id).await {
         Ok(row) => Json(row).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2098,20 +2108,20 @@ async fn display_kiosk_layout_stream(
         )
             .into_response();
     };
-    let Some((club_id, _admin)) = display_context(&headers, &db) else {
+    let Some((club_id, _admin)) = display_context(&headers, &db).await else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "display session required" })),
         )
             .into_response();
     };
-    let _ = db.ensure_kiosk_qr_defaults(&club_id);
+    let _ = db.ensure_kiosk_qr_defaults(&club_id).await;
     let club_id2 = club_id.clone();
     let stream = stream::unfold((db, 0i64), move |(db, mut last_rev)| {
         let club_id = club_id2.clone();
         async move {
             tokio::time::sleep(Duration::from_secs(2)).await;
-            let layout = match db.kiosk_qr_layout(&club_id) {
+            let layout = match db.kiosk_qr_layout(&club_id).await {
                 Ok(l) => l,
                 Err(_) => return None,
             };
@@ -2144,16 +2154,17 @@ async fn club_screen_qr_svg(
     let Some(db) = club_db(&state) else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let Some((club_id, _admin)) = display_context(&headers, db) else {
+    let Some((club_id, _admin)) = display_context(&headers, db).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let now = now_ms();
-    let token = match db.mint_checkin_qr_token(&club_id, now) {
+    let token = match db.mint_checkin_qr_token(&club_id, now).await {
         Ok(t) => t,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let slug = db
         .club_slug(&club_id)
+        .await
         .unwrap_or_else(|| "default".to_string());
     let path = crate::club::club_scope::checkin_qr_path(&slug, &token);
     let payload = crate::club::android_assetlinks::absolute_https_url(&headers, &path);
@@ -2176,7 +2187,7 @@ async fn device_pair_qr_svg(
     headers: HeaderMap,
     Path(device_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
         id,
         status: PilotStatus::Approved,
@@ -2188,7 +2199,7 @@ async fn device_pair_qr_svg(
     let Some(db) = club_db(&state) else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let Some(token) = db.device_pair_token_for_pilot(&device_id, &id) else {
+    let Some(token) = db.device_pair_token_for_pilot(&device_id, &id).await else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let svg = match crate::club::qr::svg_for_payload(&token, 180) {
@@ -2232,7 +2243,7 @@ async fn postal_bounce_webhook(
         .and_then(|v| v.as_str())
         .unwrap_or("");
     if !email.is_empty() {
-        let _ = db.suppress_email(email, "postal_bounce");
+        let _ = db.suppress_email(email, "postal_bounce").await;
     }
     Json(json!({ "ok": true })).into_response()
 }

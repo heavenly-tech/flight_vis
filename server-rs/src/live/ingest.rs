@@ -55,9 +55,12 @@ pub async fn post_ingest(
         .map(LiveEngine::input_to_fix)
         .collect();
     if let Some(db) = &state.club {
-        if let Some(device_id) = db.resolve_device_token(token) {
-            if let Some(flight_id) = db.open_flight_for_device(&device_id) {
-                let accepted = db.append_fixes(&flight_id, &device_id, &fixes).unwrap_or(0);
+        if let Some(device_id) = db.resolve_device_token(token).await {
+            if let Some(flight_id) = db.open_flight_for_device(&device_id).await {
+                let accepted = db
+                    .append_fixes(&flight_id, &device_id, &fixes)
+                    .await
+                    .unwrap_or(0);
                 return (
                     StatusCode::OK,
                     Json(json!({ "ok": true, "accepted": accepted })),
@@ -226,10 +229,11 @@ pub async fn osmand_ingest(
         fix.t = state.live.now_ms();
     }
     if let Some(db) = &state.club {
-        if let Some(device_id) = db.resolve_device_token(&token) {
-            if let Some(flight_id) = db.open_flight_for_device(&device_id) {
+        if let Some(device_id) = db.resolve_device_token(&token).await {
+            if let Some(flight_id) = db.open_flight_for_device(&device_id).await {
                 if db
                     .append_fixes(&flight_id, &device_id, std::slice::from_ref(&fix))
+                    .await
                     .is_ok()
                 {
                     return (StatusCode::OK, "OK").into_response();

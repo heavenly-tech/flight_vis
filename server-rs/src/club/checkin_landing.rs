@@ -22,18 +22,19 @@ enum LandingError {
     Db,
 }
 
-fn validate_checkin_peek(
+async fn validate_checkin_peek(
     db: &ClubDb,
     slug: &str,
     token: &str,
     now: i64,
 ) -> Result<String, LandingError> {
-    let ctx = db.resolve_club_context(slug).map_err(|e| match e {
+    let ctx = db.resolve_club_context(slug).await.map_err(|e| match e {
         ClubScopeError::NotFound => LandingError::NotFound,
         ClubScopeError::Forbidden => LandingError::NotFound,
     })?;
     let (secret, _) = db
         .club_checkin_settings(&ctx.club_id)
+        .await
         .map_err(|_| LandingError::Db)?;
     let (token_club, _) =
         checkin::verify_checkin_token(&secret, token, now).map_err(|_| LandingError::NotFound)?;
@@ -50,7 +51,7 @@ async fn checkin_landing_page(
     let Some(db) = club_db(&state) else {
         return checkin_not_found_page(&state).await;
     };
-    match validate_checkin_peek(db, &slug, &token, now_ms()) {
+    match validate_checkin_peek(db, &slug, &token, now_ms()).await {
         Ok(_) => {
             let path = state.dist_dir.join("club-checkin-landing.html");
             match tokio::fs::read_to_string(&path).await {
@@ -89,14 +90,20 @@ async fn checkin_landing_config(
     let Some(db) = club_db(&state) else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     };
-    if validate_checkin_peek(db, &slug, &token, now_ms()).is_err() {
+    if validate_checkin_peek(db, &slug, &token, now_ms())
+        .await
+        .is_err()
+    {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     }
-    let ctx = db.resolve_club_context(&slug).ok();
-    let club_default_locale = ctx
-        .as_ref()
-        .and_then(|c| db.club_default_locale(&c.club_id).ok())
-        .unwrap_or_else(|| "es".to_string());
+    let ctx = db.resolve_club_context(&slug).await.ok();
+    let club_default_locale = match ctx.as_ref() {
+        Some(c) => db
+            .club_default_locale(&c.club_id)
+            .await
+            .unwrap_or_else(|_| "es".to_string()),
+        None => "es".to_string(),
+    };
     let accept = headers
         .get(axum::http::header::ACCEPT_LANGUAGE)
         .and_then(|v| v.to_str().ok());
@@ -130,6 +137,7 @@ pub fn routes() -> Router<AppState> {
 mod tests {
     use super::*;
     use crate::club::db::ClubDb;
+    use serial_test::serial;
     use crate::{
         auth::Auth, build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState,
     };
@@ -140,7 +148,7 @@ mod tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
-    fn fixture() -> (tempfile::TempDir, axum::Router, ClubDb) {
+    async fn fixture() -> (tempfile::TempDir, axum::Router, ClubDb) {
         let dir = tempfile::tempdir().unwrap();
         let dist = dir.path().join("dist");
         std::fs::create_dir_all(&dist).unwrap();
@@ -154,17 +162,15 @@ mod tests {
             "<html>expired</html>",
         )
         .unwrap();
-        let db = ClubDb::open(dir.path()).unwrap();
-        let club_id = db.default_club_id().unwrap();
-        db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE clubs SET slug = 'demo' WHERE id = ?1",
-                rusqlite::params![club_id],
-            )
-        })
-        .unwrap();
+        let db = ClubDb::open_test().await.unwrap();
+        let club_id = db.default_club_id().await.unwrap();
+        sqlx::query("UPDATE clubs SET slug = 'demo' WHERE id = $1")
+            .bind(&club_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
         let now = now_ms();
-        let _token = db.mint_checkin_qr_token(&club_id, now).unwrap();
+        let _token = db.mint_checkin_qr_token(&club_id, now).await.unwrap();
         let state = AppState {
             dist_dir: dist,
             auth: Auth::with_password("x"),
@@ -182,16 +188,16 @@ mod tests {
         (dir, router, db)
     }
 
+    #[serial]
     #[tokio::test]
     async fn landing_renders_for_valid_token_without_consuming() {
-        let (_dir, router, db) = fixture();
-        let club_id = db.default_club_id().unwrap();
+        let (_dir, router, db) = fixture().await;
+        let club_id = db.default_club_id().await.unwrap();
         let now = now_ms();
-        let token = db.mint_checkin_qr_token(&club_id, now).unwrap();
-        let before = db
-            .with_conn(|conn| {
-                conn.query_row("SELECT COUNT(*) FROM checkins", [], |r| r.get::<_, i64>(0))
-            })
+        let token = db.mint_checkin_qr_token(&club_id, now).await.unwrap();
+        let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM checkins")
+            .fetch_one(&db.pool)
+            .await
             .unwrap();
         let res = router
             .oneshot(
@@ -205,17 +211,17 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
         assert!(String::from_utf8_lossy(&body).contains("Descarga"));
-        let after = db
-            .with_conn(|conn| {
-                conn.query_row("SELECT COUNT(*) FROM checkins", [], |r| r.get::<_, i64>(0))
-            })
+        let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM checkins")
+            .fetch_one(&db.pool)
+            .await
             .unwrap();
         assert_eq!(before, after);
     }
 
+    #[serial]
     #[tokio::test]
     async fn invalid_token_gets_404_page() {
-        let (_dir, router, _db) = fixture();
+        let (_dir, router, _db) = fixture().await;
         let res = router
             .oneshot(
                 Request::builder()

@@ -2,17 +2,20 @@
 #[cfg(test)]
 mod tests {
     use crate::club::{db::ClubDb, now_ms, visibility::FlightVisibility};
+    use serial_test::serial;
     use crate::live::LiveFix;
     use std::time::Instant;
 
-    fn fixture() -> (ClubDb, Vec<(String, String)>) {
-        let db = ClubDb::open_in_memory().expect("db");
-        let club = db.default_club_id().unwrap();
-        db.upsert_type(&club, "C152").unwrap();
+    async fn fixture() -> (ClubDb, Vec<(String, String)>) {
+        let db = ClubDb::open_test().await.expect("db");
+        let club = db.default_club_id().await.unwrap();
+        db.upsert_type(&club, "C152").await.unwrap();
         let mut flights = Vec::new();
         for i in 0..50 {
             let tail = format!("N{i:03}");
-            db.upsert_aircraft(&club, &tail, "C152", true).unwrap();
+            db.upsert_aircraft(&club, &tail, "C152", true)
+                .await
+                .unwrap();
             let pid = db
                 .register(
                     &club,
@@ -21,22 +24,27 @@ mod tests {
                     "",
                     "password12",
                 )
+                .await
                 .unwrap();
-            db.approve_pilot(&pid).unwrap();
-            db.add_checkout(&pid, "C152", None, None).unwrap();
-            let (dev, _) = db.create_device(&pid, "phone").unwrap();
-            db.issue_open_checkin(&pid, &dev, &club, now_ms()).unwrap();
+            db.approve_pilot(&pid).await.unwrap();
+            db.add_checkout(&pid, "C152", None, None).await.unwrap();
+            let (dev, _) = db.create_device(&pid, "phone").await.unwrap();
+            db.issue_open_checkin(&pid, &dev, &club, now_ms())
+                .await
+                .unwrap();
             let fid = db
                 .start_flight(&pid, &dev, &tail, FlightVisibility::Club, false, now_ms())
+                .await
                 .unwrap();
             flights.push((fid, dev));
         }
         (db, flights)
     }
 
-    #[test]
-    fn fifty_tails_one_hz_append_p95_under_25ms() {
-        let (db, flights) = fixture();
+    #[serial]
+    #[tokio::test]
+    async fn fifty_tails_one_hz_append_p95_under_25ms() {
+        let (db, flights) = fixture().await;
         let mut samples = Vec::with_capacity(50);
         let fix = LiveFix {
             t: now_ms(),
@@ -51,6 +59,7 @@ mod tests {
         for (fid, dev) in &flights {
             let start = Instant::now();
             db.append_fixes(fid, dev, std::slice::from_ref(&fix))
+                .await
                 .expect("append");
             samples.push(start.elapsed());
         }

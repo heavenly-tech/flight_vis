@@ -15,7 +15,7 @@ CREATE TABLE IF NOT EXISTS club_memberships (
     club_id TEXT NOT NULL REFERENCES clubs(id) ON DELETE CASCADE,
     role TEXT NOT NULL,
     status TEXT NOT NULL,
-    created_at INTEGER NOT NULL,
+    created_at BIGINT NOT NULL,
     UNIQUE (pilot_id, club_id)
 );
 

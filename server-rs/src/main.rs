@@ -40,6 +40,7 @@ pub(crate) struct AppState {
     pub(crate) video_queue: tokio::sync::mpsc::Sender<video::VideoJob>,
     pub(crate) login_throttle: LoginThrottle,
     pub(crate) device_register_throttle: LoginThrottle,
+    pub(crate) share_lookup_throttle: LoginThrottle,
     pub(crate) mailer: club::mail::Mailer,
 }
 
@@ -62,6 +63,7 @@ fn app_state(
             video_queue,
             login_throttle: LoginThrottle::default(),
             device_register_throttle: LoginThrottle::default(),
+            share_lookup_throttle: LoginThrottle::default(),
             mailer: club::mail::Mailer::from_env(club::mail::MailOutbox::default()),
         },
         queue_rx,
@@ -304,6 +306,25 @@ pub(crate) struct LoginThrottle {
 }
 
 impl LoginThrottle {
+    pub(crate) fn allow_up_to(&self, ip: &str, now: u64, max_attempts: usize) -> bool {
+        let mut hits = self.hits.lock().unwrap_or_else(|err| err.into_inner());
+        let cutoff = now.saturating_sub(LOGIN_WINDOW_SECS);
+        let allowed = {
+            let entry = hits.entry(ip.to_string()).or_default();
+            entry.retain(|stamp| *stamp > cutoff);
+            if entry.len() >= max_attempts {
+                false
+            } else {
+                entry.push(now);
+                true
+            }
+        };
+        if hits.len() > 4096 {
+            hits.retain(|_, times| times.last().is_some_and(|stamp| *stamp > cutoff));
+        }
+        allowed
+    }
+
     fn allow(&self, ip: &str, now: u64) -> bool {
         let mut hits = self.hits.lock().unwrap_or_else(|err| err.into_inner());
         let cutoff = now.saturating_sub(LOGIN_WINDOW_SECS);

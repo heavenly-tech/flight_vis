@@ -141,8 +141,13 @@ pub async fn connect_pool() -> Result<PgPool, DbConnectError> {
     Ok(pool)
 }
 
+#[cfg(test)]
+static TEST_MIGRATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[allow(dead_code)]
 pub async fn run_migrations(pool: &PgPool) -> Result<(), DbConnectError> {
+    #[cfg(test)]
+    let _migrate_guard = TEST_MIGRATE_LOCK.lock().await;
     sqlx::migrate!("./migrations")
         .run(pool)
         .await
@@ -156,6 +161,7 @@ pub async fn open_test_pool() -> Result<PgPool, DbConnectError> {
     connect_pool().await
 }
 
+#[allow(dead_code)]
 pub fn legacy_sqlite_path(data_dir: &Path) -> std::path::PathBuf {
     data_dir.join("club.sqlite")
 }
@@ -174,10 +180,7 @@ mod tests {
     #[test]
     fn builds_url_from_pg_env_and_password_file() {
         let _g = env_lock();
-        let dir = tempfile::tempdir().unwrap();
-        let pw_path = dir.path().join("pgpass");
-        std::fs::write(&pw_path, "s3cret!\n").unwrap();
-        for key in [
+        const KEYS: [&str; 8] = [
             "DATABASE_URL",
             "DATABASE_URL_FILE",
             "PGHOST",
@@ -186,7 +189,15 @@ mod tests {
             "PGUSER",
             "PGPASSWORD",
             "DATABASE_PASSWORD_FILE",
-        ] {
+        ];
+        let saved: Vec<(String, Option<String>)> = KEYS
+            .iter()
+            .map(|k| ((*k).to_string(), env::var(k).ok()))
+            .collect();
+        let dir = tempfile::tempdir().unwrap();
+        let pw_path = dir.path().join("pgpass");
+        std::fs::write(&pw_path, "s3cret!\n").unwrap();
+        for key in KEYS {
             env::remove_var(key);
         }
         env::set_var("PGHOST", "db.heavenly.test");
@@ -198,16 +209,29 @@ mod tests {
         assert!(url.contains("db.heavenly.test:5433/flight_vis"));
         assert!(url.contains("flight_vis"));
         assert!(url.contains("s3cret%21"));
+        for (key, val) in saved {
+            restore_var(&key, val);
+        }
     }
 
     #[test]
     fn database_url_takes_precedence() {
         let _g = env_lock();
+        let saved_url = env::var("DATABASE_URL").ok();
+        let saved_pghost = env::var("PGHOST").ok();
         env::set_var("DATABASE_URL", "postgres://u:p@h/d");
         env::set_var("PGHOST", "ignored");
         let url = resolve_database_url().unwrap();
         assert_eq!(url, "postgres://u:p@h/d");
-        env::remove_var("DATABASE_URL");
-        env::remove_var("PGHOST");
+        restore_var("DATABASE_URL", saved_url);
+        restore_var("PGHOST", saved_pghost);
+    }
+
+    fn restore_var(key: &str, value: Option<String>) {
+        if let Some(v) = value {
+            env::set_var(key, v);
+        } else {
+            env::remove_var(key);
+        }
     }
 }

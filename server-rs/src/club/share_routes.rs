@@ -72,7 +72,7 @@ async fn post_flight_share(
     headers: HeaderMap,
     Path(flight_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot { id, .. } = v else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -87,7 +87,7 @@ async fn post_flight_share(
         )
             .into_response();
     };
-    match db.create_flight_share(&id, &flight_id) {
+    match db.create_flight_share(&id, &flight_id).await {
         Ok((row, token)) => {
             let url = share_public_url(&headers, &token);
             let qr_svg = qr::svg_for_payload(&url, 220).unwrap_or_default();
@@ -123,7 +123,7 @@ async fn get_flight_shares(
     headers: HeaderMap,
     Path(flight_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot { id, .. } = v else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -134,7 +134,7 @@ async fn get_flight_shares(
     let Some(db) = club_db(&state) else {
         return Json(json!({ "shares": [] })).into_response();
     };
-    match db.list_flight_shares(&id, &flight_id) {
+    match db.list_flight_shares(&id, &flight_id).await {
         Ok(shares) => Json(json!({ "shares": shares })).into_response(),
         Err(ShareCreateError::NotOwner) => {
             (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
@@ -155,7 +155,7 @@ async fn revoke_flight_share(
     headers: HeaderMap,
     Path((flight_id, share_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers);
+    let v = viewer(&state, &headers).await;
     let Viewer::Pilot { id, .. } = v else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -170,7 +170,7 @@ async fn revoke_flight_share(
         )
             .into_response();
     };
-    match db.revoke_flight_share(&id, &flight_id, &share_id) {
+    match db.revoke_flight_share(&id, &flight_id, &share_id).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(ShareRevokeError::NotOwner) => {
             (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
@@ -202,7 +202,7 @@ async fn share_flight_meta(
     let Some(db) = club_db(&state) else {
         return share_not_found().into_response();
     };
-    let Some(meta) = db.resolve_share_token(&token) else {
+    let Some(meta) = db.resolve_share_token(&token).await else {
         return share_not_found().into_response();
     };
     (
@@ -232,10 +232,10 @@ async fn share_flight_fixes(
     let Some(db) = club_db(&state) else {
         return share_not_found().into_response();
     };
-    let Some(meta) = db.resolve_share_token(&token) else {
+    let Some(meta) = db.resolve_share_token(&token).await else {
         return share_not_found().into_response();
     };
-    let fixes = db.fixes_for_flight(&meta.flight_id);
+    let fixes = db.fixes_for_flight(&meta.flight_id).await;
     (
         StatusCode::OK,
         [(header::CACHE_CONTROL, "no-store")],
@@ -260,13 +260,13 @@ async fn share_flight_stream(
     let Some(db) = club_db(&state) else {
         return share_not_found().into_response();
     };
-    let Some(meta) = db.resolve_share_token(&token) else {
+    let Some(meta) = db.resolve_share_token(&token).await else {
         return share_not_found().into_response();
     };
     let db = state.club.clone().unwrap();
     let flight_id = meta.flight_id.clone();
     let token_capture = token.clone();
-    let backfill = db.fixes_for_flight(&flight_id);
+    let backfill = db.fixes_for_flight(&flight_id).await;
     let stream = stream::iter(backfill.into_iter().enumerate().map(move |(i, fix)| {
         Ok::<Event, Infallible>(Event::default().id(i.to_string()).json_data(fix).unwrap())
     }))
@@ -275,10 +275,10 @@ async fn share_flight_stream(
         #[allow(clippy::question_mark)]
         |(db, fid, tok, mut last_t)| async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            if db.resolve_share_token(&tok).is_none() {
+            if db.resolve_share_token(&tok).await.is_none() {
                 return None;
             }
-            let fixes = db.fixes_for_flight(&fid);
+            let fixes = db.fixes_for_flight(&fid).await;
             let fresh: Vec<_> = fixes.into_iter().filter(|f| f.t > last_t).collect();
             if let Some(t) = fresh.last().map(|f| f.t) {
                 last_t = t;

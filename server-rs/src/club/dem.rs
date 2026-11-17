@@ -14,6 +14,7 @@ pub struct DemIndex {
 }
 
 impl DemIndex {
+    #[allow(dead_code)]
     pub fn new(data_dir: &Path) -> Self {
         Self {
             data_dir: data_dir.join("dem"),

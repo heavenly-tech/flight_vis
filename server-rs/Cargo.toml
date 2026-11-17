@@ -27,3 +27,4 @@ qrcode-generator = "6.1.2"
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 tempfile = "3"
+serial_test = "3"

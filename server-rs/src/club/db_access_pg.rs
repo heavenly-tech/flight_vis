@@ -471,16 +471,14 @@ impl ClubDb {
             .bind(&co.type_code)
             .fetch_one(&mut *tx)
             .await?;
-            let aircraft_id = if let Some(ref tail) = co.tail {
-                Some(
-                    sqlx::query_scalar(
-                        "SELECT id FROM aircraft WHERE club_id = $1 AND tail = $2",
-                    )
-                    .bind(&club_id)
-                    .bind(tail)
-                    .fetch_one(&mut *tx)
-                    .await?,
+            let aircraft_id: Option<String> = if let Some(ref tail) = co.tail {
+                sqlx::query_scalar(
+                    "SELECT id FROM aircraft WHERE club_id = $1 AND tail = $2",
                 )
+                .bind(&club_id)
+                .bind(tail)
+                .fetch_optional(&mut *tx)
+                .await?
             } else {
                 None
             };
@@ -524,7 +522,7 @@ impl ClubDb {
             .bind(pilot_id)
             .fetch_one(&self.pool)
             .await
-            .map_err(|_| CheckoutError::Db)?;
+            .map_err(CheckoutError::Db)?;
         let (type_id, aircraft_id) = if let Some(tail) = tail {
             let row = sqlx::query(
                 "SELECT a.id, a.type_id FROM aircraft a
@@ -534,11 +532,13 @@ impl ClubDb {
             .bind(tail)
             .fetch_optional(&self.pool)
             .await
-            .map_err(|_| CheckoutError::Db)?;
+            .map_err(CheckoutError::Db)?;
             let Some(row) = row else {
                 return Err(CheckoutError::UnknownTail);
             };
-            (row.get::<_, String>(1), Some(row.get::<_, String>(0)))
+            let ac_id: String = row.try_get(0)?;
+            let type_id: String = row.try_get(1)?;
+            (type_id, Some(ac_id))
         } else {
             let type_id: String = sqlx::query_scalar(
                 "SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2",
@@ -547,7 +547,10 @@ impl ClubDb {
             .bind(type_code)
             .fetch_one(&self.pool)
             .await
-            .map_err(|_| CheckoutError::UnknownType)?;
+            .map_err(|e| match e {
+                sqlx::Error::RowNotFound => CheckoutError::UnknownType,
+                other => CheckoutError::Db(other),
+            })?;
             (type_id, None)
         };
         sqlx::query(
@@ -561,13 +564,13 @@ impl ClubDb {
         .bind(expires_at)
         .execute(&self.pool)
         .await
-        .map_err(|_| CheckoutError::Db)?;
+        .map_err(CheckoutError::Db)?;
         Ok(())
     }
 
     pub async fn admin_pending_counts(&self, club_id: &str) -> AdminPendingCounts {
         AdminPendingCounts {
-            pilots: self.list_pending_pilots().len(),
+            pilots: self.list_pending_pilots().await.len(),
             access_requests: self.count_pending_access_requests(club_id).await,
         }
     }
