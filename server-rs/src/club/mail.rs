@@ -139,7 +139,6 @@ impl Mailer {
         }
         if let Err(e) = self.smtp_send(to, &subject, &plain, &html).await {
             eprintln!("mail: smtp send failed for {to}: {e}");
-            self.capture(to, &subject, &plain);
         }
     }
 
