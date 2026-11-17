@@ -36,12 +36,13 @@ export async function fixesToFlight(
 
   const sorted = [...fixes].sort((a, b) => a.t - b.t);
   const meta = sorted.map((fix) => {
-    const { msl, ellipsoid } = fixAltitudeMsl(fix, { ellipsoidReady });
+    const { msl, ellipsoid, pendingMsl } = fixAltitudeMsl(fix, { ellipsoidReady });
     const speedMps = fix.speed != null && Number.isFinite(fix.speed) ? fix.speed : undefined;
     return {
       fix,
       msl,
       ellipsoid,
+      pendingMsl,
       speedMps,
     };
   });
@@ -59,9 +60,10 @@ export async function fixesToFlight(
   const flight = enrichFlight(name, "gpx", fileName, raw);
 
   for (let i = 0; i < flight.points.length; i += 1) {
-    const { fix, ellipsoid } = meta[i];
+    const { fix, ellipsoid, pendingMsl } = meta[i];
     if (ellipsoid != null) {
       flight.points[i].positionAlt = ellipsoid;
+      if (!pendingMsl) flight.points[i].mslFromGeoid = true;
     }
     if (fix.accuracy != null && Number.isFinite(fix.accuracy)) {
       flight.points[i].accuracyM = fix.accuracy;

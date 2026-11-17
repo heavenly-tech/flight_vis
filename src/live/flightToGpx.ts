@@ -19,7 +19,7 @@ export function flightToGpx(flight: Flight): string {
         lon: p.lon,
         time: p.time,
         speedMps: p.speedMps,
-        altMsl: p.alt,
+        altMsl: p.mslFromGeoid ? p.alt : undefined,
         altEllipsoid,
         accuracyM: p.accuracyM,
       });

@@ -148,21 +148,24 @@ fn header_str(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
     headers.get(name).and_then(|v| v.to_str().ok())
 }
 
-async fn file_response(
-    path: &Path,
-    content_type: &str,
-    cache: &str,
-    etag: &str,
-    content_encoding: Option<&str>,
+struct FileResponseOpts<'a> {
+    path: &'a Path,
+    content_type: &'a str,
+    cache: &'a str,
+    etag: &'a str,
+    content_encoding: Option<&'a str>,
     vary_encoding: bool,
     not_modified: bool,
-) -> Result<axum::response::Response, StatusCode> {
-    if not_modified {
+    sized_body: Option<Vec<u8>>,
+}
+
+async fn file_response(opts: FileResponseOpts<'_>) -> Result<axum::response::Response, StatusCode> {
+    if opts.not_modified {
         let mut builder = axum::response::Response::builder().status(StatusCode::NOT_MODIFIED);
         builder = builder
-            .header(header::CACHE_CONTROL, cache)
-            .header(header::ETAG, etag);
-        if vary_encoding {
+            .header(header::CACHE_CONTROL, opts.cache)
+            .header(header::ETAG, opts.etag);
+        if opts.vary_encoding {
             builder = builder.header(header::VARY, "Accept-Encoding");
         }
         return builder
@@ -170,17 +173,27 @@ async fn file_response(
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    let file = File::open(path).await.map_err(|_| StatusCode::NOT_FOUND)?;
-    let body = Body::from_stream(ReaderStream::new(file));
+    let (body, content_length) = if let Some(bytes) = opts.sized_body {
+        let len = bytes.len();
+        (Body::from(bytes), Some(len))
+    } else {
+        let file = File::open(opts.path)
+            .await
+            .map_err(|_| StatusCode::NOT_FOUND)?;
+        (Body::from_stream(ReaderStream::new(file)), None)
+    };
     let mut builder = axum::response::Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, content_type)
-        .header(header::CACHE_CONTROL, cache)
-        .header(header::ETAG, etag);
-    if let Some(enc) = content_encoding {
+        .header(header::CONTENT_TYPE, opts.content_type)
+        .header(header::CACHE_CONTROL, opts.cache)
+        .header(header::ETAG, opts.etag);
+    if let Some(len) = content_length {
+        builder = builder.header(header::CONTENT_LENGTH, len.to_string());
+    }
+    if let Some(enc) = opts.content_encoding {
         builder = builder.header(header::CONTENT_ENCODING, enc);
     }
-    if vary_encoding {
+    if opts.vary_encoding {
         builder = builder.header(header::VARY, "Accept-Encoding");
     }
     builder
@@ -205,11 +218,12 @@ pub async fn serve(
                 .and_then(|p| p.to_str())
                 .unwrap_or("");
             let cache = cache_for(relative);
+            let geoid = is_geoid_asset(relative);
             let encoding = accepts_encoding(headers);
             let mut serve_path = joined.clone();
             let mut content_encoding: Option<&str> = None;
-            let mut vary = false;
-            if is_geoid_asset(relative) && encoding != "identity" {
+            let vary = geoid;
+            if geoid && encoding != "identity" {
                 let sidecar = sidecar_path(&joined, encoding);
                 if tokio::fs::metadata(&sidecar)
                     .await
@@ -218,21 +232,30 @@ pub async fn serve(
                 {
                     serve_path = sidecar;
                     content_encoding = Some(if encoding == "br" { "br" } else { "gzip" });
-                    vary = true;
                 }
             }
             let etag = file_etag(&joined).await?;
             let if_none_match = header_str(headers, header::IF_NONE_MATCH);
             let not_modified = if_none_match == Some(etag.as_str());
-            return file_response(
-                &serve_path,
-                mime_for(&ext_of(relative).to_lowercase()),
+            let sized_body = if geoid && !not_modified {
+                Some(
+                    tokio::fs::read(&serve_path)
+                        .await
+                        .map_err(|_| StatusCode::NOT_FOUND)?,
+                )
+            } else {
+                None
+            };
+            return file_response(FileResponseOpts {
+                path: &serve_path,
+                content_type: mime_for(&ext_of(relative).to_lowercase()),
                 cache,
-                &etag,
+                etag: &etag,
                 content_encoding,
-                vary,
+                vary_encoding: vary,
                 not_modified,
-            )
+                sized_body,
+            })
             .await;
         }
     }
@@ -244,15 +267,16 @@ pub async fn serve(
     {
         let etag = file_etag(&index).await?;
         let if_none_match = header_str(headers, header::IF_NONE_MATCH);
-        return file_response(
-            &index,
-            "text/html; charset=UTF-8",
-            "no-cache",
-            &etag,
-            None,
-            false,
-            if_none_match == Some(etag.as_str()),
-        )
+        return file_response(FileResponseOpts {
+            path: &index,
+            content_type: "text/html; charset=UTF-8",
+            cache: "no-cache",
+            etag: &etag,
+            content_encoding: None,
+            vary_encoding: false,
+            not_modified: if_none_match == Some(etag.as_str()),
+            sized_body: None,
+        })
         .await;
     }
     Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -340,6 +364,36 @@ mod tests {
                 .get(header::VARY)
                 .and_then(|v| v.to_str().ok()),
             Some("Accept-Encoding")
+        );
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok()),
+            Some("10")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn geoid_identity_sets_vary_and_content_length() {
+        let dir = temp_dist();
+        let bin = dir.join("geoid/grid.bin");
+        std::fs::write(&bin, b"12345").unwrap();
+        let res = serve(&dir, "/geoid/grid.bin", &HeaderMap::new())
+            .await
+            .expect("geoid");
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(header::VARY)
+                .and_then(|v| v.to_str().ok()),
+            Some("Accept-Encoding")
+        );
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_LENGTH)
+                .and_then(|v| v.to_str().ok()),
+            Some("5")
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

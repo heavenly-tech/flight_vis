@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { installGeoidGrid, type GeoidMeta } from "../geo/geoid";
+import { geoidUndulationM, installGeoidGrid, resetGeoidForTests, type GeoidMeta } from "../geo/geoid";
 import { fixesToFlight } from "./fixesToFlight";
 import { flightToGpx } from "./flightToGpx";
 import { liveFixesFromGpx } from "./gpxLive";
@@ -51,5 +51,25 @@ describe("live GPX ellipsoid round-trip", () => {
     const round = liveFixesFromGpx(gpx);
     expect(round[0].alt_ref).toBe(ALT_REF_WGS84_ELLIPSOID);
     expect(round[0].alt).toBeCloseTo(1027.5, 1);
+  });
+
+  it("omits fv:msl when saved without geoid, then derives true MSL on replay", async () => {
+    resetGeoidForTests();
+    const flight = await fixesToFlight(fixes, { name: "t", fileName: "t.gpx" });
+    const gpx = flightToGpx(flight);
+    expect(gpx).not.toContain("<fv:msl>");
+    expect(gpx).toContain("<fv:altRef>");
+
+    const meta = JSON.parse(
+      readFileSync(path.join(root, "public/geoid/egm96-025deg.json"), "utf8"),
+    ) as GeoidMeta;
+    const bin = readFileSync(path.join(root, "public/geoid/egm96-025deg.bin"));
+    installGeoidGrid(meta, new Float32Array(bin.buffer, bin.byteOffset, bin.byteLength / 4));
+
+    const replay = parseGpx(gpx, "t.gpx");
+    const hEllipsoid = replay.points[0].positionAlt!;
+    const n = geoidUndulationM(-33.4, -70.57);
+    expect(replay.points[0].alt).toBeCloseTo(hEllipsoid - n, 2);
+    expect(replay.points[0].alt).toBeLessThan(hEllipsoid - 5);
   });
 });

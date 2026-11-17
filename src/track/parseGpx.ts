@@ -44,12 +44,19 @@ export function parseGpx(xml: string, fileName: string): Flight {
     const speedMps = speedText != null ? Number(speedText) : undefined;
     let altMsl = Number.isFinite(ele) ? ele : 0;
     let positionAlt: number | undefined;
+    let mslFromGeoid = false;
     if (altRef === ALT_REF_WGS84_ELLIPSOID || mslText != null) {
       positionAlt = Number.isFinite(ele) ? ele : undefined;
       if (mslText != null && Number.isFinite(Number(mslText))) {
         altMsl = Number(mslText);
+        mslFromGeoid = true;
       } else if (positionAlt != null) {
-        altMsl = isGeoidReady() ? ellipsoidToMsl(lat, lon, positionAlt) : positionAlt;
+        if (isGeoidReady()) {
+          altMsl = ellipsoidToMsl(lat, lon, positionAlt);
+          mslFromGeoid = true;
+        } else {
+          altMsl = positionAlt;
+        }
       }
     }
     const accuracyM = accText != null && Number.isFinite(Number(accText)) ? Number(accText) : undefined;
@@ -59,6 +66,7 @@ export function parseGpx(xml: string, fileName: string): Flight {
         lon,
         alt: altMsl,
         positionAlt,
+        mslFromGeoid,
         accuracyM,
         time: Number.isFinite(time) ? time : 0,
         speedMps: speedMps != null && Number.isFinite(speedMps) ? speedMps : undefined,
@@ -81,6 +89,7 @@ export function parseGpx(xml: string, fileName: string): Flight {
   const flight = enrichFlight(name, "gpx", fileName, raw);
   for (let i = 0; i < flight.points.length; i += 1) {
     if (raw[i].positionAlt != null) flight.points[i].positionAlt = raw[i].positionAlt;
+    if (raw[i].mslFromGeoid) flight.points[i].mslFromGeoid = true;
     if (raw[i].accuracyM != null) flight.points[i].accuracyM = raw[i].accuracyM;
   }
   return flight;

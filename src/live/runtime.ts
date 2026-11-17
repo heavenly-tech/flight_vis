@@ -318,7 +318,10 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     if (isGeoidReady()) setLiveStatus(null);
 
     stream = openLiveStream(id, {
-      onOpen: () => setLiveStatus(null),
+      onOpen: () => {
+        if (isGeoidReady()) setLiveStatus(null);
+        else syncGeoidNotice();
+      },
       onReconnect: () => setLiveStatus(msg("reconnecting", lang)),
       onError: async (status) => {
         if (status === 401) {

@@ -12,8 +12,9 @@ export function trackPointGpxLines(p: {
   lon: number;
   time: number;
   speedMps: number;
-  altMsl: number;
   altEllipsoid: number;
+  /** Omitted unless EGM96 was applied (never write ellipsoid into fv:msl). */
+  altMsl?: number;
   accuracyM?: number;
 }): string {
   const speed = Number.isFinite(p.speedMps) ? `\n        <speed>${p.speedMps.toFixed(3)}</speed>` : "";
@@ -21,9 +22,12 @@ export function trackPointGpxLines(p: {
     p.accuracyM != null && Number.isFinite(p.accuracyM)
       ? `\n        <fv:accuracy>${p.accuracyM.toFixed(1)}</fv:accuracy>`
       : "";
+  const msl =
+    p.altMsl != null && Number.isFinite(p.altMsl)
+      ? `\n        <fv:msl>${p.altMsl.toFixed(2)}</fv:msl>`
+      : "";
   return `      <trkpt lat="${p.lat}" lon="${p.lon}">
-        <ele>${p.altEllipsoid.toFixed(2)}</ele>
-        <fv:msl>${p.altMsl.toFixed(2)}</fv:msl>
+        <ele>${p.altEllipsoid.toFixed(2)}</ele>${msl}
         <fv:altRef>${ALT_REF_WGS84_ELLIPSOID}</fv:altRef>${acc}
         <time>${new Date(p.time).toISOString()}</time>${speed}
       </trkpt>`;
