@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Admin · kiosk QR</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main { max-width: 52rem; margin: 1rem auto; padding: 0 1rem 2rem; }
+      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
+      #preview-frame {
+        position: relative;
+        width: 100%;
+        max-width: 48rem;
+        margin: 1rem auto;
+        background: #121922;
+        border: 1px solid rgba(255,255,255,.12);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      #preview-map { position: absolute; inset: 0; padding: 1rem; opacity: 0.5; pointer-events: none; font-size: 0.9rem; }
+      #preview-qr {
+        position: absolute;
+        background: #fff;
+        padding: 10px;
+        border-radius: 10px;
+        box-shadow: 0 4px 16px rgba(0,0,0,.35);
+        cursor: move;
+        touch-action: none;
+      }
+      #preview-qr img { width: 100%; height: 100%; display: block; filter: contrast(1.25); }
+      #resize-handle {
+        position: absolute;
+        right: -6px;
+        bottom: -6px;
+        width: 14px;
+        height: 14px;
+        background: #3b82f6;
+        border-radius: 3px;
+        cursor: nwse-resize;
+      }
+      .toolbar { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; margin: 1rem 0; }
+      select, button { font: inherit; padding: .4rem .65rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>QR en pantalla kiosk</h1>
+      <p class="muted">Arrastre para mover; esquina inferior para redimensionar (cuadrado). Vista previa según relación de aspecto.</p>
+      <div id="admin-nav"></div>
+      <div class="toolbar">
+        <label>Relación de aspecto
+          <select id="aspect">
+            <option value="1.7777777778" selected>16:9</option>
+            <option value="1.3333333333">4:3</option>
+            <option value="1">1:1</option>
+          </select>
+        </label>
+        <button type="button" id="btn-save">Guardar</button>
+        <button type="button" id="btn-reset">Restablecer</button>
+        <span id="save-status" class="muted"></span>
+      </div>
+      <div id="preview-frame">
+        <div id="preview-map">Vista previa · mapa en vivo</div>
+        <div id="preview-qr" role="img" aria-label="QR preview">
+          <img src="/api/club/screen/qr.svg" alt="" />
+          <span id="resize-handle" aria-hidden="true"></span>
+        </div>
+      </div>
+    </main>
+    <script type="module" src="/src/club/adminKioskLayout.ts"></script>
+  </body>
+</html>

@@ -69,6 +69,7 @@ export default defineConfig({
         clubAdminPilots: path.resolve(root, "club-admin-pilots.html"),
         clubAdminCheckouts: path.resolve(root, "club-admin-checkouts.html"),
         clubAdminMap: path.resolve(root, "club-admin-map.html"),
+        clubAdminKioskLayout: path.resolve(root, "club-admin-kiosk-layout.html"),
         clubScreen: path.resolve(root, "club-screen.html"),
       },
     },

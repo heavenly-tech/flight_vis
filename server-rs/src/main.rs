@@ -38,6 +38,8 @@ pub(crate) struct AppState {
     pub(crate) club: Option<club::ClubDb>,
     pub(crate) video_queue: tokio::sync::mpsc::Sender<video::VideoJob>,
     pub(crate) login_throttle: LoginThrottle,
+    pub(crate) device_register_throttle: LoginThrottle,
+    pub(crate) mailer: club::mail::Mailer,
 }
 
 fn app_state(
@@ -58,6 +60,8 @@ fn app_state(
             club: None,
             video_queue,
             login_throttle: LoginThrottle::default(),
+            device_register_throttle: LoginThrottle::default(),
+            mailer: club::mail::Mailer::from_env(club::mail::MailOutbox::default()),
         },
         queue_rx,
     )
@@ -665,11 +669,12 @@ async fn run_server() {
             live_task.tick_idle_and_prune().await;
         }
     });
-    if let Ok(pg) = club::database::connect_pool().await {
-        if let Err(error) = club::database::run_migrations(&pg).await {
-            eprintln!("warn: club postgres migrations failed: {error}");
-        } else if let Err(error) = club::sqlite_import::import_if_present(&config.data_dir, &pg).await {
-            eprintln!("warn: club sqlite import failed: {error}");
+    if club::database::resolve_database_url().is_ok() {
+        if let Ok(pg) = club::database::connect_pool().await {
+            if let Err(error) = club::sqlite_import::import_if_present(&config.data_dir, &pg).await
+            {
+                eprintln!("warn: club sqlite import failed: {error}");
+            }
         }
     }
     let club = match club::ClubDb::open(&config.data_dir) {
@@ -699,13 +704,12 @@ async fn run_server() {
     state_bundle.0.club = club.clone();
     let (state, queue_rx) = state_bundle;
     if let Some(db) = club.clone() {
-        let club_task = db;
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
                 interval.tick().await;
                 let now = club::now_ms();
-                let _ = club_task.auto_end_idle(10 * 60 * 1000, now);
+                let _ = db.auto_end_idle(10 * 60 * 1000, now);
             }
         });
     }

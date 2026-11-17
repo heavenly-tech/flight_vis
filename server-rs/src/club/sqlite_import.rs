@@ -4,7 +4,10 @@ use rusqlite::{Connection, OpenFlags};
 use sqlx::PgPool;
 use std::path::Path;
 
-pub(crate) async fn import_if_present(data_dir: &Path, pool: &PgPool) -> Result<(), DbConnectError> {
+pub(crate) async fn import_if_present(
+    data_dir: &Path,
+    pool: &PgPool,
+) -> Result<(), DbConnectError> {
     let path = database::legacy_sqlite_path(data_dir);
     if !path.is_file() {
         return Ok(());

@@ -1,0 +1,148 @@
+#![allow(dead_code)]
+
+use hmac::{Hmac, Mac};
+use sha2::Sha256;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+type HmacSha256 = Hmac<Sha256>;
+
+#[derive(Clone, Default)]
+pub struct MailOutbox {
+    inner: Arc<Mutex<Vec<CapturedMail>>>,
+    send_hits: Arc<Mutex<HashMap<String, Vec<u64>>>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CapturedMail {
+    pub to: String,
+    pub subject: String,
+    pub body: String,
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[derive(Clone)]
+pub struct Mailer {
+    pub smtp_host: Option<String>,
+    pub smtp_from: String,
+    pub public_url: String,
+    bounce_secret: Option<Vec<u8>>,
+    outbox: MailOutbox,
+    per_email_limit: usize,
+    per_ip_limit: usize,
+    window_secs: u64,
+    ip_hits: Arc<Mutex<HashMap<String, Vec<u64>>>>,
+}
+
+impl Mailer {
+    pub fn from_env(outbox: MailOutbox) -> Self {
+        let smtp_host = std::env::var("SMTP_HOST").ok().filter(|s| !s.is_empty());
+        let smtp_from =
+            std::env::var("SMTP_FROM").unwrap_or_else(|_| "noreply@heavenly.cl".to_string());
+        let public_url = std::env::var("FLIGHT_CLUB_PUBLIC_URL")
+            .unwrap_or_else(|_| "https://flight.heavenly.cl".to_string());
+        let bounce_secret = std::env::var("POSTAL_WEBHOOK_SECRET_FILE")
+            .ok()
+            .and_then(|p| std::fs::read(p).ok())
+            .or_else(|| {
+                std::env::var("POSTAL_WEBHOOK_SECRET")
+                    .ok()
+                    .map(|s| s.into_bytes())
+            });
+        Self {
+            smtp_host,
+            smtp_from,
+            public_url,
+            bounce_secret,
+            outbox,
+            per_email_limit: 5,
+            per_ip_limit: 20,
+            window_secs: 3600,
+            ip_hits: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    pub fn allow_send(&self, email: &str, ip: &str) -> bool {
+        let now = now_secs();
+        let cutoff = now.saturating_sub(self.window_secs);
+        {
+            let mut hits = self.outbox.send_hits.lock().unwrap();
+            let entry = hits.entry(email.to_ascii_lowercase()).or_default();
+            entry.retain(|t| *t > cutoff);
+            if entry.len() >= self.per_email_limit {
+                return false;
+            }
+            entry.push(now);
+        }
+        let mut ip_hits = self.ip_hits.lock().unwrap();
+        let entry = ip_hits.entry(ip.to_string()).or_default();
+        entry.retain(|t| *t > cutoff);
+        if entry.len() >= self.per_ip_limit {
+            return false;
+        }
+        entry.push(now);
+        true
+    }
+
+    pub fn capture(&self, to: &str, subject: &str, body: &str) {
+        self.outbox.inner.lock().unwrap().push(CapturedMail {
+            to: to.to_string(),
+            subject: subject.to_string(),
+            body: body.to_string(),
+        });
+        if self.smtp_host.is_some() {
+            eprintln!("mail: would smtp-send to {to}: {subject}");
+        }
+    }
+
+    pub fn verify_postal_signature(&self, body: &[u8], signature: &str) -> bool {
+        let Some(secret) = &self.bounce_secret else {
+            return false;
+        };
+        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
+        mac.update(body);
+        let expected = hex::encode(mac.finalize().into_bytes());
+        subtle::ConstantTimeEq::ct_eq(expected.as_bytes(), signature.as_bytes()).into()
+    }
+
+    #[cfg(test)]
+    pub fn captured(&self) -> Vec<CapturedMail> {
+        self.outbox.inner.lock().unwrap().clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn send_rate_limit_per_email() {
+        let mailer = Mailer::from_env(MailOutbox::default());
+        for _ in 0..5 {
+            assert!(mailer.allow_send("a@test", "1.2.3.4"));
+        }
+        assert!(!mailer.allow_send("a@test", "1.2.3.4"));
+    }
+
+    #[test]
+    fn postal_signature_roundtrip() {
+        std::env::set_var("POSTAL_WEBHOOK_SECRET", "postal-test-secret");
+        let mailer = Mailer::from_env(MailOutbox::default());
+        let body = br#"{"email":"x@test"}"#;
+        let mut mac = HmacSha256::new_from_slice(b"postal-test-secret").unwrap();
+        mac.update(body);
+        let sig = hex::encode(mac.finalize().into_bytes());
+        assert!(mailer.verify_postal_signature(body, &sig));
+        assert!(!mailer.verify_postal_signature(body, &sig.replacen('a', "b", 1)));
+        std::env::remove_var("POSTAL_WEBHOOK_SECRET");
+    }
+}
