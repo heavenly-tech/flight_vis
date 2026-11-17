@@ -595,6 +595,7 @@ fn build_router(state: AppState) -> Router {
 /// wget/curl/busybox to probe `/api/health`; the binary does it itself over
 /// loopback, honouring the same `PORT` as the server.
 const HEALTHCHECK_ARG: &str = "healthcheck";
+const CHECK_I18N_ARG: &str = "check-i18n";
 const HEALTHCHECK_HOST: IpAddr = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
 const HEALTHCHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -671,11 +672,45 @@ fn run_healthcheck() -> bool {
     healthcheck_at(SocketAddr::new(HEALTHCHECK_HOST, port_from_env()))
 }
 
+fn run_check_i18n() -> bool {
+    let config = config_from_env();
+    let dir = i18n::Catalogs::resolve_dir(&config.dist_dir);
+    match i18n::Catalogs::load_from_dir(&dir) {
+        Ok(cat) => {
+            if cat.canonical != "es" {
+                eprintln!("check-i18n: expected canonical locale es");
+                return false;
+            }
+            let has_es_cl = cat
+                .locale_labels()
+                .any(|(id, _, bcp)| id == "es" && bcp == "es-CL");
+            if !has_es_cl {
+                eprintln!("check-i18n: es locale must be es-CL");
+                return false;
+            }
+            let sample = cat.t("es", "club.login.title", &[]);
+            if sample == "club.login.title" || sample.is_empty() {
+                eprintln!("check-i18n: missing Spanish catalog strings");
+                return false;
+            }
+            true
+        }
+        Err(error) => {
+            eprintln!("check-i18n: {error}");
+            false
+        }
+    }
+}
+
 fn main() {
     // Any other argument (or none) still starts the server, as before.
     // `args_os` so a non-UTF-8 argument cannot panic the process.
-    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(HEALTHCHECK_ARG)) {
+    let arg = std::env::args_os().nth(1);
+    if arg.as_deref() == Some(std::ffi::OsStr::new(HEALTHCHECK_ARG)) {
         std::process::exit(if run_healthcheck() { 0 } else { 1 });
+    }
+    if arg.as_deref() == Some(std::ffi::OsStr::new(CHECK_I18N_ARG)) {
+        std::process::exit(if run_check_i18n() { 0 } else { 1 });
     }
     run_server();
 }
@@ -685,7 +720,10 @@ async fn run_server() {
     let config = config_from_env();
     match i18n::init_global(&i18n::Catalogs::resolve_dir(&config.dist_dir)) {
         Ok(_) => {}
-        Err(error) => eprintln!("warn: i18n catalogs: {error}"),
+        Err(error) => {
+            eprintln!("error: i18n catalogs: {error}");
+            std::process::exit(1);
+        }
     }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let live = Arc::new(LiveEngine::new(&config.data_dir));

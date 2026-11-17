@@ -146,9 +146,20 @@ impl Catalogs {
     }
 
     pub fn resolve_dir(dist: &Path) -> PathBuf {
+        if let Ok(dir) = std::env::var("FLIGHT_I18N_LOCALES_DIR") {
+            let path = PathBuf::from(&dir);
+            if path.join("manifest.json").is_file() {
+                return path;
+            }
+        }
         let in_dist = dist.join("locales");
         if in_dist.join("manifest.json").is_file() {
             return in_dist;
+        }
+        // Legacy vite-plugin-static-copy nested `locales/` under `dist/locales/`.
+        let nested = in_dist.join("locales");
+        if nested.join("manifest.json").is_file() {
+            return nested;
         }
         let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../locales");
         if repo.join("manifest.json").is_file() {

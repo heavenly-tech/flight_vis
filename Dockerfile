@@ -67,6 +67,7 @@ ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ENV PORT=8080
 ENV FLIGHT_DATA=/data
 ENV FLIGHT_VIS_DIST=/app/dist
+ENV FLIGHT_I18N_LOCALES_DIR=/app/dist/locales
 COPY --from=runtime-deps /out/bin /usr/bin
 COPY --from=runtime-deps /out/lib /lib
 COPY --from=runtime-deps /out/usr /usr
@@ -74,6 +75,7 @@ COPY --from=runtime-deps /out/etc /etc
 COPY --from=runtime-deps --chown=65534:65534 /out/data /data
 COPY --from=runtime-deps --chmod=1777 /out/tmp /tmp
 COPY --from=frontend /app/dist ./dist
+COPY --chown=65534:65534 locales/manifest.json locales/es.json locales/en.json ./dist/locales/
 COPY --from=backend /app/server-rs/target/release/flight_vis ./flight_vis
 EXPOSE 8080
 USER 65534:65534
