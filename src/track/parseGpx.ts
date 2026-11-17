@@ -3,6 +3,10 @@ import { enrichFlight } from "./enrich";
 import type { Flight } from "./types";
 import { ALT_REF_WGS84_ELLIPSOID } from "../live/types";
 
+export function gpxNeedsGeoid(xml: string): boolean {
+  return /wgs84_ellipsoid/i.test(xml) || /fv:altRef/i.test(xml);
+}
+
 const FV_NS = "http://flight_vis.local/gpx/1";
 
 function textOf(el: Element, tag: string): string | null {

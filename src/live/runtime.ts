@@ -6,7 +6,9 @@ import type { FlightViewer } from "../viz/viewer";
 import { fetchLiveFixes, listLiveSessions, loginUrl } from "./api";
 import { fixesToFlight } from "./fixesToFlight";
 import { flightToGpx } from "./flightToGpx";
+import { createIngestQueue } from "./ingestQueue";
 import { dedupeFixes } from "./sseClient";
+import { ensureGeoidLoaded } from "../geo/geoid";
 import { getLocalFlight, putLocalFlight } from "./localFlights";
 import { liveFixesFromGpx } from "./gpxLive";
 import { detectLang, msg, setLiveLang, type LiveLang } from "./messages";
@@ -152,7 +154,10 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
   async function rebuildFromAllFixes(): Promise<void> {
     if (allFixes.length < 2 || !sessionId) return;
     const prevLen = host.getFlight()?.points.length ?? 0;
-    const next = fixesToFlight(allFixes, { name: `Live ${sessionId.slice(0, 8)}`, fileName: `${sessionId}.gpx` });
+    const next = await fixesToFlight(allFixes, {
+      name: `Live ${sessionId.slice(0, 8)}`,
+      fileName: `${sessionId}.gpx`,
+    });
     host.setFlight(next);
     const range = host.getTrim() ?? fullRange(next);
     host.setTrim({ startMs: range.startMs, endMs: edgeMs() });
@@ -180,12 +185,16 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     await flushRecording();
   }
 
-  async function ingestFixes(fixes: LiveFix[]): Promise<void> {
+  const ingestQueue = createIngestQueue(async (fixes: LiveFix[]) => {
     const fresh = dedupeFixes(fixes, seenFixTimes);
     if (fresh.length === 0) return;
     allFixes.push(...fresh);
     allFixes.sort((a, b) => a.t - b.t);
     await rebuildFromAllFixes();
+  });
+
+  function enqueueIngest(fixes: LiveFix[]): void {
+    void ingestQueue.enqueue(fixes);
   }
 
   async function seedBufferedFixes(serverFixes: LiveFix[] | null): Promise<void> {
@@ -291,6 +300,11 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
       setLiveStatus(null);
       return;
     }
+    setLiveStatus(
+      lang === "es" ? "Cargando modelo de altitud…" : "Loading altitude model…",
+    );
+    await ensureGeoidLoaded();
+    setLiveStatus(null);
     await seedBufferedFixes(initial);
 
     stream = openLiveStream(id, {
@@ -315,7 +329,7 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
         setLiveStatus(msg("reconnecting", lang));
       },
       onFix: (fix) => {
-        void ingestFixes([fix]);
+        enqueueIngest([fix]);
       },
       onEnd: async () => {
         active = false;

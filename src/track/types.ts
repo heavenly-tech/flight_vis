@@ -7,7 +7,7 @@ export type TrackPoint = {
   varioMps: number;
   distanceM: number;
   headingRad: number;
-  /** MSL or display altitude when distinct from ellipsoid `alt`. */
+  /** WGS84 ellipsoid height for the globe; `alt` is MSL for HUD/labels. */
   positionAlt?: number;
   accuracyM?: number;
 };

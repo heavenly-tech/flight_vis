@@ -31,8 +31,6 @@
           <button type="button" id="btn-library" class="chip disclosure" aria-expanded="false" aria-controls="library-panel">
             Library <span class="caret" aria-hidden="true">^</span>
           </button>
-          <button type="button" id="btn-live-sessions" class="chip" hidden>Live</button>
-          <button type="button" id="btn-lang" class="chip" title="Language" aria-label="Toggle language">EN</button>
           <div class="menu" id="file-menu">
             <button type="button" id="btn-file" class="chip disclosure" aria-expanded="false" aria-controls="file-panel">
               File <span class="caret" aria-hidden="true">^</span>
@@ -124,6 +122,10 @@
           <div id="tag-list" class="tag-list" hidden></div>
         </div>
         <div id="more-panel" class="more-panel" hidden>
+          <div class="more-live-row transport-extra" role="group" aria-label="Live and language">
+            <button type="button" id="btn-live-sessions" class="chip" hidden aria-label="Browse live sessions">Live</button>
+            <button type="button" id="btn-lang" class="chip" title="Language" aria-label="Toggle language">EN</button>
+          </div>
           <div class="modes color-modes mobile-color" role="group" aria-label="Track color">
             <span class="group-label">Color</span>
             <button type="button" data-mode="altitude" class="chip active">Alt</button>

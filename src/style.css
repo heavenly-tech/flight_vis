@@ -655,9 +655,14 @@ body.live-session .live-slot:not([hidden]):not(.is-live-edge) {
   text-align: center;
 }
 
-body.live-session #btn-live-sessions,
-body.live-session #btn-record {
+body.live-session #btn-live-sessions {
   display: inline-flex;
+}
+
+.more-live-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .live-trim-dialog form {
@@ -672,6 +677,12 @@ body.live-session #btn-record {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+}
+
+@media (max-width: 420px) {
+  .live-trim-presets {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .live-trim-presets .chip.active {
@@ -806,8 +817,12 @@ dialog input {
       "brand actions"
       "library library";
     gap: 6px;
-    max-height: 20vh;
-    overflow: hidden;
+    max-height: none;
+    overflow: visible;
+  }
+
+  body.library-open .topbar {
+    max-height: min(52vh, 420px);
   }
 
   .brand {
@@ -817,7 +832,7 @@ dialog input {
   .flight-name {
     font-size: 16px;
     margin: 0;
-    max-width: 55vw;
+    max-width: min(72vw, 20rem);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -825,7 +840,20 @@ dialog input {
 
   .library-panel {
     max-width: none;
-    max-height: 24vh;
+    max-height: none;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  body.library-open .library-panel {
+    max-height: min(40vh, 360px);
+  }
+
+  .library-list {
+    overflow-y: auto;
+    min-height: 0;
+    flex: 1 1 auto;
   }
 
   .top-actions {

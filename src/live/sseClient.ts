@@ -102,6 +102,7 @@ export function connectLiveStream(
   const url = `/api/live/${encodeURIComponent(sessionId)}/stream`;
   let source: EventSource | null = null;
   let closed = false;
+  let classifyAbort: AbortController | null = null;
 
   const open = (): void => {
     if (closed) return;
@@ -121,8 +122,11 @@ export function connectLiveStream(
     });
 
     source.onerror = () => {
-      void classifyStreamError(url).then((state) => {
-        if (closed) return;
+      classifyAbort?.abort();
+      classifyAbort = new AbortController();
+      const signal = classifyAbort.signal;
+      void classifyStreamError(url, signal).then((state) => {
+        if (closed || signal.aborted) return;
         if (state === "auth" || state === "notfound") {
           closed = true;
           source?.close();
@@ -139,6 +143,8 @@ export function connectLiveStream(
   return {
     close: () => {
       closed = true;
+      classifyAbort?.abort();
+      classifyAbort = null;
       source?.close();
       source = null;
     },
@@ -149,9 +155,16 @@ function defaultEventSource(url: string): EventSource {
   return new EventSource(url, { withCredentials: true });
 }
 
-export async function classifyStreamError(url: string): Promise<LiveStreamErrorState> {
+export async function classifyStreamError(
+  url: string,
+  signal?: AbortSignal,
+): Promise<LiveStreamErrorState> {
   try {
-    const res = await fetch(url, { credentials: "same-origin", headers: { Accept: "text/event-stream" } });
+    const res = await fetch(url, {
+      credentials: "same-origin",
+      headers: { Accept: "text/event-stream" },
+      signal,
+    });
     if (res.status === 401 || res.status === 403) return "auth";
     if (res.status === 404) return "notfound";
     return "network";

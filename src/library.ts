@@ -98,9 +98,12 @@ export function mountLibrary(opts: {
     }
 
     listEl.innerHTML = "";
-    if (!auth.authenticated) return;
+    const visible = auth.authenticated ? items : items.filter((item) => item.local);
+    if (!auth.authenticated && visible.length) {
+      hint.textContent = `${visible.length} recording${visible.length === 1 ? "" : "s"} on this device. Log in for server tracks.`;
+    }
 
-    for (const item of items) {
+    for (const item of visible) {
       const row = document.createElement("li");
       row.className = "library-item";
       if (item.slug === currentSlug) row.classList.add("active");

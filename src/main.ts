@@ -3,6 +3,7 @@ import "./style.css";
 import { getAuth, getFlight, loginUrl, logout, saveFlight, shareUrl, type AuthStatus } from "./api";
 import { isTrackFile, mountLibrary, type LibraryHandle } from "./library";
 import { formatClock, formatDuration } from "./track/geo";
+import { isGeoidReady } from "./geo/geoid";
 import { parseFlight, sampleAt } from "./track/parse";
 import { isValidSlug, normalizeSlug, slugFromFileName, slugFromPath } from "./track/slug";
 import type { ColorMode, Flight, FlightTag, TrimRange } from "./track/types";
@@ -232,7 +233,13 @@ function renderHud(): void {
   if (!flight || !trim) return;
   const sample = sampleAt(flight, cursorMs);
   const p = sample.point;
-  document.querySelector("#stat-alt")!.textContent = `${Math.round(p.alt)} m`;
+  const altEl = document.querySelector("#stat-alt")!;
+  const mslPending =
+    liveRuntime?.isActive() &&
+    p.positionAlt != null &&
+    !isGeoidReady() &&
+    Math.abs(p.alt - p.positionAlt) < 0.5;
+  altEl.textContent = mslPending ? "…" : `${Math.round(p.alt)} m`;
   document.querySelector("#stat-spd")!.textContent = `${(p.speedMps * 3.6).toFixed(0)} km/h`;
   document.querySelector("#stat-vario")!.textContent = `${p.varioMps >= 0 ? "+" : ""}${p.varioMps.toFixed(1)} m/s`;
   document.querySelector("#stat-dist")!.textContent = `${(p.distanceM / 1000).toFixed(1)} km`;
@@ -407,7 +414,7 @@ async function boot(): Promise<void> {
 
   async function loadText(text: string, fileName: string, opts?: { trim?: TrimRange; tags?: FlightTag[]; slug?: string }): Promise<void> {
     setStatus("Parsing track…");
-    await loadParsed(parseFlight(text, fileName), text, opts);
+    await loadParsed(await parseFlight(text, fileName), text, opts);
   }
 
   function tick(now: number): void {
