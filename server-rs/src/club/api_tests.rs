@@ -12,8 +12,8 @@ use axum::{
     body::{to_bytes, Body},
     http::{header, Request, StatusCode},
 };
-use std::sync::Arc;
 use serial_test::serial;
+use std::sync::Arc;
 use tower::Service;
 
 struct Fixture {
@@ -30,17 +30,25 @@ async fn setup() -> Fixture {
     let club = ClubDb::open_test().await.expect("club db");
     let club_id = club.default_club_id().await.unwrap();
     club.upsert_type(&club_id, "C152").await.unwrap();
-    club.upsert_aircraft(&club_id, "N1", "C152", true).await.unwrap();
+    club.upsert_aircraft(&club_id, "N1", "C152", true)
+        .await
+        .unwrap();
     let pilot_a = club
-        .register(&club_id, "A", "a@test", "", "password12").await
+        .register(&club_id, "A", "a@test", "", "password12")
+        .await
         .unwrap();
     let pilot_b = club
-        .register(&club_id, "B", "b@test", "", "password12").await
+        .register(&club_id, "B", "b@test", "", "password12")
+        .await
         .unwrap();
     club.approve_pilot(&pilot_a).await.unwrap();
     club.approve_pilot(&pilot_b).await.unwrap();
-    club.add_checkout(&pilot_a, "C152", None, None).await.unwrap();
-    club.add_checkout(&pilot_b, "C152", None, None).await.unwrap();
+    club.add_checkout(&pilot_a, "C152", None, None)
+        .await
+        .unwrap();
+    club.add_checkout(&pilot_b, "C152", None, None)
+        .await
+        .unwrap();
     let (_dev, device_token) = club.create_device(&pilot_a, "phone").await.unwrap();
     let live = Arc::new(LiveEngine::new(data_dir.path()));
     let (video_queue, _) = tokio::sync::mpsc::channel(4);
@@ -280,7 +288,11 @@ async fn anonymous_public_map_and_name_flag() {
 async fn server_qr_svg_endpoints() {
     let mut fx = setup().await;
     let cookie_a = login_cookie(&mut fx.router, "a@test").await;
-    let (device_id, _) = fx.club.create_device(&fx.pilot_a, "qr-phone").await.unwrap();
+    let (device_id, _) = fx
+        .club
+        .create_device(&fx.pilot_a, "qr-phone")
+        .await
+        .unwrap();
 
     let unauth = fx
         .router
@@ -330,7 +342,8 @@ async fn server_qr_svg_endpoints() {
 
     let (_sess, display_token) = fx
         .club
-        .create_display_session(&fx.pilot_a, "kiosk").await
+        .create_display_session(&fx.pilot_a, "kiosk")
+        .await
         .unwrap();
     let display_cookie = format!("{}={}", crate::club::auth::DISPLAY_COOKIE, display_token);
 
@@ -476,7 +489,8 @@ async fn pending_pilot_cannot_load_club_map() {
     let club_id = fx.club.default_club_id().await.unwrap();
     let pending = fx
         .club
-        .register(&club_id, "P", "p@test", "", "password12").await
+        .register(&club_id, "P", "p@test", "", "password12")
+        .await
         .unwrap();
     let cookie = login_cookie(&mut fx.router, "p@test").await;
     let _ = pending;
@@ -528,7 +542,11 @@ async fn kiosk_layout_admin_clamps_and_display_sse_rev() {
     assert!(size <= 0.5 + 1e-9);
     let rev1 = layout.get("rev").and_then(|v| v.as_i64()).unwrap();
 
-    let (session_id, display_token) = fx.club.create_display_session(&fx.pilot_a, "k").await.unwrap();
+    let (session_id, display_token) = fx
+        .club
+        .create_display_session(&fx.pilot_a, "k")
+        .await
+        .unwrap();
     let _ = session_id;
     let display_cookie = format!(
         "{}={display_token}; Path=/",

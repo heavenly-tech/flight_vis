@@ -1,7 +1,5 @@
 use crate::club::{
-    auth::{
-        self, digest_token, new_id, new_session_id, DUMMY_PASSWORD_HASH, SESSION_TTL_SEC,
-    },
+    auth::{self, digest_token, new_id, new_session_id, DUMMY_PASSWORD_HASH, SESSION_TTL_SEC},
     db::{ClubDb, DbError, LoginError, PilotRow},
 };
 use sqlx::Row;
@@ -58,7 +56,12 @@ impl ClubDb {
         Ok(())
     }
 
-    pub async fn record_login_attempt(&self, ip: &str, email: &str, now: i64) -> Result<(), DbError> {
+    pub async fn record_login_attempt(
+        &self,
+        ip: &str,
+        email: &str,
+        now: i64,
+    ) -> Result<(), DbError> {
         sqlx::query("INSERT INTO login_attempts (ip, email, ts) VALUES ($1, $2, $3)")
             .bind(ip)
             .bind(email)
@@ -92,9 +95,7 @@ impl ClubDb {
 
         let Some(row) = row else {
             let _ = verify_hash(DUMMY_PASSWORD_HASH);
-            let _ = self
-                .record_login_attempt(ip, email_norm, now)
-                .await;
+            let _ = self.record_login_attempt(ip, email_norm, now).await;
             return Err(LoginError::Invalid);
         };
 
@@ -102,15 +103,11 @@ impl ClubDb {
         let hash: String = row.try_get(8).map_err(|_| LoginError::Invalid)?;
         if hash.is_empty() {
             let _ = verify_hash(DUMMY_PASSWORD_HASH);
-            let _ = self
-                .record_login_attempt(ip, email_norm, now)
-                .await;
+            let _ = self.record_login_attempt(ip, email_norm, now).await;
             return Err(LoginError::Invalid);
         }
         if !verify_hash(&hash) {
-            let _ = self
-                .record_login_attempt(ip, email_norm, now)
-                .await;
+            let _ = self.record_login_attempt(ip, email_norm, now).await;
             return Err(LoginError::Invalid);
         }
         let session_id = self
@@ -301,11 +298,7 @@ impl ClubDb {
         Ok((pilot_session, session_id, pilot))
     }
 
-    pub async fn guest_session_for_pilot(
-        &self,
-        pilot_id: &str,
-        now: i64,
-    ) -> Option<String> {
+    pub async fn guest_session_for_pilot(&self, pilot_id: &str, now: i64) -> Option<String> {
         sqlx::query_scalar(
             "SELECT id FROM guest_sessions
              WHERE guest_pilot_id = $1 AND claimed_at IS NULL AND expires_at > $2",
@@ -408,11 +401,10 @@ impl ClubDb {
     }
 
     pub async fn revoke_all_devices(&self, pilot_id: &str) -> Result<(), DbError> {
-        let ids: Vec<String> =
-            sqlx::query_scalar("SELECT id FROM devices WHERE pilot_id = $1")
-                .bind(pilot_id)
-                .fetch_all(&self.pool)
-                .await?;
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM devices WHERE pilot_id = $1")
+            .bind(pilot_id)
+            .fetch_all(&self.pool)
+            .await?;
         for device_id in ids {
             let _ = self.revoke_device_by_id(pilot_id, &device_id).await;
         }
@@ -464,7 +456,11 @@ mod tests {
         .await
         .unwrap();
         let now = now_ms();
-        let raw = db.issue_magic_login(&club, "magic@test", now).await.unwrap().unwrap();
+        let raw = db
+            .issue_magic_login(&club, "magic@test", now)
+            .await
+            .unwrap()
+            .unwrap();
         let (sess, pilot) = db.consume_magic_login(&raw, &club, now).await.unwrap();
         assert_eq!(pilot.email, "magic@test");
         assert!(!sess.is_empty());
@@ -496,7 +492,8 @@ mod tests {
         let db = ClubDb::open_test().await.unwrap();
         let club = db.default_club_id().await.unwrap();
         let now = now_ms();
-        let (_pilot_sess, guest_id, guest) = db.create_guest_session(&club, "Try", now).await.unwrap();
+        let (_pilot_sess, guest_id, guest) =
+            db.create_guest_session(&club, "Try", now).await.unwrap();
         assert_eq!(guest.status, "guest");
         let claimed = db
             .claim_guest(
@@ -520,10 +517,9 @@ mod tests {
         let club = db.default_club_id().await.unwrap();
         let now = now_ms();
         let ip = "198.51.100.1";
-        assert!(
-            db.login_password(&club, "missing@test", "whatever", now, ip)
-                .await
-                .is_err()
-        );
+        assert!(db
+            .login_password(&club, "missing@test", "whatever", now, ip)
+            .await
+            .is_err());
     }
 }

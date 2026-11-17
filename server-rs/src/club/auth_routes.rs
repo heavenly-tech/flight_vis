@@ -32,7 +32,7 @@ pub async fn post_magic_link(
 ) -> impl IntoResponse {
     let email = body.email.trim();
     let now = now_ms();
-  let ip = client_ip.0;
+    let ip = client_ip.0;
     let Some(db) = club_db(&state) else {
         return Json(json!({ "ok": true })).into_response();
     };
@@ -52,7 +52,12 @@ pub async fn post_magic_link(
                 .unwrap_or_else(|| "es".to_string());
             state
                 .mailer
-                .send_localized(email, &loc, "magicLink", &[("minutes", "15"), ("url", &url)])
+                .send_localized(
+                    email,
+                    &loc,
+                    "magicLink",
+                    &[("minutes", "15"), ("url", &url)],
+                )
                 .await;
         }
     }
@@ -84,22 +89,19 @@ pub async fn get_magic_consume(
             if wants_html(&headers) {
                 return (
                     StatusCode::FOUND,
-                    [(header::SET_COOKIE, cookie), (header::LOCATION, "/".to_string())],
+                    [
+                        (header::SET_COOKIE, cookie),
+                        (header::LOCATION, "/".to_string()),
+                    ],
                 )
                     .into_response();
             }
             pilot_ok_response(&cookie, &pilot)
         }
-        Err(MagicConsumeError::Expired) => (
-            StatusCode::GONE,
-            Json(json!({ "error": "expired" })),
-        )
-            .into_response(),
-        Err(_) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "invalid" })),
-        )
-            .into_response(),
+        Err(MagicConsumeError::Expired) => {
+            (StatusCode::GONE, Json(json!({ "error": "expired" }))).into_response()
+        }
+        Err(_) => (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid" }))).into_response(),
     }
 }
 
@@ -149,7 +151,9 @@ pub async fn webauthn_register_begin(
             .into_response();
     };
     match webauthn.register_begin(&pilot) {
-        Ok((public_key, nonce)) => Json(json!({ "publicKey": public_key, "nonce": nonce })).into_response(),
+        Ok((public_key, nonce)) => {
+            Json(json!({ "publicKey": public_key, "nonce": nonce })).into_response()
+        }
         Err(_) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "webauthn begin failed" })),
@@ -209,7 +213,9 @@ pub async fn webauthn_login_begin(
     };
     let club_id = db.default_club_id().await.unwrap_or_default();
     match webauthn.login_begin(db, &body.email, &club_id).await {
-        Ok((public_key, nonce)) => Json(json!({ "publicKey": public_key, "nonce": nonce })).into_response(),
+        Ok((public_key, nonce)) => {
+            Json(json!({ "publicKey": public_key, "nonce": nonce })).into_response()
+        }
         Err(WebauthnRouteError::NotFound) => Json(json!({ "ok": true })).into_response(),
         Err(_) => (
             StatusCode::BAD_REQUEST,
@@ -392,7 +398,10 @@ fn webauthn_disabled() -> axum::response::Response {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/club/auth/magic-link", post(post_magic_link))
-        .route("/api/club/auth/magic", axum::routing::get(get_magic_consume))
+        .route(
+            "/api/club/auth/magic",
+            axum::routing::get(get_magic_consume),
+        )
         .route(
             "/api/club/auth/webauthn/register/begin",
             post(webauthn_register_begin),

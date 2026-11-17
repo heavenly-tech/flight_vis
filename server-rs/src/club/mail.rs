@@ -128,13 +128,7 @@ impl Mailer {
     }
 
     /// Capture when SMTP is unset; send plain+html when `SMTP_HOST` is configured.
-    pub async fn send_localized(
-        &self,
-        to: &str,
-        locale: &str,
-        stem: &str,
-        vars: &[(&str, &str)],
-    ) {
+    pub async fn send_localized(&self, to: &str, locale: &str, stem: &str, vars: &[(&str, &str)]) {
         let Some((subject, plain, html)) = self.localized_parts(locale, stem, vars) else {
             return;
         };
@@ -157,10 +151,7 @@ impl Mailer {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use lettre::message::{header::ContentType, MultiPart, SinglePart};
         use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
-        let host = self
-            .smtp_host
-            .as_deref()
-            .ok_or("smtp host missing")?;
+        let host = self.smtp_host.as_deref().ok_or("smtp host missing")?;
         let from: lettre::message::Mailbox = self.smtp_from.parse()?;
         let to_mail: lettre::message::Mailbox = to.parse()?;
         let body = MultiPart::alternative()

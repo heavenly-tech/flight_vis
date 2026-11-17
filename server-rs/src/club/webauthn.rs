@@ -44,16 +44,17 @@ pub enum WebauthnRouteError {
 
 impl WebauthnState {
     pub fn from_env() -> Option<Self> {
-        let rp_id = std::env::var("WEBAUTHN_RP_ID").ok().filter(|s| !s.is_empty()).or_else(
-            || {
+        let rp_id = std::env::var("WEBAUTHN_RP_ID")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
                 std::env::var("FLIGHT_CLUB_PUBLIC_URL")
                     .ok()
                     .and_then(|url| url::Url::parse(&url).ok())
                     .and_then(|u| u.host_str().map(String::from))
-            },
-        )?;
-        let origin = std::env::var("FLIGHT_CLUB_PUBLIC_URL")
-            .unwrap_or_else(|_| format!("https://{rp_id}"));
+            })?;
+        let origin =
+            std::env::var("FLIGHT_CLUB_PUBLIC_URL").unwrap_or_else(|_| format!("https://{rp_id}"));
         let rp_origin: Url = origin.parse().ok()?;
         let webauthn = WebauthnBuilder::new(&rp_id, &rp_origin)
             .ok()?
@@ -71,7 +72,9 @@ impl WebauthnState {
         let now = Instant::now();
         map.retain(|_, v| match v {
             PendingChallenge::Register { created, .. }
-            | PendingChallenge::Login { created, .. } => now.duration_since(*created) < CHALLENGE_TTL,
+            | PendingChallenge::Login { created, .. } => {
+                now.duration_since(*created) < CHALLENGE_TTL
+            }
         });
     }
 
@@ -80,7 +83,9 @@ impl WebauthnState {
         pilot: &PilotRow,
     ) -> Result<(serde_json::Value, String), WebauthnRouteError> {
         let digest = Sha256::digest(pilot.id.as_bytes());
-        let bytes: [u8; 16] = digest[..16].try_into().map_err(|_| WebauthnRouteError::InvalidPayload)?;
+        let bytes: [u8; 16] = digest[..16]
+            .try_into()
+            .map_err(|_| WebauthnRouteError::InvalidPayload)?;
         let user_unique_id = Uuid::from_bytes(bytes);
         let (ccr, reg_state) = self
             .webauthn
@@ -110,11 +115,8 @@ impl WebauthnState {
             let mut map = self.pending.lock().unwrap();
             map.remove(nonce)
         };
-        let PendingChallenge::Register {
-            pilot_id,
-            reg,
-            ..
-        } = pending.ok_or(WebauthnRouteError::InvalidSession)?
+        let PendingChallenge::Register { pilot_id, reg, .. } =
+            pending.ok_or(WebauthnRouteError::InvalidSession)?
         else {
             return Err(WebauthnRouteError::InvalidSession);
         };
@@ -168,7 +170,8 @@ impl WebauthnState {
             let mut map = self.pending.lock().unwrap();
             map.remove(nonce)
         };
-        let PendingChallenge::Login { auth, .. } = pending.ok_or(WebauthnRouteError::InvalidSession)?
+        let PendingChallenge::Login { auth, .. } =
+            pending.ok_or(WebauthnRouteError::InvalidSession)?
         else {
             return Err(WebauthnRouteError::InvalidSession);
         };
@@ -191,8 +194,12 @@ impl WebauthnState {
         let Some(row) = row else {
             return Err(WebauthnRouteError::NotFound);
         };
-        let w_id: String = row.try_get(0).map_err(|_| WebauthnRouteError::Verification)?;
-        let counter: i64 = row.try_get(2).map_err(|_| WebauthnRouteError::Verification)?;
+        let w_id: String = row
+            .try_get(0)
+            .map_err(|_| WebauthnRouteError::Verification)?;
+        let counter: i64 = row
+            .try_get(2)
+            .map_err(|_| WebauthnRouteError::Verification)?;
         let new_counter = auth_result.counter() as i64;
         if new_counter <= counter {
             return Err(WebauthnRouteError::Verification);
@@ -204,14 +211,30 @@ impl WebauthnState {
             .await
             .map_err(|_| WebauthnRouteError::Verification)?;
         let pilot = PilotRow {
-            id: row.try_get(3).map_err(|_| WebauthnRouteError::Verification)?,
-            club_id: row.try_get(4).map_err(|_| WebauthnRouteError::Verification)?,
-            name: row.try_get(5).map_err(|_| WebauthnRouteError::Verification)?,
-            email: row.try_get(6).map_err(|_| WebauthnRouteError::Verification)?,
-            license_no: row.try_get(7).map_err(|_| WebauthnRouteError::Verification)?,
-            status: row.try_get(8).map_err(|_| WebauthnRouteError::Verification)?,
-            role: row.try_get(9).map_err(|_| WebauthnRouteError::Verification)?,
-            locale: row.try_get(10).map_err(|_| WebauthnRouteError::Verification)?,
+            id: row
+                .try_get(3)
+                .map_err(|_| WebauthnRouteError::Verification)?,
+            club_id: row
+                .try_get(4)
+                .map_err(|_| WebauthnRouteError::Verification)?,
+            name: row
+                .try_get(5)
+                .map_err(|_| WebauthnRouteError::Verification)?,
+            email: row
+                .try_get(6)
+                .map_err(|_| WebauthnRouteError::Verification)?,
+            license_no: row
+                .try_get(7)
+                .map_err(|_| WebauthnRouteError::Verification)?,
+            status: row
+                .try_get(8)
+                .map_err(|_| WebauthnRouteError::Verification)?,
+            role: row
+                .try_get(9)
+                .map_err(|_| WebauthnRouteError::Verification)?,
+            locale: row
+                .try_get(10)
+                .map_err(|_| WebauthnRouteError::Verification)?,
         };
         let now = now_ms();
         let session_id = db
@@ -222,11 +245,7 @@ impl WebauthnState {
     }
 }
 
-async fn store_credential(
-    db: &ClubDb,
-    pilot_id: &str,
-    passkey: &Passkey,
-) -> Result<(), DbError> {
+async fn store_credential(db: &ClubDb, pilot_id: &str, passkey: &Passkey) -> Result<(), DbError> {
     let id = new_id();
     let cred_id = passkey.cred_id().as_ref();
     let pk = serde_cbor::to_vec(passkey).map_err(|e| {

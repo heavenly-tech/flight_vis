@@ -41,7 +41,9 @@ impl ClubDb {
         if path.is_empty() {
             return Ok(0);
         }
-        let raw = tokio::fs::read_to_string(path).await.map_err(DbError::from)?;
+        let raw = tokio::fs::read_to_string(path)
+            .await
+            .map_err(DbError::from)?;
         self.import_device_tokens(&raw).await
     }
 
@@ -125,12 +127,11 @@ mod tests {
         assert_eq!(n1, 1);
         let n2 = db.import_device_tokens(&raw).await.unwrap();
         assert_eq!(n2, 0);
-        let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE pilot_id = $1")
-                .bind(&pid)
-                .fetch_one(&db.pool)
-                .await
-                .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE pilot_id = $1")
+            .bind(&pid)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
         assert_eq!(count, 1);
     }
 }
