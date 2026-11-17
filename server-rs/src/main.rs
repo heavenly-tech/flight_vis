@@ -38,6 +38,8 @@ pub(crate) struct AppState {
     pub(crate) club: Option<club::ClubDb>,
     pub(crate) video_queue: tokio::sync::mpsc::Sender<video::VideoJob>,
     pub(crate) login_throttle: LoginThrottle,
+    pub(crate) device_register_throttle: LoginThrottle,
+    pub(crate) mailer: club::mail::Mailer,
 }
 
 fn app_state(
@@ -58,6 +60,8 @@ fn app_state(
             club: None,
             video_queue,
             login_throttle: LoginThrottle::default(),
+            device_register_throttle: LoginThrottle::default(),
+            mailer: club::mail::Mailer::from_env(club::mail::MailOutbox::default()),
         },
         queue_rx,
     )
@@ -665,7 +669,7 @@ async fn run_server() {
             live_task.tick_idle_and_prune().await;
         }
     });
-    let club = if club::database::resolve_database_url().is_ok() {
+    if club::database::resolve_database_url().is_ok() {
         if let Ok(pg) = club::database::connect_pool().await {
             if let Err(error) =
                 club::sqlite_import::import_if_present(&config.data_dir, &pg).await
@@ -673,22 +677,20 @@ async fn run_server() {
                 eprintln!("warn: club sqlite import failed: {error}");
             }
         }
-        match club::ClubDb::connect().await {
-            Ok(db) => {
-                if std::env::var("FLIGHT_CLUB_SEED_DEMO").as_deref() == Ok("1") {
-                    if let Err(error) = db.seed_demo_if_empty().await {
-                        eprintln!("warn: demo seed failed: {error}");
-                    }
+    }
+    let club = match club::ClubDb::open(&config.data_dir) {
+        Ok(db) => {
+            if std::env::var("FLIGHT_CLUB_SEED_DEMO").as_deref() == Ok("1") {
+                if let Err(error) = db.seed_demo_if_empty() {
+                    eprintln!("warn: demo seed failed: {error}");
                 }
-                Some(db)
             }
-            Err(error) => {
-                eprintln!("warn: club database unavailable: {error}");
-                None
-            }
+            Some(db)
         }
-    } else {
-        None
+        Err(error) => {
+            eprintln!("warn: club database unavailable: {error}");
+            None
+        }
     };
     let mut state_bundle = app_state(
         config.dist_dir,
@@ -703,13 +705,12 @@ async fn run_server() {
     state_bundle.0.club = club.clone();
     let (state, queue_rx) = state_bundle;
     if let Some(db) = club.clone() {
-        let club_task = db;
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
             loop {
                 interval.tick().await;
                 let now = club::now_ms();
-                let _ = club_task.auto_end_idle(10 * 60 * 1000, now).await;
+                let _ = db.auto_end_idle(10 * 60 * 1000, now);
             }
         });
     }

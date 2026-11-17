@@ -1,12 +1,20 @@
 //! Flight-club registry: pilot auth, checkouts, shared live map.
 mod access_request;
 mod auth;
+mod club_scope;
 pub mod checkin;
 pub mod database;
-#[path = "db_pg.rs"]
 mod db;
 mod db_access;
+mod db_checkin;
+mod db_devices;
+mod db_map_view;
+mod dem;
+mod geo;
+pub mod mail;
+mod mail_suppress;
 mod map;
+mod map_filter;
 mod qr;
 mod routes;
 pub(crate) mod sqlite_import;

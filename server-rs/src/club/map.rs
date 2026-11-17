@@ -23,6 +23,7 @@ pub struct DeviceFix {
     pub pilot_id: String,
     pub pilot_name: String,
     pub visibility: String,
+    pub club_id: String,
     pub fix: LiveFix,
 }
 
@@ -102,6 +103,7 @@ mod tests {
             pilot_id: "p1".to_string(),
             pilot_name: "Pat".to_string(),
             visibility: "club".to_string(),
+            club_id: "c1".to_string(),
             fix: fix(t, acc),
         }
     }

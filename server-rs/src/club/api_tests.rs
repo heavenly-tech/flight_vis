@@ -52,6 +52,8 @@ fn setup() -> Fixture {
         club: Some(club.clone()),
         video_queue,
         login_throttle: crate::LoginThrottle::default(),
+        device_register_throttle: crate::LoginThrottle::default(),
+        mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
     };
     Fixture {
         _dir: data_dir,
@@ -342,6 +344,119 @@ async fn server_qr_svg_endpoints() {
     .unwrap();
     assert!(screen_svg.contains("<svg"));
     assert!(!screen_svg.contains("qrserver"));
+}
+
+#[tokio::test]
+async fn api_me_devices_auto_register_idempotent_and_revoke_on_logout() {
+    let mut fx = setup();
+    let cookie = login_cookie(&mut fx.router, "a@test").await;
+    let reg = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/me/devices")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::from(
+                    r#"{"label":"Pixel","model":"Google Pixel","installId":"install-api-test-01"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reg.status(), StatusCode::OK);
+    let body = to_bytes(reg.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json.get("created").and_then(|v| v.as_bool()), Some(true));
+    let device_id = json.get("id").and_then(|v| v.as_str()).expect("id");
+    let token = json.get("token").and_then(|v| v.as_str()).expect("token");
+
+    let flight_id = start_flight(
+        &mut fx.router,
+        &fx.club,
+        &cookie,
+        token,
+        FlightVisibility::Club.as_str(),
+    )
+    .await;
+    assert!(!flight_id.is_empty());
+
+    let reg2 = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/me/devices")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::from(
+                    r#"{"label":"Pixel","installId":"install-api-test-01"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reg2.status(), StatusCode::OK);
+    let body2 = to_bytes(reg2.into_body(), usize::MAX).await.unwrap();
+    let json2: serde_json::Value = serde_json::from_slice(&body2).unwrap();
+    assert_eq!(json2.get("created").and_then(|v| v.as_bool()), Some(false));
+    assert_eq!(json2.get("id").and_then(|v| v.as_str()), Some(device_id));
+    let token2 = json2.get("token").and_then(|v| v.as_str()).expect("token2");
+    assert_ne!(token, token2);
+
+    let del = fx
+        .router
+        .call(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/me/devices/install-api-test-01")
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(del.status(), StatusCode::OK);
+    assert!(fx.club.resolve_device_token(token2).is_none());
+
+    let reg3 = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/me/devices")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::from(
+                    r#"{"label":"Pixel","installId":"install-api-test-01"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reg3.status(), StatusCode::OK);
+    let body3 = to_bytes(reg3.into_body(), usize::MAX).await.unwrap();
+    let json3: serde_json::Value = serde_json::from_slice(&body3).unwrap();
+    let token3 = json3.get("token").and_then(|v| v.as_str()).expect("token3");
+
+    let logout = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/logout")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, cookie)
+                .body(Body::from(
+                    r#"{"installId":"install-api-test-01"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(logout.status(), StatusCode::OK);
+    assert!(fx.club.resolve_device_token(token3).is_none());
 }
 
 #[tokio::test]
