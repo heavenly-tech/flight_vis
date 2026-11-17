@@ -2063,6 +2063,49 @@ mod tests {
 
     #[serial]
     #[tokio::test]
+    async fn club_map_hides_other_pilot_name_without_opt_in() {
+        let db = ClubDb::open_test().await.unwrap();
+        let (club, a, b, _ac) = seed(&db).await;
+        let dev = pilot_device_with_checkin(&db, &a, &club).await;
+        let fid = db
+            .start_flight(&a, &dev, "N123", FlightVisibility::Club, false, now_ms())
+            .await
+            .unwrap();
+        db.append_fix(
+            &fid,
+            &dev,
+            &LiveFix {
+                t: now_ms(),
+                lat: 1.0,
+                lon: 2.0,
+                alt: None,
+                alt_ref: None,
+                speed: None,
+                course: None,
+                accuracy: Some(5.0),
+            },
+        )
+        .await
+        .unwrap();
+        let viewer_b = Viewer::Pilot {
+            id: b.clone(),
+            status: PilotStatus::Approved,
+            role: PilotRole::Pilot,
+        };
+        let map_b = db.club_map_for_viewer(&viewer_b).await;
+        assert_eq!(map_b.len(), 1);
+        assert!(map_b[0].pilot_name.is_none());
+        let viewer_a = Viewer::Pilot {
+            id: a.clone(),
+            status: PilotStatus::Approved,
+            role: PilotRole::Pilot,
+        };
+        let map_a = db.club_map_for_viewer(&viewer_a).await;
+        assert_eq!(map_a[0].pilot_name.as_deref(), Some("Alice"));
+    }
+
+    #[serial]
+    #[tokio::test]
     async fn mid_flight_visibility_change_affects_access() {
         let db = ClubDb::open_test().await.unwrap();
         let (club, a, b, _ac) = seed(&db).await;

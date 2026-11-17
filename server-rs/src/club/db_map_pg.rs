@@ -320,7 +320,11 @@ impl ClubDb {
         let mut positions = dedupe_by_tail(filtered);
         for pos in &mut positions {
             if let Some(f) = self.get_flight(&pos.flight_id).await {
-                pos.pilot_name = Some(f.pilot_name);
+                if show_pilot_name(viewer, &f.pilot_id, f.show_pilot_name_public) {
+                    pos.pilot_name = Some(f.pilot_name);
+                } else {
+                    pos.pilot_name = None;
+                }
             }
         }
         apply_public_cap(
