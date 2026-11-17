@@ -7,6 +7,7 @@ mod checkin_landing;
 mod club_scope;
 pub mod database;
 mod db;
+mod db_access_pg;
 mod dem;
 mod geo;
 mod kiosk_qr;

@@ -21,8 +21,12 @@ pub struct ClubDb {
 }
 
 pub const MAX_DEVICES_PER_PILOT: usize = 10;
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeviceRegisterError { InvalidInstallId, CapExceeded, Db, }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceRegisterError {
+    InvalidInstallId,
+    CapExceeded,
+    Db,
+}
 pub enum ShareCreateError { Db(DbError), NotFound, NotOwner, }
 pub enum ShareRevokeError { Db(DbError), NotFound, NotOwner, }
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -768,31 +772,12 @@ pub async fn append_fixes(
 
     pub fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
         
-            conn.query_row(
-                "SELECT f.id, f.pilot_id, f.aircraft_id, f.status, f.started_at, f.ended_at, f.last_fix_at,
+            sqlx::query("SELECT f.id, f.pilot_id, f.aircraft_id, f.status, f.started_at, f.ended_at, f.last_fix_at,
                         f.visibility, f.show_pilot_name_public, a.tail, p.name
                  FROM flights f
                  JOIN aircraft a ON a.id = f.aircraft_id
                  JOIN pilots p ON p.id = f.pilot_id
-                 WHERE f.id = $1",
-                params![flight_id],
-                |r| {
-                    Ok(FlightRow {
-                        id: r.get(0)?,
-                        pilot_id: r.get(1)?,
-                        aircraft_id: r.get(2)?,
-                        status: r.get(3)?,
-                        started_at: r.get(4)?,
-                        ended_at: r.get(5)?,
-                        last_fix_at: r.get(6)?,
-                        visibility: r.get(7)?,
-                        show_pilot_name_public: r.get::<_, i64>(8)? != 0,
-                        tail: r.get(9)?,
-                        pilot_name: r.get(10)?,
-                    })
-                },
-            )
-            .optional()
+                 WHERE f.id = $1").bind(flight_id).fetch_optional(&self.pool).await
         
         .ok()
         .flatten()
@@ -974,14 +959,9 @@ pub async fn append_fixes(
 
     pub fn device_pair_token_for_pilot(&self, device_id: &str, pilot_id: &str) -> Option<String> {
         
-            conn.query_row(
-                "SELECT dpt.token FROM device_pair_tokens dpt
+            sqlx::query("SELECT dpt.token FROM device_pair_tokens dpt
                  JOIN devices d ON d.id = dpt.device_id
-                 WHERE dpt.device_id = $1 AND d.pilot_id = $2",
-                params![device_id, pilot_id],
-                |r| r.get(0),
-            )
-            .optional()
+                 WHERE dpt.device_id = $1 AND d.pilot_id = $2").bind(device_id).bind(pilot_id).fetch_optional(&self.pool).await
         
         .ok()
         .flatten()
@@ -1081,18 +1061,7 @@ pub async fn append_fixes(
         active: bool,
     ) -> Result<String, DbError> {
         
-            let type_id: String = conn.query_row(
-                "SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2",
-                params![club_id, type_code],
-                |r| r.get(0),
-            )?;
-            if let Some(id) = conn
-                .query_row(
-                    "SELECT id FROM aircraft WHERE club_id = $1 AND tail = $2",
-                    params![club_id, tail],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()?
+            let type_id: String = sqlx::query("SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2").bind(club_id).bind(type_code).fetch_optional(&self.pool).await?
             {
                 sqlx::query("UPDATE aircraft SET type_id = $1, active = $2 WHERE id = $3").bind(type_id).bind(i64::from(active)).bind(id).execute(&self.pool).await?;
                 return Ok(id);
@@ -1484,19 +1453,8 @@ pub async fn append_fixes(
         let hash = digest_token(token);
         let row = self
             .with_conn(|conn| {
-                conn.query_row(
-                    "SELECT id, club_id, created_by_pilot_id FROM display_sessions
-                     WHERE token_hash = $1 AND revoked_at IS NULL",
-                    params![hash],
-                    |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, String>(2)?,
-                        ))
-                    },
-                )
-                .optional()
+                sqlx::query("SELECT id, club_id, created_by_pilot_id FROM display_sessions
+                     WHERE token_hash = $1 AND revoked_at IS NULL").bind(hash).fetch_optional(&self.pool).await
             })
             .ok()
             .flatten()?;
