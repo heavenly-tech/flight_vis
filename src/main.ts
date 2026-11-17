@@ -332,15 +332,17 @@ function hitHandle(x: number, width: number): "start" | "end" | null {
 
 async function boot(): Promise<void> {
   const liveRouteEarly = parseLivePath(window.location.pathname);
-  setStatus("Preparing 3D globe…");
   if (liveRouteEarly.sessionId) {
     nameEl.textContent = "Live session";
+    setStatus(null);
+  } else {
+    setStatus("Preparing 3D globe…");
   }
   const skipGlobe = import.meta.env.VITE_E2E_SKIP_GLOBE === "1";
   const viewer = skipGlobe
     ? createE2eFlightViewer()
     : await createFlightViewer(document.getElementById("cesiumContainer")!);
-  if (liveRouteEarly.sessionId) {
+  if (!liveRouteEarly.sessionId) {
     setStatus(null);
   }
   (window as unknown as { __fv: typeof viewer }).__fv = viewer;
