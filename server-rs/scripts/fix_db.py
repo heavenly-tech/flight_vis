@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src/club/db_sqlite_reference.rs"
+SRC = ROOT / "src/club/db_sqlite_merged.rs"
 OUT = ROOT / "src/club/db.rs"
 
 HEADER = """use crate::club::{

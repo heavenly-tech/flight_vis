@@ -25,5 +25,8 @@ mod api_tests;
 #[cfg(test)]
 mod load_test;
 
-pub use db::{now_ms, ClubDb};
+pub use db::{
+    now_ms, ClubDb, DeviceRegisterError, FlightShareListItem, FlightShareRow, MAX_DEVICES_PER_PILOT,
+    ResolvedShare, ShareCreateError, ShareRevokeError, SHARE_LIFETIME_AFTER_END_MS,
+};
 pub use routes::{patch_club_flight_by_id, post_club_flight_start, router};

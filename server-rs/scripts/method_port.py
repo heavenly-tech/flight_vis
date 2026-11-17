@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src/club/db_sqlite_source.rs"
+SRC = ROOT / "src/club/db_sqlite_merged.rs"
 OUT = ROOT / "src/club/db.rs"
 
 HEADER = """use crate::club::{
@@ -29,6 +29,29 @@ pub type DbError = sqlx::Error;
 #[derive(Clone)]
 pub struct ClubDb {
     pool: PgPool,
+}
+
+pub const MAX_DEVICES_PER_PILOT: usize = 10;
+pub const MIN_INSTALL_ID_LEN: usize = 8;
+pub const MAX_INSTALL_ID_LEN: usize = 128;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceRegisterError {
+    InvalidInstallId,
+    CapExceeded,
+    Db,
+}
+
+pub enum ShareCreateError {
+    Db(DbError),
+    NotFound,
+    NotOwner,
+}
+
+pub enum ShareRevokeError {
+    Db(DbError),
+    NotFound,
+    NotOwner,
 }
 
 """
@@ -225,6 +248,10 @@ def convert_query_row_scalar(body: str) -> str:
 
 
 def port_body(body: str) -> str:
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fpc", ROOT / "scripts/full_pg_convert.py")
+    fpc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fpc)
     body = body.replace("rusqlite::Error", "DbError")
     for m in re.finditer(r'"([^"]*(?:SELECT|INSERT|UPDATE|DELETE|FROM)[^"]*)"', body):
         old = m.group(0)
@@ -252,6 +279,14 @@ def port_body(body: str) -> str:
     body = body.replace("tx.commit()?;", "tx.commit().await?;")
     body = body.replace(".execute(&self.pool).await,;", ".execute(&self.pool).await?;")
     body = body.replace(".execute(&self.pool).await,", ".execute(&self.pool).await?")
+    body = fpc.convert_query_row_optional(body)
+    body = fpc.convert_query_row_tuple(body)
+    body = fpc.convert_prepare_query_map(body)
+    body = body.replace("INSERT OR IGNORE INTO fixes", "INSERT INTO fixes")
+    body = body.replace(
+        '"INSERT INTO fixes (flight_id, device_id, t_ms, lat, lon, alt, speed, course, accuracy)',
+        '"INSERT INTO fixes (flight_id, device_id, t_ms, received_at, lat, lon, alt, alt_ref, speed, course, accuracy)',
+    )
     return body
 
 
@@ -272,6 +307,15 @@ def extract_fns(impl_text: str) -> list[str]:
 
 def main() -> None:
     raw = SRC.read_text()
+    acc = ROOT / "src/club/db_access.rs"
+    if acc.exists() and "rusqlite" in acc.read_text():
+        acc_text = acc.read_text()
+        for m in re.finditer(r"impl ClubDb \{([\s\S]*?)\n\}", acc_text):
+            raw = raw.replace(
+                "\n}\n\npub fn now_ms",
+                "\n" + m.group(1) + "\n}\n\npub fn now_ms",
+                1,
+            )
     ts = raw.index("pub struct PilotRow")
     impl_i = raw.index("impl ClubDb {")
     types = raw[ts:impl_i].replace("rusqlite::Error", "DbError")
@@ -297,13 +341,19 @@ def main() -> None:
         out = re.sub(r"\n    fn ", "\n    async fn ", out, count=1)
         ported.append(out)
 
+    header = HEADER.replace("    pool: PgPool,", "    pub(crate) pool: PgPool,")
     impl = "impl ClubDb {\n" + CONNECT + "\n".join(ported) + "\n}\n"
+    impl = impl.replace(
+        "impl ClubDb {",
+        'impl ClubDb {\n    pub(crate) fn data_dir(&self) -> &std::path::Path {\n        static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();\n        DIR.get_or_init(|| std::env::var("FLIGHT_DATA").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("data")))\n    }\n',
+        1,
+    )
     tail = tail.replace("ClubDb::open_in_memory().unwrap()", "ClubDb::open_test().await.unwrap()")
     tail = re.sub(r"#\[test\]\n    fn ", "#[tokio::test]\n    async fn ", tail)
     tail = tail.replace("rusqlite::Error", "sqlx::Error")
     tail = port_body(tail)
 
-    out = HEADER + types + impl + tail
+    out = header + types + impl + tail
     print("manual methods:", ", ".join(manual[:40]), f"({len(manual)} total)")
     OUT.write_text(out)
     print("wrote", OUT)

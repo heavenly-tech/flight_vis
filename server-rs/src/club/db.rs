@@ -1,7 +1,12 @@
 use crate::club::{
-    auth::{self, digest_token, new_device_token, new_id, SESSION_TTL_SEC},
+    access_request::{
+        normalize_tail, AccessRequestError, AccessRequestView, AdminAccessRequestView,
+    },
+    auth::{self, digest_token, new_device_token, new_id, new_share_token, SESSION_TTL_SEC},
     checkin::{self, CheckinTokenError},
+    club_scope::{ClubContext, ClubScopeError, checkin_qr_path},
     database::{self, DbConnectError},
+    db_access::{AdminPendingCounts, ApprovePilotCheckout},
     map::{dedupe_by_tail, filter_admin_tails, DeviceFix, TailLivePosition},
     visibility::{
         can_view_flight, includes_in_club_map, includes_in_public_map, show_pilot_name,
@@ -12,12 +17,36 @@ use crate::live::LiveFix;
 use serde::Serialize;
 use sqlx::{PgPool, Row};
 use std::borrow::Cow;
+use subtle::ConstantTimeEq;
 
 pub type DbError = sqlx::Error;
 
 #[derive(Clone)]
 pub struct ClubDb {
     pub(crate) pool: PgPool,
+}
+
+pub const MAX_DEVICES_PER_PILOT: usize = 10;
+pub const MIN_INSTALL_ID_LEN: usize = 8;
+pub const MAX_INSTALL_ID_LEN: usize = 128;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceRegisterError {
+    InvalidInstallId,
+    CapExceeded,
+    Db,
+}
+
+pub enum ShareCreateError {
+    Db(DbError),
+    NotFound,
+    NotOwner,
+}
+
+pub enum ShareRevokeError {
+    Db(DbError),
+    NotFound,
+    NotOwner,
 }
 
 pub struct PilotRow {
@@ -52,7 +81,64 @@ pub struct FlightRow {
     pub pilot_name: String,
 }
 
+pub const SHARE_LIFETIME_AFTER_END_MS: i64 = 24 * 3600 * 1000;
+
+#[derive(Debug, Clone)]
+pub struct FlightShareRow {
+    pub id: String,
+    pub flight_id: String,
+    pub club_id: String,
+    pub created_by: String,
+    pub token_hash: String,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct FlightShareListItem {
+    pub id: String,
+    pub created_at: i64,
+    pub expires_at: Option<i64>,
+    pub revoked: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedShare {
+    pub flight_id: String,
+    pub club_id: String,
+    pub tail: String,
+    pub status: String,
+}
+
+fn share_active_at(share: &FlightShareRow, flight: &FlightRow, now: i64) -> bool {
+    if share.revoked_at.is_some() {
+        return false;
+    }
+    if let Some(exp) = share.expires_at {
+        if now > exp {
+            return false;
+        }
+    }
+    if let Some(ended) = flight.ended_at {
+        let deadline = ended + SHARE_LIFETIME_AFTER_END_MS;
+        if share.expires_at.is_none() && now > deadline {
+            return false;
+        }
+    }
+    true
+}
+
+pub(crate) fn token_hash_matches(stored: &str, candidate_digest: &str) -> bool {
+    stored.as_bytes().ct_eq(candidate_digest.as_bytes()).into()
+}
+
 impl ClubDb {
+    pub(crate) fn data_dir(&self) -> &std::path::Path {
+        static DIR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+        DIR.get_or_init(|| std::env::var("FLIGHT_DATA").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("data")))
+    }
+
 
     pub async fn connect() -> Result<Self, DbConnectError> {
         let pool = database::connect_pool().await?;
@@ -84,44 +170,60 @@ impl ClubDb {
 
 
     async fn bootstrap(&self) -> Result<(), DbError> {
-        
-            let count: i64 =
-                conn.query_row("SELECT COUNT(*) FROM clubs", [], |r| r.get(0))?;
-            if count == 0 {
-                let now = now_ms();
-                let club_id = new_id();
-                let slug = std::env::var("FLIGHT_CLUB_SLUG")
-                    .unwrap_or_else(|_| "default".to_string());
-                sqlx::query("INSERT INTO clubs (id, name, slug, created_at, checkin_window_hours, latitude, longitude)
-                     VALUES ($1, $2, $3, $4, 12, -33.4489, -70.6693)").bind(club_id).bind(std::env::var("FLIGHT_CLUB_NAME")
-                            .unwrap_or_else(|_| "Flight Club".to_string())).bind(slug).bind(now).execute(&self.pool).await?;
-            }
-            if let (Ok(email), Ok(password)) = (
-                std::env::var("FLIGHT_CLUB_BOOTSTRAP_ADMIN_EMAIL"),
-                std::env::var("FLIGHT_CLUB_BOOTSTRAP_ADMIN_PASSWORD"),
-            ) {
-                if !email.is_empty() && !password.is_empty() {
-                    let club_id: String = conn.query_row(
-                        "SELECT id FROM clubs ORDER BY created_at ASC, id ASC LIMIT 1",
-                        [],
-                        |r| r.get(0),
-                    )?;
-                    let exists: i64 = conn.query_row(
-                        "SELECT COUNT(*) FROM pilots WHERE club_id = $1 AND email = $2",
-                        params![club_id, email],
-                        |r| r.get(0),
-                    )?;
-                    if exists == 0 {
-                        let hash = auth::hash_password(&password).map_err(|_| {
-                            DbError::InvalidParameterName("hash".into())
-                        })?;
-                        sqlx::query("INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
-                             VALUES ($1, $2, $3, $4, '', 'approved', 'admin', $5, $6)").bind(new_id()).bind(club_id).bind("Admin").bind(email).bind(hash).bind(now_ms()).execute(&self.pool).await?;
-                    }
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM clubs")
+            .fetch_one(&self.pool)
+            .await?;
+        if count == 0 {
+            let now = now_ms();
+            let club_id = new_id();
+            let slug = std::env::var("FLIGHT_CLUB_SLUG").unwrap_or_else(|_| "default".to_string());
+            sqlx::query(
+                "INSERT INTO clubs (id, name, slug, created_at, checkin_window_hours, latitude, longitude)
+                 VALUES ($1, $2, $3, $4, 12, -33.4489, -70.6693)",
+            )
+            .bind(club_id)
+            .bind(std::env::var("FLIGHT_CLUB_NAME").unwrap_or_else(|_| "Flight Club".to_string()))
+            .bind(slug)
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+        }
+        if let (Ok(email), Ok(password)) = (
+            std::env::var("FLIGHT_CLUB_BOOTSTRAP_ADMIN_EMAIL"),
+            std::env::var("FLIGHT_CLUB_BOOTSTRAP_ADMIN_PASSWORD"),
+        ) {
+            if !email.is_empty() && !password.is_empty() {
+                let club_id: String = sqlx::query_scalar(
+                    "SELECT id FROM clubs ORDER BY created_at ASC, id ASC LIMIT 1",
+                )
+                .fetch_one(&self.pool)
+                .await?;
+                let exists: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM pilots WHERE club_id = $1 AND email = $2",
+                )
+                .bind(&club_id)
+                .bind(&email)
+                .fetch_one(&self.pool)
+                .await?;
+                if exists == 0 {
+                    let hash = auth::hash_password(&password)
+                        .map_err(|_| DbError::InvalidParameterName("hash".into()))?;
+                    sqlx::query(
+                        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+                         VALUES ($1, $2, $3, $4, '', 'approved', 'admin', $5, $6)",
+                    )
+                    .bind(new_id())
+                    .bind(&club_id)
+                    .bind("Admin")
+                    .bind(&email)
+                    .bind(&hash)
+                    .bind(now_ms())
+                    .execute(&self.pool)
+                    .await?;
                 }
             }
-            Ok(())
-        
+        }
+        Ok(())
     }
 
     pub async fn default_club_id(&self) -> Result<String, DbError> {
@@ -145,7 +247,7 @@ impl ClubDb {
         let id = new_id();
         let now = now_ms();
         let member_id = new_id();
-        match sqlx::query(
+        let r = sqlx::query(
             "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
              VALUES ($1, $2, $3, $4, $5, 'pending', 'pilot', $6, $7)",
         )
@@ -157,8 +259,8 @@ impl ClubDb {
         .bind(&hash)
         .bind(now)
         .execute(&self.pool)
-        .await
-        {
+        .await;
+        match r {
             Ok(_) => {
                 sqlx::query(
                     "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
@@ -175,7 +277,7 @@ impl ClubDb {
             }
             Err(e) => {
                 if let Some(db_err) = e.as_database_error() {
-                    if db_err.code() == Some(Cow::Borrowed("23505")) {
+                    if db_err.code() == Some(std::borrow::Cow::Borrowed("23505")) {
                         return Err(RegisterError::EmailExists);
                     }
                 }
@@ -238,39 +340,37 @@ impl ClubDb {
     }
 
     pub async fn logout(&self, session_id: &str) -> Result<(), DbError> {
-        
-            sqlx::query("DELETE FROM pilot_sessions WHERE id = $1").bind(session_id).execute(&self.pool).await?;
-            Ok(())
-        
+        sqlx::query("DELETE FROM pilot_sessions WHERE id = $1")
+            .bind(session_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
     pub async fn pilot_from_session(&self, session_id: &str, now: i64) -> Option<PilotRow> {
-        
-            conn.query_row(
-                "SELECT p.id, p.club_id, p.name, p.email, p.license_no, p.status, p.role
-                 FROM pilot_sessions s
-                 JOIN pilots p ON p.id = s.pilot_id
-                 WHERE s.id = $1 AND s.expires_at > $2",
-                params![session_id, now],
-                |r| {
-                    Ok(PilotRow {
-                        id: r.get(0)?,
-                        club_id: r.get(1)?,
-                        name: r.get(2)?,
-                        email: r.get(3)?,
-                        license_no: r.get(4)?,
-                        status: r.get(5)?,
-                        role: r.get(6)?,
-                    })
-                },
-            )
-            .optional()
-        
-        .ok()
-        .flatten()
+        let row = sqlx::query(
+            "SELECT p.id, p.club_id, p.name, p.email, p.license_no, p.status, p.role
+             FROM pilot_sessions s
+             JOIN pilots p ON p.id = s.pilot_id
+             WHERE s.id = $1 AND s.expires_at > $2",
+        )
+        .bind(session_id)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()??;
+        Some(PilotRow {
+            id: row.try_get(0).ok()?,
+            club_id: row.try_get(1).ok()?,
+            name: row.try_get(2).ok()?,
+            email: row.try_get(3).ok()?,
+            license_no: row.try_get(4).ok()?,
+            status: row.try_get(5).ok()?,
+            role: row.try_get(6).ok()?,
+        })
     }
 
-    pub async fn viewer_from_session(&self, session_id: Option<&str>, now: i64) -> Viewer {
+pub async fn viewer_from_session(&self, session_id: Option<&str>, now: i64) -> Viewer {
         let Some(session_id) = session_id else {
             return Viewer::Anonymous;
         };
@@ -307,45 +407,80 @@ impl ClubDb {
         (viewer, Some(pilot))
     }
 
-    pub async fn approve_pilot(&self, pilot_id: &str) -> Result<(), DbError> {
-        
-            sqlx::query("UPDATE pilots SET status = 'approved' WHERE id = $1").bind(pilot_id).execute(&self.pool).await?;
-            sqlx::query("UPDATE club_memberships SET status = 'approved' WHERE pilot_id = $1").bind(pilot_id).execute(&self.pool).await?;
-            Ok(())
-        
+pub async fn approve_pilot(&self, pilot_id: &str) -> Result<(), DbError> {
+        sqlx::query("UPDATE pilots SET status = 'approved' WHERE id = $1")
+            .bind(pilot_id)
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("UPDATE club_memberships SET status = 'approved' WHERE pilot_id = $1")
+            .bind(pilot_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
     }
 
-    pub async fn me_tails(&self, pilot_id: &str, now: i64) -> Result<Vec<TailInfo>, DbError> {
-        
-            let mut stmt = conn.prepare(
-                "SELECT a.id, a.tail, t.code
-                 FROM aircraft a
-                 JOIN aircraft_types t ON t.id = a.type_id
-                 WHERE a.active = 1",
-            )?;
-            let rows = stmt.query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            })?;
-            let mut out = Vec::new();
-            for row in rows {
-                let (id, tail, type_code) = row?;
-                if Self::checkout_ok(&self.pool, pilot_id, &id, now)? {
-                    out.push(TailInfo {
-                        id,
-                        tail,
-                        type_code,
-                    });
-                }
+pub(crate) async fn checkout_ok(
+        pool: &PgPool,
+        pilot_id: &str,
+        aircraft_id: &str,
+        now: i64,
+    ) -> Result<bool, DbError> {
+        let row = sqlx::query("SELECT type_id, active FROM aircraft WHERE id = $1")
+            .bind(aircraft_id)
+            .fetch_optional(pool)
+            .await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let type_id: String = row.try_get(0)?;
+        let active: bool = row.try_get(1)?;
+        if !active {
+            return Ok(false);
+        }
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM checkouts c
+             WHERE c.pilot_id = $1
+               AND (c.expires_at IS NULL OR c.expires_at > $2)
+               AND (
+                 (c.aircraft_id = $3) OR
+                 (c.aircraft_id IS NULL AND c.type_id = $4)
+               )",
+        )
+        .bind(pilot_id)
+        .bind(now)
+        .bind(aircraft_id)
+        .bind(type_id)
+        .fetch_one(pool)
+        .await?;
+        Ok(count > 0)
+    }
+
+pub async fn me_tails(&self, pilot_id: &str, now: i64) -> Result<Vec<TailInfo>, DbError> {
+        let rows = sqlx::query(
+            "SELECT a.id, a.tail, t.code
+             FROM aircraft a
+             JOIN aircraft_types t ON t.id = a.type_id
+             WHERE a.active = true",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::new();
+        for row in rows {
+            let id: String = row.try_get(0)?;
+            let tail: String = row.try_get(1)?;
+            let type_code: String = row.try_get(2)?;
+            if Self::checkout_ok(&self.pool, pilot_id, &id, now).await? {
+                out.push(TailInfo {
+                    id,
+                    tail,
+                    type_code,
+                });
             }
-            Ok(out)
-        
+        }
+        Ok(out)
     }
 
-    pub async fn start_flight(
+pub async fn start_flight(
         &self,
         pilot_id: &str,
         device_id: &str,
@@ -365,7 +500,7 @@ impl ClubDb {
         .await
     }
 
-    pub async fn patch_flight(
+pub async fn patch_flight(
         &self,
         pilot_id: &str,
         flight_id: &str,
@@ -402,7 +537,7 @@ impl ClubDb {
         Ok(())
     }
 
-    pub async fn end_flight(&self, pilot_id: &str, flight_id: &str, now: i64) -> Result<(), EndError> {
+pub async fn end_flight(&self, pilot_id: &str, flight_id: &str, now: i64) -> Result<(), EndError> {
         let row = sqlx::query("SELECT pilot_id, status FROM flights WHERE id = $1")
             .bind(flight_id)
             .fetch_optional(&self.pool)
@@ -428,7 +563,7 @@ impl ClubDb {
         Ok(())
     }
 
-    pub async fn device_pilot_id(&self, device_id: &str) -> Option<String> {
+pub async fn device_pilot_id(&self, device_id: &str) -> Option<String> {
         sqlx::query_scalar("SELECT pilot_id FROM devices WHERE id = $1")
             .bind(device_id)
             .fetch_optional(&self.pool)
@@ -437,7 +572,7 @@ impl ClubDb {
             .flatten()
     }
 
-    pub async fn resolve_device_token(&self, token: &str) -> Option<String> {
+pub async fn resolve_device_token(&self, token: &str) -> Option<String> {
         let hash = digest_token(token);
         sqlx::query_scalar("SELECT id FROM devices WHERE token_hash = $1")
             .bind(hash)
@@ -447,7 +582,7 @@ impl ClubDb {
             .flatten()
     }
 
-    pub async fn open_flight_for_device(&self, device_id: &str) -> Option<String> {
+pub async fn open_flight_for_device(&self, device_id: &str) -> Option<String> {
         sqlx::query_scalar(
             "SELECT f.id FROM flights f
              JOIN flight_devices fd ON fd.flight_id = f.id
@@ -461,7 +596,7 @@ impl ClubDb {
         .flatten()
     }
 
-    pub async fn append_fix(
+pub async fn append_fix(
         &self,
         flight_id: &str,
         device_id: &str,
@@ -472,7 +607,7 @@ impl ClubDb {
             .map(|_| ())
     }
 
-    pub async fn append_fixes(
+pub async fn append_fixes(
         &self,
         flight_id: &str,
         device_id: &str,
@@ -533,47 +668,23 @@ impl ClubDb {
         Ok(inserted)
     }
 
-    pub async fn auto_end_idle(&self, idle_ms: i64, now: i64) -> Result<usize, DbError> {
-        let cutoff = now - idle_ms;
-        let updated = sqlx::query(
-            "UPDATE flights SET status = 'ended', ended_at = $1
-             WHERE status = 'active' AND (last_fix_at IS NULL AND started_at < $2 OR last_fix_at < $2)",
-        )
-        .bind(now)
-        .bind(cutoff)
-        .execute(&self.pool)
-        .await?
-        .rows_affected();
-        Ok(usize::try_from(updated).unwrap_or(0))
+    pub fn auto_end_idle(&self, idle_ms: i64, now: i64) -> Result<usize, DbError> {
+        
+            let cutoff = now - idle_ms;
+            let updated = sqlx::query("UPDATE flights SET status = 'ended', ended_at = $1
+                 WHERE status = 'active' AND (last_fix_at IS NULL AND started_at < $2 OR last_fix_at < $2)").bind(now).bind(cutoff).execute(&self.pool).await?;
+            Ok(updated)
+        
     }
 
-    pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
+    pub fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
         
-            conn.query_row(
-                "SELECT f.id, f.pilot_id, f.aircraft_id, f.status, f.started_at, f.ended_at, f.last_fix_at,
+            sqlx::query("SELECT f.id, f.pilot_id, f.aircraft_id, f.status, f.started_at, f.ended_at, f.last_fix_at,
                         f.visibility, f.show_pilot_name_public, a.tail, p.name
                  FROM flights f
                  JOIN aircraft a ON a.id = f.aircraft_id
                  JOIN pilots p ON p.id = f.pilot_id
-                 WHERE f.id = $1",
-                params![flight_id],
-                |r| {
-                    Ok(FlightRow {
-                        id: r.get(0)?,
-                        pilot_id: r.get(1)?,
-                        aircraft_id: r.get(2)?,
-                        status: r.get(3)?,
-                        started_at: r.get(4)?,
-                        ended_at: r.get(5)?,
-                        last_fix_at: r.get(6)?,
-                        visibility: r.get(7)?,
-                        show_pilot_name_public: r.get::<_, i64>(8)? != 0,
-                        tail: r.get(9)?,
-                        pilot_name: r.get(10)?,
-                    })
-                },
-            )
-            .optional()
+                 WHERE f.id = $1").bind(flight_id).fetch_optional(&self.pool).await
         
         .ok()
         .flatten()
@@ -606,7 +717,7 @@ impl ClubDb {
         .unwrap_or_default()
     }
 
-    pub async fn admin_map(&self, admin_id: &str) -> Vec<TailLivePosition> {
+    pub fn admin_map(&self, admin_id: &str) -> Vec<TailLivePosition> {
         let viewer = Viewer::Pilot {
             id: admin_id.to_string(),
             status: PilotStatus::Approved,
@@ -631,7 +742,7 @@ impl ClubDb {
         .unwrap_or_default()
     }
 
-    pub async fn set_admin_map_tails(
+    pub fn set_admin_map_tails(
         &self,
         admin_id: &str,
         tails: &[String],
@@ -644,7 +755,7 @@ impl ClubDb {
         
     }
 
-    pub async fn create_device(
+    pub fn create_device(
         &self,
         pilot_id: &str,
         label: &str,
@@ -659,16 +770,11 @@ impl ClubDb {
         
     }
 
-    pub async fn device_pair_token_for_pilot(&self, device_id: &str, pilot_id: &str) -> Option<String> {
+    pub fn device_pair_token_for_pilot(&self, device_id: &str, pilot_id: &str) -> Option<String> {
         
-            conn.query_row(
-                "SELECT dpt.token FROM device_pair_tokens dpt
+            sqlx::query("SELECT dpt.token FROM device_pair_tokens dpt
                  JOIN devices d ON d.id = dpt.device_id
-                 WHERE dpt.device_id = $1 AND d.pilot_id = $2",
-                params![device_id, pilot_id],
-                |r| r.get(0),
-            )
-            .optional()
+                 WHERE dpt.device_id = $1 AND d.pilot_id = $2").bind(device_id).bind(pilot_id).fetch_optional(&self.pool).await
         
         .ok()
         .flatten()
@@ -743,24 +849,27 @@ impl ClubDb {
     }
 
     pub async fn upsert_type(&self, club_id: &str, code: &str) -> Result<String, DbError> {
-        
-            if let Some(id) = conn
-                .query_row(
-                    "SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2",
-                    params![club_id, code],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()?
-            {
-                return Ok(id);
-            }
-            let id = new_id();
-            sqlx::query("INSERT INTO aircraft_types (id, club_id, code) VALUES ($1, $2, $3)").bind(id).bind(club_id).bind(code).execute(&self.pool).await?;
-            Ok(id)
-        
+        if let Some(id) = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2",
+        )
+        .bind(club_id)
+        .bind(code)
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            return Ok(id);
+        }
+        let id = new_id();
+        sqlx::query("INSERT INTO aircraft_types (id, club_id, code) VALUES ($1, $2, $3)")
+            .bind(&id)
+            .bind(club_id)
+            .bind(code)
+            .execute(&self.pool)
+            .await?;
+        Ok(id)
     }
 
-    pub async fn upsert_aircraft(
+    pub fn upsert_aircraft(
         &self,
         club_id: &str,
         tail: &str,
@@ -768,18 +877,7 @@ impl ClubDb {
         active: bool,
     ) -> Result<String, DbError> {
         
-            let type_id: String = conn.query_row(
-                "SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2",
-                params![club_id, type_code],
-                |r| r.get(0),
-            )?;
-            if let Some(id) = conn
-                .query_row(
-                    "SELECT id FROM aircraft WHERE club_id = $1 AND tail = $2",
-                    params![club_id, tail],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()?
+            let type_id: String = sqlx::query("SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2").bind(club_id).bind(type_code).fetch_optional(&self.pool).await?
             {
                 sqlx::query("UPDATE aircraft SET type_id = $1, active = $2 WHERE id = $3").bind(type_id).bind(i64::from(active)).bind(id).execute(&self.pool).await?;
                 return Ok(id);
@@ -790,7 +888,7 @@ impl ClubDb {
         
     }
 
-    pub async fn add_checkout(
+    pub fn add_checkout(
         &self,
         pilot_id: &str,
         type_code: &str,
@@ -965,7 +1063,7 @@ impl ClubDb {
         Ok(secret)
     }
 
-    async fn insert_checkin_row(
+    fn insert_checkin_row(
         &self,
         club_id: &str,
         pilot_id: Option<&str>,
@@ -1140,23 +1238,12 @@ impl ClubDb {
         Ok(updated > 0)
     }
 
-    pub async fn resolve_display_session(&self, token: &str) -> Option<(String, String, String)> {
+    pub fn resolve_display_session(&self, token: &str) -> Option<(String, String, String)> {
         let hash = digest_token(token);
         let row = self
             .with_conn(|conn| {
-                conn.query_row(
-                    "SELECT id, club_id, created_by_pilot_id FROM display_sessions
-                     WHERE token_hash = $1 AND revoked_at IS NULL",
-                    params![hash],
-                    |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, String>(2)?,
-                        ))
-                    },
-                )
-                .optional()
+                sqlx::query("SELECT id, club_id, created_by_pilot_id FROM display_sessions
+                     WHERE token_hash = $1 AND revoked_at IS NULL").bind(hash).fetch_optional(&self.pool).await
             })
             .ok()
             .flatten()?;
@@ -1313,7 +1400,7 @@ impl ClubDb {
         Ok(hours.max(1))
     }
 
-    pub async fn set_club_checkin_window_hours(
+    pub fn set_club_checkin_window_hours(
         &self,
         club_id: &str,
         hours: i64,
@@ -1382,28 +1469,17 @@ impl ClubDb {
         
     }
 
-    pub async fn latest_open_checkin(
+    pub fn latest_open_checkin(
         &self,
         pilot_id: &str,
         club_id: &str,
         now: i64,
     ) -> Option<CheckinRecord> {
         
-            conn.query_row(
-                "SELECT id, created_at, expires_at FROM checkins
+            sqlx::query("SELECT id, created_at, expires_at FROM checkins
                  WHERE outcome = 'ok' AND pilot_id = $1 AND club_id = $2
                    AND expires_at IS NOT NULL AND expires_at > $3
-                 ORDER BY expires_at DESC LIMIT 1",
-                params![pilot_id, club_id, now],
-                |r| {
-                    Ok(CheckinRecord {
-                        id: r.get(0)?,
-                        created_at: r.get(1)?,
-                        expires_at: r.get(2)?,
-                    })
-                },
-            )
-            .optional()
+                 ORDER BY expires_at DESC LIMIT 1").bind(pilot_id).bind(club_id).bind(now).fetch_optional(&self.pool).await
         
         .ok()
         .flatten()
@@ -1471,122 +1547,136 @@ impl ClubDb {
         Ok(rec)
     }
 
-    pub async fn start_flight_atomic(
+pub async fn start_flight_atomic(
         &self,
         pilot_id: &str,
         device_id: &str,
         tail: &str,
-        visibility: crate::club::visibility::FlightVisibility,
+        visibility: FlightVisibility,
         show_pilot_name_public: bool,
         now: i64,
     ) -> Result<String, StartFlightError> {
-        let mut outcome: Result<String, StartFlightError> = Err(StartFlightError::NoTail);
-        let db_err = 
-            conn.execute_batch("BEGIN IMMEDIATE")?;
-            outcome = (|| -> Result<String, StartFlightError> {
-                let dev_owner: Option<String> = conn
-                    .query_row(
-                        "SELECT pilot_id FROM devices WHERE id = $1",
-                        params![device_id],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .map_err(|_| StartFlightError::DeviceMismatch)?;
-                if dev_owner.as_deref() != Some(pilot_id) {
-                    return Err(StartFlightError::DeviceMismatch);
-                }
-                let checkin_club: String = conn
-                    .query_row(
-                        "SELECT club_id FROM checkins
-                         WHERE outcome = 'ok' AND pilot_id = $1
-                           AND expires_at IS NOT NULL AND expires_at > $2
-                           AND (device_id IS NULL OR device_id = $3)
-                         ORDER BY expires_at DESC LIMIT 1",
-                        params![pilot_id, now, device_id],
-                        |r| r.get(0),
-                    )
-                    .map_err(|_| StartFlightError::NoCheckin)?;
-                let aircraft_id: Option<String> = conn
-                    .query_row(
-                        "SELECT id FROM aircraft WHERE tail = $1 AND club_id = $2 AND active = 1",
-                        params![tail, checkin_club],
-                        |r| r.get(0),
-                    )
-                    .optional()
-                    .map_err(|_| StartFlightError::NoTail)?;
-                let Some(aircraft_id) = aircraft_id else {
-                    return Err(StartFlightError::NoTail);
-                };
-                let type_code: String = conn
-                    .query_row(
-                        "SELECT t.code FROM aircraft a
-                         JOIN aircraft_types t ON t.id = a.type_id
-                         WHERE a.id = $1",
-                        params![aircraft_id],
-                        |r| r.get(0),
-                    )
-                    .map_err(|_| StartFlightError::NoTail)?;
-                if !ClubDb::checkout_ok(conn, pilot_id, &aircraft_id, now)
-                    .map_err(|_| StartFlightError::NoTail)?
-                {
-                    return Err(StartFlightError::NotCleared {
-                        tail: tail.to_string(),
-                        type_code,
-                    });
-                }
-                let pilot_active: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM flights WHERE pilot_id = $1 AND status = 'active'",
-                        params![pilot_id],
-                        |r| r.get(0),
-                    )
-                    .map_err(|_| StartFlightError::NoTail)?;
-                if pilot_active > 0 {
-                    return Err(StartFlightError::AlreadyActive);
-                }
-                let device_active: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM flights f
-                         JOIN flight_devices fd ON fd.flight_id = f.id
-                         WHERE fd.device_id = $1 AND f.status = 'active'",
-                        params![device_id],
-                        |r| r.get(0),
-                    )
-                    .map_err(|_| StartFlightError::NoTail)?;
-                if device_active > 0 {
-                    return Err(StartFlightError::AlreadyActive);
-                }
-                let club_id = checkin_club;
-                let checkins: i64 = conn
-                    .query_row(
-                        "SELECT COUNT(*) FROM checkins
-                         WHERE outcome = 'ok' AND pilot_id = $1 AND club_id = $2
-                           AND expires_at IS NOT NULL AND expires_at > $3
-                           AND (device_id IS NULL OR device_id = $4)",
-                        params![pilot_id, club_id, now, device_id],
-                        |r| r.get(0),
-                    )
-                    .map_err(|_| StartFlightError::NoCheckin)?;
-                if checkins == 0 {
-                    return Err(StartFlightError::NoCheckin);
-                }
-                let flight_id = new_id();
-                sqlx::query("INSERT INTO flights (id, pilot_id, aircraft_id, club_id, status, started_at, visibility, show_pilot_name_public)
-                     VALUES ($1, $2, $3, $4, 'active', $5, $6, $7)").bind(flight_id).bind(pilot_id).bind(aircraft_id).bind(club_id).bind(now).bind(visibility.as_str()).bind(show_pilot_name_public).execute(&self.pool).await?                .map_err(|_| StartFlightError::NoTail)?;
-                sqlx::query("INSERT INTO flight_devices (flight_id, device_id) VALUES ($1, $2)").bind(flight_id).bind(device_id).execute(&self.pool).await?                .map_err(|_| StartFlightError::NoTail)?;
-                Ok(flight_id)
-            })();
-            if outcome.is_ok() {
-                conn.execute_batch("COMMIT")?;
-            } else {
-                let _ = conn.execute_batch("ROLLBACK");
+        let mut tx = self.pool.begin().await.map_err(|_| StartFlightError::NoTail)?;
+        let result: Result<String, StartFlightError> = try {
+            let dev_owner: Option<String> = sqlx::query_scalar(
+                "SELECT pilot_id FROM devices WHERE id = $1",
+            )
+            .bind(device_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| StartFlightError::DeviceMismatch)?;
+            if dev_owner.as_deref() != Some(pilot_id) {
+                Err(StartFlightError::DeviceMismatch)?;
             }
-            Ok(())
-        ;
-        if db_err.is_err() {
-            return Err(StartFlightError::NoTail);
+            let checkin_club: String = sqlx::query_scalar(
+                "SELECT club_id FROM checkins
+                 WHERE outcome = 'ok' AND pilot_id = $1
+                   AND expires_at IS NOT NULL AND expires_at > $2
+                   AND (device_id IS NULL OR device_id = $3)
+                 ORDER BY expires_at DESC LIMIT 1",
+            )
+            .bind(pilot_id)
+            .bind(now)
+            .bind(device_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| StartFlightError::NoCheckin)?;
+            let aircraft_id: Option<String> = sqlx::query_scalar(
+                "SELECT id FROM aircraft WHERE tail = $1 AND club_id = $2 AND active = true",
+            )
+            .bind(tail)
+            .bind(&checkin_club)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| StartFlightError::NoTail)?;
+            let aircraft_id = aircraft_id.ok_or(StartFlightError::NoTail)?;
+            let type_code: String = sqlx::query_scalar(
+                "SELECT t.code FROM aircraft a
+                 JOIN aircraft_types t ON t.id = a.type_id
+                 WHERE a.id = $1",
+            )
+            .bind(&aircraft_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| StartFlightError::NoTail)?;
+            if !Self::checkout_ok(&self.pool, pilot_id, &aircraft_id, now)
+                .await
+                .map_err(|_| StartFlightError::NoTail)?
+            {
+                Err(StartFlightError::NotCleared {
+                    tail: tail.to_string(),
+                    type_code,
+                })?;
+            }
+            let pilot_active: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM flights WHERE pilot_id = $1 AND status = 'active'",
+            )
+            .bind(pilot_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| StartFlightError::NoTail)?;
+            if pilot_active > 0 {
+                Err(StartFlightError::AlreadyActive)?;
+            }
+            let device_active: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM flights f
+                 JOIN flight_devices fd ON fd.flight_id = f.id
+                 WHERE fd.device_id = $1 AND f.status = 'active'",
+            )
+            .bind(device_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| StartFlightError::NoTail)?;
+            if device_active > 0 {
+                Err(StartFlightError::AlreadyActive)?;
+            }
+            let club_id = checkin_club;
+            let checkins: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM checkins
+                 WHERE outcome = 'ok' AND pilot_id = $1 AND club_id = $2
+                   AND expires_at IS NOT NULL AND expires_at > $3
+                   AND (device_id IS NULL OR device_id = $4)",
+            )
+            .bind(pilot_id)
+            .bind(&club_id)
+            .bind(now)
+            .bind(device_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| StartFlightError::NoCheckin)?;
+            if checkins == 0 {
+                Err(StartFlightError::NoCheckin)?;
+            }
+            let flight_id = new_id();
+            sqlx::query(
+                "INSERT INTO flights (id, pilot_id, aircraft_id, club_id, status, started_at, visibility, show_pilot_name_public)
+                 VALUES ($1, $2, $3, $4, 'active', $5, $6, $7)",
+            )
+            .bind(&flight_id)
+            .bind(pilot_id)
+            .bind(&aircraft_id)
+            .bind(&club_id)
+            .bind(now)
+            .bind(visibility.as_str())
+            .bind(show_pilot_name_public)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StartFlightError::NoTail)?;
+            sqlx::query("INSERT INTO flight_devices (flight_id, device_id) VALUES ($1, $2)")
+                .bind(&flight_id)
+                .bind(device_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| StartFlightError::NoTail)?;
+            flight_id
+        };
+        match &result {
+            Ok(_) => tx.commit().await.map_err(|_| StartFlightError::NoTail)?,
+            Err(_) => {
+                let _ = tx.rollback().await;
+            }
         }
-        outcome
+        result
     }
 
     pub async fn count_devices_for_pilot(&self, pilot_id: &str) -> usize {
@@ -1999,7 +2089,7 @@ impl ClubDb {
             .collect()
     }
 
-    pub async fn club_map_for_viewer(&self, viewer: &Viewer) -> Vec<TailLivePosition> {
+    pub fn club_map_for_viewer(&self, viewer: &Viewer) -> Vec<TailLivePosition> {
         let (viewing_club, filter) = match viewer {
             Viewer::Pilot {
                 id,
@@ -2034,7 +2124,7 @@ impl ClubDb {
         )
     }
 
-    pub async fn public_map(&self) -> Vec<TailLivePosition> {
+    pub fn public_map(&self) -> Vec<TailLivePosition> {
         let club = self.default_club_id().unwrap_or_default();
         let filter = self.club_map_filter(&club);
         let dem = self.dem_index();
@@ -2142,7 +2232,7 @@ impl ClubDb {
             pilot_name: r.try_get(2).ok()?,
             visibility: r.try_get(3).ok()?,
             club_id: r.try_get(4).ok()?,
-            fix: crate::live::LiveFix {
+            fix: LiveFix {
                 t: r.try_get(5).ok()?,
                 lat: r.try_get(6).ok()?,
                 lon: r.try_get(7).ok()?,
@@ -2193,7 +2283,6 @@ impl ClubDb {
             expires_at: None,
             revoked_at: None,
         };
-        
         sqlx::query(
             "INSERT INTO flight_shares (id, flight_id, club_id, created_by, token_hash, created_at)
              VALUES ($1, $2, $3, $4, $5, $6)",
@@ -2215,26 +2304,32 @@ impl ClubDb {
         pilot_id: &str,
         flight_id: &str,
     ) -> Result<Vec<FlightShareListItem>, ShareCreateError> {
-        let flight = self.get_flight(flight_id).ok_or(ShareCreateError::NotFound)?;
+        let flight = self
+            .get_flight(flight_id)
+            .await
+            .ok_or(ShareCreateError::NotFound)?;
         if flight.pilot_id != pilot_id {
             return Err(ShareCreateError::NotOwner);
         }
-        
-            let mut stmt = conn.prepare(
-                "SELECT id, created_at, expires_at, revoked_at FROM flight_shares
-                 WHERE flight_id = $1 ORDER BY created_at DESC",
-            )?;
-            let rows = stmt.query_map(params![flight_id], |r| {
-                Ok(FlightShareListItem {
-                    id: r.get(0)?,
-                    created_at: r.get(1)?,
-                    expires_at: r.get(2)?,
-                    revoked: r.get::<_, Option<i64>>(3)?.is_some(),
+        let rows = sqlx::query(
+            "SELECT id, created_at, expires_at, revoked_at FROM flight_shares
+             WHERE flight_id = $1 ORDER BY created_at DESC",
+        )
+        .bind(flight_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(ShareCreateError::Db)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                Some(FlightShareListItem {
+                    id: r.try_get(0).ok()?,
+                    created_at: r.try_get(1).ok()?,
+                    expires_at: r.try_get(2).ok()?,
+                    revoked: r.try_get::<_, Option<i64>>(3).ok()?.is_some(),
                 })
-            })?;
-            rows.collect::<Result<Vec<_>, _>>()
-        
-        .map_err(ShareCreateError::Db)
+            })
+            .collect())
     }
 
     pub async fn revoke_flight_share(
@@ -2243,16 +2338,25 @@ impl ClubDb {
         flight_id: &str,
         share_id: &str,
     ) -> Result<(), ShareRevokeError> {
-        let flight = self.get_flight(flight_id).ok_or(ShareRevokeError::NotFound)?;
+        let flight = self
+            .get_flight(flight_id)
+            .await
+            .ok_or(ShareRevokeError::NotFound)?;
         if flight.pilot_id != pilot_id {
             return Err(ShareRevokeError::NotOwner);
         }
         let now = now_ms();
-        let changed = self
-            .with_conn(|conn| {
-                sqlx::query("UPDATE flight_shares SET revoked_at = $1
-                     WHERE id = $2 AND flight_id = $3 AND revoked_at IS NULL").bind(now).bind(share_id).bind(flight_id).execute(&self.pool).await?            })
-            .map_err(ShareRevokeError::Db)?;
+        let changed = sqlx::query(
+            "UPDATE flight_shares SET revoked_at = $1
+             WHERE id = $2 AND flight_id = $3 AND revoked_at IS NULL",
+        )
+        .bind(now)
+        .bind(share_id)
+        .bind(flight_id)
+        .execute(&self.pool)
+        .await
+        .map_err(ShareRevokeError::Db)?
+        .rows_affected();
         if changed == 0 {
             return Err(ShareRevokeError::NotFound);
         }
@@ -2260,28 +2364,24 @@ impl ClubDb {
     }
 
     async fn fetch_share_by_hash(&self, token_hash: &str) -> Option<FlightShareRow> {
-        
-            conn.query_row(
-                "SELECT id, flight_id, club_id, created_by, token_hash, created_at, expires_at, revoked_at
-                 FROM flight_shares WHERE token_hash = $1",
-                params![token_hash],
-                |r| {
-                    Ok(row_from_query(
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.get(4)?,
-                        r.get(5)?,
-                        r.get(6)?,
-                        r.get(7)?,
-                    ))
-                },
-            )
-            .optional()
-        
-        .ok()
-        .flatten()
+        let r = sqlx::query(
+            "SELECT id, flight_id, club_id, created_by, token_hash, created_at, expires_at, revoked_at
+             FROM flight_shares WHERE token_hash = $1",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()??;
+        Some(FlightShareRow {
+            id: r.try_get(0).ok()?,
+            flight_id: r.try_get(1).ok()?,
+            club_id: r.try_get(2).ok()?,
+            created_by: r.try_get(3).ok()?,
+            token_hash: r.try_get(4).ok()?,
+            created_at: r.try_get(5).ok()?,
+            expires_at: r.try_get(6).ok()?,
+            revoked_at: r.try_get(7).ok()?,
+        })
     }
 
     pub async fn resolve_share_token(&self, token: &str) -> Option<ResolvedShare> {
@@ -2289,11 +2389,11 @@ impl ClubDb {
             return None;
         }
         let digest = digest_token(token);
-        let share = self.fetch_share_by_hash(&digest)?;
+        let share = self.fetch_share_by_hash(&digest).await?;
         if !token_hash_matches(&share.token_hash, &digest) {
             return None;
         }
-        let flight = self.get_flight(&share.flight_id)?;
+        let flight = self.get_flight(&share.flight_id).await?;
         if !share_active_at(&share, &flight, now_ms()) {
             return None;
         }
@@ -2306,40 +2406,36 @@ impl ClubDb {
     }
 
     pub async fn share_flight_id(&self, token: &str) -> Option<String> {
-        self.resolve_share_token(token).map(|r| r.flight_id)
+        self.resolve_share_token(token)
+            .await
+            .map(|r| r.flight_id)
     }
 
-    pub async fn club_id_for_slug(&self, slug: &str) -> Option<String> {
+    pub fn club_id_for_slug(&self, slug: &str) -> Option<String> {
         let slug = slug.trim();
         if slug.is_empty() {
             return None;
         }
-        sqlx::query_scalar("SELECT id FROM clubs WHERE slug = $1")
-            .bind(slug)
-            .fetch_optional(&self.pool)
-            .await
-            .ok()
-            .flatten()
+        
+            sqlx::query("SELECT id FROM clubs WHERE slug = $1").bind(slug).fetch_optional(&self.pool).await
+        
+        .ok()
+        .flatten()
     }
 
-    pub async fn club_slug(&self, club_id: &str) -> Option<String> {
-        sqlx::query_scalar("SELECT slug FROM clubs WHERE id = $1")
-            .bind(club_id)
-            .fetch_optional(&self.pool)
-            .await
-            .ok()
-            .flatten()
+    pub fn club_slug(&self, club_id: &str) -> Option<String> {
+        
+            sqlx::query("SELECT slug FROM clubs WHERE id = $1").bind(club_id).fetch_optional(&self.pool).await
+        
+        .ok()
+        .flatten()
     }
 
-    pub async fn resolve_club_context(
-        &self,
-        slug: &str,
-    ) -> Result<crate::club::club_scope::ClubContext, crate::club::club_scope::ClubScopeError>
-    {
+    pub async fn resolve_club_context(&self, slug: &str) -> Result<ClubContext, ClubScopeError> {
         let Some(club_id) = self.club_id_for_slug(slug).await else {
             return Err(ClubScopeError::NotFound);
         };
-        Ok(crate::club::club_scope::ClubContext {
+        Ok(ClubContext {
             club_id,
             slug: slug.to_string(),
         })
@@ -2352,34 +2448,34 @@ impl ClubDb {
             .await
             .ok()
             .flatten()
-            .is_some_and(|r| r == "superadmin")
+            .map(|r| r == "superadmin")
+            .unwrap_or(false)
     }
 
-    pub async fn membership_in_club(&self, pilot_id: &str, club_id: &str) -> Option<(String, String)> {
+    pub fn membership_in_club(&self, pilot_id: &str, club_id: &str) -> Option<(String, String)> {
         
-            conn.query_row(
-                "SELECT role, status FROM club_memberships
-                 WHERE pilot_id = $1 AND club_id = $2",
-                params![pilot_id, club_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .optional()
+            sqlx::query("SELECT role, status FROM club_memberships
+                 WHERE pilot_id = $1 AND club_id = $2").bind(pilot_id).bind(club_id).fetch_optional(&self.pool).await
         
         .ok()
         .flatten()
     }
 
-    pub async fn require_club_admin(&self, pilot_id: &str, club_id: &str) -> Result<(), ClubScopeError> {
-        if self.is_superadmin(pilot_id) {
+    pub async fn require_club_admin(
+        &self,
+        pilot_id: &str,
+        club_id: &str,
+    ) -> Result<(), ClubScopeError> {
+        if self.is_superadmin(pilot_id).await {
             return Ok(());
         }
-        match self.membership_in_club(pilot_id, club_id) {
+        match self.membership_in_club(pilot_id, club_id).await {
             Some((role, status)) if role == "admin" && status == "approved" => Ok(()),
             _ => Err(ClubScopeError::Forbidden),
         }
     }
 
-    pub async fn ensure_membership_row(
+    pub fn ensure_membership_row(
         &self,
         pilot_id: &str,
         club_id: &str,
@@ -2396,6 +2492,500 @@ impl ClubDb {
                    status = excluded.status").bind(new_id()).bind(pilot_id).bind(club_id).bind(role).bind(status).bind(now_ms()).execute(&self.pool).await?;
             Ok(())
         
+    }
+
+    pub fn record_audit(
+        &self,
+        club_id: &str,
+        actor_pilot_id: Option<&str>,
+        action: &str,
+        entity_type: &str,
+        entity_id: &str,
+        detail: Option<&str>,
+    ) -> Result<(), DbError> {
+        let now = now_ms();
+        
+            sqlx::query("INSERT INTO audit_log (id, club_id, actor_pilot_id, action, entity_type, entity_id, detail, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)").bind(new_id()).bind(club_id).bind(actor_pilot_id).bind(action).bind(entity_type).bind(entity_id).bind(detail).bind(now).execute(&self.pool).await?;
+            Ok(())
+        
+    }
+
+    pub async fn pilot_has_open_checkin(&self, pilot_id: &str, now: i64) -> bool {
+        
+            let n: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM checkins
+                 WHERE outcome = 'ok' AND pilot_id = $1
+                   AND consumed_at IS NULL AND expires_at IS NOT NULL AND expires_at > $2",
+                params![pilot_id, now],
+                |r| r.get(0),
+            )?;
+            Ok(n > 0)
+        
+        .unwrap_or(false)
+    }
+
+    pub async fn count_pending_access_requests(&self, club_id: &str) -> usize {
+        
+            let n: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM access_requests WHERE club_id = $1 AND status = 'pending'",
+                params![club_id],
+                |r| r.get(0),
+            )?;
+            Ok(n as usize)
+        
+        .unwrap_or(0)
+    }
+
+    pub async fn create_access_request(
+        &self,
+        pilot_id: &str,
+        tail: &str,
+        type_id: Option<&str>,
+        new_type_name: Option<&str>,
+        now: i64,
+    ) -> Result<String, AccessRequestError> {
+        let tail = normalize_tail(tail).map_err(|_| AccessRequestError::InvalidTail)?;
+        if type_id.is_none() && new_type_name.map(str::trim).unwrap_or("").is_empty() {
+            return Err(AccessRequestError::MissingType);
+        }
+        if !self.pilot_has_open_checkin(pilot_id, now) {
+            return Err(AccessRequestError::NoCheckin);
+        }
+        let club_id: String = self
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT club_id FROM pilots WHERE id = $1",
+                    params![pilot_id],
+                    |r| r.get(0),
+                )
+            })
+            .map_err(|_| AccessRequestError::Db)?;
+        if let Some(tid) = type_id {
+            let ok = self
+                .with_conn(|conn| {
+                    let n: i64 = conn.query_row(
+                        "SELECT COUNT(*) FROM aircraft_types WHERE club_id = $1 AND id = $2",
+                        params![club_id, tid],
+                        |r| r.get(0),
+                    )?;
+                    Ok(n > 0)
+                })
+                .unwrap_or(false);
+            if !ok {
+                return Err(AccessRequestError::MissingType);
+            }
+        }
+        let dup: i64 = self
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM access_requests
+                     WHERE pilot_id = $1 AND requested_tail = $2 AND status = 'pending'",
+                    params![pilot_id, tail],
+                    |r| r.get(0),
+                )
+            })
+            .unwrap_or(0);
+        if dup > 0 {
+            return Err(AccessRequestError::DuplicatePending);
+        }
+        let id = new_id();
+        let new_type = new_type_name.map(str::trim).filter(|s| !s.is_empty());
+        
+            sqlx::query("INSERT INTO access_requests (id, club_id, pilot_id, requested_tail, type_id, new_type_name, status, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7)").bind(id).bind(club_id).bind(pilot_id).bind(tail).bind(type_id).bind(new_type).bind(now).execute(&self.pool).await?;
+            Ok(())
+        
+        .map_err(|_| AccessRequestError::Db)?;
+        let _ = self.record_audit(
+            &club_id,
+            Some(pilot_id),
+            "access_request.create",
+            "access_request",
+            &id,
+            Some(&tail),
+        );
+        Ok(id)
+    }
+
+    pub async fn list_pilot_access_requests(&self, pilot_id: &str) -> Vec<AccessRequestView> {
+        
+            let mut stmt = conn.prepare(
+                "SELECT ar.id, ar.pilot_id, ar.requested_tail, t.code, ar.new_type_name,
+                        ar.status, ar.reject_reason, ar.created_at, ar.decided_at
+                 FROM access_requests ar
+                 LEFT JOIN aircraft_types t ON t.id = ar.type_id
+                 WHERE ar.pilot_id = $1
+                 ORDER BY ar.created_at DESC",
+            )?;
+            let rows = stmt.query_map(params![pilot_id], |r| {
+                Ok(AccessRequestView {
+                    id: r.get(0)?,
+                    requested_tail: r.get(2)?,
+                    type_code: r.get(3)?,
+                    new_type_name: r.get(4)?,
+                    status: r.get(5)?,
+                    reject_reason: r.get(6)?,
+                    created_at: r.get(7)?,
+                    decided_at: r.get(8)?,
+                })
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        
+        .unwrap_or_default()
+    }
+
+    pub async fn list_admin_access_requests(
+        &self,
+        club_id: &str,
+        status: Option<&str>,
+    ) -> Vec<AdminAccessRequestView> {
+        
+            let sql = if status.is_some() {
+                "SELECT ar.id, ar.pilot_id, ar.requested_tail, t.code, ar.new_type_name,
+                        ar.status, ar.reject_reason, ar.created_at, ar.decided_at,
+                        ar.pilot_id, p.name, p.email
+                 FROM access_requests ar
+                 JOIN pilots p ON p.id = ar.pilot_id
+                 LEFT JOIN aircraft_types t ON t.id = ar.type_id
+                 WHERE ar.club_id = $1 AND ar.status = $2
+                 ORDER BY ar.created_at DESC"
+            } else {
+                "SELECT ar.id, ar.pilot_id, ar.requested_tail, t.code, ar.new_type_name,
+                        ar.status, ar.reject_reason, ar.created_at, ar.decided_at,
+                        ar.pilot_id, p.name, p.email
+                 FROM access_requests ar
+                 JOIN pilots p ON p.id = ar.pilot_id
+                 LEFT JOIN aircraft_types t ON t.id = ar.type_id
+                 WHERE ar.club_id = $1
+                 ORDER BY ar.created_at DESC"
+            };
+            let mut stmt = conn.prepare(sql)?;
+            let mut out = Vec::new();
+            if let Some(st) = status {
+                let rows = stmt.query_map(params![club_id, st], |r| {
+                    Ok(AdminAccessRequestView {
+                        base: AccessRequestView {
+                            id: r.get(0)?,
+                            requested_tail: r.get(2)?,
+                            type_code: r.get(3)?,
+                            new_type_name: r.get(4)?,
+                            status: r.get(5)?,
+                            reject_reason: r.get(6)?,
+                            created_at: r.get(7)?,
+                            decided_at: r.get(8)?,
+                        },
+                        pilot_id: r.get(9)?,
+                        pilot_name: r.get(10)?,
+                        pilot_email: r.get(11)?,
+                    })
+                })?;
+                for row in rows {
+                    out.push(row?);
+                }
+            } else {
+                let rows = stmt.query_map(params![club_id], |r| {
+                    Ok(AdminAccessRequestView {
+                        base: AccessRequestView {
+                            id: r.get(0)?,
+                            requested_tail: r.get(2)?,
+                            type_code: r.get(3)?,
+                            new_type_name: r.get(4)?,
+                            status: r.get(5)?,
+                            reject_reason: r.get(6)?,
+                            created_at: r.get(7)?,
+                            decided_at: r.get(8)?,
+                        },
+                        pilot_id: r.get(9)?,
+                        pilot_name: r.get(10)?,
+                        pilot_email: r.get(11)?,
+                    })
+                })?;
+                for row in rows {
+                    out.push(row?);
+                }
+            }
+            Ok(out)
+        
+        .unwrap_or_default()
+    }
+
+    pub async fn approve_access_request(
+        &self,
+        admin_id: &str,
+        request_id: &str,
+        expires_at: Option<i64>,
+        now: i64,
+    ) -> Result<(), AccessRequestError> {
+        self.with_conn_any(|conn| -> Result<(), AccessRequestError> {
+            let tx = conn.unchecked_transaction().map_err(|_| AccessRequestError::Db)?;
+            let row = conn
+                .query_row(
+                    "SELECT ar.club_id, ar.pilot_id, ar.requested_tail, ar.type_id, ar.new_type_name, ar.status
+                     FROM access_requests ar WHERE ar.id = $1",
+                    params![request_id],
+                    |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, Option<String>>(3)?,
+                            r.get::<_, Option<String>>(4)?,
+                            r.get::<_, String>(5)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|_| AccessRequestError::Db)?;
+            let Some((club_id, pilot_id, tail, type_id, new_type_name, status)) = row else {
+                return Err(AccessRequestError::NotFound);
+            };
+            if status != "pending" {
+                return Err(AccessRequestError::NotPending);
+            }
+            let mut resolved_type_id = type_id;
+            if resolved_type_id.is_none() {
+                let name = new_type_name.as_deref().unwrap_or("").trim();
+                if name.is_empty() {
+                    return Err(AccessRequestError::MissingType);
+                }
+                resolved_type_id = if let Some(existing) = conn
+                    .query_row(
+                        "SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2",
+                        params![club_id, name],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(|_| AccessRequestError::Db)?
+                {
+                    Some(existing)
+                } else {
+                    let tid = new_id();
+                    sqlx::query("INSERT INTO aircraft_types (id, club_id, code) VALUES ($1, $2, $3)").bind(tid).bind(club_id).bind(name).execute(&self.pool).await?                    .map_err(|_| AccessRequestError::Db)?;
+                    sqlx::query("INSERT INTO audit_log (id, club_id, actor_pilot_id, action, entity_type, entity_id, detail, created_at)
+                         VALUES ($1, $2, $3, 'create', 'aircraft_type', $4, $5, $6)").bind(new_id()).bind(club_id).bind(admin_id).bind(tid).bind(name).bind(now).execute(&self.pool).await?                    .map_err(|_| AccessRequestError::Db)?;
+                    Some(tid)
+                };
+            }
+            let type_id = resolved_type_id.ok_or(AccessRequestError::MissingType)?;
+            let aircraft_id = if let Some(aid) = conn
+                .query_row(
+                    "SELECT id, type_id FROM aircraft WHERE club_id = $1 AND tail = $2",
+                    params![club_id, tail],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(|_| AccessRequestError::Db)?
+            {
+                if aid.1 != type_id {
+                    return Err(AccessRequestError::TypeMismatch);
+                }
+                aid.0
+            } else {
+                let aid = new_id();
+                sqlx::query("INSERT INTO aircraft (id, club_id, tail, type_id, active) VALUES ($1, $2, $3, $4, 1)").bind(aid).bind(club_id).bind(tail).bind(type_id).execute(&self.pool).await?                .map_err(|_| AccessRequestError::Db)?;
+                sqlx::query("INSERT INTO audit_log (id, club_id, actor_pilot_id, action, entity_type, entity_id, detail, created_at)
+                     VALUES ($1, $2, $3, 'create', 'aircraft', $4, $5, $6)").bind(new_id()).bind(club_id).bind(admin_id).bind(aid).bind(tail).bind(now).execute(&self.pool).await?                .map_err(|_| AccessRequestError::Db)?;
+                aid
+            };
+            let checkout_id = new_id();
+            sqlx::query("INSERT INTO checkouts (id, pilot_id, type_id, aircraft_id, expires_at)
+                 VALUES ($1, $2, $3, $4, $5)").bind(checkout_id).bind(pilot_id).bind(type_id).bind(aircraft_id).bind(expires_at).execute(&self.pool).await?            .map_err(|_| AccessRequestError::Db)?;
+            sqlx::query("INSERT INTO audit_log (id, club_id, actor_pilot_id, action, entity_type, entity_id, detail, created_at)
+                 VALUES ($1, $2, $3, 'create', 'checkout', $4, $5, $6)").bind(new_id()).bind(club_id).bind(admin_id).bind(checkout_id).bind(tail).bind(now).execute(&self.pool).await?            .map_err(|_| AccessRequestError::Db)?;
+            sqlx::query("UPDATE access_requests SET status = 'approved', decided_at = $1, decided_by_pilot_id = $2
+                 WHERE id = $3").bind(now).bind(admin_id).bind(request_id).execute(&self.pool).await?            .map_err(|_| AccessRequestError::Db)?;
+            sqlx::query("INSERT INTO audit_log (id, club_id, actor_pilot_id, action, entity_type, entity_id, detail, created_at)
+                 VALUES ($1, $2, $3, 'approve', 'access_request', $4, $5, $6)").bind(new_id()).bind(club_id).bind(admin_id).bind(request_id).bind(tail).bind(now).execute(&self.pool).await?            .map_err(|_| AccessRequestError::Db)?;
+            tx.commit().map_err(|_| AccessRequestError::Db)?;
+            Ok(())
+        })
+    }
+
+    pub async fn reject_access_request(
+        &self,
+        admin_id: &str,
+        request_id: &str,
+        reason: &str,
+        now: i64,
+    ) -> Result<(), AccessRequestError> {
+        self.with_conn_any(|conn| -> Result<(), AccessRequestError> {
+            let row = conn
+                .query_row(
+                    "SELECT club_id, status FROM access_requests WHERE id = $1",
+                    params![request_id],
+                    |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+                )
+                .optional()
+                .map_err(|_| AccessRequestError::Db)?;
+            let Some((club_id, status)) = row else {
+                return Err(AccessRequestError::NotFound);
+            };
+            if status != "pending" {
+                return Err(AccessRequestError::NotPending);
+            }
+            sqlx::query("UPDATE access_requests SET status = 'rejected', reject_reason = $1,
+                    decided_at = $2, decided_by_pilot_id = $3 WHERE id = $4").bind(reason).bind(now).bind(admin_id).bind(request_id).execute(&self.pool).await?            .map_err(|_| AccessRequestError::Db)?;
+            sqlx::query("INSERT INTO audit_log (id, club_id, actor_pilot_id, action, entity_type, entity_id, detail, created_at)
+                 VALUES ($1, $2, $3, 'reject', 'access_request', $4, $5, $6)").bind(new_id()).bind(club_id).bind(admin_id).bind(request_id).bind(reason).bind(now).execute(&self.pool).await?            .map_err(|_| AccessRequestError::Db)?;
+            Ok(())
+        })
+    }
+
+    pub async fn approve_pilot_with_checkout(
+        &self,
+        admin_id: &str,
+        pilot_id: &str,
+        checkout: Option<ApprovePilotCheckout>,
+    ) -> Result<(), DbError> {
+        let mut tx = self.pool.begin().await?;
+        let row = sqlx::query("SELECT club_id, status FROM pilots WHERE id = $1")
+            .bind(pilot_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some(row) = row else {
+            return Ok(());
+        };
+        let club_id: String = row.try_get(0)?;
+        let status: String = row.try_get(1)?;
+        if status != "pending" {
+            tx.commit().await?;
+            return Ok(());
+        }
+        let now = now_ms();
+        sqlx::query("UPDATE pilots SET status = 'approved' WHERE id = $1")
+            .bind(pilot_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO audit_log (id, club_id, actor_pilot_id, action, entity_type, entity_id, detail, created_at)
+             VALUES ($1, $2, $3, 'approve', 'pilot', $4, NULL, $5)",
+        )
+        .bind(new_id())
+        .bind(&club_id)
+        .bind(admin_id)
+        .bind(pilot_id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        if let Some(co) = checkout {
+            let type_id: String = sqlx::query_scalar(
+                "SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2",
+            )
+            .bind(&club_id)
+            .bind(&co.type_code)
+            .fetch_one(&mut *tx)
+            .await?;
+            let aircraft_id = if let Some(ref tail) = co.tail {
+                Some(
+                    sqlx::query_scalar::<_, String>(
+                        "SELECT id FROM aircraft WHERE club_id = $1 AND tail = $2",
+                    )
+                    .bind(&club_id)
+                    .bind(tail)
+                    .fetch_one(&mut *tx)
+                    .await?,
+                )
+            } else {
+                None
+            };
+            let checkout_id = new_id();
+            sqlx::query(
+                "INSERT INTO checkouts (id, pilot_id, type_id, aircraft_id, expires_at)
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(&checkout_id)
+            .bind(pilot_id)
+            .bind(&type_id)
+            .bind(aircraft_id.as_deref())
+            .bind(co.expires_at)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                "INSERT INTO audit_log (id, club_id, actor_pilot_id, action, entity_type, entity_id, detail, created_at)
+                 VALUES ($1, $2, $3, 'create', 'checkout', $4, $5, $6)",
+            )
+            .bind(new_id())
+            .bind(&club_id)
+            .bind(admin_id)
+            .bind(&checkout_id)
+            .bind(&co.type_code)
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn add_checkout_typed(
+        &self,
+        pilot_id: &str,
+        type_code: &str,
+        tail: Option<&str>,
+        expires_at: Option<i64>,
+    ) -> Result<(), CheckoutError> {
+        let club_id: String = sqlx::query_scalar("SELECT club_id FROM pilots WHERE id = $1")
+            .bind(pilot_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| CheckoutError::UnknownType)?;
+        let (type_id, aircraft_id) = if let Some(tail) = tail {
+            let row = sqlx::query(
+                "SELECT a.id, a.type_id FROM aircraft a
+                 WHERE a.club_id = $1 AND a.tail = $2",
+            )
+            .bind(&club_id)
+            .bind(tail)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|_| CheckoutError::UnknownTail)?;
+            let Some(row) = row else {
+                return Err(CheckoutError::UnknownTail);
+            };
+            (
+                row.try_get::<_, String>(1)
+                    .map_err(|_| CheckoutError::UnknownTail)?,
+                Some(
+                    row.try_get::<_, String>(0)
+                        .map_err(|_| CheckoutError::UnknownTail)?,
+                ),
+            )
+        } else {
+            let type_id: String = sqlx::query_scalar(
+                "SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2",
+            )
+            .bind(&club_id)
+            .bind(type_code)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| CheckoutError::UnknownType)?;
+            (type_id, None)
+        };
+        sqlx::query(
+            "INSERT INTO checkouts (id, pilot_id, type_id, aircraft_id, expires_at)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(new_id())
+        .bind(pilot_id)
+        .bind(&type_id)
+        .bind(aircraft_id.as_deref())
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|_| CheckoutError::UnknownType)?;
+        Ok(())
+    }
+
+    pub async fn admin_pending_counts(&self, club_id: &str) -> AdminPendingCounts {
+        AdminPendingCounts {
+            pilots: self.list_pending_pilots().await.len(),
+            access_requests: self.count_pending_access_requests(club_id).await,
+        }
     }
 }
 

@@ -6,7 +6,7 @@ use crate::club::{
         RegisterError, StartFlightError,
     },
     db_access::{AdminPendingCounts, ApprovePilotCheckout},
-    db_devices::{DeviceRegisterError, MAX_DEVICES_PER_PILOT},
+    db::{DeviceRegisterError, MAX_DEVICES_PER_PILOT},
     map::TailLivePosition,
     visibility::{FlightVisibility, PilotRole, PilotStatus, Viewer},
 };
