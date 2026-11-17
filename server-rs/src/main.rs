@@ -665,6 +665,13 @@ async fn run_server() {
             live_task.tick_idle_and_prune().await;
         }
     });
+    if let Ok(pg) = club::database::connect_pool().await {
+        if let Err(error) = club::database::run_migrations(&pg).await {
+            eprintln!("warn: club postgres migrations failed: {error}");
+        } else if let Err(error) = club::sqlite_import::import_if_present(&config.data_dir, &pg).await {
+            eprintln!("warn: club sqlite import failed: {error}");
+        }
+    }
     let club = match club::ClubDb::open(&config.data_dir) {
         Ok(db) => {
             if std::env::var("FLIGHT_CLUB_SEED_DEMO").as_deref() == Ok("1") {

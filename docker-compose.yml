@@ -1,12 +1,28 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: app-heavenly-flight-vis-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: flight_vis
+    volumes:
+      - flight_vis_pg:/var/lib/postgresql/data
+    networks:
+      - default
+
   flight_vis:
     build: .
     image: app-heavenly-flight-vis:latest
     container_name: app-heavenly-flight-vis
     restart: unless-stopped
+    depends_on:
+      - postgres
     environment:
       PORT: 8080
       FLIGHT_DATA: /data
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/flight_vis
       FLIGHT_VIS_PASSWORD: ${FLIGHT_VIS_PASSWORD:-}
       VIRTUAL_HOST: flight.heavenly.cl
       LETSENCRYPT_HOST: flight.heavenly.cl
@@ -16,6 +32,9 @@ services:
     networks:
       - proxy_network
       - default
+
+volumes:
+  flight_vis_pg:
 
 networks:
   proxy_network:

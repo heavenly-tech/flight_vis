@@ -60,10 +60,12 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), DbConnectError> {
     sqlx::migrate!("./migrations")
         .run(pool)
         .await
-        .map_err(DbConnectError::from)
+        .map_err(|e| DbConnectError::Sqlx(sqlx::Error::Migrate(Box::new(e))))
 }
 
 /// Postgres for integration tests (CI sets DATABASE_URL).
+#[cfg(test)]
+#[allow(dead_code)]
 pub async fn open_test_pool() -> Result<PgPool, DbConnectError> {
     connect_pool().await
 }
