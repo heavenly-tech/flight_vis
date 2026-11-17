@@ -665,26 +665,30 @@ async fn run_server() {
             live_task.tick_idle_and_prune().await;
         }
     });
-    if let Ok(pg) = club::database::connect_pool().await {
-        if let Err(error) = club::database::run_migrations(&pg).await {
-            eprintln!("warn: club postgres migrations failed: {error}");
-        } else if let Err(error) = club::sqlite_import::import_if_present(&config.data_dir, &pg).await {
-            eprintln!("warn: club sqlite import failed: {error}");
-        }
-    }
-    let club = match club::ClubDb::open(&config.data_dir) {
-        Ok(db) => {
-            if std::env::var("FLIGHT_CLUB_SEED_DEMO").as_deref() == Ok("1") {
-                if let Err(error) = db.seed_demo_if_empty() {
-                    eprintln!("warn: demo seed failed: {error}");
-                }
+    let club = if club::database::resolve_database_url().is_ok() {
+        if let Ok(pg) = club::database::connect_pool().await {
+            if let Err(error) =
+                club::sqlite_import::import_if_present(&config.data_dir, &pg).await
+            {
+                eprintln!("warn: club sqlite import failed: {error}");
             }
-            Some(db)
         }
-        Err(error) => {
-            eprintln!("warn: club database unavailable: {error}");
-            None
+        match club::ClubDb::connect().await {
+            Ok(db) => {
+                if std::env::var("FLIGHT_CLUB_SEED_DEMO").as_deref() == Ok("1") {
+                    if let Err(error) = db.seed_demo_if_empty().await {
+                        eprintln!("warn: demo seed failed: {error}");
+                    }
+                }
+                Some(db)
+            }
+            Err(error) => {
+                eprintln!("warn: club database unavailable: {error}");
+                None
+            }
         }
+    } else {
+        None
     };
     let mut state_bundle = app_state(
         config.dist_dir,
@@ -705,7 +709,7 @@ async fn run_server() {
             loop {
                 interval.tick().await;
                 let now = club::now_ms();
-                let _ = club_task.auto_end_idle(10 * 60 * 1000, now);
+                let _ = club_task.auto_end_idle(10 * 60 * 1000, now).await;
             }
         });
     }

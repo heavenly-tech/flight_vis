@@ -3,6 +3,7 @@ mod access_request;
 mod auth;
 pub mod checkin;
 pub mod database;
+#[path = "db_pg.rs"]
 mod db;
 mod db_access;
 mod map;
