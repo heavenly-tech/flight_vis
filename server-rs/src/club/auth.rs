@@ -7,6 +7,7 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 pub const COOKIE: &str = "fv_club_session";
+pub const DISPLAY_COOKIE: &str = "fv_club_display";
 pub const SESSION_TTL_SEC: i64 = 7 * 24 * 3600;
 
 pub fn hash_password(password: &str) -> Result<String, &'static str> {
@@ -45,6 +46,44 @@ pub fn new_device_token() -> String {
 
 pub fn new_id() -> String {
     new_session_id()
+}
+
+pub fn parse_display_cookie(headers: &HeaderMap) -> Option<String> {
+    let header = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())?;
+    for part in header.split(';') {
+        let part = part.trim();
+        let mut kv = part.splitn(2, '=');
+        let (Some(name), Some(value)) = (kv.next(), kv.next()) else {
+            continue;
+        };
+        if name == DISPLAY_COOKIE {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub fn set_display_cookie(token: &str, secure: bool) -> String {
+    let mut cookie = format!("{DISPLAY_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie.push_str("; Max-Age=31536000");
+    cookie
+}
+
+#[allow(dead_code)]
+pub fn clear_display_cookie(secure: bool) -> String {
+    let mut cookie = format!("{DISPLAY_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
 }
 
 pub fn parse_session_cookie(headers: &HeaderMap) -> Option<String> {

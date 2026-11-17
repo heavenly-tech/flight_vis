@@ -3,6 +3,8 @@ import { api, mountAdminNav, requireAdmin } from "./adminCommon";
 const list = document.querySelector<HTMLUListElement>("#live")!;
 const ticks = document.querySelector<HTMLDivElement>("#ticks")!;
 const save = document.querySelector<HTMLButtonElement>("#save")!;
+const kiosk = document.querySelector<HTMLButtonElement>("#btn-kiosk")!;
+const kioskOut = document.querySelector<HTMLParagraphElement>("#kiosk-url")!;
 
 async function refresh(): Promise<void> {
   const aircraft = await api<{ aircraft: { tail: string }[] }>("/api/admin/aircraft");
@@ -28,6 +30,17 @@ async function refresh(): Promise<void> {
     }),
   );
 }
+
+kiosk?.addEventListener("click", async () => {
+  const body = await api<{ screenUrl: string; token: string }>("/api/admin/display-sessions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label: "Kiosk" }),
+  });
+  const url = `${location.origin}${body.screenUrl}`;
+  kioskOut.textContent = `Open on the kiosk: ${url}`;
+  kioskOut.innerHTML = `Open on the kiosk: <a href="${url}" target="_blank" rel="noopener">${url}</a>`;
+});
 
 save.addEventListener("click", async () => {
   const tails = [...ticks.querySelectorAll<HTMLInputElement>("input:checked")].map((i) => i.value);

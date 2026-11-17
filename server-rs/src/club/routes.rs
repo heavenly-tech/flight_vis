@@ -1,6 +1,9 @@
 use crate::club::{
-    auth::{self, parse_session_cookie},
-    db::{now_ms, ClubDb, DeleteError, EndError, PatchError, RegisterError, StartFlightError},
+    auth::{self, parse_display_cookie, parse_session_cookie},
+    db::{
+        now_ms, CheckinReject, ClubDb, DeleteError, EndError, PatchError, RegisterError,
+        StartFlightError,
+    },
     map::TailLivePosition,
     visibility::{FlightVisibility, PilotRole, PilotStatus, Viewer},
 };
@@ -11,7 +14,7 @@ use axum::{
     http::{header, HeaderMap, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
-        IntoResponse, Json,
+        Html, IntoResponse, Json,
     },
     routing::{get, post},
     Router,
@@ -362,6 +365,11 @@ pub async fn post_club_flight_start(
         Err(StartFlightError::AlreadyActive) => (
             StatusCode::CONFLICT,
             Json(json!({ "error": "active flight exists" })),
+        )
+            .into_response(),
+        Err(StartFlightError::NoCheckin) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "check-in required" })),
         )
             .into_response(),
     }
@@ -1032,8 +1040,309 @@ async fn list_devices(State(state): State<AppState>, headers: HeaderMap) -> impl
     Json(json!({ "devices": db.list_my_devices(&id) })).into_response()
 }
 
+fn display_context(headers: &HeaderMap, db: &ClubDb) -> Option<(String, String)> {
+    let raw = parse_display_cookie(headers)?;
+    db.resolve_display_session(&raw)
+        .map(|(_id, club_id, admin_id)| (club_id, admin_id))
+}
+
+#[derive(Deserialize)]
+struct CheckinBody {
+    token: String,
+}
+
+async fn post_checkin(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<CheckinBody>,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let now = now_ms();
+    let mut pilot_id: Option<String> = None;
+    let mut device_id: Option<String> = None;
+    if let Some(bearer) = bearer_token(&headers) {
+        if let Some(dev) = db.resolve_device_token(&bearer) {
+            device_id = Some(dev.clone());
+            pilot_id = db.device_pilot_id(&dev);
+        }
+    }
+    if pilot_id.is_none() {
+        let v = viewer(&state, &headers);
+        if let Viewer::Pilot {
+            id,
+            status: PilotStatus::Approved,
+            ..
+        } = v
+        {
+            pilot_id = Some(id);
+        }
+    }
+    let Some(pilot_id) = pilot_id else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    };
+    if let Some(dev) = &device_id {
+        if db.device_pilot_id(dev).as_deref() != Some(pilot_id.as_str()) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "device mismatch" })),
+            )
+                .into_response();
+        }
+    }
+    match db.submit_checkin(&pilot_id, device_id.as_deref(), body.token.trim(), now) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(CheckinReject::Format) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid token", "reason": "format" })),
+        )
+            .into_response(),
+        Err(CheckinReject::ForgedHmac) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "invalid token", "reason": "forged_hmac" })),
+        )
+            .into_response(),
+        Err(CheckinReject::OldStep) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "invalid token", "reason": "old_step" })),
+        )
+            .into_response(),
+        Err(CheckinReject::WrongClub) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "invalid token", "reason": "wrong_club" })),
+        )
+            .into_response(),
+        Err(CheckinReject::Replay) => (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "token already used", "reason": "replay" })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct DisplayActivateBody {
+    token: String,
+}
+
+async fn display_activate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<DisplayActivateBody>,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let token = body.token.trim();
+    let Some(_ctx) = db.resolve_display_session(token) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "invalid display token" })),
+        )
+            .into_response();
+    };
+    let cookie = auth::set_display_cookie(token, is_secure(&headers));
+    (
+        StatusCode::OK,
+        [(header::SET_COOKIE, cookie)],
+        Json(json!({ "ok": true })),
+    )
+        .into_response()
+}
+
+async fn display_checkin_qr(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "error": "club disabled" })).into_response();
+    };
+    let Some((club_id, _admin)) = display_context(&headers, db) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "display session required" })),
+        )
+            .into_response();
+    };
+    let now = now_ms();
+    match db.mint_checkin_qr_token(&club_id, now) {
+        Ok(token) => {
+            let step = crate::club::checkin::current_step(now);
+            Json(json!({
+                "token": token,
+                "step": step,
+                "stepSeconds": crate::club::checkin::CHECKIN_STEP_SEC,
+                "serverTimeMs": now,
+            }))
+            .into_response()
+        }
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn display_map(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "aircraft": [] })).into_response();
+    };
+    let Some((_club_id, admin_id)) = display_context(&headers, db) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "display session required" })),
+        )
+            .into_response();
+    };
+    let rows = db.display_map(&admin_id);
+    Json(json!({ "aircraft": rows })).into_response()
+}
+
+#[derive(Deserialize, Default)]
+struct DisplaySessionBody {
+    label: String,
+}
+
+async fn admin_create_display(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<DisplaySessionBody>,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    let Viewer::Pilot {
+        id,
+        role: PilotRole::Admin,
+        ..
+    } = v
+    else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin required" })),
+        )
+            .into_response();
+    };
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    match db.create_display_session(&id, body.label.trim()) {
+        Ok((session_id, token)) => Json(json!({
+            "id": session_id,
+            "token": token,
+            "screenUrl": format!("/club/screen?token={token}"),
+        }))
+        .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn admin_list_display(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    let Viewer::Pilot {
+        id,
+        role: PilotRole::Admin,
+        ..
+    } = v
+    else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin required" })),
+        )
+            .into_response();
+    };
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "sessions": [] })).into_response();
+    };
+    Json(json!({ "sessions": db.list_display_sessions(&id) })).into_response()
+}
+
+async fn admin_revoke_display(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(session_id): Path<String>,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    let Viewer::Pilot {
+        id,
+        role: PilotRole::Admin,
+        ..
+    } = v
+    else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin required" })),
+        )
+            .into_response();
+    };
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    match db.revoke_display_session(&id, &session_id) {
+        Ok(true) => Json(json!({ "ok": true })).into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn club_screen_page(State(state): State<AppState>) -> impl IntoResponse {
+    let path = state.dist_dir.join("club-screen.html");
+    match tokio::fs::read_to_string(&path).await {
+        Ok(html) => Html(html).into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            "Club screen page not built (npm run build)",
+        )
+            .into_response(),
+    }
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/club/screen", get(club_screen_page))
+        .route("/api/checkin", post(post_checkin))
+        .route("/api/display/activate", post(display_activate))
+        .route("/api/display/checkin-qr", get(display_checkin_qr))
+        .route("/api/display/map", get(display_map))
+        .route(
+            "/api/admin/display-sessions",
+            get(admin_list_display).post(admin_create_display),
+        )
+        .route(
+            "/api/admin/display-sessions/{id}/revoke",
+            post(admin_revoke_display),
+        )
         .route("/api/club/register", post(register))
         .route("/api/club/login", post(club_login))
         .route("/api/club/logout", post(club_logout).get(club_logout))

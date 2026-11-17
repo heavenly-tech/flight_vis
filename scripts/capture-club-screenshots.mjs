@@ -19,6 +19,7 @@ const shots = [
   { name: "club-admin-pilots", path: "/club-admin-pilots.html", auth: "admin@demo.test" },
   { name: "club-admin-checkouts", path: "/club-admin-checkouts.html", auth: "admin@demo.test" },
   { name: "club-admin-map", path: "/club-admin-map.html", auth: "admin@demo.test" },
+  { name: "club-screen", path: "/club/screen", auth: null, display: true },
   { name: "my-flights", path: "/club-pilot.html", auth: "pilot@demo.test" },
   { name: "club-map", path: "/club-map.html", auth: "pilot@demo.test" },
   { name: "public-map", path: "/public-map.html", auth: null },
@@ -49,13 +50,33 @@ async function capture() {
 
   const all = [...shots, { name: "club-flight", path: flightPath, auth: "pilot@demo.test" }];
 
+  let displayToken = null;
+  try {
+    const adminPage = await ctxDesktop.newPage();
+    await login(adminPage, "admin@demo.test");
+    const created = await adminPage.request.post(`${base}/api/admin/display-sessions`, {
+      data: { label: "Screenshot kiosk" },
+    });
+    if (created.ok()) {
+      const body = await created.json();
+      displayToken = body.token;
+    }
+    await adminPage.close();
+  } catch {
+    /* optional */
+  }
+
   for (const spec of all) {
     for (const [label, ctx] of [
       ["desktop", ctxDesktop],
       ["mobile-390", ctxMobile],
     ]) {
       const page = await ctx.newPage();
-      if (spec.auth) await login(page, spec.auth);
+      if (spec.display && displayToken) {
+        await page.request.post(`${base}/api/display/activate`, {
+          data: { token: displayToken },
+        });
+      } else if (spec.auth) await login(page, spec.auth);
       await page.goto(`${base}${spec.path}`);
       await page.waitForTimeout(800);
       await page.screenshot({

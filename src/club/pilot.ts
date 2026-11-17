@@ -1,3 +1,5 @@
+export {};
+
 const who = document.querySelector<HTMLParagraphElement>("#who")!;
 const profile = document.querySelector<HTMLParagraphElement>("#profile")!;
 const tokenReveal = document.querySelector<HTMLDivElement>("#token-reveal")!;

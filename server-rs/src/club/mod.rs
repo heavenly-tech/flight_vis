@@ -1,5 +1,6 @@
 //! Flight-club registry: SQLite persistence, pilot auth, checkouts, shared live map.
 mod auth;
+pub mod checkin;
 mod db;
 mod map;
 mod routes;

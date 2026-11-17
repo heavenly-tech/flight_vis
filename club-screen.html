@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Club check-in screen</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main { max-width: 56rem; margin: 0 auto; padding: 1rem 1rem 2.5rem; }
+      .grid { display: grid; gap: 1.5rem; }
+      @media (min-width: 720px) {
+        .grid { grid-template-columns: 1fr 1fr; align-items: start; }
+      }
+      #qr { width: min(280px, 80vw); height: min(280px, 80vw); background: #fff; padding: 8px; border-radius: 12px; }
+      #map li { padding: 0.35rem 0; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+      .token { font-family: ui-monospace, monospace; font-size: 0.75rem; word-break: break-all; opacity: 0.7; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Club check-in</h1>
+      <p id="status" class="muted">Starting kiosk…</p>
+      <div class="grid">
+        <section>
+          <h2>Scan to check in</h2>
+          <img id="qr" alt="Check-in QR" width="280" height="280" />
+          <p class="token" id="token-text"></p>
+        </section>
+        <section>
+          <h2>Live club map</h2>
+          <ul id="map"></ul>
+        </section>
+      </div>
+    </main>
+    <script type="module" src="/src/club/clubScreen.ts"></script>
+  </body>
+</html>
