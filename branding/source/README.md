@@ -4,7 +4,7 @@ Owner-approved raster primitives and the approved Pillow compose script. Vector 
 
 ## Re-render the approved PNG
 
-Requirements: Python 3, [Pillow](https://pypi.org/project/pillow/), [cairosvg](https://pypi.org/project/cairosvg/), [numpy](https://pypi.org/project/numpy/).
+Requirements: Python 3, [Pillow](https://pypi.org/project/pillow/), [cairosvg](https://pypi.org/project/cairosvg/), [numpy](https://pypi.org/project/numpy/), [opencv-python-headless](https://pypi.org/project/opencv-python-headless/), [scipy](https://pypi.org/project/scipy/).
 
 ```bash
 pip install pillow cairosvg numpy
