@@ -3,8 +3,8 @@ use crate::club::{
     auth::{self, parse_display_cookie, parse_session_cookie},
     db::{
         now_ms, AdminPendingCounts, ApprovePilotCheckout, CheckinReject, CheckoutError, ClubDb,
-        DeleteError, DeviceRegisterError, EndError, MAX_DEVICES_PER_PILOT, PatchError,
-        RegisterError, StartFlightError,
+        DeleteError, DeviceRegisterError, EndError, PatchError, RegisterError, StartFlightError,
+        MAX_DEVICES_PER_PILOT,
     },
     map::TailLivePosition,
     visibility::{FlightVisibility, PilotRole, PilotStatus, Viewer},
@@ -114,13 +114,16 @@ async fn register(
                 .into_response();
         }
     };
-    match db.register(
-        &club_id,
-        body.name.trim(),
-        body.email.trim(),
-        body.license_no.trim(),
-        &body.password,
-    ).await {
+    match db
+        .register(
+            &club_id,
+            body.name.trim(),
+            body.email.trim(),
+            body.license_no.trim(),
+            &body.password,
+        )
+        .await
+    {
         Ok(id) => (
             StatusCode::CREATED,
             Json(json!({ "ok": true, "pilotId": id })),
@@ -164,7 +167,10 @@ async fn club_login(
     };
     let club_id = db.default_club_id().await.unwrap_or_default();
     let now = now_ms();
-    match db.login(&club_id, body.email.trim(), &body.password, now).await {
+    match db
+        .login(&club_id, body.email.trim(), &body.password, now)
+        .await
+    {
         Ok((session_id, pilot)) => {
             let cookie = auth::set_session_cookie(&session_id, is_secure(&headers));
             (
@@ -266,14 +272,18 @@ fn accept_locale(headers: &HeaderMap) -> Option<&str> {
 
 async fn club_i18n_context(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let accept = accept_locale(&headers);
+    let cat = crate::i18n::require_global();
+    let available_locales: Vec<_> = cat
+        .locale_labels()
+        .map(|(id, label, bcp47)| json!({ "id": id, "label": label, "bcp47": bcp47 }))
+        .collect();
     let Some(db) = club_db(&state) else {
-        let resolved = crate::i18n::global()
-            .map(|c| c.resolve_locale(None, None, accept))
-            .unwrap_or_else(|| "es".to_string());
+        let resolved = cat.resolve_locale(None, None, accept);
         return Json(json!({
             "userLocale": null,
             "clubDefaultLocale": null,
             "resolvedLocale": resolved,
+            "availableLocales": available_locales,
         }))
         .into_response();
     };
@@ -283,19 +293,19 @@ async fn club_i18n_context(State(state): State<AppState>, headers: HeaderMap) ->
     let (user_locale, club_default) = match pilot {
         Some(p) => (
             Some(p.locale),
-            db.club_default_locale(&p.club_id).await
+            db.club_default_locale(&p.club_id)
+                .await
                 .ok()
                 .or(Some("es".to_string())),
         ),
         None => (None, None),
     };
-    let resolved = crate::i18n::global()
-        .map(|c| c.resolve_locale(user_locale.as_deref(), club_default.as_deref(), accept))
-        .unwrap_or_else(|| "es".to_string());
+    let resolved = cat.resolve_locale(user_locale.as_deref(), club_default.as_deref(), accept);
     Json(json!({
         "userLocale": user_locale,
         "clubDefaultLocale": club_default,
         "resolvedLocale": resolved,
+        "availableLocales": available_locales,
     }))
     .into_response()
 }
@@ -350,14 +360,22 @@ async fn patch_admin_club_locale(
         )
             .into_response();
     };
-    if require_admin(&viewer(&state, &headers).await).is_err() {
+    let v = viewer(&state, &headers).await;
+    let Viewer::Pilot { id, .. } = v else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    };
+    let club_id = db.default_club_id().await.unwrap_or_default();
+    if db.require_club_admin(&id, &club_id).await.is_err() {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "admin only" })),
         )
             .into_response();
     }
-    let club_id = db.default_club_id().await.unwrap_or_default();
     match db.set_club_default_locale(&club_id, &body.locale).await {
         Ok(()) => Json(json!({ "locale": body.locale })).into_response(),
         Err(_) => (
@@ -483,14 +501,17 @@ pub async fn post_club_flight_start(
         }
     };
     let show_name = parsed.show_pilot_name_public.unwrap_or(false);
-    match db.start_flight(
-        &pilot_id,
-        &device_id,
-        parsed.tail.trim(),
-        visibility,
-        show_name,
-        now_ms(),
-    ).await {
+    match db
+        .start_flight(
+            &pilot_id,
+            &device_id,
+            parsed.tail.trim(),
+            visibility,
+            show_name,
+            now_ms(),
+        )
+        .await
+    {
         Ok(flight_id) => Json(json!({
             "id": flight_id,
             "visibility": visibility.as_str(),
@@ -561,7 +582,10 @@ pub async fn patch_club_flight_by_id(
             }
         },
     };
-    match db.patch_flight(&id, &flight_id, visibility, body.show_pilot_name_public).await {
+    match db
+        .patch_flight(&id, &flight_id, visibility, body.show_pilot_name_public)
+        .await
+    {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(PatchError::NotFound) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
@@ -1000,7 +1024,10 @@ async fn admin_add_aircraft(
             .into_response();
     };
     let club = db.default_club_id().await.unwrap_or_default();
-    match db.upsert_aircraft(&club, body.tail.trim(), body.type_code.trim(), body.active).await {
+    match db
+        .upsert_aircraft(&club, body.tail.trim(), body.type_code.trim(), body.active)
+        .await
+    {
         Ok(id) => Json(json!({ "id": id })).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1078,7 +1105,10 @@ async fn admin_approve(
             .into_response();
     };
     let checkout = body.checkout;
-    match db.approve_pilot_with_checkout(&admin_id, &pilot_id, checkout).await {
+    match db
+        .approve_pilot_with_checkout(&admin_id, &pilot_id, checkout)
+        .await
+    {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1135,12 +1165,15 @@ async fn admin_checkout(
         )
             .into_response();
     };
-    match db.add_checkout(
-        &body.pilot_id,
-        &body.type_code,
-        body.tail.as_deref(),
-        body.expires_at,
-    ).await {
+    match db
+        .add_checkout(
+            &body.pilot_id,
+            &body.type_code,
+            body.tail.as_deref(),
+            body.expires_at,
+        )
+        .await
+    {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(CheckoutError::UnknownTail) => (
             StatusCode::BAD_REQUEST,
@@ -1242,13 +1275,16 @@ async fn post_access_request(
         )
             .into_response();
     };
-    match db.create_access_request(
-        &id,
-        &body.tail,
-        body.type_id.as_deref(),
-        body.new_type_name.as_deref(),
-        now_ms(),
-    ).await {
+    match db
+        .create_access_request(
+            &id,
+            &body.tail,
+            body.type_id.as_deref(),
+            body.new_type_name.as_deref(),
+            now_ms(),
+        )
+        .await
+    {
         Ok(req_id) => Json(json!({ "ok": true, "id": req_id })).into_response(),
         Err(err) => {
             let status = match err {
@@ -1354,7 +1390,10 @@ async fn admin_approve_access(
             .into_response();
     };
     let expires = body.as_ref().and_then(|Json(b)| b.expires_at);
-    match db.approve_access_request(&admin_id, &id, expires, now_ms()).await {
+    match db
+        .approve_access_request(&admin_id, &id, expires, now_ms())
+        .await
+    {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(err) => (
             StatusCode::BAD_REQUEST,
@@ -1396,7 +1435,10 @@ async fn admin_reject_access(
             .into_response();
     };
     let reason = body.reason.unwrap_or_else(|| "rejected".to_string());
-    match db.reject_access_request(&admin_id, &id, &reason, now_ms()).await {
+    match db
+        .reject_access_request(&admin_id, &id, &reason, now_ms())
+        .await
+    {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(err) => (
             StatusCode::BAD_REQUEST,
@@ -1459,7 +1501,10 @@ async fn create_device(
         .filter(|s| !s.is_empty())
     {
         let label = body.label.trim();
-        match db.register_device_for_install(&id, label, body.model.as_deref(), install_id).await {
+        match db
+            .register_device_for_install(&id, label, body.model.as_deref(), install_id)
+            .await
+        {
             Ok(reg) => return Json(reg).into_response(),
             Err(DeviceRegisterError::CapExceeded) => {
                 return (
@@ -1628,7 +1673,10 @@ async fn post_checkin(
                 .into_response();
         }
     }
-    match db.submit_checkin(&pilot_id, device_id.as_deref(), body.token.trim(), now).await {
+    match db
+        .submit_checkin(&pilot_id, device_id.as_deref(), body.token.trim(), now)
+        .await
+    {
         Ok(record) => {
             let Some(expires_at) = expires_at_iso_utc(record.expires_at) else {
                 return (
@@ -2009,7 +2057,10 @@ async fn admin_patch_kiosk_layout(
             .into_response();
     }
     let aspect = layout_aspect(&body);
-    match db.set_kiosk_qr_layout(&club_id, body.x, body.y, body.size, aspect).await {
+    match db
+        .set_kiosk_qr_layout(&club_id, body.x, body.y, body.size, aspect)
+        .await
+    {
         Ok(row) => Json(row).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -2345,6 +2396,7 @@ pub fn router() -> Router<AppState> {
             "/api/admin/access-requests/{id}/reject",
             post(admin_reject_access),
         )
+        .merge(crate::club::android_assetlinks::well_known_routes())
         .merge(crate::club::checkin_landing::routes())
         .merge(crate::club::share_routes::routes())
 }

@@ -275,7 +275,7 @@ async fn share_flight_stream(
         #[allow(clippy::question_mark)]
         |(db, fid, tok, mut last_t)| async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            if db.resolve_share_token(&tok).await.is_none() {
+            if db.share_flight_id(&tok).await.is_none() {
                 return None;
             }
             let fixes = db.fixes_for_flight(&fid).await;

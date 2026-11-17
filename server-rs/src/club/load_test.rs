@@ -2,8 +2,8 @@
 #[cfg(test)]
 mod tests {
     use crate::club::{db::ClubDb, now_ms, visibility::FlightVisibility};
-    use serial_test::serial;
     use crate::live::LiveFix;
+    use serial_test::serial;
     use std::time::Instant;
 
     async fn fixture() -> (ClubDb, Vec<(String, String)>) {

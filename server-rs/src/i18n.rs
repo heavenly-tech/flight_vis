@@ -1,5 +1,4 @@
 //! Locale catalogs (`locales/*.json`) loaded at startup; no per-string code changes when adding a language.
-#![allow(dead_code)]
 
 use serde::Deserialize;
 use std::{
@@ -104,6 +103,9 @@ fn flatten_catalog(json: &serde_json::Value) -> BTreeMap<String, String> {
 impl Catalogs {
     pub fn load_from_dir(dir: &Path) -> Result<Self, I18nError> {
         let manifest_path = dir.join("manifest.json");
+        if !manifest_path.is_file() {
+            return Err(I18nError::MissingManifest);
+        }
         let manifest: Manifest = serde_json::from_slice(&std::fs::read(&manifest_path)?)?;
         let canonical = manifest.canonical.clone();
         let canon_path = dir.join(format!("{canonical}.json"));
@@ -157,6 +159,14 @@ impl Catalogs {
 
     pub fn ids(&self) -> impl Iterator<Item = &str> {
         self.locales.keys().map(String::as_str)
+    }
+
+    pub fn locale_labels(&self) -> impl Iterator<Item = (&str, &str, &str)> {
+        self.ids().filter_map(|id| {
+            self.locales
+                .get(id)
+                .map(|meta| (id, meta.label.as_str(), meta.bcp47.as_str()))
+        })
     }
 
     pub fn is_known(&self, locale: &str) -> bool {

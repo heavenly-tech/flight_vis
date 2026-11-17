@@ -44,12 +44,56 @@ async fn validate_checkin_peek(
     Ok(ctx.slug)
 }
 
+fn localize_data_i18n(html: &str, locale: &str) -> String {
+    let cat = crate::i18n::require_global();
+    let mut out = html.to_string();
+    let pairs = [
+        (
+            r#"<h1 data-i18n="checkin.expiredTitle"></h1>"#,
+            "checkin.expiredTitle",
+            "h1",
+        ),
+        (
+            r#"<p class="muted" data-i18n="checkin.expiredBody"></p>"#,
+            "checkin.expiredBody",
+            "p",
+        ),
+        (
+            r#"<a href="/" data-i18n="common.home"></a>"#,
+            "common.home",
+            "a",
+        ),
+    ];
+    for (empty, key, tag) in pairs {
+        let text = cat.t(locale, key, &[]);
+        let filled = if tag == "a" {
+            format!(r#"<a href="/" data-i18n="{key}">{text}</a>"#)
+        } else if tag == "p" {
+            format!(r#"<p class="muted" data-i18n="{key}">{text}</p>"#)
+        } else {
+            format!(r#"<{tag} data-i18n="{key}">{text}</{tag}>"#)
+        };
+        out = out.replace(empty, &filled);
+    }
+    if let Some(start) = out.find(r#"<title data-i18n="checkin.expiredTitle">"#) {
+        if let Some(end) = out[start..].find("</title>") {
+            let title = cat.t(locale, "checkin.expiredTitle", &[]);
+            out.replace_range(
+                start..start + end + "</title>".len(),
+                &format!(r#"<title data-i18n="checkin.expiredTitle">{title}</title>"#),
+            );
+        }
+    }
+    out
+}
+
 async fn checkin_landing_page(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path((slug, token)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
-        return checkin_not_found_page(&state).await;
+        return checkin_not_found_page(&state, &headers).await;
     };
     match validate_checkin_peek(db, &slug, &token, now_ms()).await {
         Ok(_) => {
@@ -64,18 +108,22 @@ async fn checkin_landing_page(
                 Err(_) => (StatusCode::NOT_FOUND, "missing landing").into_response(),
             }
         }
-        Err(LandingError::NotFound) => checkin_not_found_page(&state).await,
+        Err(LandingError::NotFound) => checkin_not_found_page(&state, &headers).await,
         Err(LandingError::Db) => (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response(),
     }
 }
 
-async fn checkin_not_found_page(state: &AppState) -> axum::response::Response {
+async fn checkin_not_found_page(state: &AppState, headers: &HeaderMap) -> axum::response::Response {
+    let accept = headers
+        .get(axum::http::header::ACCEPT_LANGUAGE)
+        .and_then(|v| v.to_str().ok());
+    let locale = crate::i18n::require_global().resolve_locale(None, Some("es"), accept);
     let path = state.dist_dir.join("club-checkin-expired.html");
     match tokio::fs::read_to_string(&path).await {
         Ok(html) => (
             StatusCode::NOT_FOUND,
             [(header::CACHE_CONTROL, "no-store")],
-            Html(html),
+            Html(localize_data_i18n(&html, &locale)),
         )
             .into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "expired").into_response(),
@@ -137,7 +185,6 @@ pub fn routes() -> Router<AppState> {
 mod tests {
     use super::*;
     use crate::club::db::ClubDb;
-    use serial_test::serial;
     use crate::{
         auth::Auth, build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState,
     };
@@ -145,10 +192,13 @@ mod tests {
         body::{to_bytes, Body},
         http::{Request, StatusCode},
     };
+    use serial_test::serial;
     use std::sync::Arc;
     use tower::ServiceExt;
 
     async fn fixture() -> (tempfile::TempDir, axum::Router, ClubDb) {
+        let locales = crate::i18n::Catalogs::resolve_dir(std::path::Path::new("dist"));
+        let _ = crate::i18n::init_global(&locales);
         let dir = tempfile::tempdir().unwrap();
         let dist = dir.path().join("dist");
         std::fs::create_dir_all(&dist).unwrap();
@@ -159,7 +209,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             dist.join("club-checkin-expired.html"),
-            "<html>expired</html>",
+            r#"<h1 data-i18n="checkin.expiredTitle"></h1>"#,
         )
         .unwrap();
         let db = ClubDb::open_test().await.unwrap();

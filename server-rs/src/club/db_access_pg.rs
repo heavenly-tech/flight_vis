@@ -4,7 +4,9 @@ use crate::club::access_request::{
     normalize_tail, AccessRequestError, AccessRequestView, AdminAccessRequestView,
 };
 use crate::club::auth::new_id;
-use crate::club::db::{now_ms, CheckoutError, ClubDb, AdminPendingCounts, ApprovePilotCheckout, DbError};
+use crate::club::db::{
+    now_ms, AdminPendingCounts, ApprovePilotCheckout, CheckoutError, ClubDb, DbError,
+};
 use sqlx::Row;
 
 impl ClubDb {
@@ -223,7 +225,11 @@ impl ClubDb {
         expires_at: Option<i64>,
         now: i64,
     ) -> Result<(), AccessRequestError> {
-        let mut tx = self.pool.begin().await.map_err(|_| AccessRequestError::Db)?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| AccessRequestError::Db)?;
         let row = sqlx::query(
             "SELECT ar.club_id, ar.pilot_id, ar.requested_tail, ar.type_id, ar.new_type_name, ar.status
              FROM access_requests ar WHERE ar.id = $1",
@@ -250,27 +256,24 @@ impl ClubDb {
             if name.is_empty() {
                 return Err(AccessRequestError::MissingType);
             }
-            resolved_type_id = if let Some(existing) = sqlx::query_scalar(
-                "SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2",
-            )
-            .bind(&club_id)
-            .bind(name)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|_| AccessRequestError::Db)?
+            resolved_type_id = if let Some(existing) =
+                sqlx::query_scalar("SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2")
+                    .bind(&club_id)
+                    .bind(name)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|_| AccessRequestError::Db)?
             {
                 Some(existing)
             } else {
                 let tid = new_id();
-                sqlx::query(
-                    "INSERT INTO aircraft_types (id, club_id, code) VALUES ($1, $2, $3)",
-                )
-                .bind(&tid)
-                .bind(&club_id)
-                .bind(name)
-                .execute(&mut *tx)
-                .await
-                .map_err(|_| AccessRequestError::Db)?;
+                sqlx::query("INSERT INTO aircraft_types (id, club_id, code) VALUES ($1, $2, $3)")
+                    .bind(&tid)
+                    .bind(&club_id)
+                    .bind(name)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|_| AccessRequestError::Db)?;
                 sqlx::query(
                     "INSERT INTO audit_log (id, club_id, actor_pilot_id, action, entity_type, entity_id, detail, created_at)
                      VALUES ($1, $2, $3, 'create', 'aircraft_type', $4, $5, $6)",
@@ -288,14 +291,13 @@ impl ClubDb {
             };
         }
         let type_id = resolved_type_id.ok_or(AccessRequestError::MissingType)?;
-        let aircraft_id = if let Some(row) = sqlx::query(
-            "SELECT id, type_id FROM aircraft WHERE club_id = $1 AND tail = $2",
-        )
-        .bind(&club_id)
-        .bind(&tail)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|_| AccessRequestError::Db)?
+        let aircraft_id = if let Some(row) =
+            sqlx::query("SELECT id, type_id FROM aircraft WHERE club_id = $1 AND tail = $2")
+                .bind(&club_id)
+                .bind(&tail)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|_| AccessRequestError::Db)?
         {
             let aid: String = row.get(0);
             let existing_type: String = row.get(1);
@@ -472,13 +474,11 @@ impl ClubDb {
             .fetch_one(&mut *tx)
             .await?;
             let aircraft_id: Option<String> = if let Some(ref tail) = co.tail {
-                sqlx::query_scalar(
-                    "SELECT id FROM aircraft WHERE club_id = $1 AND tail = $2",
-                )
-                .bind(&club_id)
-                .bind(tail)
-                .fetch_optional(&mut *tx)
-                .await?
+                sqlx::query_scalar("SELECT id FROM aircraft WHERE club_id = $1 AND tail = $2")
+                    .bind(&club_id)
+                    .bind(tail)
+                    .fetch_optional(&mut *tx)
+                    .await?
             } else {
                 None
             };

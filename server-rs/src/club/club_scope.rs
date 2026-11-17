@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::club::db::{now_ms, ClubDb, DbError};
 use sqlx::Row;
 
@@ -117,5 +115,29 @@ impl ClubDb {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn resolve_club_context_unknown_slug() {
+        let db = ClubDb::open_test().await.expect("db");
+        assert!(matches!(
+            db.resolve_club_context("no-such-club-slug-xyz").await,
+            Err(ClubScopeError::NotFound)
+        ));
+    }
+
+    #[tokio::test]
+    async fn require_club_admin_forbids_when_not_admin() {
+        let db = ClubDb::open_test().await.expect("db");
+        let club = db.default_club_id().await.expect("club");
+        assert!(matches!(
+            db.require_club_admin("nonexistent-pilot", &club).await,
+            Err(ClubScopeError::Forbidden)
+        ));
     }
 }

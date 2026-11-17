@@ -24,7 +24,11 @@ impl ClubDb {
             .await
     }
 
-    pub async fn set_club_default_locale(&self, club_id: &str, locale: &str) -> Result<(), DbError> {
+    pub async fn set_club_default_locale(
+        &self,
+        club_id: &str,
+        locale: &str,
+    ) -> Result<(), DbError> {
         if !Self::locale_known(locale) {
             return Err(DbError::protocol("locale"));
         }

@@ -679,6 +679,10 @@ fn main() {
 #[tokio::main]
 async fn run_server() {
     let config = config_from_env();
+    match i18n::init_global(&i18n::Catalogs::resolve_dir(&config.dist_dir)) {
+        Ok(_) => {}
+        Err(error) => eprintln!("warn: i18n catalogs: {error}"),
+    }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let live = Arc::new(LiveEngine::new(&config.data_dir));
     if let Err(error) = live.load_from_disk().await {

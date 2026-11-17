@@ -9,6 +9,9 @@ const cesiumBaseUrl = "cesiumStatic";
 const api = "http://127.0.0.1:8080";
 
 const authProxy: Record<string, string | ProxyOptions> = {
+  "/.well-known": api,
+  "/c": api,
+  "/s": api,
   "/api": api,
   "/logout": api,
   "/login": {

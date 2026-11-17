@@ -40,9 +40,17 @@ pub enum ShareRevokeError {
     NotOwner,
 }
 #[derive(Debug, Clone, serde::Deserialize)]
-pub struct ApprovePilotCheckout { #[serde(rename="type")] pub type_code: String, pub tail: Option<String>, pub expires_at: Option<i64>, }
+pub struct ApprovePilotCheckout {
+    #[serde(rename = "type")]
+    pub type_code: String,
+    pub tail: Option<String>,
+    pub expires_at: Option<i64>,
+}
 #[derive(serde::Serialize)]
-pub struct AdminPendingCounts { pub pilots: usize, pub access_requests: usize, }
+pub struct AdminPendingCounts {
+    pub pilots: usize,
+    pub access_requests: usize,
+}
 
 #[derive(Clone, Debug, Serialize)]
 pub struct PilotRow {
@@ -109,9 +117,7 @@ pub struct ResolvedShare {
     pub status: String,
 }
 
-
 impl ClubDb {
-
     pub async fn connect() -> Result<Self, DbConnectError> {
         let pool = database::connect_pool().await?;
         database::run_migrations(&pool).await?;
@@ -142,8 +148,7 @@ impl ClubDb {
         Ok(())
     }
 
-
-async fn bootstrap(&self) -> Result<(), DbError> {
+    async fn bootstrap(&self) -> Result<(), DbError> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM clubs")
             .fetch_one(&self.pool)
             .await?;
@@ -180,8 +185,8 @@ async fn bootstrap(&self) -> Result<(), DbError> {
                 .fetch_one(&self.pool)
                 .await?;
                 if exists == 0 {
-                    let hash = auth::hash_password(&password)
-                        .map_err(|_| DbError::protocol("hash"))?;
+                    let hash =
+                        auth::hash_password(&password).map_err(|_| DbError::protocol("hash"))?;
                     sqlx::query(
                         "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
                          VALUES ($1, $2, $3, $4, '', 'approved', 'admin', $5, $6)",
@@ -390,14 +395,16 @@ async fn bootstrap(&self) -> Result<(), DbError> {
             .bind(pilot_id)
             .execute(&self.pool)
             .await?;
-        sqlx::query("UPDATE club_memberships SET status = 'approved' WHERE pilot_id = $1")
+        let club_id: String = sqlx::query_scalar("SELECT club_id FROM pilots WHERE id = $1")
             .bind(pilot_id)
-            .execute(&self.pool)
+            .fetch_one(&self.pool)
+            .await?;
+        self.ensure_membership_row(pilot_id, &club_id, "pilot", "approved")
             .await?;
         Ok(())
     }
 
-pub(crate) async fn checkout_ok(
+    pub(crate) async fn checkout_ok(
         pool: &PgPool,
         pilot_id: &str,
         aircraft_id: &str,
@@ -433,7 +440,7 @@ pub(crate) async fn checkout_ok(
         Ok(count > 0)
     }
 
-pub async fn me_tails(&self, pilot_id: &str, now: i64) -> Result<Vec<TailInfo>, DbError> {
+    pub async fn me_tails(&self, pilot_id: &str, now: i64) -> Result<Vec<TailInfo>, DbError> {
         let rows = sqlx::query(
             "SELECT a.id, a.tail, t.code
              FROM aircraft a
@@ -467,15 +474,18 @@ pub async fn me_tails(&self, pilot_id: &str, now: i64) -> Result<Vec<TailInfo>, 
         show_pilot_name_public: bool,
         now: i64,
     ) -> Result<String, StartFlightError> {
-        let mut tx = self.pool.begin().await.map_err(|_| StartFlightError::NoTail)?;
-        let result: Result<String, StartFlightError> = {
-            let dev_owner: Option<String> = sqlx::query_scalar(
-                "SELECT pilot_id FROM devices WHERE id = $1",
-            )
-            .bind(device_id)
-            .fetch_optional(&mut *tx)
+        let mut tx = self
+            .pool
+            .begin()
             .await
-            .map_err(|_| StartFlightError::DeviceMismatch)?;
+            .map_err(|_| StartFlightError::NoTail)?;
+        let result: Result<String, StartFlightError> = {
+            let dev_owner: Option<String> =
+                sqlx::query_scalar("SELECT pilot_id FROM devices WHERE id = $1")
+                    .bind(device_id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|_| StartFlightError::DeviceMismatch)?;
             if dev_owner.as_deref() != Some(pilot_id) {
                 Err(StartFlightError::DeviceMismatch)?;
             }
@@ -590,7 +600,7 @@ pub async fn me_tails(&self, pilot_id: &str, now: i64) -> Result<Vec<TailInfo>, 
         result
     }
 
-pub async fn start_flight(
+    pub async fn start_flight(
         &self,
         pilot_id: &str,
         device_id: &str,
@@ -610,7 +620,7 @@ pub async fn start_flight(
         .await
     }
 
-pub async fn patch_flight(
+    pub async fn patch_flight(
         &self,
         pilot_id: &str,
         flight_id: &str,
@@ -647,7 +657,12 @@ pub async fn patch_flight(
         Ok(())
     }
 
-pub async fn end_flight(&self, pilot_id: &str, flight_id: &str, now: i64) -> Result<(), EndError> {
+    pub async fn end_flight(
+        &self,
+        pilot_id: &str,
+        flight_id: &str,
+        now: i64,
+    ) -> Result<(), EndError> {
         let row = sqlx::query("SELECT pilot_id, status FROM flights WHERE id = $1")
             .bind(flight_id)
             .fetch_optional(&self.pool)
@@ -673,7 +688,7 @@ pub async fn end_flight(&self, pilot_id: &str, flight_id: &str, now: i64) -> Res
         Ok(())
     }
 
-pub async fn device_pilot_id(&self, device_id: &str) -> Option<String> {
+    pub async fn device_pilot_id(&self, device_id: &str) -> Option<String> {
         sqlx::query_scalar("SELECT pilot_id FROM devices WHERE id = $1")
             .bind(device_id)
             .fetch_optional(&self.pool)
@@ -682,7 +697,7 @@ pub async fn device_pilot_id(&self, device_id: &str) -> Option<String> {
             .flatten()
     }
 
-pub async fn resolve_device_token(&self, token: &str) -> Option<String> {
+    pub async fn resolve_device_token(&self, token: &str) -> Option<String> {
         let hash = digest_token(token);
         sqlx::query_scalar("SELECT id FROM devices WHERE token_hash = $1")
             .bind(hash)
@@ -692,7 +707,7 @@ pub async fn resolve_device_token(&self, token: &str) -> Option<String> {
             .flatten()
     }
 
-pub async fn open_flight_for_device(&self, device_id: &str) -> Option<String> {
+    pub async fn open_flight_for_device(&self, device_id: &str) -> Option<String> {
         sqlx::query_scalar(
             "SELECT f.id FROM flights f
              JOIN flight_devices fd ON fd.flight_id = f.id
@@ -706,7 +721,7 @@ pub async fn open_flight_for_device(&self, device_id: &str) -> Option<String> {
         .flatten()
     }
 
-pub async fn append_fix(
+    pub async fn append_fix(
         &self,
         flight_id: &str,
         device_id: &str,
@@ -717,7 +732,7 @@ pub async fn append_fix(
             .map(|_| ())
     }
 
-pub async fn append_fixes(
+    pub async fn append_fixes(
         &self,
         flight_id: &str,
         device_id: &str,
@@ -757,10 +772,11 @@ pub async fn append_fixes(
             .bind(flight_id)
             .execute(&mut *tx)
             .await?;
-        if let Ok(pilot_id) = sqlx::query_scalar::<_, String>("SELECT pilot_id FROM flights WHERE id = $1")
-            .bind(flight_id)
-            .fetch_one(&mut *tx)
-            .await
+        if let Ok(pilot_id) =
+            sqlx::query_scalar::<_, String>("SELECT pilot_id FROM flights WHERE id = $1")
+                .bind(flight_id)
+                .fetch_one(&mut *tx)
+                .await
         {
             if let Some(last) = fixes.last() {
                 let _ = sqlx::query(
@@ -779,14 +795,13 @@ pub async fn append_fixes(
     }
 
     pub async fn auto_end_idle(&self, idle_ms: i64, now: i64) -> Result<usize, DbError> {
-        
-            let cutoff = now - idle_ms;
-            let updated = sqlx::query("UPDATE flights SET status = 'ended', ended_at = $1
+        let cutoff = now - idle_ms;
+        let updated = sqlx::query("UPDATE flights SET status = 'ended', ended_at = $1
                  WHERE status = 'active' AND (last_fix_at IS NULL AND started_at < $2 OR last_fix_at < $2)").bind(now).bind(cutoff).execute(&self.pool).await?;
-            Ok(updated.rows_affected() as usize)
+        Ok(updated.rows_affected() as usize)
     }
 
-pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
+    pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
         let row = sqlx::query(
             "SELECT f.id, f.pilot_id, f.aircraft_id, f.status, f.started_at, f.ended_at, f.last_fix_at,
                         f.visibility, f.show_pilot_name_public, a.tail, p.name
@@ -894,8 +909,7 @@ pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
         let filtered: Vec<DeviceFix> = rows
             .into_iter()
             .filter(|r| {
-                let vis =
-                    FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
+                let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
                 includes_in_club_map(viewer, &r.pilot_id, vis)
                     && can_view_flight(viewer, &r.pilot_id, vis)
             })
@@ -915,8 +929,7 @@ pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
             .await
             .into_iter()
             .filter(|r| {
-                let vis =
-                    FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
+                let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
                 includes_in_public_map(vis)
             })
             .collect();
@@ -945,15 +958,14 @@ pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
     }
 
     pub async fn admin_map_tails(&self, admin_id: &str) -> Vec<String> {
-        let json: String = sqlx::query_scalar(
-            "SELECT tails_json FROM admin_map_prefs WHERE pilot_id = $1",
-        )
-        .bind(admin_id)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| "[]".to_string());
+        let json: String =
+            sqlx::query_scalar("SELECT tails_json FROM admin_map_prefs WHERE pilot_id = $1")
+                .bind(admin_id)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| "[]".to_string());
         serde_json::from_str(&json).unwrap_or_default()
     }
 
@@ -1030,13 +1042,11 @@ pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
     }
 
     pub async fn list_my_devices(&self, pilot_id: &str) -> Vec<DeviceInfo> {
-        let rows = sqlx::query(
-            "SELECT id, label, created_at FROM devices WHERE pilot_id = $1",
-        )
-        .bind(pilot_id)
-        .fetch_all(&self.pool)
-        .await
-        .unwrap_or_default();
+        let rows = sqlx::query("SELECT id, label, created_at FROM devices WHERE pilot_id = $1")
+            .bind(pilot_id)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
         rows.into_iter()
             .filter_map(|r| {
                 Some(DeviceInfo {
@@ -1073,7 +1083,11 @@ pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
             .collect()
     }
 
-    pub async fn delete_my_flight(&self, pilot_id: &str, flight_id: &str) -> Result<(), DeleteError> {
+    pub async fn delete_my_flight(
+        &self,
+        pilot_id: &str,
+        flight_id: &str,
+    ) -> Result<(), DeleteError> {
         let owner: String = match sqlx::query_scalar("SELECT pilot_id FROM flights WHERE id = $1")
             .bind(flight_id)
             .fetch_optional(&self.pool)
@@ -1106,14 +1120,12 @@ pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
             return Ok(id);
         }
         let id = new_id();
-        sqlx::query(
-            "INSERT INTO aircraft_types (id, club_id, code) VALUES ($1, $2, $3)",
-        )
-        .bind(&id)
-        .bind(club_id)
-        .bind(code)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("INSERT INTO aircraft_types (id, club_id, code) VALUES ($1, $2, $3)")
+            .bind(&id)
+            .bind(club_id)
+            .bind(code)
+            .execute(&self.pool)
+            .await?;
         Ok(id)
     }
 
@@ -1124,13 +1136,12 @@ pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
         type_code: &str,
         active: bool,
     ) -> Result<String, DbError> {
-        let type_id: String = sqlx::query_scalar(
-            "SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2",
-        )
-        .bind(club_id)
-        .bind(type_code)
-        .fetch_one(&self.pool)
-        .await?;
+        let type_id: String =
+            sqlx::query_scalar("SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2")
+                .bind(club_id)
+                .bind(type_code)
+                .fetch_one(&self.pool)
+                .await?;
         if let Some(id) = sqlx::query_scalar::<_, String>(
             "SELECT id FROM aircraft WHERE club_id = $1 AND tail = $2",
         )
@@ -1186,13 +1197,12 @@ pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
     }
 
     pub async fn list_types(&self, club_id: &str) -> Vec<TypeRow> {
-        let rows = sqlx::query(
-            "SELECT id, code FROM aircraft_types WHERE club_id = $1 ORDER BY code",
-        )
-        .bind(club_id)
-        .fetch_all(&self.pool)
-        .await
-        .unwrap_or_default();
+        let rows =
+            sqlx::query("SELECT id, code FROM aircraft_types WHERE club_id = $1 ORDER BY code")
+                .bind(club_id)
+                .fetch_all(&self.pool)
+                .await
+                .unwrap_or_default();
         rows.into_iter()
             .filter_map(|r| {
                 Some(TypeRow {
@@ -1608,8 +1618,7 @@ pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
             .await
             .into_iter()
             .filter(|r| {
-                let vis =
-                    FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
+                let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
                 matches!(vis, FlightVisibility::Club | FlightVisibility::Public)
             })
             .collect();
@@ -1639,8 +1648,7 @@ pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
         let admin_id = new_id();
         let pilot_id = new_id();
         let pending_id = new_id();
-        let hash = auth::hash_password("password12")
-            .map_err(|_| DbError::protocol("hash"))?;
+        let hash = auth::hash_password("password12").map_err(|_| DbError::protocol("hash"))?;
         let t = now_ms();
         sqlx::query(
             "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at) VALUES
@@ -1674,9 +1682,8 @@ pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
             .await?;
         self.issue_open_checkin(&admin_id, &dev_admin, &club_id, t)
             .await?;
-        let seed_flight_err = |e: StartFlightError| {
-            DbError::protocol(format!("seed_demo flight: {e:?}"))
-        };
+        let seed_flight_err =
+            |e: StartFlightError| DbError::protocol(format!("seed_demo flight: {e:?}"));
         let pub_id = self
             .start_flight(
                 &pilot_id,
@@ -1719,7 +1726,6 @@ pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
             .await?;
         Ok(())
     }
-
 }
 
 pub fn now_ms() -> i64 {
@@ -1861,14 +1867,17 @@ pub struct FlightSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
     use crate::club::visibility::{FlightVisibility, PilotRole, PilotStatus, Viewer};
+    use serial_test::serial;
 
     async fn seed(db: &ClubDb) -> (String, String, String, String) {
         let club = db.default_club_id().await.unwrap();
         let type_id = db.upsert_type(&club, "C152").await.unwrap();
         let _ = type_id;
-        let ac = db.upsert_aircraft(&club, "N123", "C152", true).await.unwrap();
+        let ac = db
+            .upsert_aircraft(&club, "N123", "C152", true)
+            .await
+            .unwrap();
         let pilot_a = db
             .register(&club, "Alice", "a@test", "L1", "password12")
             .await
@@ -1901,7 +1910,10 @@ mod tests {
         db.upsert_type(&club, "DA20").await.unwrap();
         db.upsert_type(&club, "C152").await.unwrap();
         db.upsert_aircraft(&club, "N1", "C152", true).await.unwrap();
-        let a = db.register(&club, "A", "a@test", "", "password12").await.unwrap();
+        let a = db
+            .register(&club, "A", "a@test", "", "password12")
+            .await
+            .unwrap();
         db.approve_pilot(&a).await.unwrap();
         db.add_checkout(&a, "DA20", None, None).await.unwrap();
         let tails = db.me_tails(&a, now_ms()).await.unwrap();
@@ -1914,11 +1926,18 @@ mod tests {
         let db = ClubDb::open_test().await.unwrap();
         let club = db.default_club_id().await.unwrap();
         db.upsert_type(&club, "C152").await.unwrap();
-        db.upsert_aircraft(&club, "N123", "C152", true).await.unwrap();
-        let a = db.register(&club, "A", "a@test", "", "password12").await.unwrap();
+        db.upsert_aircraft(&club, "N123", "C152", true)
+            .await
+            .unwrap();
+        let a = db
+            .register(&club, "A", "a@test", "", "password12")
+            .await
+            .unwrap();
         db.approve_pilot(&a).await.unwrap();
         let expired = now_ms() - 1000;
-        db.add_checkout(&a, "C152", None, Some(expired)).await.unwrap();
+        db.add_checkout(&a, "C152", None, Some(expired))
+            .await
+            .unwrap();
         let tails = db.me_tails(&a, now_ms()).await.unwrap();
         assert!(tails.is_empty());
     }
@@ -1929,8 +1948,13 @@ mod tests {
         let db = ClubDb::open_test().await.unwrap();
         let club = db.default_club_id().await.unwrap();
         db.upsert_type(&club, "DA20").await.unwrap();
-        db.upsert_aircraft(&club, "N999", "DA20", false).await.unwrap();
-        let p = db.register(&club, "P", "p@test", "", "password12").await.unwrap();
+        db.upsert_aircraft(&club, "N999", "DA20", false)
+            .await
+            .unwrap();
+        let p = db
+            .register(&club, "P", "p@test", "", "password12")
+            .await
+            .unwrap();
         db.approve_pilot(&p).await.unwrap();
         db.add_checkout(&p, "DA20", None, None).await.unwrap();
         let tails = db.me_tails(&p, now_ms()).await.unwrap();
@@ -1944,7 +1968,8 @@ mod tests {
         let (club, a, b, _ac) = seed(&db).await;
         let dev = pilot_device_with_checkin(&db, &a, &club).await;
         let fid = db
-            .start_flight(&a, &dev, "N123", FlightVisibility::Private, false, now_ms()).await
+            .start_flight(&a, &dev, "N123", FlightVisibility::Private, false, now_ms())
+            .await
             .unwrap();
         let fix = LiveFix {
             t: now_ms(),
@@ -1977,17 +2002,23 @@ mod tests {
     async fn admin_tail_filter_does_not_change_pilot_map() {
         let db = ClubDb::open_test().await.unwrap();
         let (club, a, _b, _ac) = seed(&db).await;
-        db.upsert_aircraft(&club, "N456", "C152", true).await.unwrap();
-        db.add_checkout(&a, "C152", Some("N456"), None).await.unwrap();
+        db.upsert_aircraft(&club, "N456", "C152", true)
+            .await
+            .unwrap();
+        db.add_checkout(&a, "C152", Some("N456"), None)
+            .await
+            .unwrap();
         let dev = pilot_device_with_checkin(&db, &a, &club).await;
         let f1 = db
-            .start_flight(&a, &dev, "N123", FlightVisibility::Club, false, now_ms()).await
+            .start_flight(&a, &dev, "N123", FlightVisibility::Club, false, now_ms())
+            .await
             .unwrap();
         db.end_flight(&a, &f1, now_ms()).await.unwrap();
         let t2 = now_ms() + 1;
         db.issue_open_checkin(&a, &dev, &club, t2).await.unwrap();
         let f2 = db
-            .start_flight(&a, &dev, "N456", FlightVisibility::Club, false, t2).await
+            .start_flight(&a, &dev, "N456", FlightVisibility::Club, false, t2)
+            .await
             .unwrap();
         let fix = LiveFix {
             t: now_ms(),
@@ -2000,7 +2031,9 @@ mod tests {
             accuracy: Some(5.0),
         };
         db.append_fix(&f2, &dev, &fix).await.unwrap();
-        db.set_admin_map_tails(&a, &["N123".to_string()]).await.unwrap();
+        db.set_admin_map_tails(&a, &["N123".to_string()])
+            .await
+            .unwrap();
         let admin_map = db.admin_map(&a).await;
         assert!(admin_map.is_empty());
         let pilot_map = db
@@ -2026,7 +2059,8 @@ mod tests {
                 "p2@test",
                 "",
                 "password12",
-            ).await
+            )
+            .await
             .unwrap();
         let viewer = Viewer::Pilot {
             id: pending,
@@ -2043,7 +2077,8 @@ mod tests {
         let (club, a, _b, _ac) = seed(&db).await;
         let dev = pilot_device_with_checkin(&db, &a, &club).await;
         let fid = db
-            .start_flight(&a, &dev, "N123", FlightVisibility::Public, false, now_ms()).await
+            .start_flight(&a, &dev, "N123", FlightVisibility::Public, false, now_ms())
+            .await
             .unwrap();
         db.append_fix(
             &fid,
@@ -2058,7 +2093,8 @@ mod tests {
                 course: None,
                 accuracy: Some(5.0),
             },
-        ).await
+        )
+        .await
         .unwrap();
         let map = db.public_map().await;
         assert_eq!(map.len(), 1);
@@ -2072,7 +2108,8 @@ mod tests {
         let (club, a, b, _ac) = seed(&db).await;
         let dev = pilot_device_with_checkin(&db, &a, &club).await;
         let fid = db
-            .start_flight(&a, &dev, "N123", FlightVisibility::Club, false, now_ms()).await
+            .start_flight(&a, &dev, "N123", FlightVisibility::Club, false, now_ms())
+            .await
             .unwrap();
         let viewer_b = Viewer::Pilot {
             id: b.clone(),
@@ -2080,7 +2117,8 @@ mod tests {
             role: PilotRole::Pilot,
         };
         assert!(db.flight_visible_to(&viewer_b, &fid).await.is_some());
-        db.patch_flight(&a, &fid, Some(FlightVisibility::Private), None).await
+        db.patch_flight(&a, &fid, Some(FlightVisibility::Private), None)
+            .await
             .unwrap();
         assert!(db.flight_visible_to(&viewer_b, &fid).await.is_none());
     }
@@ -2092,12 +2130,16 @@ mod tests {
         let (club, a, _, _) = seed(&db).await;
         let dev = db.create_device(&a, "phone").await.unwrap().0;
         assert!(matches!(
-            db.start_flight(&a, &dev, "N123", FlightVisibility::Club, false, now_ms()).await,
+            db.start_flight(&a, &dev, "N123", FlightVisibility::Club, false, now_ms())
+                .await,
             Err(StartFlightError::NoCheckin)
         ));
-        db.issue_open_checkin(&a, &dev, &club, now_ms()).await.unwrap();
+        db.issue_open_checkin(&a, &dev, &club, now_ms())
+            .await
+            .unwrap();
         assert!(db
-            .start_flight(&a, &dev, "N123", FlightVisibility::Club, false, now_ms()).await
+            .start_flight(&a, &dev, "N123", FlightVisibility::Club, false, now_ms())
+            .await
             .is_ok());
     }
 
@@ -2116,7 +2158,8 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(
-            db.start_flight(&a, &dev, "N123", FlightVisibility::Club, false, t).await,
+            db.start_flight(&a, &dev, "N123", FlightVisibility::Club, false, t)
+                .await,
             Err(StartFlightError::NoCheckin)
         ));
     }
@@ -2129,10 +2172,12 @@ mod tests {
         let dev = db.create_device(&a, "phone").await.unwrap().0;
         let t = now_ms();
         db.issue_open_checkin(&a, &dev, &club, t).await.unwrap();
-        db.start_flight(&a, &dev, "N123", FlightVisibility::Club, false, t).await
+        db.start_flight(&a, &dev, "N123", FlightVisibility::Club, false, t)
+            .await
             .unwrap();
         assert!(matches!(
-            db.start_flight(&a, &dev, "N123", FlightVisibility::Club, false, t + 1).await,
+            db.start_flight(&a, &dev, "N123", FlightVisibility::Club, false, t + 1)
+                .await,
             Err(StartFlightError::NoCheckin) | Err(StartFlightError::AlreadyActive)
         ));
     }
@@ -2210,7 +2255,8 @@ mod tests {
         let token = db.mint_checkin_qr_token(&club, t).await.unwrap();
         db.submit_checkin(&a, Some(&dev), &token, t).await.unwrap();
         assert!(db
-            .start_flight(&a, &dev, "N123", FlightVisibility::Club, false, t).await
+            .start_flight(&a, &dev, "N123", FlightVisibility::Club, false, t)
+            .await
             .is_ok());
     }
 
@@ -2230,13 +2276,11 @@ mod tests {
         let rec = db.submit_checkin(&a, Some(&dev), &token, t).await.unwrap();
         assert_eq!(rec.created_at, t);
         assert_eq!(rec.expires_at, t + 45 * 60_000);
-        let row = sqlx::query(
-            "SELECT created_at, expires_at FROM checkins WHERE id = $1",
-        )
-        .bind(&rec.id)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
+        let row = sqlx::query("SELECT created_at, expires_at FROM checkins WHERE id = $1")
+            .bind(&rec.id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
         let stored: (i64, i64) = (row.get(0), row.get(1));
         assert_eq!(stored.0 + 45 * 60_000, stored.1);
     }
@@ -2248,13 +2292,12 @@ mod tests {
         let (club, _, _, _) = seed(&db).await;
         let t = now_ms();
         let (_, row) = db.login(&club, "a@test", "password12", t).await.unwrap();
-        let exp: i64 = sqlx::query_scalar(
-            "SELECT expires_at FROM pilot_sessions WHERE pilot_id = $1",
-        )
-        .bind(&row.id)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
+        let exp: i64 =
+            sqlx::query_scalar("SELECT expires_at FROM pilot_sessions WHERE pilot_id = $1")
+                .bind(&row.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
         assert!(exp >= t + SESSION_TTL_SEC * 1000);
         assert!(exp < t + SESSION_TTL_SEC * 1000 + 60_000);
     }
@@ -2270,7 +2313,8 @@ mod tests {
         let qr = db.mint_checkin_qr_token(&club, t).await.unwrap();
         db.submit_checkin(&b, Some(&dev_b), &qr, t).await.unwrap();
         assert_eq!(
-            db.start_flight(&b, &dev_a, "N123", FlightVisibility::Club, false, t).await,
+            db.start_flight(&b, &dev_a, "N123", FlightVisibility::Club, false, t)
+                .await,
             Err(StartFlightError::DeviceMismatch)
         );
     }
@@ -2286,7 +2330,8 @@ mod tests {
         let qr = db.mint_checkin_qr_token(&club, t).await.unwrap();
         db.submit_checkin(&a, Some(&dev), &qr, t).await.unwrap();
         let fid = db
-            .start_flight(&a, &dev, "N123", FlightVisibility::Private, false, t).await
+            .start_flight(&a, &dev, "N123", FlightVisibility::Private, false, t)
+            .await
             .unwrap();
         db.append_fix(
             &fid,
@@ -2301,7 +2346,8 @@ mod tests {
                 accuracy: None,
                 alt_ref: None,
             },
-        ).await
+        )
+        .await
         .unwrap();
         assert!(db.display_map(&admin).await.is_empty());
     }
@@ -2321,27 +2367,30 @@ mod tests {
     async fn access_request_approve_then_start() {
         let db = ClubDb::open_test().await.unwrap();
         let (club, p) = empty_club_with_approved_pilot(&db).await;
-        let admin = db.register(&club, "A", "admin@test", "", "password12").await.unwrap();
+        let admin = db
+            .register(&club, "A", "admin@test", "", "password12")
+            .await
+            .unwrap();
         db.approve_pilot(&admin).await.unwrap();
         let dev = db.create_device(&p, "phone").await.unwrap().0;
-        db.issue_open_checkin(&p, &dev, &club, now_ms()).await.unwrap();
-        let rid = db
-            .create_access_request(&p, "CC-ABC", None, Some("C152"), now_ms()).await
+        db.issue_open_checkin(&p, &dev, &club, now_ms())
+            .await
             .unwrap();
-        db.approve_access_request(&admin, &rid, None, now_ms()).await
+        let rid = db
+            .create_access_request(&p, "CC-ABC", None, Some("C152"), now_ms())
+            .await
+            .unwrap();
+        db.approve_access_request(&admin, &rid, None, now_ms())
+            .await
             .unwrap();
         let tails = db.me_tails(&p, now_ms()).await.unwrap();
         assert!(tails.iter().any(|t| t.tail == "CC-ABC"));
-        db.issue_open_checkin(&p, &dev, &club, now_ms()).await.unwrap();
+        db.issue_open_checkin(&p, &dev, &club, now_ms())
+            .await
+            .unwrap();
         assert!(db
-            .start_flight(
-                &p,
-                &dev,
-                "CC-ABC",
-                FlightVisibility::Club,
-                false,
-                now_ms()
-            ).await
+            .start_flight(&p, &dev, "CC-ABC", FlightVisibility::Club, false, now_ms())
+            .await
             .is_ok());
     }
 
@@ -2350,22 +2399,32 @@ mod tests {
     async fn access_request_reject_blocks_start() {
         let db = ClubDb::open_test().await.unwrap();
         let (club, p) = empty_club_with_approved_pilot(&db).await;
-        let admin = db.register(&club, "A", "admin@test", "", "password12").await.unwrap();
+        let admin = db
+            .register(&club, "A", "admin@test", "", "password12")
+            .await
+            .unwrap();
         db.approve_pilot(&admin).await.unwrap();
         let dev = db.create_device(&p, "phone").await.unwrap().0;
-        db.issue_open_checkin(&p, &dev, &club, now_ms()).await.unwrap();
-        let rid = db
-            .create_access_request(&p, "CC-XYZ", None, Some("DA20"), now_ms()).await
+        db.issue_open_checkin(&p, &dev, &club, now_ms())
+            .await
             .unwrap();
-        db.reject_access_request(&admin, &rid, "not yet", now_ms()).await
+        let rid = db
+            .create_access_request(&p, "CC-XYZ", None, Some("DA20"), now_ms())
+            .await
+            .unwrap();
+        db.reject_access_request(&admin, &rid, "not yet", now_ms())
+            .await
             .unwrap();
         let list = db.list_pilot_access_requests(&p).await;
         assert_eq!(list[0].status, "rejected");
         assert_eq!(list[0].reject_reason.as_deref(), Some("not yet"));
         db.upsert_type(&club, "DA20").await.unwrap();
-        db.upsert_aircraft(&club, "CC-XYZ", "DA20", true).await.unwrap();
+        db.upsert_aircraft(&club, "CC-XYZ", "DA20", true)
+            .await
+            .unwrap();
         assert!(matches!(
-            db.start_flight(&p, &dev, "CC-XYZ", FlightVisibility::Club, false, now_ms()).await,
+            db.start_flight(&p, &dev, "CC-XYZ", FlightVisibility::Club, false, now_ms())
+                .await,
             Err(StartFlightError::NotCleared { .. })
         ));
     }
@@ -2376,13 +2435,19 @@ mod tests {
         let db = ClubDb::open_test().await.unwrap();
         let (club, p) = empty_club_with_approved_pilot(&db).await;
         let dev = db.create_device(&p, "phone").await.unwrap().0;
-        db.issue_open_checkin(&p, &dev, &club, now_ms()).await.unwrap();
-        db.create_access_request(&p, "CC-NOP", None, Some("T1"), now_ms()).await
+        db.issue_open_checkin(&p, &dev, &club, now_ms())
+            .await
+            .unwrap();
+        db.create_access_request(&p, "CC-NOP", None, Some("T1"), now_ms())
+            .await
             .unwrap();
         db.upsert_type(&club, "T1").await.unwrap();
-        db.upsert_aircraft(&club, "CC-NOP", "T1", true).await.unwrap();
+        db.upsert_aircraft(&club, "CC-NOP", "T1", true)
+            .await
+            .unwrap();
         assert!(matches!(
-            db.start_flight(&p, &dev, "CC-NOP", FlightVisibility::Club, false, now_ms()).await,
+            db.start_flight(&p, &dev, "CC-NOP", FlightVisibility::Club, false, now_ms())
+                .await,
             Err(StartFlightError::NotCleared { .. })
         ));
     }

@@ -61,14 +61,13 @@ impl ClubDb {
             return Ok(deleted.rows_affected() > 0);
         }
         let revoked_hash = digest_token(&format!("revoked-{}", new_id()));
-        let updated = sqlx::query(
-            "UPDATE devices SET token_hash = $1 WHERE pilot_id = $2 AND id = $3",
-        )
-        .bind(&revoked_hash)
-        .bind(pilot_id)
-        .bind(device_id)
-        .execute(&self.pool)
-        .await?;
+        let updated =
+            sqlx::query("UPDATE devices SET token_hash = $1 WHERE pilot_id = $2 AND id = $3")
+                .bind(&revoked_hash)
+                .bind(pilot_id)
+                .bind(device_id)
+                .execute(&self.pool)
+                .await?;
         let _ = sqlx::query("DELETE FROM device_pair_tokens WHERE device_id = $1")
             .bind(device_id)
             .execute(&self.pool)
@@ -106,16 +105,14 @@ impl ClubDb {
         .await
         .map_err(|_| DeviceRegisterError::Db)?
         {
-            sqlx::query(
-                "UPDATE devices SET token_hash = $1, label = $2, model = $3 WHERE id = $4",
-            )
-            .bind(&hash)
-            .bind(label)
-            .bind(model)
-            .bind(&existing_id)
-            .execute(&self.pool)
-            .await
-            .map_err(|_| DeviceRegisterError::Db)?;
+            sqlx::query("UPDATE devices SET token_hash = $1, label = $2, model = $3 WHERE id = $4")
+                .bind(&hash)
+                .bind(label)
+                .bind(model)
+                .bind(&existing_id)
+                .execute(&self.pool)
+                .await
+                .map_err(|_| DeviceRegisterError::Db)?;
             let _ = sqlx::query("DELETE FROM device_pair_tokens WHERE device_id = $1")
                 .bind(&existing_id)
                 .execute(&self.pool)
@@ -130,13 +127,11 @@ impl ClubDb {
             });
         }
 
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM devices WHERE pilot_id = $1",
-        )
-        .bind(pilot_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|_| DeviceRegisterError::Db)?;
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM devices WHERE pilot_id = $1")
+            .bind(pilot_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| DeviceRegisterError::Db)?;
         if count as usize >= MAX_DEVICES_PER_PILOT {
             return Err(DeviceRegisterError::CapExceeded);
         }
@@ -171,13 +166,12 @@ impl ClubDb {
         install_id: &str,
     ) -> Result<bool, DbError> {
         let install_id = install_id.trim();
-        let device_id: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM devices WHERE pilot_id = $1 AND install_id = $2",
-        )
-        .bind(pilot_id)
-        .bind(install_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let device_id: Option<String> =
+            sqlx::query_scalar("SELECT id FROM devices WHERE pilot_id = $1 AND install_id = $2")
+                .bind(pilot_id)
+                .bind(install_id)
+                .fetch_optional(&self.pool)
+                .await?;
         let Some(device_id) = device_id else {
             return Ok(false);
         };

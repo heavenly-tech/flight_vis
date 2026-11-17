@@ -53,10 +53,7 @@ pub(crate) fn token_hash_matches(stored: &str, candidate_digest: &str) -> bool {
     if stored.len() != candidate_digest.len() {
         return false;
     }
-    stored
-        .as_bytes()
-        .ct_eq(candidate_digest.as_bytes())
-        .into()
+    stored.as_bytes().ct_eq(candidate_digest.as_bytes()).into()
 }
 
 impl ClubDb {
@@ -213,5 +210,21 @@ impl ClubDb {
             tail: flight.tail,
             status: flight.status.clone(),
         })
+    }
+
+    /// Map a share URL token to a flight id when active (tests + diagnostics).
+    pub async fn share_flight_id(&self, token: &str) -> Option<String> {
+        self.resolve_share_token(token).await.map(|r| r.flight_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn share_flight_id_tracks_resolve() {
+        let db = ClubDb::open_test().await.expect("db");
+        assert_eq!(db.share_flight_id("not-a-real-token").await, None);
     }
 }
