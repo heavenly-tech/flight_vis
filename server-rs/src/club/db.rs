@@ -1534,12 +1534,9 @@ impl ClubDb {
         .fetch_optional(&self.pool)
         .await
         .ok()??;
-        if let Ok(Some(exp)) = row.try_get::<Option<i64>, _>(3) {
-            if let Some(exp) = exp {
-                if now > exp {
-                    return None;
-                }
-            }
+        let expires_at: Option<i64> = row.try_get(3).ok().flatten();
+        if expires_at.is_some_and(|exp| now > exp) {
+            return None;
         }
         Some((
             row.try_get(0).ok()?,
