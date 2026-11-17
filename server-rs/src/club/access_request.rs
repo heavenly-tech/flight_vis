@@ -45,6 +45,7 @@ pub enum AccessRequestError {
     NotFound,
     NotPending,
     TypeMismatch,
+    Forbidden,
     Db,
 }
 
@@ -64,6 +65,7 @@ impl AccessRequestError {
             Self::NotFound => "not found",
             Self::NotPending => "not pending",
             Self::TypeMismatch => "type does not match existing tail",
+            Self::Forbidden => "forbidden",
             Self::Db => "db error",
         }
     }

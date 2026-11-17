@@ -791,13 +791,7 @@ impl ClubDb {
     }
 
     pub async fn flight_visible_to(&self, viewer: &Viewer, flight_id: &str) -> Option<FlightRow> {
-        let flight = self.get_flight(flight_id).await?;
-        let vis = FlightVisibility::parse(&flight.visibility)?;
-        if can_view_flight(viewer, &flight.pilot_id, vis) {
-            Some(flight)
-        } else {
-            None
-        }
+        self.flight_visible_to_scoped(viewer, flight_id).await
     }
 
     pub async fn fixes_for_flight(&self, flight_id: &str) -> Vec<LiveFix> {
@@ -825,7 +819,7 @@ impl ClubDb {
             .collect()
     }
 
-    async fn latest_device_fixes(&self) -> Vec<DeviceFix> {
+    pub(crate) async fn latest_device_fixes(&self) -> Vec<DeviceFix> {
         let rows = sqlx::query(
             "SELECT f.id, a.tail, f.pilot_id, p.name, f.visibility, f.club_id,
                     fx.t_ms, fx.lat, fx.lon, fx.alt, fx.speed, fx.course, fx.accuracy
@@ -866,45 +860,11 @@ impl ClubDb {
     }
 
     pub async fn club_map_for_viewer(&self, viewer: &Viewer) -> Vec<TailLivePosition> {
-        let rows = self.latest_device_fixes().await;
-        let filtered: Vec<DeviceFix> = rows
-            .into_iter()
-            .filter(|r| {
-                let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
-                includes_in_club_map(viewer, &r.pilot_id, vis)
-                    && can_view_flight(viewer, &r.pilot_id, vis)
-            })
-            .collect();
-        let mut positions = dedupe_by_tail(filtered);
-        for pos in &mut positions {
-            if let Some(f) = self.get_flight(&pos.flight_id).await {
-                pos.pilot_name = Some(f.pilot_name);
-            }
-        }
-        positions
+        self.club_map_for_viewer_scoped(viewer).await
     }
 
     pub async fn public_map(&self) -> Vec<TailLivePosition> {
-        let rows: Vec<DeviceFix> = self
-            .latest_device_fixes()
-            .await
-            .into_iter()
-            .filter(|r| {
-                let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
-                includes_in_public_map(vis)
-            })
-            .collect();
-        let mut positions = dedupe_by_tail(rows);
-        for pos in &mut positions {
-            if let Some(f) = self.get_flight(&pos.flight_id).await {
-                if show_pilot_name(&Viewer::Anonymous, &f.pilot_id, f.show_pilot_name_public) {
-                    pos.pilot_name = Some(f.pilot_name);
-                } else {
-                    pos.pilot_name = None;
-                }
-            }
-        }
-        positions
+        self.public_map_scoped().await
     }
 
     pub async fn admin_map(&self, admin_id: &str) -> Vec<TailLivePosition> {
@@ -913,7 +873,7 @@ impl ClubDb {
             status: PilotStatus::Approved,
             role: PilotRole::Admin,
         };
-        let all = self.club_map_for_viewer(&viewer).await;
+        let all = self.club_map_for_viewer_scoped(&viewer).await;
         let tails = self.admin_map_tails(admin_id).await;
         filter_admin_tails(all, &tails)
     }
@@ -1133,11 +1093,12 @@ impl ClubDb {
         Ok(id)
     }
 
-    pub async fn list_pending_pilots(&self) -> Vec<PilotRow> {
+    pub async fn list_pending_pilots(&self, club_id: &str) -> Vec<PilotRow> {
         let rows = sqlx::query(
             "SELECT id, club_id, name, email, license_no, status, role, locale
-             FROM pilots WHERE status = 'pending'",
+             FROM pilots WHERE status = 'pending' AND club_id = $1",
         )
+        .bind(club_id)
         .fetch_all(&self.pool)
         .await
         .unwrap_or_default();
@@ -1196,11 +1157,12 @@ impl ClubDb {
             .collect()
     }
 
-    pub async fn list_all_pilots(&self) -> Vec<PilotRow> {
+    pub async fn list_all_pilots(&self, club_id: &str) -> Vec<PilotRow> {
         let rows = sqlx::query(
             "SELECT id, club_id, name, email, license_no, status, role, locale
-             FROM pilots ORDER BY email",
+             FROM pilots WHERE club_id = $1 ORDER BY email",
         )
+        .bind(club_id)
         .fetch_all(&self.pool)
         .await
         .unwrap_or_default();
@@ -1220,15 +1182,17 @@ impl ClubDb {
             .collect()
     }
 
-    pub async fn list_checkouts(&self) -> Vec<CheckoutRow> {
+    pub async fn list_checkouts(&self, club_id: &str) -> Vec<CheckoutRow> {
         let rows = sqlx::query(
             "SELECT c.id, c.pilot_id, p.name, p.email, t.code, a.tail, c.expires_at
              FROM checkouts c
              JOIN pilots p ON p.id = c.pilot_id
              JOIN aircraft_types t ON t.id = c.type_id
              LEFT JOIN aircraft a ON a.id = c.aircraft_id
+             WHERE t.club_id = $1
              ORDER BY p.email, t.code",
         )
+        .bind(club_id)
         .fetch_all(&self.pool)
         .await
         .unwrap_or_default();
@@ -1573,28 +1537,13 @@ impl ClubDb {
             .collect()
     }
 
-    pub async fn display_map(&self, admin_creator_id: &str) -> Vec<TailLivePosition> {
-        let rows: Vec<DeviceFix> = self
-            .latest_device_fixes()
+    pub async fn display_map(
+        &self,
+        display_club_id: &str,
+        admin_creator_id: &str,
+    ) -> Vec<TailLivePosition> {
+        self.display_map_scoped(display_club_id, admin_creator_id)
             .await
-            .into_iter()
-            .filter(|r| {
-                let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
-                matches!(vis, FlightVisibility::Club | FlightVisibility::Public)
-            })
-            .collect();
-        let mut positions = dedupe_by_tail(rows);
-        for pos in &mut positions {
-            if let Some(f) = self.get_flight(&pos.flight_id).await {
-                if show_pilot_name(&Viewer::Anonymous, &f.pilot_id, f.show_pilot_name_public) {
-                    pos.pilot_name = Some(f.pilot_name);
-                } else {
-                    pos.pilot_name = None;
-                }
-            }
-        }
-        let prefs = self.admin_map_tails(admin_creator_id).await;
-        filter_admin_tails(positions, &prefs)
     }
 
     pub async fn seed_demo_if_empty(&self) -> Result<(), DbError> {
@@ -2312,7 +2261,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(db.display_map(&admin).await.is_empty());
+        assert!(db.display_map(&club, &admin).await.is_empty());
     }
 
     async fn empty_club_with_approved_pilot(db: &ClubDb) -> (String, String) {
@@ -2335,6 +2284,14 @@ mod tests {
             .await
             .unwrap();
         db.approve_pilot(&admin).await.unwrap();
+        sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
+            .bind(&admin)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        db.ensure_membership_row(&admin, &club, "admin", "approved")
+            .await
+            .unwrap();
         let dev = db.create_device(&p, "phone").await.unwrap().0;
         db.issue_open_checkin(&p, &dev, &club, now_ms())
             .await
@@ -2367,6 +2324,14 @@ mod tests {
             .await
             .unwrap();
         db.approve_pilot(&admin).await.unwrap();
+        sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
+            .bind(&admin)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        db.ensure_membership_row(&admin, &club, "admin", "approved")
+            .await
+            .unwrap();
         let dev = db.create_device(&p, "phone").await.unwrap().0;
         db.issue_open_checkin(&p, &dev, &club, now_ms())
             .await

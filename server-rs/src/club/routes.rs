@@ -84,6 +84,59 @@ fn require_admin(viewer: &Viewer) -> Result<(), (StatusCode, Json<serde_json::Va
     }
 }
 
+async fn require_club_admin_scope(
+    db: &ClubDb,
+    viewer: &Viewer,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    require_approved(viewer)?;
+    let Viewer::Pilot { id, .. } = viewer else {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        ));
+    };
+    let club_id = db.pilot_club_id(id).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+    })?;
+    if db.require_club_admin(id, &club_id).await.is_err() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        ));
+    }
+    Ok(club_id)
+}
+
+async fn admin_may_act_on_pilot(
+    db: &ClubDb,
+    admin_id: &str,
+    target_pilot_id: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let admin_club = db.pilot_club_id(admin_id).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+    })?;
+    if db.require_club_admin(admin_id, &admin_club).await.is_err() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        ));
+    }
+    let target_club = db
+        .pilot_club_id(target_pilot_id)
+        .await
+        .map_err(|_| (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))))?;
+    if target_club != admin_club {
+        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct RegisterBody {
     name: String,
@@ -247,11 +300,7 @@ async fn club_logout(
             if let Some(Json(body)) = body {
                 if let Some(install_id) = body.install_id.as_deref().filter(|s| !s.is_empty()) {
                     let _ = db.revoke_device_by_install(&pilot.id, install_id).await;
-                } else {
-                    let _ = db.revoke_all_devices(&pilot.id).await;
                 }
-            } else {
-                let _ = db.revoke_all_devices(&pilot.id).await;
             }
         }
         let _ = db.logout(&session).await;
@@ -693,24 +742,27 @@ async fn public_map(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn admin_map(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    if require_admin(&v).is_err() {
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "aircraft": [] })).into_response();
+    };
+    let admin_id = match &v {
+        Viewer::Pilot { id, .. } => id.clone(),
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "admin only" })),
+            )
+                .into_response();
+        }
+    };
+    if require_club_admin_scope(&db, &v).await.is_err() {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "admin only" })),
         )
             .into_response();
     }
-    let Viewer::Pilot { id, .. } = v else {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    };
-    let Some(db) = club_db(&state) else {
-        return Json(json!({ "aircraft": [] })).into_response();
-    };
-    let aircraft = db.admin_map(&id).await;
+    let aircraft = db.admin_map(&admin_id).await;
     Json(json!({ "aircraft": aircraft })).into_response()
 }
 
@@ -966,17 +1018,13 @@ struct TypeBody {
 
 async fn list_types(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    if require_admin(&v).is_err() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    }
     let Some(db) = club_db(&state) else {
         return Json(json!({ "types": [] })).into_response();
     };
-    let club = db.default_club_id().await.unwrap_or_default();
+    let club = match require_club_admin_scope(&db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
     Json(json!({ "types": db.list_types(&club).await })).into_response()
 }
 
@@ -986,13 +1034,6 @@ async fn admin_add_type(
     Json(body): Json<TypeBody>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    if require_admin(&v).is_err() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    }
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1000,7 +1041,10 @@ async fn admin_add_type(
         )
             .into_response();
     };
-    let club = db.default_club_id().await.unwrap_or_default();
+    let club = match require_club_admin_scope(&db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
     match db.upsert_type(&club, body.code.trim()).await {
         Ok(id) => Json(json!({ "id": id })).into_response(),
         Err(_) => (
@@ -1026,17 +1070,13 @@ fn default_true() -> bool {
 
 async fn list_aircraft(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    if require_admin(&v).is_err() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    }
     let Some(db) = club_db(&state) else {
         return Json(json!({ "aircraft": [] })).into_response();
     };
-    let club = db.default_club_id().await.unwrap_or_default();
+    let club = match require_club_admin_scope(&db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
     Json(json!({ "aircraft": db.list_aircraft(&club).await })).into_response()
 }
 
@@ -1046,13 +1086,6 @@ async fn admin_add_aircraft(
     Json(body): Json<AircraftBody>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    if require_admin(&v).is_err() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    }
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1060,7 +1093,10 @@ async fn admin_add_aircraft(
         )
             .into_response();
     };
-    let club = db.default_club_id().await.unwrap_or_default();
+    let club = match require_club_admin_scope(&db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
     match db
         .upsert_aircraft(&club, body.tail.trim(), body.type_code.trim(), body.active)
         .await
@@ -1076,32 +1112,26 @@ async fn admin_add_aircraft(
 
 async fn list_pilots_admin(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    if require_admin(&v).is_err() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    }
     let Some(db) = club_db(&state) else {
         return Json(json!({ "pilots": [] })).into_response();
     };
-    Json(json!({ "pilots": db.list_all_pilots().await })).into_response()
+    let club_id = match require_club_admin_scope(&db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    Json(json!({ "pilots": db.list_all_pilots(&club_id).await })).into_response()
 }
 
 async fn admin_pending(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    if require_admin(&v).is_err() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    }
     let Some(db) = club_db(&state) else {
         return Json(json!({ "pilots": [] })).into_response();
     };
-    Json(json!({ "pilots": db.list_pending_pilots().await })).into_response()
+    let club_id = match require_club_admin_scope(&db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    Json(json!({ "pilots": db.list_pending_pilots(&club_id).await })).into_response()
 }
 
 #[derive(Deserialize, Default)]
@@ -1117,23 +1147,13 @@ async fn admin_approve(
     Json(body): Json<ApprovePilotBody>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    let Viewer::Pilot {
-        id: admin_id, role, ..
-    } = v
-    else {
+    let Viewer::Pilot { id: admin_id, .. } = v else {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "admin only" })),
         )
             .into_response();
     };
-    if role != PilotRole::Admin {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    }
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1141,6 +1161,9 @@ async fn admin_approve(
         )
             .into_response();
     };
+    if let Err(e) = admin_may_act_on_pilot(&db, &admin_id, &pilot_id).await {
+        return e.into_response();
+    }
     let checkout = body.checkout;
     match db
         .approve_pilot_with_checkout(&admin_id, &pilot_id, checkout)
@@ -1169,17 +1192,14 @@ async fn list_checkouts_admin(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    if require_admin(&v).is_err() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    }
     let Some(db) = club_db(&state) else {
         return Json(json!({ "checkouts": [] })).into_response();
     };
-    Json(json!({ "checkouts": db.list_checkouts().await })).into_response()
+    let club_id = match require_club_admin_scope(&db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    Json(json!({ "checkouts": db.list_checkouts(&club_id).await })).into_response()
 }
 
 async fn admin_checkout(
@@ -1835,7 +1855,7 @@ async fn display_map(State(state): State<AppState>, headers: HeaderMap) -> impl 
         )
             .into_response();
     };
-    let rows = db.display_map(&admin_id).await;
+    let rows = db.display_map(&_club_id, &admin_id).await;
     Json(json!({ "aircraft": rows })).into_response()
 }
 
@@ -2371,7 +2391,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/api/club/register", post(register))
         .route("/api/club/login", post(club_login))
-        .route("/api/club/logout", post(club_logout).get(club_logout))
+        .route("/api/club/logout", post(club_logout))
         .route("/api/club/me", get(club_me))
         .route("/api/club/me/locale", axum::routing::patch(patch_me_locale))
         .route("/api/club/i18n/context", get(club_i18n_context))

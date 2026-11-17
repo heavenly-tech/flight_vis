@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::club::{
     dem::{DemIndex, DemSample},
     geo::{egm96_undulation_m, haversine_km, METERS_PER_FOOT},

@@ -568,3 +568,57 @@ async fn kiosk_layout_admin_clamps_and_display_sse_rev() {
     let disp_layout: serde_json::Value = serde_json::from_slice(&disp_body).unwrap();
     assert_eq!(disp_layout.get("rev").and_then(|v| v.as_i64()), Some(rev1));
 }
+
+async fn seed_second_club(db: &ClubDb, slug: &str) -> String {
+    let id = crate::club::auth::new_id();
+    sqlx::query(
+        "INSERT INTO clubs (id, name, slug, created_at, latitude, longitude, show_public_tracks)
+         VALUES ($1, $2, $3, $4, -33.0, -70.0, TRUE)",
+    )
+    .bind(&id)
+    .bind("Club B")
+    .bind(slug)
+    .bind(now_ms())
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    id
+}
+
+#[tokio::test]
+#[serial]
+async fn cross_club_admin_cannot_approve_other_club_pilot() {
+    let mut fx = setup().await;
+    let club_a = fx.club.default_club_id().await.unwrap();
+    let slug = format!("club-b-{}", &crate::club::auth::new_id()[..8]);
+    let club_b = seed_second_club(&fx.club, &slug).await;
+    let pending_b = fx
+        .club
+        .register(&club_b, "Pending B", "pending-b@test", "", "password12")
+        .await
+        .unwrap();
+    sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
+        .bind(&fx.pilot_a)
+        .execute(&fx.club.pool)
+        .await
+        .unwrap();
+    fx.club
+        .ensure_membership_row(&fx.pilot_a, &club_a, "admin", "approved")
+        .await
+        .unwrap();
+    let cookie_a = login_cookie(&mut fx.router, "a@test").await;
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/admin/pilots/{pending_b}/approve"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, cookie_a)
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}

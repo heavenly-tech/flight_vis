@@ -247,6 +247,10 @@ impl ClubDb {
         let type_id: Option<String> = row.get(3);
         let new_type_name: Option<String> = row.get(4);
         let status: String = row.get(5);
+        if self.require_club_admin(admin_id, &club_id).await.is_err() {
+            tx.rollback().await.ok();
+            return Err(AccessRequestError::Forbidden);
+        }
         if status != "pending" {
             return Err(AccessRequestError::NotPending);
         }
@@ -405,6 +409,9 @@ impl ClubDb {
         if status != "pending" {
             return Err(AccessRequestError::NotPending);
         }
+        if self.require_club_admin(admin_id, &club_id).await.is_err() {
+            return Err(AccessRequestError::Forbidden);
+        }
         sqlx::query(
             "UPDATE access_requests SET status = 'rejected', reject_reason = $1,
                 decided_at = $2, decided_by_pilot_id = $3 WHERE id = $4",
@@ -448,6 +455,10 @@ impl ClubDb {
         if status != "pending" {
             tx.commit().await?;
             return Ok(());
+        }
+        if self.require_club_admin(admin_id, &club_id).await.is_err() {
+            tx.rollback().await.ok();
+            return Err(DbError::protocol("forbidden"));
         }
         let now = now_ms();
         sqlx::query("UPDATE pilots SET status = 'approved' WHERE id = $1")
@@ -570,7 +581,7 @@ impl ClubDb {
 
     pub async fn admin_pending_counts(&self, club_id: &str) -> AdminPendingCounts {
         AdminPendingCounts {
-            pilots: self.list_pending_pilots().await.len(),
+            pilots: self.list_pending_pilots(club_id).await.len(),
             access_requests: self.count_pending_access_requests(club_id).await,
         }
     }

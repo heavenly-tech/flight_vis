@@ -13,6 +13,7 @@ mod db_auth_pg;
 mod db_devices_pg;
 mod db_kiosk_pg;
 mod db_locale;
+mod db_map_pg;
 mod db_shares_pg;
 mod dem;
 mod device_tokens_import;
