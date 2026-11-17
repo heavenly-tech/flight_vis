@@ -1040,6 +1040,19 @@ async fn list_devices(State(state): State<AppState>, headers: HeaderMap) -> impl
     Json(json!({ "devices": db.list_my_devices(&id) })).into_response()
 }
 
+fn expires_at_iso_utc(ms: i64) -> Option<String> {
+    let secs = ms.div_euclid(1000);
+    let nanos = (ms.rem_euclid(1000) * 1_000_000) as u32;
+    let dt = time::OffsetDateTime::from_unix_timestamp(secs).ok()?;
+    let dt = if nanos == 0 {
+        dt
+    } else {
+        dt.replace_nanosecond(nanos).ok()?
+    };
+    dt.format(&time::format_description::well_known::Rfc3339)
+        .ok()
+}
+
 fn display_context(headers: &HeaderMap, db: &ClubDb) -> Option<(String, String)> {
     let raw = parse_display_cookie(headers)?;
     db.resolve_display_session(&raw)
@@ -1100,7 +1113,21 @@ async fn post_checkin(
         }
     }
     match db.submit_checkin(&pilot_id, device_id.as_deref(), body.token.trim(), now) {
-        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Ok(record) => {
+            let Some(expires_at) = expires_at_iso_utc(record.expires_at) else {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "timestamp format" })),
+                )
+                    .into_response();
+            };
+            Json(json!({
+                "ok": true,
+                "id": record.id,
+                "expiresAt": expires_at,
+            }))
+            .into_response()
+        }
         Err(CheckinReject::Format) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "invalid token", "reason": "format" })),

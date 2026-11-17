@@ -1202,7 +1202,7 @@ impl ClubDb {
         expires_at: Option<i64>,
         outcome: &str,
         fail_reason: Option<&str>,
-    ) -> Result<(), rusqlite::Error> {
+    ) -> Result<String, rusqlite::Error> {
         let id = new_id();
         self.with_conn(|conn| {
             conn.execute(
@@ -1222,7 +1222,8 @@ impl ClubDb {
                 ],
             )?;
             Ok(())
-        })
+        })?;
+        Ok(id)
     }
 
     pub fn mint_checkin_qr_token(
@@ -1265,7 +1266,7 @@ impl ClubDb {
         device_id: Option<&str>,
         token: &str,
         now: i64,
-    ) -> Result<(), CheckinReject> {
+    ) -> Result<CheckinRecord, CheckinReject> {
         let pilot_club = self
             .pilot_club_id(pilot_id)
             .map_err(|_| CheckinReject::WrongClub)?;
@@ -1307,19 +1308,24 @@ impl ClubDb {
             return Err(fail("replay", CheckinReject::Replay));
         }
         let expires = now + valid_min * 60_000;
-        self.insert_checkin_row(
-            &pilot_club,
-            Some(pilot_id),
-            device_id,
-            step,
-            &digest,
-            now,
-            Some(expires),
-            "ok",
-            None,
-        )
-        .map_err(|_| CheckinReject::ForgedHmac)?;
-        Ok(())
+        let id = self
+            .insert_checkin_row(
+                &pilot_club,
+                Some(pilot_id),
+                device_id,
+                step,
+                &digest,
+                now,
+                Some(expires),
+                "ok",
+                None,
+            )
+            .map_err(|_| CheckinReject::ForgedHmac)?;
+        Ok(CheckinRecord {
+            id,
+            created_at: now,
+            expires_at: expires,
+        })
     }
 
     pub fn consume_checkin(
@@ -1363,7 +1369,7 @@ impl ClubDb {
         let (_, valid_min) = self.club_checkin_settings(club_id)?;
         let expires = now + valid_min * 60_000;
         let digest = checkin::token_digest(&format!("internal:{pilot_id}:{now}"));
-        self.insert_checkin_row(
+        let _ = self.insert_checkin_row(
             club_id,
             Some(pilot_id),
             Some(device_id),
@@ -1373,7 +1379,8 @@ impl ClubDb {
             Some(expires),
             "ok",
             None,
-        )
+        )?;
+        Ok(())
     }
 
     pub fn create_display_session(
@@ -1572,6 +1579,13 @@ pub enum StartFlightError {
     NoCheckout,
     NoCheckin,
     AlreadyActive,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckinRecord {
+    pub id: String,
+    pub created_at: i64,
+    pub expires_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1993,5 +2007,34 @@ mod tests {
         assert!(db
             .start_flight(&a, &dev, "N123", FlightVisibility::Club, false, t)
             .is_ok());
+    }
+
+    #[test]
+    fn checkin_expires_at_uses_club_valid_minutes() {
+        let db = ClubDb::open_in_memory().unwrap();
+        let (club, a, _, _) = seed(&db);
+        let dev = db.create_device(&a, "phone").unwrap().0;
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE clubs SET checkin_valid_minutes = 45 WHERE id = ?1",
+                params![club],
+            )
+        })
+        .unwrap();
+        let t = 1_700_000_123_000_i64;
+        let token = db.mint_checkin_qr_token(&club, t).unwrap();
+        let rec = db.submit_checkin(&a, Some(&dev), &token, t).unwrap();
+        assert_eq!(rec.created_at, t);
+        assert_eq!(rec.expires_at, t + 45 * 60_000);
+        let stored: (i64, i64) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT created_at, expires_at FROM checkins WHERE id = ?1",
+                    params![rec.id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+            })
+            .unwrap();
+        assert_eq!(stored.0 + 45 * 60_000, stored.1);
     }
 }
