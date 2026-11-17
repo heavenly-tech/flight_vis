@@ -1,0 +1,5 @@
+*.pyc
+*.bak
+*.broken
+db_sqlite_merged.rs
+db_access.sqlite.rs
