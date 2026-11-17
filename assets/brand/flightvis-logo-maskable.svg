@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="flight_vis">
+  <rect width="1024" height="1024" fill="#152B52"/>
+  <g transform="translate(512 512) scale(0.82) translate(-512 -512)">
+    <defs>
+      <clipPath id="mapClipMask">
+        <rect x="72" y="88" width="880" height="848" rx="56" ry="56"/>
+      </clipPath>
+    </defs>
+    <g clip-path="url(#mapClipMask)">
+      <rect x="72" y="88" width="880" height="848" fill="#3A8FD4"/>
+      <path fill="#59B450" d="M 248 248 C 340 200 470 208 560 285 C 640 250 780 290 845 375 C 870 420 860 480 820 535 C 755 595 655 602 575 562 C 495 600 385 588 305 528 C 245 478 228 345 248 248 Z"/>
+      <path fill="#59B450" d="M 395 455 C 485 425 610 435 710 505 C 770 555 795 640 745 712 C 685 785 565 812 475 772 C 410 742 375 665 395 575 C 402 535 395 495 395 455 Z"/>
+      <path fill="#4FA847" d="M 468 798 C 545 712 665 705 735 785 C 775 840 762 895 705 938 C 625 982 515 968 462 895 C 435 855 445 815 468 798 Z"/>
+    </g>
+    <rect x="72" y="88" width="880" height="848" rx="56" ry="56" fill="none" stroke="#E8EEF8" stroke-width="10"/>
+    <path fill="none" stroke="#FF00CC" stroke-width="22" stroke-linecap="butt" stroke-dasharray="46 24" d="M 150,885 C 330,895 590,850 640,740 C 680,655 660,640 590,640 C 400,640 212,630 212,520 C 198,285 205,195 248,155 C 325,118 445,98 575,108 C 720,118 860,168 935,248 C 975,295 945,370 875,408 C 820,432 555,592 474,571 L 610,425"/>
+    <g transform="translate(610 425) scale(1.12) translate(-672 -450)">
+      <path fill="#FFFFFF" stroke="#E8EEF8" stroke-width="12" stroke-linejoin="round" d="M 672 450 L 748 318 L 705 365 L 982 118 L 805 312 L 862 395 Z"/>
+    </g>
+  </g>
+</svg>

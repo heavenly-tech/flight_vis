@@ -38,6 +38,7 @@ export default defineConfig({
         { src: `${cesiumSource}/Workers`, dest: cesiumBaseUrl },
         { src: `${cesiumSource}/Assets`, dest: cesiumBaseUrl },
         { src: `${cesiumSource}/Widgets`, dest: cesiumBaseUrl },
+        { src: "assets/brand", dest: "assets/brand" },
       ],
     }),
   ],

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="flight_vis">
+  <defs>
+    <clipPath id="mapClipSm">
+      <rect x="72" y="88" width="880" height="848" rx="56" ry="56"/>
+    </clipPath>
+  </defs>
+  <rect width="1024" height="1024" fill="#152B52"/>
+  <g clip-path="url(#mapClipSm)">
+    <rect x="72" y="88" width="880" height="848" fill="#3A8FD4"/>
+    <path fill="#59B450" d="M 240 255 C 335 195 470 200 560 268 C 640 230 780 265 855 365 C 895 420 885 500 830 555 C 755 615 655 620 575 578 C 495 615 385 605 305 545 C 240 495 215 395 240 255 Z"/>
+    <path fill="#59B450" d="M 390 460 C 480 420 610 430 710 498 C 770 545 795 635 745 712 C 685 798 565 825 475 785 C 410 755 375 675 390 585 C 395 545 390 505 390 460 Z"/>
+    <path fill="#4FA847" d="M 465 795 C 545 705 665 695 735 775 C 775 830 765 895 705 938 C 625 985 515 975 465 895 C 440 855 445 815 465 795 Z"/>
+  </g>
+  <rect x="72" y="88" width="880" height="848" rx="56" ry="56" fill="none" stroke="#152B52" stroke-width="16"/>
+  <path fill="none" stroke="#FF00CC" stroke-width="34" stroke-linecap="butt" stroke-dasharray="140 80" d="M 150,885 C 330,895 590,850 640,740 C 400,640 212,630 212,520 C 248,155 575,108 935,248 C 474,571 L 610,425"/>
+  <g transform="translate(610 425) scale(1.12) translate(-672 -450)">
+    <path fill="#FFFFFF" stroke="#152B52" stroke-width="20" stroke-linejoin="round" d="M 672 450 L 748 318 L 705 365 L 982 118 L 805 312 L 862 395 Z"/>
+  </g>
+</svg>
