@@ -1,4 +1,6 @@
 //! Locale catalogs (`locales/*.json`) loaded at startup; no per-string code changes when adding a language.
+#![allow(dead_code)]
+
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
@@ -29,7 +31,11 @@ struct Manifest {
 pub enum I18nError {
     MissingManifest,
     MissingCatalog(String),
-    KeyMismatch { locale: String, missing: Vec<String>, extra: Vec<String> },
+    KeyMismatch {
+        locale: String,
+        missing: Vec<String>,
+        extra: Vec<String>,
+    },
     Io(std::io::Error),
     Json(serde_json::Error),
 }
@@ -158,7 +164,11 @@ impl Catalogs {
     }
 
     pub fn normalize(locale: &str) -> String {
-        locale.split('-').next().unwrap_or(locale).to_ascii_lowercase()
+        locale
+            .split('-')
+            .next()
+            .unwrap_or(locale)
+            .to_ascii_lowercase()
     }
 
     pub fn resolve_locale(
@@ -185,7 +195,10 @@ impl Catalogs {
         } else {
             self.canonical.as_str()
         };
-        let table = self.messages.get(id).or_else(|| self.messages.get(&self.canonical));
+        let table = self
+            .messages
+            .get(id)
+            .or_else(|| self.messages.get(&self.canonical));
         let Some(table) = table else {
             return key.to_string();
         };
@@ -196,7 +209,12 @@ impl Catalogs {
         text
     }
 
-    pub fn mail(&self, locale: &str, stem: &str, vars: &[(&str, &str)]) -> (String, String, String) {
+    pub fn mail(
+        &self,
+        locale: &str,
+        stem: &str,
+        vars: &[(&str, &str)],
+    ) -> (String, String, String) {
         let subj = self.t(locale, &format!("mail.{stem}.subject"), vars);
         let plain = self.t(locale, &format!("mail.{stem}.bodyPlain"), vars);
         let html = self.t(locale, &format!("mail.{stem}.bodyHtml"), vars);

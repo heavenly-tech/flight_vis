@@ -97,7 +97,10 @@ use axum::http::StatusCode;
 pub fn well_known_routes() -> Router<crate::AppState> {
     Router::new()
         .route("/.well-known/assetlinks.json", get(assetlinks_handler))
-        .route("/.well-known/apple-app-site-association", get(aasa_placeholder))
+        .route(
+            "/.well-known/apple-app-site-association",
+            get(aasa_placeholder),
+        )
 }
 
 pub fn absolute_https_url(headers: &HeaderMap, path: &str) -> String {

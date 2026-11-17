@@ -22,7 +22,12 @@ enum LandingError {
     Db,
 }
 
-fn validate_checkin_peek(db: &ClubDb, slug: &str, token: &str, now: i64) -> Result<String, LandingError> {
+fn validate_checkin_peek(
+    db: &ClubDb,
+    slug: &str,
+    token: &str,
+    now: i64,
+) -> Result<String, LandingError> {
     let ctx = db.resolve_club_context(slug).map_err(|e| match e {
         ClubScopeError::NotFound => LandingError::NotFound,
         ClubScopeError::Forbidden => LandingError::NotFound,
@@ -45,7 +50,7 @@ async fn checkin_landing_page(
     let Some(db) = club_db(&state) else {
         return checkin_not_found_page(&state).await;
     };
-  match validate_checkin_peek(db, &slug, &token, now_ms()) {
+    match validate_checkin_peek(db, &slug, &token, now_ms()) {
         Ok(_) => {
             let path = state.dist_dir.join("club-checkin-landing.html");
             match tokio::fs::read_to_string(&path).await {
@@ -82,18 +87,10 @@ async fn checkin_landing_config(
     Path((slug, token)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not found" })),
-        )
-            .into_response();
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     };
     if validate_checkin_peek(db, &slug, &token, now_ms()).is_err() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not found" })),
-        )
-            .into_response();
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     }
     let ctx = db.resolve_club_context(&slug).ok();
     let club_default_locale = ctx
@@ -104,13 +101,7 @@ async fn checkin_landing_config(
         .get(axum::http::header::ACCEPT_LANGUAGE)
         .and_then(|v| v.to_str().ok());
     let resolved_locale = crate::i18n::global()
-        .map(|c| {
-            c.resolve_locale(
-                None,
-                Some(club_default_locale.as_str()),
-                accept,
-            )
-        })
+        .map(|c| c.resolve_locale(None, Some(club_default_locale.as_str()), accept))
         .unwrap_or(club_default_locale.clone());
     let https_path = checkin_qr_path(&slug, &token);
     let https_url = absolute_https_url(&headers, &https_path);
@@ -129,20 +120,18 @@ async fn checkin_landing_config(
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/c/{slug}/q/{token}", get(checkin_landing_page))
-        .route("/api/c/{slug}/q/{token}/landing", get(checkin_landing_config))
+        .route(
+            "/api/c/{slug}/q/{token}/landing",
+            get(checkin_landing_config),
+        )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::club::{db::ClubDb, routes::club_db};
+    use crate::club::db::ClubDb;
     use crate::{
-        auth::Auth,
-        build_router,
-        device_auth::DeviceAuth,
-        live::LiveEngine,
-        store::Store,
-        AppState,
+        auth::Auth, build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState,
     };
     use axum::{
         body::{to_bytes, Body},
@@ -160,7 +149,11 @@ mod tests {
             "<html><body id=\"ok\">Descarga la app</body></html>",
         )
         .unwrap();
-        std::fs::write(dist.join("club-checkin-expired.html"), "<html>expired</html>").unwrap();
+        std::fs::write(
+            dist.join("club-checkin-expired.html"),
+            "<html>expired</html>",
+        )
+        .unwrap();
         let db = ClubDb::open(dir.path()).unwrap();
         let club_id = db.default_club_id().unwrap();
         db.with_conn(|conn| {
@@ -171,7 +164,7 @@ mod tests {
         })
         .unwrap();
         let now = now_ms();
-        let token = db.mint_checkin_qr_token(&club_id, now).unwrap();
+        let _token = db.mint_checkin_qr_token(&club_id, now).unwrap();
         let state = AppState {
             dist_dir: dist,
             auth: Auth::with_password("x"),
@@ -191,7 +184,7 @@ mod tests {
 
     #[tokio::test]
     async fn landing_renders_for_valid_token_without_consuming() {
-        let (_dir, mut router, db) = fixture();
+        let (_dir, router, db) = fixture();
         let club_id = db.default_club_id().unwrap();
         let now = now_ms();
         let token = db.mint_checkin_qr_token(&club_id, now).unwrap();
@@ -222,7 +215,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_token_gets_404_page() {
-        let (_dir, mut router, _db) = fixture();
+        let (_dir, router, _db) = fixture();
         let res = router
             .oneshot(
                 Request::builder()

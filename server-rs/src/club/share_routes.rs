@@ -13,7 +13,7 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
         Html, IntoResponse, Json,
     },
-    routing::{delete, get, post},
+    routing::{delete, get},
     Router,
 };
 use futures_util::stream;
@@ -104,16 +104,12 @@ async fn post_flight_share(
             )
                 .into_response()
         }
-        Err(ShareCreateError::NotOwner) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "forbidden" })),
-        )
-            .into_response(),
-        Err(ShareCreateError::NotFound) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not found" })),
-        )
-            .into_response(),
+        Err(ShareCreateError::NotOwner) => {
+            (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
+        }
+        Err(ShareCreateError::NotFound) => {
+            (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+        }
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "db error" })),
@@ -140,16 +136,12 @@ async fn get_flight_shares(
     };
     match db.list_flight_shares(&id, &flight_id) {
         Ok(shares) => Json(json!({ "shares": shares })).into_response(),
-        Err(ShareCreateError::NotOwner) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "forbidden" })),
-        )
-            .into_response(),
-        Err(ShareCreateError::NotFound) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not found" })),
-        )
-            .into_response(),
+        Err(ShareCreateError::NotOwner) => {
+            (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
+        }
+        Err(ShareCreateError::NotFound) => {
+            (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+        }
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "db error" })),
@@ -180,16 +172,12 @@ async fn revoke_flight_share(
     };
     match db.revoke_flight_share(&id, &flight_id, &share_id) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(ShareRevokeError::NotOwner) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "forbidden" })),
-        )
-            .into_response(),
-        Err(ShareRevokeError::NotFound) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not found" })),
-        )
-            .into_response(),
+        Err(ShareRevokeError::NotOwner) => {
+            (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
+        }
+        Err(ShareRevokeError::NotFound) => {
+            (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+        }
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "db error" })),
@@ -284,6 +272,7 @@ async fn share_flight_stream(
     }))
     .chain(stream::unfold(
         (db, flight_id, token_capture, 0_i64),
+        #[allow(clippy::question_mark)]
         |(db, fid, tok, mut last_t)| async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
             if db.resolve_share_token(&tok).is_none() {

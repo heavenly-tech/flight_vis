@@ -265,10 +265,7 @@ fn accept_locale(headers: &HeaderMap) -> Option<&str> {
         .and_then(|v| v.to_str().ok())
 }
 
-async fn club_i18n_context(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn club_i18n_context(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let accept = accept_locale(&headers);
     let Some(db) = club_db(&state) else {
         let resolved = crate::i18n::global()
@@ -294,13 +291,7 @@ async fn club_i18n_context(
         None => (None, None),
     };
     let resolved = crate::i18n::global()
-        .map(|c| {
-            c.resolve_locale(
-                user_locale.as_deref(),
-                club_default.as_deref(),
-                accept,
-            )
-        })
+        .map(|c| c.resolve_locale(user_locale.as_deref(), club_default.as_deref(), accept))
         .unwrap_or_else(|| "es".to_string());
     Json(json!({
         "userLocale": user_locale,
@@ -2162,10 +2153,11 @@ async fn club_screen_qr_svg(
         Ok(t) => t,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let slug = db.club_slug(&club_id).unwrap_or_else(|| "default".to_string());
+    let slug = db
+        .club_slug(&club_id)
+        .unwrap_or_else(|| "default".to_string());
     let path = crate::club::club_scope::checkin_qr_path(&slug, &token);
-    let payload =
-        crate::club::android_assetlinks::absolute_https_url(&headers, &path);
+    let payload = crate::club::android_assetlinks::absolute_https_url(&headers, &path);
     let svg = match crate::club::qr::svg_for_payload(&payload, 280) {
         Ok(s) => s,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),

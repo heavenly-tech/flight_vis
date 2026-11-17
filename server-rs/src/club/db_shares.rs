@@ -31,6 +31,7 @@ pub struct FlightShareListItem {
 #[derive(Clone, Debug)]
 pub struct ResolvedShare {
     pub flight_id: String,
+    #[allow(dead_code)]
     pub club_id: String,
     pub tail: String,
     pub status: String,
@@ -40,6 +41,7 @@ pub struct ResolvedShare {
 pub enum ShareCreateError {
     NotOwner,
     NotFound,
+    #[allow(dead_code)]
     Db(rusqlite::Error),
 }
 
@@ -47,9 +49,11 @@ pub enum ShareCreateError {
 pub enum ShareRevokeError {
     NotOwner,
     NotFound,
+    #[allow(dead_code)]
     Db(rusqlite::Error),
 }
 
+#[allow(clippy::too_many_arguments)]
 fn row_from_query(
     id: String,
     flight_id: String,
@@ -96,7 +100,9 @@ impl ClubDb {
         pilot_id: &str,
         flight_id: &str,
     ) -> Result<(FlightShareRow, String), ShareCreateError> {
-        let flight = self.get_flight(flight_id).ok_or(ShareCreateError::NotFound)?;
+        let flight = self
+            .get_flight(flight_id)
+            .ok_or(ShareCreateError::NotFound)?;
         if flight.pilot_id != pilot_id {
             return Err(ShareCreateError::NotOwner);
         }
@@ -145,7 +151,9 @@ impl ClubDb {
         pilot_id: &str,
         flight_id: &str,
     ) -> Result<Vec<FlightShareListItem>, ShareCreateError> {
-        let flight = self.get_flight(flight_id).ok_or(ShareCreateError::NotFound)?;
+        let flight = self
+            .get_flight(flight_id)
+            .ok_or(ShareCreateError::NotFound)?;
         if flight.pilot_id != pilot_id {
             return Err(ShareCreateError::NotOwner);
         }
@@ -173,7 +181,9 @@ impl ClubDb {
         flight_id: &str,
         share_id: &str,
     ) -> Result<(), ShareRevokeError> {
-        let flight = self.get_flight(flight_id).ok_or(ShareRevokeError::NotFound)?;
+        let flight = self
+            .get_flight(flight_id)
+            .ok_or(ShareRevokeError::NotFound)?;
         if flight.pilot_id != pilot_id {
             return Err(ShareRevokeError::NotOwner);
         }
@@ -240,6 +250,7 @@ impl ClubDb {
     }
 
     /// Same flight as resolve_share_token; used to assert share access does not leak other flights.
+    #[allow(dead_code)]
     pub fn share_flight_id(&self, token: &str) -> Option<String> {
         self.resolve_share_token(token).map(|r| r.flight_id)
     }
@@ -249,20 +260,13 @@ pub(crate) fn token_hash_matches(stored: &str, candidate_digest: &str) -> bool {
     if stored.len() != candidate_digest.len() {
         return false;
     }
-    stored
-        .as_bytes()
-        .ct_eq(candidate_digest.as_bytes())
-        .into()
+    stored.as_bytes().ct_eq(candidate_digest.as_bytes()).into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::club::{
-        db::ClubDb,
-        visibility::FlightVisibility,
-    };
-    use crate::live::LiveFix;
+    use crate::club::{db::ClubDb, visibility::FlightVisibility};
 
     fn pilot_flight(db: &ClubDb) -> (String, String) {
         let club = db.default_club_id().unwrap();
@@ -274,7 +278,8 @@ mod tests {
         db.approve_pilot(&pilot).unwrap();
         db.add_checkout(&pilot, "C152", None, None).unwrap();
         let (dev, _) = db.create_device(&pilot, "phone").unwrap();
-        db.issue_open_checkin(&pilot, &dev, &club, now_ms()).unwrap();
+        db.issue_open_checkin(&pilot, &dev, &club, now_ms())
+            .unwrap();
         let fid = db
             .start_flight(
                 &pilot,
@@ -328,7 +333,8 @@ mod tests {
         db.approve_pilot(&pilot).unwrap();
         db.add_checkout(&pilot, "C152", None, None).unwrap();
         let (dev, _) = db.create_device(&pilot, "d").unwrap();
-        db.issue_open_checkin(&pilot, &dev, &club, now_ms()).unwrap();
+        db.issue_open_checkin(&pilot, &dev, &club, now_ms())
+            .unwrap();
         let fid = db
             .start_flight(
                 &pilot,
@@ -357,7 +363,8 @@ mod tests {
         db.approve_pilot(&pilot_b).unwrap();
         db.add_checkout(&pilot_b, "C152", None, None).unwrap();
         let (dev_b, _) = db.create_device(&pilot_b, "b").unwrap();
-        db.issue_open_checkin(&pilot_b, &dev_b, &club, now_ms()).unwrap();
+        db.issue_open_checkin(&pilot_b, &dev_b, &club, now_ms())
+            .unwrap();
         let fid_b = db
             .start_flight(
                 &pilot_b,

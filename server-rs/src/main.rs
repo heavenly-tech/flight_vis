@@ -1,8 +1,8 @@
 mod auth;
 mod club;
 mod device_auth;
-mod i18n;
 mod flights;
+mod i18n;
 mod live;
 mod static_files;
 mod store;

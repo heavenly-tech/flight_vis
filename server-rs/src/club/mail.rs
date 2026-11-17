@@ -104,14 +104,8 @@ impl Mailer {
         }
     }
 
-  /// Send (capture) an email using locale catalogs (`mail.{stem}.*` keys).
-    pub fn capture_localized(
-        &self,
-        to: &str,
-        locale: &str,
-        stem: &str,
-        vars: &[(&str, &str)],
-    ) {
+    /// Send (capture) an email using locale catalogs (`mail.{stem}.*` keys).
+    pub fn capture_localized(&self, to: &str, locale: &str, stem: &str, vars: &[(&str, &str)]) {
         let Some(cat) = crate::i18n::global() else {
             return;
         };
