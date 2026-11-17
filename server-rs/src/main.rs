@@ -1,4 +1,5 @@
 mod auth;
+mod club;
 mod device_auth;
 mod flights;
 mod live;
@@ -34,6 +35,7 @@ pub(crate) struct AppState {
     pub(crate) device_auth: DeviceAuth,
     pub(crate) live: Arc<LiveEngine>,
     pub(crate) store: Store,
+    pub(crate) club: Option<club::ClubDb>,
     pub(crate) video_queue: tokio::sync::mpsc::Sender<video::VideoJob>,
     pub(crate) login_throttle: LoginThrottle,
 }
@@ -53,6 +55,7 @@ fn app_state(
             device_auth,
             live,
             store,
+            club: None,
             video_queue,
             login_throttle: LoginThrottle::default(),
         },
@@ -541,13 +544,16 @@ fn require_auth(
 }
 
 fn build_router(state: AppState) -> Router {
-    Router::new()
+    let mut app = Router::new()
         .route("/api/health", get(health))
         .route("/api/auth/me", get(auth_me))
         .route("/login", get(login_page).post(login_post))
         .route("/login.html", get(login_html_redirect))
-        .route("/logout", get(logout).post(logout))
-        .merge(flights::router().layer(DefaultBodyLimit::max(64 * 1024 * 1024)))
+        .route("/logout", get(logout).post(logout));
+    if state.club.is_some() {
+        app = app.merge(club::router());
+    }
+    app.merge(flights::router().layer(DefaultBodyLimit::max(64 * 1024 * 1024)))
         .merge(video::router())
         .merge(live::router().layer(DefaultBodyLimit::max(256 * 1024)))
         .fallback(fallback)
@@ -659,7 +665,14 @@ async fn run_server() {
             live_task.tick_idle_and_prune().await;
         }
     });
-    let (state, queue_rx) = app_state(
+    let club = match club::ClubDb::open(&config.data_dir) {
+        Ok(db) => Some(db),
+        Err(error) => {
+            eprintln!("warn: club database unavailable: {error}");
+            None
+        }
+    };
+    let mut state_bundle = app_state(
         config.dist_dir,
         Auth::from_env(),
         DeviceAuth::from_env().unwrap_or_else(|error| {
@@ -669,6 +682,19 @@ async fn run_server() {
         live,
         Store::new(&config.data_dir),
     );
+    state_bundle.0.club = club.clone();
+    let (state, queue_rx) = state_bundle;
+    if let Some(db) = club.clone() {
+        let club_task = db;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                let now = club::now_ms();
+                let _ = club_task.auto_end_idle(10 * 60 * 1000, now);
+            }
+        });
+    }
     state
         .store
         .seed(

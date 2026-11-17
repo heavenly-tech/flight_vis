@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>flight_vis · pilot</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main { max-width: 46rem; margin: 1.5rem auto; padding: 0 1rem 3rem; }
+      section { border: 1px solid rgba(255,255,255,.12); border-radius: 14px; padding: 1rem 1.1rem; margin-top: 1rem; background: #10151d; }
+      input, select, button { font: inherit; }
+      .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+      .token-box { word-break: break-all; font-family: monospace; font-size: .85rem; padding: .6rem; background: #0b0f16; border-radius: 8px; margin: .5rem 0; }
+      #qr { max-width: 180px; background: #fff; padding: 8px; border-radius: 8px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Pilot</h1>
+      <p id="who" class="muted">Checking session…</p>
+      <p><a href="/app.html">Download Android tracker app</a></p>
+      <section>
+        <h2 style="margin:0;font-size:1rem">Device token</h2>
+        <p class="muted">Shown once. Scan the QR or paste into the Traccar/OsmAnd client.</p>
+        <div class="row">
+          <input id="dev-label" placeholder="Phone label" />
+          <button type="button" id="btn-new-device">Create device</button>
+        </div>
+        <div id="token-reveal" hidden>
+          <div class="token-box" id="token-text"></div>
+          <img id="qr" alt="device token qr" />
+        </div>
+        <ul id="devices"></ul>
+      </section>
+      <section>
+        <h2 style="margin:0;font-size:1rem">My flights</h2>
+        <ul id="flights"></ul>
+      </section>
+      <p><a href="/club-map.html">Club map</a> · <a href="/">Globe viewer</a></p>
+    </main>
+    <script type="module" src="/src/club/pilot.ts"></script>
+  </body>
+</html>

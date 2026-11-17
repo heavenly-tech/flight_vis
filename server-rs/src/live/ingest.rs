@@ -45,6 +45,28 @@ pub async fn post_ingest(
         Some(token) => token,
         None => return unauthorized().into_response(),
     };
+    let batch: crate::live::types::IngestBatch = match serde_json::from_slice(&body) {
+        Ok(batch) => batch,
+        Err(_) => return bad_request("invalid json").into_response(),
+    };
+    let fixes: Vec<LiveFix> = batch
+        .fixes
+        .into_iter()
+        .map(LiveEngine::input_to_fix)
+        .collect();
+    if let Some(db) = &state.club {
+        if let Some(device_id) = db.resolve_device_token(token) {
+            if let Some(flight_id) = db.open_flight_for_device(&device_id) {
+                let accepted = fixes
+                    .iter()
+                    .filter(|f| db.append_fix(&flight_id, &device_id, f).is_ok())
+                    .count();
+                return (StatusCode::OK, Json(json!({ "ok": true, "accepted": accepted })))
+                    .into_response();
+            }
+            return bad_request("no active flight").into_response();
+        }
+    }
     let device = match state.device_auth.verify(token) {
         Some(name) => name,
         None => return unauthorized().into_response(),
@@ -56,15 +78,6 @@ pub async fn post_ingest(
         )
             .into_response();
     }
-    let batch: crate::live::types::IngestBatch = match serde_json::from_slice(&body) {
-        Ok(batch) => batch,
-        Err(_) => return bad_request("invalid json").into_response(),
-    };
-    let fixes: Vec<LiveFix> = batch
-        .fixes
-        .into_iter()
-        .map(LiveEngine::input_to_fix)
-        .collect();
     match state.live.ingest_fixes(device, fixes).await {
         Ok(n) => (StatusCode::OK, Json(json!({ "ok": true, "accepted": n }))).into_response(),
         Err(msg) => bad_request(msg).into_response(),
@@ -211,6 +224,16 @@ pub async fn osmand_ingest(
     };
     if fix.t == 0 {
         fix.t = state.live.now_ms();
+    }
+    if let Some(db) = &state.club {
+        if let Some(device_id) = db.resolve_device_token(&token) {
+            if let Some(flight_id) = db.open_flight_for_device(&device_id) {
+                if db.append_fix(&flight_id, &device_id, &fix).is_ok() {
+                    return (StatusCode::OK, "OK").into_response();
+                }
+            }
+            return bad_request("no active flight").into_response();
+        }
     }
     let device = match state.device_auth.verify(&token) {
         Some(name) => name,

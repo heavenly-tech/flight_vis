@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>flight_vis · club map</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>main{padding:1rem} ul{list-style:none;padding:0} li{padding:.35rem 0;border-bottom:1px solid rgba(255,255,255,.08)}</style>
+  </head>
+  <body>
+    <main>
+      <h1>Club map</h1>
+      <p class="muted">Approved members only. Visibility enforced server-side.</p>
+      <ul id="list"></ul>
+      <p><a href="/">Public map: anonymous</a> uses <code>/api/club/map/public</code></p>
+    </main>
+    <script type="module">
+      const list = document.getElementById("list");
+      const res = await fetch("/api/club/map", { credentials: "same-origin" });
+      if (!res.ok) {
+        list.innerHTML = "<li>Sign in as an approved pilot</li>";
+      } else {
+        const data = await res.json();
+        for (const row of data.aircraft ?? []) {
+          const li = document.createElement("li");
+          li.textContent = `${row.tail} · ${row.pilotName ?? "—"}`;
+          list.appendChild(li);
+        }
+      }
+    </script>
+  </body>
+</html>

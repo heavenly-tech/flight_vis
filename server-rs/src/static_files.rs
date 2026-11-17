@@ -24,6 +24,7 @@ fn mime_for(ext: &str) -> &'static str {
         "wasm" => "application/wasm",
         "woff" => "font/woff",
         "woff2" => "font/woff2",
+        "apk" => "application/vnd.android.package-archive",
         _ => "application/octet-stream",
     }
 }

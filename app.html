@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>flight_vis · Android app</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main { max-width: 42rem; margin: 2rem auto; padding: 0 1.25rem; }
+      .card { border: 1px solid var(--stroke, rgba(255,255,255,.12)); border-radius: 16px; padding: 1.25rem 1.5rem; background: var(--panel, #10151d); }
+      .muted { opacity: .75; }
+      ol { padding-left: 1.2rem; line-height: 1.6; }
+      code { font-size: .92em; }
+      .badge { display: inline-block; padding: .2rem .55rem; border-radius: 999px; background: rgba(103,232,249,.15); color: #67e8f9; font-size: .8rem; letter-spacing: .04em; }
+      a.dl { display: inline-block; margin-top: 1rem; padding: .65rem 1.1rem; border-radius: 10px; background: #ecebff; color: #15132a; font-weight: 650; text-decoration: none; }
+      a.dl[disabled] { opacity: .45; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p class="badge">flight_vis · Android</p>
+      <h1 style="margin-top: .5rem">Sideload the tracker app</h1>
+      <p class="muted">Install the heavenly.cl flight tracker on your phone. No Play Store required.</p>
+      <section class="card" id="release-card" style="margin-top: 1.25rem">
+        <p id="status">Loading release info…</p>
+        <p id="version" hidden></p>
+        <p id="sha" hidden><strong>SHA-256</strong> <code id="sha-val"></code></p>
+        <a class="dl" id="download" hidden download="flightvis.apk">Download APK</a>
+      </section>
+      <section class="card" style="margin-top: 1rem">
+        <h2 style="margin-top: 0; font-size: 1rem">Sideloading steps</h2>
+        <ol>
+          <li>On Android, open <strong>Settings → Apps → Special access → Install unknown apps</strong> and allow your browser to install packages.</li>
+          <li>Download the APK using the button above (when available) and open it to install.</li>
+          <li>After install, grant location <strong>Allow all the time</strong> so fixes continue in the background.</li>
+          <li>Set battery usage for the app to <strong>Unrestricted</strong> so Android does not kill tracking during flight.</li>
+          <li>Copy your per-device token from the <a href="/club-pilot.html">pilot profile</a> into the app.</li>
+        </ol>
+      </section>
+      <p class="muted" style="margin-top: 1.5rem"><a href="/">← Back to flight_vis</a></p>
+    </main>
+    <script type="module" src="/src/app/main.ts"></script>
+  </body>
+</html>

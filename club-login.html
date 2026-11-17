@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>flight_vis · club login</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>main{max-width:24rem;margin:3rem auto;padding:1rem} input,button{width:100%;padding:.6rem;margin:.35rem 0;font:inherit}</style>
+  </head>
+  <body>
+    <main>
+      <h1>Club login</h1>
+      <form id="form">
+        <input name="email" type="email" required placeholder="Email" />
+        <input name="password" type="password" required placeholder="Password" minlength="8" />
+        <button type="submit">Log in</button>
+      </form>
+      <p id="msg" class="muted"></p>
+      <p><a href="/club-pilot.html">Pilot profile</a> · <a href="/app.html">Android app</a></p>
+    </main>
+    <script type="module">
+      const form = document.getElementById("form");
+      const msg = document.getElementById("msg");
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const body = Object.fromEntries(new FormData(form));
+        const res = await fetch("/api/club/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify(body),
+        });
+        if (res.ok) {
+          msg.textContent = "Signed in.";
+          location.href = "/club-pilot.html";
+        } else {
+          msg.textContent = "Login failed.";
+        }
+      });
+    </script>
+  </body>
+</html>

@@ -38,6 +38,7 @@ mod tests {
             device_auth: devices,
             live,
             store: Store::new(&data_dir),
+            club: None,
             video_queue,
             login_throttle: LoginThrottle::default(),
         };

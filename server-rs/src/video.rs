@@ -976,6 +976,7 @@ mod tests {
             device_auth: crate::device_auth::DeviceAuth::empty(),
             live,
             store,
+            club: None,
             video_queue,
             login_throttle: crate::LoginThrottle::default(),
         };

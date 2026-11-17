@@ -57,6 +57,11 @@ export default defineConfig({
       input: {
         main: path.resolve(root, "index.html"),
         login: path.resolve(root, "login.html"),
+        app: path.resolve(root, "app.html"),
+        clubPilot: path.resolve(root, "club-pilot.html"),
+        clubFlight: path.resolve(root, "club-flight.html"),
+        clubLogin: path.resolve(root, "club-login.html"),
+        clubMap: path.resolve(root, "club-map.html"),
       },
     },
   },

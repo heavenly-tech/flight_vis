@@ -99,6 +99,13 @@ async fn post_flights(
     headers: HeaderMap,
     body: Bytes,
 ) -> axum::response::Response {
+    if let Ok(start) = serde_json::from_slice::<serde_json::Value>(&body) {
+        if start.get("tail").and_then(|v| v.as_str()).is_some() {
+            return crate::club::post_club_flight_start(State(state), headers, body)
+                .await
+                .into_response();
+        }
+    }
     if let Err(denied) = require_auth(&state, &headers) {
         return *denied;
     }
@@ -119,6 +126,21 @@ async fn patch_flight(
     Path(raw): Path<String>,
     body: Bytes,
 ) -> axum::response::Response {
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) {
+        let club_patch = (value.get("visibility").is_some()
+            || value.get("show_pilot_name_public").is_some())
+            && state.club.as_ref().and_then(|db| db.get_flight(&raw)).is_some();
+        if club_patch {
+            return crate::club::patch_club_flight_by_id(
+                State(state),
+                headers,
+                Path(raw),
+                Json(serde_json::from_slice(&body).unwrap_or_default()),
+            )
+            .await
+            .into_response();
+        }
+    }
     if let Err(denied) = require_auth(&state, &headers) {
         return *denied;
     }
@@ -217,6 +239,7 @@ mod tests {
             device_auth: crate::device_auth::DeviceAuth::empty(),
             live,
             store,
+            club: None,
             video_queue,
             login_throttle: crate::LoginThrottle::default(),
         };
