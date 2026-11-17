@@ -2,11 +2,10 @@ use crate::club::{
     access_request::AccessRequestError,
     auth::{self, parse_display_cookie, parse_session_cookie},
     db::{
-        now_ms, CheckinReject, CheckoutError, ClubDb, DeleteError, EndError, PatchError,
+        now_ms, AdminPendingCounts, ApprovePilotCheckout, CheckinReject, CheckoutError, ClubDb,
+        DeleteError, DeviceRegisterError, EndError, MAX_DEVICES_PER_PILOT, PatchError,
         RegisterError, StartFlightError,
     },
-    db_access::{AdminPendingCounts, ApprovePilotCheckout},
-    db_devices::{DeviceRegisterError, MAX_DEVICES_PER_PILOT},
     map::TailLivePosition,
     visibility::{FlightVisibility, PilotRole, PilotStatus, Viewer},
 };

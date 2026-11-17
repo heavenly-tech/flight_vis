@@ -61,6 +61,7 @@ def main() -> None:
         ("approve_pilot", "flight_core.rs"),
         ("checkout_ok", "checkout_ok.rs"),
         ("me_tails", "flight_core.rs"),
+        ("start_flight_atomic", "start_flight_atomic.rs"),
         ("start_flight", "patch_through_append.rs"),
         ("patch_flight", "patch_through_append.rs"),
         ("end_flight", "patch_through_append.rs"),
@@ -69,7 +70,6 @@ def main() -> None:
         ("open_flight_for_device", "patch_through_append.rs"),
         ("append_fix", "patch_through_append.rs"),
         ("append_fixes", "patch_through_append.rs"),
-        ("start_flight_atomic", "start_flight_atomic.rs"),
     ]:
         snip = (SNIP / fname).read_text()
         # extract single method from multi-method snippet files
@@ -84,6 +84,9 @@ def main() -> None:
                 except KeyError:
                     if name == "checkout_ok":
                         ins = db.index("    pub async fn me_tails(")
+                        db = db[:ins] + body + "\n\n" + db[ins:]
+                    elif name == "start_flight_atomic":
+                        ins = db.index("    pub async fn start_flight(")
                         db = db[:ins] + body + "\n\n" + db[ins:]
                     else:
                         raise

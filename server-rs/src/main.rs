@@ -2,7 +2,6 @@ mod auth;
 mod club;
 mod device_auth;
 mod flights;
-mod i18n;
 mod live;
 mod static_files;
 mod store;
@@ -40,7 +39,6 @@ pub(crate) struct AppState {
     pub(crate) video_queue: tokio::sync::mpsc::Sender<video::VideoJob>,
     pub(crate) login_throttle: LoginThrottle,
     pub(crate) device_register_throttle: LoginThrottle,
-    pub(crate) share_lookup_throttle: LoginThrottle,
     pub(crate) mailer: club::mail::Mailer,
 }
 
@@ -63,7 +61,6 @@ fn app_state(
             video_queue,
             login_throttle: LoginThrottle::default(),
             device_register_throttle: LoginThrottle::default(),
-            share_lookup_throttle: LoginThrottle::default(),
             mailer: club::mail::Mailer::from_env(club::mail::MailOutbox::default()),
         },
         queue_rx,
@@ -306,17 +303,13 @@ pub(crate) struct LoginThrottle {
 }
 
 impl LoginThrottle {
-    pub(crate) fn allow(&self, ip: &str, now: u64) -> bool {
-        self.allow_up_to(ip, now, LOGIN_MAX_ATTEMPTS)
-    }
-
-    pub(crate) fn allow_up_to(&self, ip: &str, now: u64, max_attempts: usize) -> bool {
+    fn allow(&self, ip: &str, now: u64) -> bool {
         let mut hits = self.hits.lock().unwrap_or_else(|err| err.into_inner());
         let cutoff = now.saturating_sub(LOGIN_WINDOW_SECS);
         let allowed = {
             let entry = hits.entry(ip.to_string()).or_default();
             entry.retain(|stamp| *stamp > cutoff);
-            if entry.len() >= max_attempts {
+            if entry.len() >= LOGIN_MAX_ATTEMPTS {
                 false
             } else {
                 entry.push(now);
@@ -562,7 +555,6 @@ fn build_router(state: AppState) -> Router {
         .route("/login", get(login_page).post(login_post))
         .route("/login.html", get(login_html_redirect))
         .route("/logout", get(logout).post(logout));
-    app = app.merge(club::android_assetlinks::well_known_routes());
     if state.club.is_some() {
         app = app.merge(club::router());
     }
@@ -665,10 +657,6 @@ fn main() {
 #[tokio::main]
 async fn run_server() {
     let config = config_from_env();
-    let locale_dir = i18n::Catalogs::resolve_dir(&config.dist_dir);
-    if let Err(error) = i18n::init_global(&locale_dir) {
-        eprintln!("warn: i18n catalogs: {error}");
-    }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let live = Arc::new(LiveEngine::new(&config.data_dir));
     if let Err(error) = live.load_from_disk().await {
@@ -682,18 +670,10 @@ async fn run_server() {
             live_task.tick_idle_and_prune().await;
         }
     });
-    if club::database::resolve_database_url().is_ok() {
-        if let Ok(pg) = club::database::connect_pool().await {
-            if let Err(error) = club::sqlite_import::import_if_present(&config.data_dir, &pg).await
-            {
-                eprintln!("warn: club sqlite import failed: {error}");
-            }
-        }
-    }
-    let club = match club::ClubDb::open(&config.data_dir) {
+    let club = match club::ClubDb::connect().await {
         Ok(db) => {
             if std::env::var("FLIGHT_CLUB_SEED_DEMO").as_deref() == Ok("1") {
-                if let Err(error) = db.seed_demo_if_empty() {
+                if let Err(error) = db.seed_demo_if_empty().await {
                     eprintln!("warn: demo seed failed: {error}");
                 }
             }
@@ -722,7 +702,7 @@ async fn run_server() {
             loop {
                 interval.tick().await;
                 let now = club::now_ms();
-                let _ = db.auto_end_idle(10 * 60 * 1000, now);
+                let _ = db.auto_end_idle(10 * 60 * 1000, now).await;
             }
         });
     }

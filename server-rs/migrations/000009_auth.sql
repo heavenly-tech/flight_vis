@@ -1,0 +1,61 @@
+-- Mirrors sqlite-legacy 009_club_auth, 010_map_view_filters, 011_kiosk_qr_layout (Postgres).
+
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'live';
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS contact_email TEXT NOT NULL DEFAULT '';
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS email_verified_at BIGINT;
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS suspended_at BIGINT;
+
+UPDATE clubs SET contact_email = '' WHERE contact_email IS NULL;
+UPDATE clubs SET status = 'live' WHERE status IS NULL OR status = '';
+
+CREATE TABLE IF NOT EXISTS magic_login_tokens (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_at BIGINT NOT NULL,
+    expires_at BIGINT NOT NULL,
+    used_at BIGINT,
+    purpose TEXT NOT NULL DEFAULT 'login'
+);
+
+CREATE INDEX IF NOT EXISTS idx_magic_login_email ON magic_login_tokens (email, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS webauthn_credentials (
+    id TEXT PRIMARY KEY,
+    pilot_id TEXT NOT NULL REFERENCES pilots(id) ON DELETE CASCADE,
+    credential_id BYTEA NOT NULL,
+    public_key BYTEA NOT NULL,
+    counter BIGINT NOT NULL DEFAULT 0,
+    created_at BIGINT NOT NULL,
+    UNIQUE (credential_id)
+);
+
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS latitude DOUBLE PRECISION;
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS longitude DOUBLE PRECISION;
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS public_radius_km DOUBLE PRECISION NOT NULL DEFAULT 100;
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS show_public_tracks BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS public_flights_cap INTEGER NOT NULL DEFAULT 50;
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS public_altitude_mode TEXT NOT NULL DEFAULT 'agl';
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS public_altitude_min_ft DOUBLE PRECISION NOT NULL DEFAULT 300;
+
+ALTER TABLE pilots ADD COLUMN IF NOT EXISTS public_radius_km DOUBLE PRECISION NOT NULL DEFAULT 100;
+ALTER TABLE pilots ADD COLUMN IF NOT EXISTS show_public_tracks BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE pilots ADD COLUMN IF NOT EXISTS public_flights_cap INTEGER NOT NULL DEFAULT 50;
+ALTER TABLE pilots ADD COLUMN IF NOT EXISTS public_altitude_mode TEXT NOT NULL DEFAULT 'agl';
+ALTER TABLE pilots ADD COLUMN IF NOT EXISTS public_altitude_min_ft DOUBLE PRECISION NOT NULL DEFAULT 300;
+ALTER TABLE pilots ADD COLUMN IF NOT EXISTS last_latitude DOUBLE PRECISION;
+ALTER TABLE pilots ADD COLUMN IF NOT EXISTS last_longitude DOUBLE PRECISION;
+ALTER TABLE pilots ADD COLUMN IF NOT EXISTS last_position_at BIGINT;
+
+UPDATE clubs SET latitude = -33.4489, longitude = -70.6693 WHERE latitude IS NULL;
+
+CREATE TABLE IF NOT EXISTS email_suppressions (
+    email TEXT PRIMARY KEY,
+    reason TEXT NOT NULL,
+    created_at BIGINT NOT NULL
+);
+
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS kiosk_qr_x DOUBLE PRECISION;
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS kiosk_qr_y DOUBLE PRECISION;
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS kiosk_qr_size DOUBLE PRECISION;
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS kiosk_layout_rev BIGINT NOT NULL DEFAULT 0;

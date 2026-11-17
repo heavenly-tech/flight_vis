@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] / "src/club"
@@ -19,8 +20,9 @@ def extract_impl_methods(path: Path) -> str:
     if "impl ClubDb" not in text:
         return ""
     impl = text[text.index("impl ClubDb {") + len("impl ClubDb {") :]
-    if "#[cfg(test)]" in impl:
-        impl = impl[: impl.index("#[cfg(test)]")]
+    mod_tests = re.search(r"\n#\[cfg\(test\)\]\nmod tests\b", impl)
+    if mod_tests:
+        impl = impl[: mod_tests.start()]
     # strip trailing closing brace of impl
     depth = 0
     end = None
