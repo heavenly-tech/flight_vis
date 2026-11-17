@@ -1,16 +1,18 @@
 use crate::club::{
+    access_request::AccessRequestError,
     auth::{self, parse_display_cookie, parse_session_cookie},
     db::{
-        now_ms, CheckinReject, ClubDb, DeleteError, EndError, PatchError, RegisterError,
-        StartFlightError,
+        now_ms, CheckinReject, CheckoutError, ClubDb, DeleteError, EndError, PatchError,
+        RegisterError, StartFlightError,
     },
+    db_access::{AdminPendingCounts, ApprovePilotCheckout},
     map::TailLivePosition,
     visibility::{FlightVisibility, PilotRole, PilotStatus, Viewer},
 };
 use crate::AppState;
 use axum::{
     body::Bytes,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -352,9 +354,9 @@ pub async fn post_club_flight_start(
             "showPilotNamePublic": show_name,
         }))
         .into_response(),
-        Err(StartFlightError::NoCheckout) => (
+        Err(StartFlightError::NotCleared { tail, type_code }) => (
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "no checkout" })),
+            Json(json!({ "error": format!("not cleared for {tail} / {type_code}") })),
         )
             .into_response(),
         Err(StartFlightError::NoTail) => (
@@ -892,13 +894,30 @@ async fn admin_pending(State(state): State<AppState>, headers: HeaderMap) -> imp
     Json(json!({ "pilots": db.list_pending_pilots() })).into_response()
 }
 
+#[derive(Deserialize, Default)]
+struct ApprovePilotBody {
+    #[serde(default)]
+    checkout: Option<ApprovePilotCheckout>,
+}
+
 async fn admin_approve(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(pilot_id): Path<String>,
+    Json(body): Json<ApprovePilotBody>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers);
-    if require_admin(&v).is_err() {
+    let Viewer::Pilot {
+        id: admin_id, role, ..
+    } = v
+    else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    };
+    if role != PilotRole::Admin {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "admin only" })),
@@ -912,7 +931,8 @@ async fn admin_approve(
         )
             .into_response();
     };
-    match db.approve_pilot(&pilot_id) {
+    let checkout = body.checkout;
+    match db.approve_pilot_with_checkout(&admin_id, &pilot_id, checkout) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -976,9 +996,265 @@ async fn admin_checkout(
         body.expires_at,
     ) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(CheckoutError::UnknownTail) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "unknown tail; type is derived from the aircraft tail" })),
+        )
+            .into_response(),
+        Err(CheckoutError::UnknownType) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "unknown aircraft type" })),
+        )
+            .into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct AccessRequestBody {
+    tail: String,
+    #[serde(rename = "typeId")]
+    type_id: Option<String>,
+    #[serde(rename = "newTypeName")]
+    new_type_name: Option<String>,
+}
+
+async fn me_access_requests(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    let Viewer::Pilot { id, .. } = v else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    };
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "requests": [] })).into_response();
+    };
+    Json(json!({ "requests": db.list_pilot_access_requests(&id) })).into_response()
+}
+
+async fn me_access_requests_stream(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    let Viewer::Pilot { id, .. } = v else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    };
+    let Some(db) = club_db(&state).cloned() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let pilot_id = id;
+    let stream = stream::unfold(0u64, move |_| {
+        let db = db.clone();
+        let pid = pilot_id.clone();
+        async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let rows = db.list_pilot_access_requests(&pid);
+            let payload = serde_json::to_string(&json!({ "requests": rows })).ok()?;
+            Some((Ok::<_, Infallible>(Event::default().data(payload)), 0u64))
+        }
+    });
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(2)))
+        .into_response()
+}
+
+async fn post_access_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AccessRequestBody>,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    let Viewer::Pilot { id, .. } = v else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    };
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    match db.create_access_request(
+        &id,
+        &body.tail,
+        body.type_id.as_deref(),
+        body.new_type_name.as_deref(),
+        now_ms(),
+    ) {
+        Ok(req_id) => Json(json!({ "ok": true, "id": req_id })).into_response(),
+        Err(err) => {
+            let status = match err {
+                AccessRequestError::NoCheckin => StatusCode::FORBIDDEN,
+                AccessRequestError::InvalidTail | AccessRequestError::MissingType => {
+                    StatusCode::BAD_REQUEST
+                }
+                _ => StatusCode::CONFLICT,
+            };
+            (status, Json(json!({ "error": err.message() }))).into_response()
+        }
+    }
+}
+
+async fn admin_pending_counts(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    if require_admin(&v).is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "pilots": 0, "accessRequests": 0 })).into_response();
+    };
+    let club_id = db.default_club_id().unwrap_or_default();
+    let AdminPendingCounts {
+        pilots,
+        access_requests,
+    } = db.admin_pending_counts(&club_id);
+    Json(json!({ "pilots": pilots, "accessRequests": access_requests })).into_response()
+}
+
+async fn admin_list_access_requests(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<AccessRequestQuery>,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    if require_admin(&v).is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "requests": [] })).into_response();
+    };
+    let club_id = db.default_club_id().unwrap_or_default();
+    Json(json!({
+        "requests": db.list_admin_access_requests(&club_id, q.status.as_deref())
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize, Default)]
+struct AccessRequestQuery {
+    status: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct DecideAccessBody {
+    #[serde(default)]
+    expires_at: Option<i64>,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+async fn admin_approve_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Option<Json<DecideAccessBody>>,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    let Viewer::Pilot {
+        id: admin_id, role, ..
+    } = v
+    else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    };
+    if role != PilotRole::Admin {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let expires = body.as_ref().and_then(|Json(b)| b.expires_at);
+    match db.approve_access_request(&admin_id, &id, expires, now_ms()) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": err.message() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn admin_reject_access(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(body): Json<DecideAccessBody>,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    let Viewer::Pilot {
+        id: admin_id, role, ..
+    } = v
+    else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    };
+    if role != PilotRole::Admin {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let reason = body.reason.unwrap_or_else(|| "rejected".to_string());
+    match db.reject_access_request(&admin_id, &id, &reason, now_ms()) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(err) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": err.message() })),
         )
             .into_response(),
     }
@@ -1482,4 +1758,25 @@ pub fn router() -> Router<AppState> {
             get(list_checkouts_admin).post(admin_checkout),
         )
         .route("/api/admin/pilots/{id}/approve", post(admin_approve))
+        .route(
+            "/api/me/access-requests",
+            get(me_access_requests).post(post_access_request),
+        )
+        .route(
+            "/api/me/access-requests/stream",
+            get(me_access_requests_stream),
+        )
+        .route("/api/admin/pending-counts", get(admin_pending_counts))
+        .route(
+            "/api/admin/access-requests",
+            get(admin_list_access_requests),
+        )
+        .route(
+            "/api/admin/access-requests/{id}/approve",
+            post(admin_approve_access),
+        )
+        .route(
+            "/api/admin/access-requests/{id}/reject",
+            post(admin_reject_access),
+        )
 }

@@ -8,7 +8,11 @@ use sha2::{Digest, Sha256};
 
 pub const COOKIE: &str = "fv_club_session";
 pub const DISPLAY_COOKIE: &str = "fv_club_display";
-pub const SESSION_TTL_SEC: i64 = 7 * 24 * 3600;
+pub const SESSION_TTL_SEC: i64 = 12 * 3600;
+
+/// Argon2 hash of a fixed password; verified on failed login lookups for timing parity.
+pub const DUMMY_PASSWORD_HASH: &str =
+    "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHlzYWx0c2FsdDE$+7K0dWSyNpY2LxqJX5v+fxWuZLq0sP3Q8xZ7d3Y6o2w";
 
 pub fn hash_password(password: &str) -> Result<String, &'static str> {
     let salt = SaltString::generate(&mut OsRng);
@@ -111,7 +115,7 @@ pub fn set_session_cookie(session_id: &str, secure: bool) -> String {
     if secure {
         cookie.push_str("; Secure");
     }
-    cookie.push_str("; Max-Age=604800");
+    cookie.push_str(&format!("; Max-Age={SESSION_TTL_SEC}"));
     cookie
 }
 

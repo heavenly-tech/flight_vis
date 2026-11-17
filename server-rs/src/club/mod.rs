@@ -1,8 +1,10 @@
-//! Flight-club registry: pilot auth, checkouts, shared live map (Postgres).
+//! Flight-club registry: pilot auth, checkouts, shared live map.
+mod access_request;
 mod auth;
 pub mod checkin;
 pub mod database;
 mod db;
+mod db_access;
 mod map;
 mod qr;
 mod routes;

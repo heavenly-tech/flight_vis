@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Admin · requests</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main { max-width: 44rem; margin: 1rem auto; padding: 0 1rem 2rem; }
+      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
+      .badge { background: #c62828; color: #fff; border-radius: 999px; padding: 0 .45rem; font-size: .75rem; margin-left: .25rem; }
+      article { border: 1px solid #ccc; border-radius: .5rem; padding: .75rem; margin: .75rem 0; }
+      button { font: inherit; margin-right: .35rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Access requests <span id="badge" class="badge" hidden>0</span></h1>
+      <div id="admin-nav"></div>
+      <div id="list"></div>
+    </main>
+    <script type="module" src="/src/club/adminRequests.ts"></script>
+  </body>
+</html>

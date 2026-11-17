@@ -3,6 +3,7 @@ const NAV = `
   <a href="/club-admin-types.html">Types</a>
   <a href="/club-admin-tails.html">Tails</a>
   <a href="/club-admin-pilots.html">Pilots</a>
+  <a href="/club-admin-requests.html">Requests</a>
   <a href="/club-admin-checkouts.html">Checkouts</a>
   <a href="/club-admin-map.html">Admin map</a>
   <a href="/club-login.html">Login</a>
