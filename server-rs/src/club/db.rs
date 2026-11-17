@@ -4,11 +4,8 @@ use crate::club::{
     auth::{self, digest_token, new_device_token, new_id},
     checkin::{self, CheckinTokenError},
     database::{self, DbConnectError},
-    map::{dedupe_by_tail, filter_admin_tails, DeviceFix, TailLivePosition},
-    visibility::{
-        can_view_flight, includes_in_club_map, includes_in_public_map, show_pilot_name,
-        FlightVisibility, PilotRole, PilotStatus, Viewer,
-    },
+    map::{filter_admin_tails, DeviceFix, TailLivePosition},
+    visibility::{FlightVisibility, PilotRole, PilotStatus, Viewer},
 };
 use crate::live::LiveFix;
 use serde::Serialize;
@@ -794,12 +791,38 @@ impl ClubDb {
         self.flight_visible_to_scoped(viewer, flight_id).await
     }
 
+    #[allow(dead_code)]
+    pub async fn mark_email_verified(&self, pilot_id: &str, now: i64) -> Result<(), DbError> {
+        sqlx::query("UPDATE pilots SET email_verified_at = $1 WHERE id = $2")
+            .bind(now)
+            .bind(pilot_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub async fn pilot_email_verified(&self, pilot_id: &str) -> bool {
+        sqlx::query_scalar::<_, Option<i64>>("SELECT email_verified_at FROM pilots WHERE id = $1")
+            .bind(pilot_id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|t| t.is_some())
+    }
+
     pub async fn fixes_for_flight(&self, flight_id: &str) -> Vec<LiveFix> {
+        self.fixes_for_flight_since(flight_id, 0).await
+    }
+
+    pub async fn fixes_for_flight_since(&self, flight_id: &str, since_t: i64) -> Vec<LiveFix> {
         let rows = sqlx::query(
             "SELECT t_ms, lat, lon, alt, speed, course, accuracy, alt_ref
-             FROM fixes WHERE flight_id = $1 ORDER BY t_ms ASC",
+             FROM fixes WHERE flight_id = $1 AND t_ms > $2 ORDER BY t_ms ASC",
         )
         .bind(flight_id)
+        .bind(since_t)
         .fetch_all(&self.pool)
         .await
         .unwrap_or_default();

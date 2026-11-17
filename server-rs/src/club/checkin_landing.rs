@@ -234,6 +234,7 @@ mod tests {
             share_lookup_throttle: crate::LoginThrottle::default(),
             mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
             webauthn: None,
+            sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
         };
         let router = build_router(state);
         (dir, router, db)

@@ -21,7 +21,11 @@ use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio_stream::StreamExt as _;
 
-fn share_public_url(headers: &HeaderMap, token: &str) -> String {
+fn share_public_url(state: &AppState, headers: &HeaderMap, token: &str) -> String {
+    let base = state.mailer.public_url.trim_end_matches('/');
+    if !base.is_empty() && base.starts_with("http") {
+        return format!("{base}/s/{token}");
+    }
     let host = headers
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
@@ -89,7 +93,7 @@ async fn post_flight_share(
     };
     match db.create_flight_share(&id, &flight_id).await {
         Ok((row, token)) => {
-            let url = share_public_url(&headers, &token);
+            let url = share_public_url(&state, &headers, &token);
             let qr_svg = qr::svg_for_payload(&url, 220).unwrap_or_default();
             (
                 StatusCode::OK,
@@ -278,8 +282,7 @@ async fn share_flight_stream(
             if db.share_flight_id(&tok).await.is_none() {
                 return None;
             }
-            let fixes = db.fixes_for_flight(&fid).await;
-            let fresh: Vec<_> = fixes.into_iter().filter(|f| f.t > last_t).collect();
+            let fresh = db.fixes_for_flight_since(&fid, last_t).await;
             if let Some(t) = fresh.last().map(|f| f.t) {
                 last_t = t;
             }

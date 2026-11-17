@@ -70,20 +70,6 @@ fn require_approved(viewer: &Viewer) -> Result<(), (StatusCode, Json<serde_json:
     }
 }
 
-fn require_admin(viewer: &Viewer) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    require_approved(viewer)?;
-    match viewer {
-        Viewer::Pilot {
-            role: PilotRole::Admin,
-            ..
-        } => Ok(()),
-        _ => Err((
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )),
-    }
-}
-
 async fn require_club_admin_scope(
     db: &ClubDb,
     viewer: &Viewer,
@@ -167,6 +153,7 @@ async fn register(
                 .into_response();
         }
     };
+    let now = now_ms();
     match db
         .register(
             &club_id,
@@ -177,11 +164,31 @@ async fn register(
         )
         .await
     {
-        Ok(id) => (
-            StatusCode::CREATED,
-            Json(json!({ "ok": true, "pilotId": id })),
-        )
-            .into_response(),
+        Ok(id) => {
+            if let Ok(token) = db
+                .issue_magic_email_verify(&id, body.email.trim(), now)
+                .await
+            {
+                let url = format!(
+                    "{}/api/club/auth/magic?token={token}",
+                    state.mailer.public_url.trim_end_matches('/')
+                );
+                state
+                    .mailer
+                    .send_localized(
+                        body.email.trim(),
+                        "es",
+                        "magicLink",
+                        &[("minutes", "15"), ("url", &url)],
+                    )
+                    .await;
+            }
+            (
+                StatusCode::CREATED,
+                Json(json!({ "ok": true, "pilotId": id, "emailVerificationSent": true })),
+            )
+                .into_response()
+        }
         Err(RegisterError::EmailExists) => (
             StatusCode::CONFLICT,
             Json(json!({ "error": "email exists" })),
@@ -294,6 +301,9 @@ async fn club_logout(
     headers: HeaderMap,
     body: Option<Json<LogoutBody>>,
 ) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
     if let (Some(db), Some(session)) = (club_db(&state), parse_session_cookie(&headers)) {
         let now = now_ms();
         if let Some(pilot) = db.pilot_from_session(&session, now).await {
@@ -755,7 +765,7 @@ async fn admin_map(State(state): State<AppState>, headers: HeaderMap) -> impl In
                 .into_response();
         }
     };
-    if require_club_admin_scope(&db, &v).await.is_err() {
+    if require_club_admin_scope(db, &v).await.is_err() {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "admin only" })),
@@ -776,22 +786,22 @@ async fn get_admin_map_tails(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    if require_admin(&v).is_err() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    }
-    let Viewer::Pilot { id, .. } = v else {
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "tails": [] })).into_response();
+    };
+    let Ok(_club_id) = require_club_admin_scope(db, &v).await else {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "admin only" })),
         )
             .into_response();
     };
-    let Some(db) = club_db(&state) else {
-        return Json(json!({ "tails": [] })).into_response();
+    let Viewer::Pilot { id, .. } = v else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
     };
     let tails = db.admin_map_tails(&id).await;
     Json(json!({ "tails": tails })).into_response()
@@ -803,24 +813,24 @@ async fn put_admin_map_tails(
     Json(body): Json<AdminTailsBody>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    if require_admin(&v).is_err() {
+    let Some(db) = club_db(&state) else {
         return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
         )
             .into_response();
-    }
-    let Viewer::Pilot { id, .. } = v else {
+    };
+    let Ok(_club_id) = require_club_admin_scope(db, &v).await else {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "admin only" })),
         )
             .into_response();
     };
-    let Some(db) = club_db(&state) else {
+    let Viewer::Pilot { id, .. } = v else {
         return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "club disabled" })),
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
         )
             .into_response();
     };
@@ -880,9 +890,17 @@ async fn club_flight_gpx(
         .into_response()
 }
 
+fn xml_escape_attr(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
 fn fixes_to_gpx(name: &str, fixes: &[crate::live::LiveFix]) -> String {
+    let safe_name = xml_escape_attr(name);
     let mut out = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<gpx version=\"1.1\" creator=\"flight_vis\"><trk><name>{name}</name><trkseg>\n"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<gpx version=\"1.1\" creator=\"flight_vis\"><trk><name>{safe_name}</name><trkseg>\n"
     );
     for f in fixes {
         out.push_str(&format!("<trkpt lat=\"{}\" lon=\"{}\">", f.lat, f.lon));
@@ -911,8 +929,30 @@ fn unix_ms_to_rfc3339(ms: i64) -> String {
 async fn club_flight_stream(
     State(state): State<AppState>,
     headers: HeaderMap,
+    client_ip: ClientIp,
     Path(flight_id): Path<String>,
 ) -> impl IntoResponse {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if !state
+        .share_lookup_throttle
+        .allow_up_to(&client_ip.0, now_secs, 30)
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "rate limited" })),
+        )
+            .into_response();
+    }
+    let Some(sse_guard) = state.sse_limiter.try_admit(&client_ip.0) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "too many streams" })),
+        )
+            .into_response();
+    };
     let v = viewer(&state, &headers).await;
     let Some(db) = club_db(&state) else {
         return (
@@ -928,21 +968,35 @@ async fn club_flight_stream(
     let viewer = v;
     let flight_id_capture = flight_id.clone();
     let backfill: Vec<_> = db.fixes_for_flight(&flight_id).await;
+    let idle_ms = super::sse_limit::SSE_IDLE_MS;
     let stream = stream::iter(backfill.into_iter().enumerate().map(move |(i, fix)| {
         Ok::<Event, Infallible>(Event::default().id(i.to_string()).json_data(fix).unwrap())
     }))
     .chain(stream::unfold(
-        (db, flight_id_capture, viewer, 0_i64),
+        (
+            db,
+            flight_id_capture,
+            viewer,
+            0_i64,
+            tokio::time::Instant::now(),
+            sse_guard,
+        ),
         #[allow(clippy::question_mark)]
-        |(db, fid, viewer, mut last_t)| async move {
+        move |(db, fid, viewer, mut last_t, mut idle_since, _sse_guard)| async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
             if db.flight_visible_to(&viewer, &fid).await.is_none() {
                 return None;
             }
-            let fixes = db.fixes_for_flight(&fid).await;
-            let fresh: Vec<_> = fixes.into_iter().filter(|f| f.t > last_t).collect();
-            if let Some(t) = fresh.last().map(|f| f.t) {
-                last_t = t;
+            let fresh = db.fixes_for_flight_since(&fid, last_t).await;
+            if fresh.is_empty() {
+                if idle_since.elapsed() > Duration::from_millis(idle_ms) {
+                    return None;
+                }
+            } else {
+                idle_since = tokio::time::Instant::now();
+                if let Some(t) = fresh.last().map(|f| f.t) {
+                    last_t = t;
+                }
             }
             let event = if fresh.is_empty() {
                 Event::default().comment("ping")
@@ -951,7 +1005,7 @@ async fn club_flight_stream(
                     .json_data(json!({ "fixes": fresh }))
                     .unwrap()
             };
-            Some((Ok(event), (db, fid, viewer, last_t)))
+            Some((Ok(event), (db, fid, viewer, last_t, idle_since, _sse_guard)))
         },
     ));
     Sse::new(stream)
@@ -1021,7 +1075,7 @@ async fn list_types(State(state): State<AppState>, headers: HeaderMap) -> impl I
     let Some(db) = club_db(&state) else {
         return Json(json!({ "types": [] })).into_response();
     };
-    let club = match require_club_admin_scope(&db, &v).await {
+    let club = match require_club_admin_scope(db, &v).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -1041,7 +1095,7 @@ async fn admin_add_type(
         )
             .into_response();
     };
-    let club = match require_club_admin_scope(&db, &v).await {
+    let club = match require_club_admin_scope(db, &v).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -1073,7 +1127,7 @@ async fn list_aircraft(State(state): State<AppState>, headers: HeaderMap) -> imp
     let Some(db) = club_db(&state) else {
         return Json(json!({ "aircraft": [] })).into_response();
     };
-    let club = match require_club_admin_scope(&db, &v).await {
+    let club = match require_club_admin_scope(db, &v).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -1093,7 +1147,7 @@ async fn admin_add_aircraft(
         )
             .into_response();
     };
-    let club = match require_club_admin_scope(&db, &v).await {
+    let club = match require_club_admin_scope(db, &v).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -1115,7 +1169,7 @@ async fn list_pilots_admin(State(state): State<AppState>, headers: HeaderMap) ->
     let Some(db) = club_db(&state) else {
         return Json(json!({ "pilots": [] })).into_response();
     };
-    let club_id = match require_club_admin_scope(&db, &v).await {
+    let club_id = match require_club_admin_scope(db, &v).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -1127,7 +1181,7 @@ async fn admin_pending(State(state): State<AppState>, headers: HeaderMap) -> imp
     let Some(db) = club_db(&state) else {
         return Json(json!({ "pilots": [] })).into_response();
     };
-    let club_id = match require_club_admin_scope(&db, &v).await {
+    let club_id = match require_club_admin_scope(db, &v).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -1161,7 +1215,7 @@ async fn admin_approve(
         )
             .into_response();
     };
-    if let Err(e) = admin_may_act_on_pilot(&db, &admin_id, &pilot_id).await {
+    if let Err(e) = admin_may_act_on_pilot(db, &admin_id, &pilot_id).await {
         return e.into_response();
     }
     let checkout = body.checkout;
@@ -1195,7 +1249,7 @@ async fn list_checkouts_admin(
     let Some(db) = club_db(&state) else {
         return Json(json!({ "checkouts": [] })).into_response();
     };
-    let club_id = match require_club_admin_scope(&db, &v).await {
+    let club_id = match require_club_admin_scope(db, &v).await {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
@@ -1208,13 +1262,6 @@ async fn admin_checkout(
     Json(body): Json<CheckoutBody>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    if require_admin(&v).is_err() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    }
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1222,6 +1269,26 @@ async fn admin_checkout(
         )
             .into_response();
     };
+    let Ok(_club_id) = require_club_admin_scope(db, &v).await else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    };
+    let Viewer::Pilot { id: admin_id, .. } = v else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    };
+    if admin_may_act_on_pilot(db, &admin_id, &body.pilot_id)
+        .await
+        .is_err()
+    {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response();
+    }
     match db
         .add_checkout(
             &body.pilot_id,
@@ -1361,17 +1428,13 @@ async fn admin_pending_counts(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    if require_admin(&v).is_err() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    }
     let Some(db) = club_db(&state) else {
         return Json(json!({ "pilots": 0, "accessRequests": 0 })).into_response();
     };
-    let club_id = db.default_club_id().await.unwrap_or_default();
+    let club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
     let AdminPendingCounts {
         pilots,
         access_requests,
@@ -1385,17 +1448,13 @@ async fn admin_list_access_requests(
     Query(q): Query<AccessRequestQuery>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    if require_admin(&v).is_err() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    }
     let Some(db) = club_db(&state) else {
         return Json(json!({ "requests": [] })).into_response();
     };
-    let club_id = db.default_club_id().await.unwrap_or_default();
+    let club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
     let requests = db
         .list_admin_access_requests(&club_id, q.status.as_deref())
         .await;
@@ -1422,27 +1481,24 @@ async fn admin_approve_access(
     body: Option<Json<DecideAccessBody>>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    let Viewer::Pilot {
-        id: admin_id, role, ..
-    } = v
-    else {
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let Ok(_club_id) = require_club_admin_scope(db, &v).await else {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "admin only" })),
         )
             .into_response();
     };
-    if role != PilotRole::Admin {
+    let Viewer::Pilot { id: admin_id, .. } = v else {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    }
-    let Some(db) = club_db(&state) else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "club disabled" })),
         )
             .into_response();
     };
@@ -1467,27 +1523,24 @@ async fn admin_reject_access(
     Json(body): Json<DecideAccessBody>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    let Viewer::Pilot {
-        id: admin_id, role, ..
-    } = v
-    else {
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let Ok(_club_id) = require_club_admin_scope(db, &v).await else {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "admin only" })),
         )
             .into_response();
     };
-    if role != PilotRole::Admin {
+    let Viewer::Pilot { id: admin_id, .. } = v else {
         return (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    }
-    let Some(db) = club_db(&state) else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "club disabled" })),
         )
             .into_response();
     };

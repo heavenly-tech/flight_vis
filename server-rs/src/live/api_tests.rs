@@ -45,6 +45,7 @@ mod tests {
             share_lookup_throttle: LoginThrottle::default(),
             mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
             webauthn: None,
+            sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
         };
         (build_router(state), data_dir)
     }

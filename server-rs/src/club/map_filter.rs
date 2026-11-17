@@ -31,6 +31,7 @@ pub struct MapViewFilter {
     pub cap: usize,
     pub altitude_mode: AltitudeMode,
     pub altitude_min_ft: f64,
+    #[allow(dead_code)]
     pub club_id: String,
 }
 

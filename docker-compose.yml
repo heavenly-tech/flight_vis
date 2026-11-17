@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_DB: flight_vis
     volumes:
       - flight_vis_pg:/var/lib/postgresql/data
@@ -22,7 +22,7 @@ services:
     environment:
       PORT: 8080
       FLIGHT_DATA: /data
-      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/flight_vis
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@postgres:5432/flight_vis
       FLIGHT_VIS_PASSWORD: ${FLIGHT_VIS_PASSWORD:-}
       VIRTUAL_HOST: flight.heavenly.cl
       LETSENCRYPT_HOST: flight.heavenly.cl

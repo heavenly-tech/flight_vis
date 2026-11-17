@@ -23,8 +23,13 @@ async function refresh(): Promise<void> {
     ...pending.requests.map((r) => {
       const art = document.createElement("article");
       const type = r.typeCode ?? r.newTypeName ?? "?";
-      art.innerHTML = `<p><strong>${r.pilotName}</strong> (${r.pilotEmail})<br/>
-        Tail ${r.requestedTail} · type ${type}</p>`;
+      const p = document.createElement("p");
+      const strong = document.createElement("strong");
+      strong.textContent = r.pilotName;
+      p.append(strong, document.createTextNode(` (${r.pilotEmail})`));
+      p.appendChild(document.createElement("br"));
+      p.append(document.createTextNode(`Tail ${r.requestedTail} · type ${type}`));
+      art.appendChild(p);
       const approve = document.createElement("button");
       approve.textContent = "Approve";
       approve.addEventListener("click", async () => {

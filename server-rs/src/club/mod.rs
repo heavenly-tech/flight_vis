@@ -6,6 +6,8 @@ mod auth_routes;
 pub mod checkin;
 mod checkin_landing;
 mod club_scope;
+mod contract_routes;
+mod csrf;
 pub mod database;
 mod db;
 mod db_access_pg;
@@ -26,6 +28,7 @@ mod map_filter;
 mod qr;
 mod routes;
 mod share_routes;
+pub(crate) mod sse_limit;
 mod visibility;
 pub mod webauthn;
 
@@ -34,5 +37,6 @@ mod api_tests;
 #[cfg(test)]
 mod load_test;
 
+pub use contract_routes::router as contract_router;
 pub use db::{now_ms, ClubDb};
 pub use routes::{patch_club_flight_by_id, post_club_flight_start, router};

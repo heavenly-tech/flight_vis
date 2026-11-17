@@ -145,12 +145,26 @@ fn is_form_content_type(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+fn bearer_device_token(headers: &HeaderMap) -> Option<String> {
+    let auth = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())?;
+    auth.strip_prefix("Bearer ")
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
 pub fn parse_osmand_request(
     headers: &HeaderMap,
     query: OsmAndQuery,
     body: &[u8],
 ) -> Result<OsmAndQuery, &'static str> {
     let mut q = query;
+    if q.id.is_none() && q.deviceid.is_none() {
+        if let Some(token) = bearer_device_token(headers) {
+            q.id = Some(token);
+        }
+    }
     if is_form_content_type(headers) || (!body.is_empty() && q.id.is_none() && q.lat.is_none()) {
         let from_body: OsmAndQuery =
             serde_urlencoded::from_bytes(body).map_err(|_| "invalid form body")?;

@@ -33,9 +33,13 @@ fn now_secs() -> u64 {
 #[derive(Clone)]
 pub struct Mailer {
     pub smtp_host: Option<String>,
+    smtp_port: u16,
+    smtp_user: Option<String>,
+    smtp_password: Option<String>,
     pub smtp_from: String,
     pub public_url: String,
     bounce_secret: Option<Vec<u8>>,
+    postal_public_key_pem: Option<String>,
     outbox: MailOutbox,
     per_email_limit: usize,
     per_ip_limit: usize,
@@ -46,10 +50,25 @@ pub struct Mailer {
 impl Mailer {
     pub fn from_env(outbox: MailOutbox) -> Self {
         let smtp_host = std::env::var("SMTP_HOST").ok().filter(|s| !s.is_empty());
+        let smtp_port = std::env::var("SMTP_PORT")
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(587);
+        let smtp_user = std::env::var("SMTP_USER").ok().filter(|s| !s.is_empty());
+        let smtp_password = std::env::var("SMTP_PASS_FILE")
+            .ok()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| std::env::var("SMTP_PASS").ok().filter(|s| !s.is_empty()));
         let smtp_from =
             std::env::var("SMTP_FROM").unwrap_or_else(|_| "noreply@heavenly.cl".to_string());
         let public_url = std::env::var("FLIGHT_CLUB_PUBLIC_URL")
             .unwrap_or_else(|_| "https://flight.heavenly.cl".to_string());
+        let postal_public_key_pem = std::env::var("POSTAL_WEBHOOK_PUBLIC_KEY_FILE")
+            .ok()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .filter(|s| !s.is_empty());
         let bounce_secret = std::env::var("POSTAL_WEBHOOK_SECRET_FILE")
             .ok()
             .and_then(|p| std::fs::read(p).ok())
@@ -60,9 +79,13 @@ impl Mailer {
             });
         Self {
             smtp_host,
+            smtp_port,
+            smtp_user,
+            smtp_password,
             smtp_from,
             public_url,
             bounce_secret,
+            postal_public_key_pem,
             outbox,
             per_email_limit: 5,
             per_ip_limit: 20,
@@ -150,6 +173,7 @@ impl Mailer {
         html: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use lettre::message::{header::ContentType, MultiPart, SinglePart};
+        use lettre::transport::smtp::authentication::Credentials;
         use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
         let host = self.smtp_host.as_deref().ok_or("smtp host missing")?;
         let from: lettre::message::Mailbox = self.smtp_from.parse()?;
@@ -170,12 +194,20 @@ impl Mailer {
             .to(to_mail)
             .subject(subject)
             .multipart(body)?;
-        let mailer = AsyncSmtpTransport::<Tokio1Executor>::relay(host)?.build();
+        let mailer = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)?;
+        let mut mailer = mailer.port(self.smtp_port);
+        if let (Some(user), Some(pass)) = (&self.smtp_user, &self.smtp_password) {
+            mailer = mailer.credentials(Credentials::new(user.clone(), pass.clone()));
+        }
+        let mailer = mailer.build();
         mailer.send(email).await?;
         Ok(())
     }
 
     pub fn verify_postal_signature(&self, body: &[u8], signature: &str) -> bool {
+        if let Some(pem) = &self.postal_public_key_pem {
+            return verify_postal_rsa(pem, body, signature);
+        }
         let Some(secret) = &self.bounce_secret else {
             return false;
         };
@@ -185,6 +217,37 @@ impl Mailer {
         subtle::ConstantTimeEq::ct_eq(expected.as_bytes(), signature.as_bytes()).into()
     }
 
+    /// Live Postal webhooks need RSA public key + SMTP credentials from secrets (not in-repo).
+    pub fn postal_live_configured(&self) -> bool {
+        self.postal_public_key_pem.is_some()
+            && self.smtp_host.is_some()
+            && self.smtp_user.is_some()
+            && self.smtp_password.is_some()
+    }
+}
+
+fn verify_postal_rsa(pem: &str, body: &[u8], signature_b64: &str) -> bool {
+    use base64::Engine;
+    use rsa::pkcs1v15::VerifyingKey;
+    use rsa::pkcs8::DecodePublicKey;
+    use rsa::signature::Verifier;
+    use rsa::RsaPublicKey;
+    use sha1::Sha1;
+    let Ok(sig_bytes) = base64::engine::general_purpose::STANDARD.decode(signature_b64.trim())
+    else {
+        return false;
+    };
+    let Ok(key) = RsaPublicKey::from_public_key_pem(pem) else {
+        return false;
+    };
+    let verifying_key = VerifyingKey::<Sha1>::new(key);
+    let Ok(sig) = rsa::pkcs1v15::Signature::try_from(sig_bytes.as_slice()) else {
+        return false;
+    };
+    verifying_key.verify(body, &sig).is_ok()
+}
+
+impl Mailer {
     #[cfg(test)]
     pub fn captured(&self) -> Vec<CapturedMail> {
         self.outbox.inner.lock().unwrap().clone()
@@ -230,5 +293,33 @@ mod tests {
         assert!(mailer.verify_postal_signature(body, &sig));
         assert!(!mailer.verify_postal_signature(body, &sig.replacen('a', "b", 1)));
         std::env::remove_var("POSTAL_WEBHOOK_SECRET");
+    }
+
+    #[test]
+    fn postal_rsa_signature_roundtrip() {
+        use base64::Engine;
+        use rsa::pkcs1v15::SigningKey;
+        use rsa::pkcs8::EncodePublicKey;
+        use rsa::signature::{SignatureEncoding, Signer};
+        use rsa::RsaPrivateKey;
+        use sha1::Sha1;
+        let mut rng = rand::thread_rng();
+        let private = RsaPrivateKey::new(&mut rng, 2048).expect("rsa key");
+        let pem = private
+            .to_public_key()
+            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+            .expect("pem");
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("postal-pub.pem");
+        std::fs::write(&key_path, &pem).unwrap();
+        std::env::set_var("POSTAL_WEBHOOK_PUBLIC_KEY_FILE", key_path);
+        let mailer = Mailer::from_env(MailOutbox::default());
+        let body = br#"{"email":"x@test"}"#;
+        let signing = SigningKey::<Sha1>::new(private);
+        let signature = signing.sign(body);
+        let sig_b64 = base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+        assert!(mailer.verify_postal_signature(body, &sig_b64));
+        assert!(!mailer.postal_live_configured());
+        std::env::remove_var("POSTAL_WEBHOOK_PUBLIC_KEY_FILE");
     }
 }

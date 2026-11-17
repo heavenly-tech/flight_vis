@@ -12,6 +12,7 @@ use axum::{
     body::{to_bytes, Body},
     http::{header, Request, StatusCode},
 };
+use serde::Deserialize;
 use serial_test::serial;
 use std::sync::Arc;
 use tower::Service;
@@ -41,6 +42,9 @@ async fn setup() -> Fixture {
         .register(&club_id, "B", "b@test", "", "password12")
         .await
         .unwrap();
+    let now = now_ms();
+    club.mark_email_verified(&pilot_a, now).await.unwrap();
+    club.mark_email_verified(&pilot_b, now).await.unwrap();
     club.approve_pilot(&pilot_a).await.unwrap();
     club.approve_pilot(&pilot_b).await.unwrap();
     club.add_checkout(&pilot_a, "C152", None, None)
@@ -65,6 +69,7 @@ async fn setup() -> Fixture {
         share_lookup_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
+        sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
     };
     Fixture {
         _dir: data_dir,
@@ -597,6 +602,10 @@ async fn cross_club_admin_cannot_approve_other_club_pilot() {
         .register(&club_b, "Pending B", "pending-b@test", "", "password12")
         .await
         .unwrap();
+    fx.club
+        .mark_email_verified(&pending_b, now_ms())
+        .await
+        .unwrap();
     sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
         .bind(&fx.pilot_a)
         .execute(&fx.club.pool)
@@ -621,4 +630,74 @@ async fn cross_club_admin_cannot_approve_other_club_pilot() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+#[derive(Deserialize)]
+struct ContractCase {
+    method: String,
+    #[serde(default)]
+    path: String,
+    #[serde(rename = "pathTemplate", default)]
+    path_template: String,
+    #[serde(default)]
+    body: Option<serde_json::Value>,
+    #[serde(rename = "expectStatus")]
+    expect_status: u16,
+    #[serde(rename = "expectBodyKeys", default)]
+    expect_body_keys: Vec<String>,
+}
+
+#[tokio::test]
+#[serial]
+async fn contract_client_api_aliases() {
+    let mut fx = setup().await;
+    let slug: String = sqlx::query_scalar("SELECT slug FROM clubs ORDER BY created_at ASC LIMIT 1")
+        .fetch_one(&fx.club.pool)
+        .await
+        .unwrap();
+    let magic_case = include_str!("../../tests/contract/magic_send.json");
+    let club_case = include_str!("../../tests/contract/club_by_slug.json");
+    for raw in [magic_case, club_case] {
+        let case: ContractCase = serde_json::from_str(raw).expect("contract json");
+        let path = if case.path_template.is_empty() {
+            case.path
+        } else {
+            case.path_template.replace("{slug}", &slug)
+        };
+        let mut req = Request::builder().method(case.method.as_str()).uri(path);
+        let res = if let Some(body) = case.body {
+            req = req.header(header::CONTENT_TYPE, "application/json");
+            fx.router
+                .call(req.body(Body::from(body.to_string())).unwrap())
+                .await
+                .unwrap()
+        } else {
+            fx.router
+                .call(req.body(Body::empty()).unwrap())
+                .await
+                .unwrap()
+        };
+        assert_eq!(
+            res.status(),
+            StatusCode::from_u16(case.expect_status).unwrap()
+        );
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        for key in case.expect_body_keys {
+            assert!(json.get(&key).is_some(), "missing key {key}");
+        }
+    }
+    let anon = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/devices/anonymous")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"name":"Contract Guest"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anon.status(), StatusCode::OK);
 }

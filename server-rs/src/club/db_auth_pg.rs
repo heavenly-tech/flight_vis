@@ -189,6 +189,84 @@ impl ClubDb {
         Ok(Some(raw_token))
     }
 
+    pub async fn issue_magic_email_verify(
+        &self,
+        pilot_id: &str,
+        email: &str,
+        now: i64,
+    ) -> Result<String, DbError> {
+        let raw_token = auth::new_share_token();
+        let token_hash = digest_token(&raw_token);
+        let id = new_id();
+        let expires = now + MAGIC_TTL_MS;
+        sqlx::query(
+            "INSERT INTO magic_login_tokens (id, email, token_hash, created_at, expires_at, purpose, pilot_id)
+             VALUES ($1, $2, $3, $4, $5, 'verify_email', $6)",
+        )
+        .bind(&id)
+        .bind(email.trim().to_ascii_lowercase())
+        .bind(&token_hash)
+        .bind(now)
+        .bind(expires)
+        .bind(pilot_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(raw_token)
+    }
+
+    pub async fn try_consume_magic_verify(
+        &self,
+        raw_token: &str,
+        now: i64,
+    ) -> Result<(), MagicConsumeError> {
+        let token_hash = digest_token(raw_token.trim());
+        let row = sqlx::query(
+            "SELECT id, pilot_id, expires_at, used_at, purpose FROM magic_login_tokens WHERE token_hash = $1",
+        )
+        .bind(&token_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| MagicConsumeError::Invalid)?;
+        let Some(row) = row else {
+            return Err(MagicConsumeError::Invalid);
+        };
+        let id: String = row.try_get(0).map_err(|_| MagicConsumeError::Invalid)?;
+        let pilot_id: Option<String> = row.try_get(1).ok();
+        let expires_at: i64 = row.try_get(2).map_err(|_| MagicConsumeError::Invalid)?;
+        let used_at: Option<i64> = row.try_get(3).map_err(|_| MagicConsumeError::Invalid)?;
+        let purpose: String = row.try_get(4).unwrap_or_else(|_| "login".to_string());
+        if purpose != "verify_email" {
+            return Err(MagicConsumeError::Invalid);
+        }
+        let Some(pilot_id) = pilot_id else {
+            return Err(MagicConsumeError::Invalid);
+        };
+        if used_at.is_some() {
+            return Err(MagicConsumeError::Used);
+        }
+        if now > expires_at {
+            return Err(MagicConsumeError::Expired);
+        }
+        let updated = sqlx::query(
+            "UPDATE magic_login_tokens SET used_at = $1 WHERE id = $2 AND used_at IS NULL",
+        )
+        .bind(now)
+        .bind(&id)
+        .execute(&self.pool)
+        .await
+        .map_err(|_| MagicConsumeError::Invalid)?;
+        if updated.rows_affected() == 0 {
+            return Err(MagicConsumeError::Used);
+        }
+        sqlx::query("UPDATE pilots SET email_verified_at = $1 WHERE id = $2")
+            .bind(now)
+            .bind(&pilot_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|_| MagicConsumeError::Invalid)?;
+        Ok(())
+    }
+
     pub async fn consume_magic_login(
         &self,
         raw_token: &str,
@@ -197,7 +275,7 @@ impl ClubDb {
     ) -> Result<(String, PilotRow), MagicConsumeError> {
         let token_hash = digest_token(raw_token.trim());
         let row = sqlx::query(
-            "SELECT id, email, expires_at, used_at FROM magic_login_tokens WHERE token_hash = $1",
+            "SELECT id, email, expires_at, used_at, purpose FROM magic_login_tokens WHERE token_hash = $1",
         )
         .bind(&token_hash)
         .fetch_optional(&self.pool)
@@ -210,6 +288,10 @@ impl ClubDb {
         let email: String = row.try_get(1).map_err(|_| MagicConsumeError::Invalid)?;
         let expires_at: i64 = row.try_get(2).map_err(|_| MagicConsumeError::Invalid)?;
         let used_at: Option<i64> = row.try_get(3).map_err(|_| MagicConsumeError::Invalid)?;
+        let purpose: String = row.try_get(4).unwrap_or_else(|_| "login".to_string());
+        if purpose != "login" {
+            return Err(MagicConsumeError::Invalid);
+        }
         if used_at.is_some() {
             return Err(MagicConsumeError::Used);
         }
@@ -400,6 +482,7 @@ impl ClubDb {
         row_to_pilot(&pilot_row).map_err(|_| GuestClaimError::Db)
     }
 
+    #[allow(dead_code)]
     pub async fn revoke_all_devices(&self, pilot_id: &str) -> Result<(), DbError> {
         let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM devices WHERE pilot_id = $1")
             .bind(pilot_id)

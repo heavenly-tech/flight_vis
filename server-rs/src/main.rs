@@ -43,6 +43,7 @@ pub(crate) struct AppState {
     pub(crate) share_lookup_throttle: LoginThrottle,
     pub(crate) mailer: club::mail::Mailer,
     pub(crate) webauthn: Option<club::webauthn::WebauthnState>,
+    pub(crate) sse_limiter: std::sync::Arc<club::sse_limit::SseLimiter>,
 }
 
 fn app_state(
@@ -67,6 +68,7 @@ fn app_state(
             share_lookup_throttle: LoginThrottle::default(),
             mailer: club::mail::Mailer::from_env(club::mail::MailOutbox::default()),
             webauthn: club::webauthn::WebauthnState::from_env(),
+            sse_limiter: std::sync::Arc::new(club::sse_limit::SseLimiter::default()),
         },
         queue_rx,
     )
@@ -580,7 +582,7 @@ fn build_router(state: AppState) -> Router {
         .route("/login.html", get(login_html_redirect))
         .route("/logout", get(logout).post(logout));
     if state.club.is_some() {
-        app = app.merge(club::router());
+        app = app.merge(club::router()).merge(club::contract_router());
     }
     app.merge(flights::router().layer(DefaultBodyLimit::max(64 * 1024 * 1024)))
         .merge(video::router())

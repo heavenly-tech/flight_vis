@@ -115,11 +115,18 @@ impl WebauthnState {
             let mut map = self.pending.lock().unwrap();
             map.remove(nonce)
         };
-        let PendingChallenge::Register { pilot_id, reg, .. } =
-            pending.ok_or(WebauthnRouteError::InvalidSession)?
+        let PendingChallenge::Register {
+            pilot_id,
+            reg,
+            created,
+            ..
+        } = pending.ok_or(WebauthnRouteError::InvalidSession)?
         else {
             return Err(WebauthnRouteError::InvalidSession);
         };
+        if created.elapsed() > CHALLENGE_TTL {
+            return Err(WebauthnRouteError::InvalidSession);
+        }
         let passkey = self
             .webauthn
             .finish_passkey_registration(&credential, &reg)
@@ -170,11 +177,14 @@ impl WebauthnState {
             let mut map = self.pending.lock().unwrap();
             map.remove(nonce)
         };
-        let PendingChallenge::Login { auth, .. } =
+        let PendingChallenge::Login { auth, created, .. } =
             pending.ok_or(WebauthnRouteError::InvalidSession)?
         else {
             return Err(WebauthnRouteError::InvalidSession);
         };
+        if created.elapsed() > CHALLENGE_TTL {
+            return Err(WebauthnRouteError::InvalidSession);
+        }
         let auth_result = self
             .webauthn
             .finish_passkey_authentication(&credential, &auth)
@@ -201,7 +211,7 @@ impl WebauthnState {
             .try_get(2)
             .map_err(|_| WebauthnRouteError::Verification)?;
         let new_counter = auth_result.counter() as i64;
-        if new_counter <= counter {
+        if new_counter > 0 && new_counter <= counter {
             return Err(WebauthnRouteError::Verification);
         }
         sqlx::query("UPDATE webauthn_credentials SET counter = $1 WHERE id = $2")

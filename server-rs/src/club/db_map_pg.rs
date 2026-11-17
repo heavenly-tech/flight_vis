@@ -174,6 +174,7 @@ impl ClubDb {
         out
     }
 
+    #[allow(dead_code)]
     pub async fn viewing_club_id(&self, viewer: &Viewer) -> Result<String, DbError> {
         match viewer {
             Viewer::Pilot {

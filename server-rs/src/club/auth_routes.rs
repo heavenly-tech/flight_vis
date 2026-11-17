@@ -7,7 +7,7 @@ use crate::{AppState, ClientIp};
 use axum::{
     extract::{Query, State},
     http::{header, HeaderMap, StatusCode},
-    response::{IntoResponse, Json},
+    response::{Html, IntoResponse, Json},
     routing::post,
     Router,
 };
@@ -74,6 +74,16 @@ pub async fn get_magic_consume(
     headers: HeaderMap,
     Query(q): Query<MagicQuery>,
 ) -> impl IntoResponse {
+    if wants_html(&headers) {
+        let token = html_escape(&q.token);
+        return Html(format!(
+            r#"<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head>
+<body><h1>Sign in</h1><form method="post" action="/api/club/auth/magic">
+<input type="hidden" name="token" value="{token}">
+<button type="submit">Continue</button></form></body></html>"#
+        ))
+        .into_response();
+    }
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -81,8 +91,11 @@ pub async fn get_magic_consume(
         )
             .into_response();
     };
-    let club_id = db.default_club_id().await.unwrap_or_default();
     let now = now_ms();
+    if db.try_consume_magic_verify(&q.token, now).await.is_ok() {
+        return Json(json!({ "ok": true, "verified": true })).into_response();
+    }
+    let club_id = db.default_club_id().await.unwrap_or_default();
     match db.consume_magic_login(&q.token, &club_id, now).await {
         Ok((session_id, pilot)) => {
             let cookie = set_session_cookie(&session_id, is_secure(&headers));
@@ -103,6 +116,68 @@ pub async fn get_magic_consume(
         }
         Err(_) => (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid" }))).into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct MagicConsumeForm {
+    token: String,
+}
+
+async fn post_magic_consume_form(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::Form(body): axum::Form<MagicConsumeForm>,
+) -> impl IntoResponse {
+    magic_consume_post(state, headers, body.token).await
+}
+
+async fn post_magic_consume_json(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<MagicQuery>,
+) -> impl IntoResponse {
+    magic_consume_post(state, headers, body.token).await
+}
+
+async fn magic_consume_post(
+    state: AppState,
+    headers: HeaderMap,
+    token: String,
+) -> axum::response::Response {
+    if auth::parse_session_cookie(&headers).is_some() {
+        if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+            return (status, Json(json!({ "error": "csrf" }))).into_response();
+        }
+    }
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let now = now_ms();
+    if db.try_consume_magic_verify(&token, now).await.is_ok() {
+        return Json(json!({ "ok": true, "verified": true })).into_response();
+    }
+    let club_id = db.default_club_id().await.unwrap_or_default();
+    match db.consume_magic_login(&token, &club_id, now).await {
+        Ok((session_id, pilot)) => {
+            let cookie = set_session_cookie(&session_id, is_secure(&headers));
+            pilot_ok_response(&cookie, &pilot)
+        }
+        Err(MagicConsumeError::Expired) => {
+            (StatusCode::GONE, Json(json!({ "error": "expired" }))).into_response()
+        }
+        Err(_) => (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid" }))).into_response(),
+    }
+}
+
+fn html_escape(raw: &str) -> String {
+    raw.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn wants_html(headers: &HeaderMap) -> bool {
@@ -150,6 +225,13 @@ pub async fn webauthn_register_begin(
         )
             .into_response();
     };
+    if pilot.status != "approved" {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "approved pilot required" })),
+        )
+            .into_response();
+    }
     match webauthn.register_begin(&pilot) {
         Ok((public_key, nonce)) => {
             Json(json!({ "publicKey": public_key, "nonce": nonce })).into_response()
@@ -350,17 +432,38 @@ pub async fn post_claim(
         )
         .await
     {
-        Ok(pilot) => Json(json!({
-            "ok": true,
-            "pilot": {
-                "id": pilot.id,
-                "name": pilot.name,
-                "email": pilot.email,
-                "status": pilot.status,
-                "role": pilot.role,
+        Ok(pilot) => {
+            if let Ok(token) = db
+                .issue_magic_email_verify(&pilot.id, &pilot.email, now)
+                .await
+            {
+                let url = format!(
+                    "{}/api/club/auth/magic?token={token}",
+                    state.mailer.public_url.trim_end_matches('/')
+                );
+                state
+                    .mailer
+                    .send_localized(
+                        &pilot.email,
+                        "es",
+                        "magicLink",
+                        &[("minutes", "15"), ("url", &url)],
+                    )
+                    .await;
             }
-        }))
-        .into_response(),
+            Json(json!({
+                "ok": true,
+                "emailVerificationSent": true,
+                "pilot": {
+                    "id": pilot.id,
+                    "name": pilot.name,
+                    "email": pilot.email,
+                    "status": pilot.status,
+                    "role": pilot.role,
+                }
+            }))
+            .into_response()
+        }
         Err(GuestClaimError::EmailExists) => (
             StatusCode::CONFLICT,
             Json(json!({ "error": "email exists" })),
@@ -400,7 +503,11 @@ pub fn router() -> Router<AppState> {
         .route("/api/club/auth/magic-link", post(post_magic_link))
         .route(
             "/api/club/auth/magic",
-            axum::routing::get(get_magic_consume),
+            axum::routing::get(get_magic_consume).post(post_magic_consume_form),
+        )
+        .route(
+            "/api/club/auth/magic/consume",
+            post(post_magic_consume_json),
         )
         .route(
             "/api/club/auth/webauthn/register/begin",

@@ -80,6 +80,8 @@ impl ClubDb {
         let token_hash = digest_token(&token);
         let id = new_id();
         let created_at = now_ms();
+        const SHARE_MAX_MS: i64 = 30 * 24 * 3600 * 1000;
+        let expires_at = created_at + SHARE_MAX_MS;
         let row = FlightShareRow {
             id: id.clone(),
             flight_id: flight_id.to_string(),
@@ -87,12 +89,12 @@ impl ClubDb {
             created_by: pilot_id.to_string(),
             token_hash: token_hash.clone(),
             created_at,
-            expires_at: None,
+            expires_at: Some(expires_at),
             revoked_at: None,
         };
         sqlx::query(
-            "INSERT INTO flight_shares (id, flight_id, club_id, created_by, token_hash, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO flight_shares (id, flight_id, club_id, created_by, token_hash, created_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(&row.id)
         .bind(&row.flight_id)
@@ -100,6 +102,7 @@ impl ClubDb {
         .bind(&row.created_by)
         .bind(&row.token_hash)
         .bind(row.created_at)
+        .bind(expires_at)
         .execute(&self.pool)
         .await
         .map_err(ShareCreateError::Db)?;

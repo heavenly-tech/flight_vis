@@ -456,6 +456,17 @@ impl ClubDb {
             tx.commit().await?;
             return Ok(());
         }
+        let verified: Option<i64> =
+            sqlx::query_scalar("SELECT email_verified_at FROM pilots WHERE id = $1")
+                .bind(pilot_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|_| DbError::protocol("email not verified"))?
+                .flatten();
+        if verified.is_none() {
+            tx.rollback().await.ok();
+            return Err(DbError::protocol("email not verified"));
+        }
         if self.require_club_admin(admin_id, &club_id).await.is_err() {
             tx.rollback().await.ok();
             return Err(DbError::protocol("forbidden"));
