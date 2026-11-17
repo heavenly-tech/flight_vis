@@ -34,7 +34,7 @@ import {
   Viewer,
   createWorldTerrainAsync,
 } from "cesium";
-import type { ColorMode, Flight, FlightTag, Sample, TrimRange } from "../track/types";
+import type { ColorMode, Flight, FlightTag, Sample, TrackPoint, TrimRange } from "../track/types";
 import { headingRadians } from "../track/geo";
 import { sampleAt } from "../track/parse";
 import { fullRange, pointsInTrim } from "../track/trim";
@@ -48,7 +48,7 @@ const ESRI_TERRAIN =
   "https://elevation3d.arcgis.com/arcgis/rest/services/WorldElevation3D/Terrain3D/ImageServer";
 
 export type FlightViewer = {
-  setFlight: (flight: Flight, colorMode: ColorMode, trim?: TrimRange) => Promise<void>;
+  setFlight: (flight: Flight, colorMode: ColorMode, trim?: TrimRange, fly?: boolean) => Promise<void>;
   setColorMode: (mode: ColorMode) => Promise<void>;
   setTrim: (trim: TrimRange, fly?: boolean) => Promise<void>;
   setTags: (tags: FlightTag[]) => void;
@@ -69,8 +69,14 @@ export type FlightViewer = {
     resolutionScale: number;
   };
   stepQuality: (fps: number) => void;
+  appendLivePoints: (newPoints: TrackPoint[]) => Promise<void>;
+  setAccuracyDim: (thresholdM: number) => void;
   destroy: () => void;
 };
+
+function pointAlt(p: TrackPoint): number {
+  return p.positionAlt ?? p.alt;
+}
 
 /** Trace shows the whole path and the marker travels along it.
  *  Draw reveals the path progressively as the marker moves. */
@@ -197,6 +203,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   let smoothRange: number | null = null;
   const smoothTarget = new Cartesian3();
   let hasSmoothTarget = false;
+  let accuracyThresholdM = Number.POSITIVE_INFINITY;
 
   function requestRender(): void {
     viewer.scene.requestRender();
@@ -311,8 +318,15 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     return wrapAngle(trackHeading(sample) + relativeOffset);
   }
 
+  function colorWithAccuracy(base: Color, point: TrackPoint): Color {
+    if ((point.accuracyM ?? 0) > accuracyThresholdM) {
+      return Color.clone(base, new Color(base.red, base.green, base.blue, base.alpha * 0.32));
+    }
+    return base;
+  }
+
   function captureFromCamera(sample: Sample): void {
-    const target = Cartesian3.fromDegrees(sample.point.lon, sample.point.lat, sample.point.alt);
+    const target = Cartesian3.fromDegrees(sample.point.lon, sample.point.lat, pointAlt(sample.point));
     worldHeading = viewer.camera.heading;
     relativeOffset = wrapAngle(worldHeading - trackHeading(sample));
     followPitch = viewer.camera.pitch;
@@ -360,7 +374,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       const index = nearestPointIndex(tag.timeMs);
       if (index < 0) continue;
       const point = flight.points[index];
-      tagAnchors.set(tag.id, Cartesian3.fromDegrees(point.lon, point.lat, point.alt + 40));
+      tagAnchors.set(tag.id, Cartesian3.fromDegrees(point.lon, point.lat, pointAlt(point) + 40));
     }
   }
 
@@ -527,9 +541,11 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     const visible = pointsInTrim(next, nextTrim);
     const source = visible.length >= 2 ? visible : next.points;
     linePoints = source;
-    linePositions = source.map((p) => Cartesian3.fromDegrees(p.lon, p.lat, p.alt));
-    lineColors = source.map((p) => colorForUnit(normalizeValue(next, mode, valueForMode(p, mode))));
-    allPositions = next.points.map((p) => Cartesian3.fromDegrees(p.lon, p.lat, p.alt));
+    linePositions = source.map((p) => Cartesian3.fromDegrees(p.lon, p.lat, pointAlt(p)));
+    lineColors = source.map((p) =>
+      colorWithAccuracy(colorForUnit(normalizeValue(next, mode, valueForMode(p, mode))), p),
+    );
+    allPositions = next.points.map((p) => Cartesian3.fromDegrees(p.lon, p.lat, pointAlt(p)));
     trackPositions = linePositions;
     revealMs = Math.min(Math.max(revealMs, source[0].time), source[source.length - 1].time);
     drawnTagKey = "";
@@ -558,10 +574,22 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     drawTags();
   }
 
+  function applyCraftAccuracy(point: TrackPoint): void {
+    if (!craft?.point) return;
+    const dim = (point.accuracyM ?? 0) > accuracyThresholdM;
+    craft.point.color = new ConstantProperty(
+      dim ? Color.fromAlpha(Color.WHITE, 0.45) : Color.WHITE,
+    );
+    craft.point.outlineColor = new ConstantProperty(
+      dim ? Color.fromAlpha(Color.fromCssColorString("#67e8f9"), 0.45) : Color.fromCssColorString("#67e8f9"),
+    );
+  }
+
   function setSample(sample: Sample, followCam: boolean): void {
     if (!flight || !craft) return;
-    const position = Cartesian3.fromDegrees(sample.point.lon, sample.point.lat, sample.point.alt);
+    const position = Cartesian3.fromDegrees(sample.point.lon, sample.point.lat, pointAlt(sample.point));
     craft.position = new ConstantPositionProperty(position);
+    applyCraftAccuracy(sample.point);
     viewer.clock.currentTime = JulianDate.fromDate(new Date(sample.t));
     const hpr = new HeadingPitchRoll(sample.point.headingRad, 0, 0);
     craft.orientation = new ConstantProperty(Transforms.headingPitchRollQuaternion(position, hpr));
@@ -626,7 +654,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       return;
     }
     setSample(sample, false);
-    const position = Cartesian3.fromDegrees(sample.point.lon, sample.point.lat, sample.point.alt);
+    const position = Cartesian3.fromDegrees(sample.point.lon, sample.point.lat, pointAlt(sample.point));
     unlockCamera();
     viewer.camera.flyToBoundingSphere(new BoundingSphere(position, 400), {
       offset: new HeadingPitchRange(sample.point.headingRad, CesiumMath.toRadians(-28), 3500),
@@ -677,12 +705,12 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   }
 
   return {
-    setFlight: async (next, mode, nextTrim) => {
+    setFlight: async (next, mode, nextTrim, fly = true) => {
       following = false;
       captured = false;
       hasSmoothTarget = false;
       await rebuildTrack(next, mode, nextTrim ?? fullRange(next));
-      flyOverview();
+      if (fly) flyOverview();
     },
     setColorMode: async (mode) => {
       if (!flight || !trim) return;
@@ -753,6 +781,30 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       };
     },
     stepQuality,
+    appendLivePoints: async (newPoints) => {
+      if (!flight || !trim || newPoints.length === 0) return;
+      const merged = [...flight.points, ...newPoints];
+      const alts = merged.map((p) => pointAlt(p));
+      const speeds = merged.map((p) => p.speedMps);
+      const varios = merged.map((p) => p.varioMps);
+      flight = {
+        ...flight,
+        points: merged,
+        durationMs: merged[merged.length - 1].time - merged[0].time,
+        distanceM: merged[merged.length - 1].distanceM,
+        minAlt: Math.min(...alts),
+        maxAlt: Math.max(...alts),
+        maxSpeedMps: Math.max(...speeds),
+        minVario: Math.min(...varios),
+        maxVario: Math.max(...varios),
+      };
+      await rebuildTrack(flight, colorMode, trim);
+    },
+    setAccuracyDim: (thresholdM) => {
+      accuracyThresholdM = thresholdM;
+      if (!flight || !trim) return;
+      void rebuildTrack(flight, colorMode, trim);
+    },
     destroy: () => {
       removeCameraMoveEnd();
       pickHandler.destroy();

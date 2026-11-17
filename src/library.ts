@@ -8,7 +8,10 @@ import {
   type AuthStatus,
   type FlightListItem,
 } from "./api";
+import { deleteLocalFlight, isLocalSlug, listLocalFlights, type LocalFlightMeta } from "./live/localFlights";
 import { isValidSlug, nameFromFileName, normalizeSlug } from "./track/slug";
+
+export type LibraryEntry = FlightListItem & { local?: boolean };
 
 export function isTrackFile(file: File): boolean {
   return /\.(igc|gpx)$/i.test(file.name);
@@ -63,7 +66,7 @@ export function mountLibrary(opts: {
   const deleteForm = document.querySelector<HTMLFormElement>("#delete-form")!;
   const deleteLabel = document.querySelector<HTMLElement>("#delete-label")!;
 
-  let items: FlightListItem[] = [];
+  let items: LibraryEntry[] = [];
   let currentSlug: string | null = opts.currentSlug();
   let renaming: FlightListItem | null = null;
   let deleting: FlightListItem | null = null;
@@ -107,8 +110,15 @@ export function mountLibrary(opts: {
       open.className = "library-open";
       const title = document.createElement("strong");
       title.textContent = item.name || item.slug;
+      if (item.local) {
+        const badge = document.createElement("span");
+        badge.className = "library-local-badge";
+        badge.textContent = "local";
+        title.append(" ", badge);
+      }
       const meta = document.createElement("span");
-      meta.textContent = [item.slug, formatSize(item.size), formatWhen(item.updatedAt)].filter(Boolean).join(" · ");
+      const slugLabel = item.local ? "device" : item.slug;
+      meta.textContent = [slugLabel, formatSize(item.size), formatWhen(item.updatedAt)].filter(Boolean).join(" · ");
       open.append(title, meta);
       open.addEventListener("click", () => {
         void opts.onOpenFlight(item.slug);
@@ -116,40 +126,59 @@ export function mountLibrary(opts: {
 
       const actions = document.createElement("div");
       actions.className = "library-item-actions";
-      const renameBtn = document.createElement("button");
-      renameBtn.type = "button";
-      renameBtn.className = "chip";
-      renameBtn.textContent = "Rename";
-      renameBtn.addEventListener("click", () => openRename(item));
+      if (!item.local) {
+        const renameBtn = document.createElement("button");
+        renameBtn.type = "button";
+        renameBtn.className = "chip";
+        renameBtn.textContent = "Rename";
+        renameBtn.addEventListener("click", () => openRename(item));
+        actions.append(renameBtn);
+      }
       const deleteBtn = document.createElement("button");
       deleteBtn.type = "button";
       deleteBtn.className = "chip danger";
       deleteBtn.textContent = "Delete";
       deleteBtn.addEventListener("click", () => openDelete(item));
-      actions.append(renameBtn, deleteBtn);
+      actions.append(deleteBtn);
 
       row.append(open, actions);
       listEl.append(row);
     }
   }
 
+  function mapLocal(meta: LocalFlightMeta): LibraryEntry {
+    return {
+      slug: meta.id,
+      name: meta.name,
+      fileName: meta.fileName,
+      updatedAt: meta.updatedAt,
+      createdAt: meta.updatedAt,
+      size: meta.size,
+      local: true,
+    };
+  }
+
   async function refresh(): Promise<void> {
     const auth = opts.getAuth();
+    const localRows = await listLocalFlights().catch(() => [] as LocalFlightMeta[]);
+    const localItems = localRows.map(mapLocal);
     if (!auth.authenticated) {
-      items = [];
+      items = localItems;
       render();
       return;
     }
     try {
-      items = await listFlights();
+      const remote = await listFlights();
+      items = [...remote, ...localItems];
     } catch (error) {
-      items = [];
+      items = localItems;
       flash(error instanceof Error ? error.message : "Could not list flights");
     }
     render();
   }
 
-  function openRename(item: FlightListItem): void {
+  function openRename(item: LibraryEntry): void {
+    if (item.local) return;
     renaming = item;
     renameName.value = item.name;
     renameSlug.value = item.slug;
@@ -161,7 +190,7 @@ export function mountLibrary(opts: {
     renameName.select();
   }
 
-  function openDelete(item: FlightListItem): void {
+  function openDelete(item: LibraryEntry): void {
     deleting = item;
     deleteLabel.textContent = `${item.name} (${item.slug})`;
     deleteDialog.showModal();
@@ -284,10 +313,14 @@ export function mountLibrary(opts: {
     deleting = null;
     void (async () => {
       try {
-        await deleteFlight(target.slug);
+        if (target.local || isLocalSlug(target.slug)) {
+          await deleteLocalFlight(target.slug);
+        } else {
+          await deleteFlight(target.slug);
+        }
         opts.onDeleted(target.slug);
         await refresh();
-        flash(`Deleted ${target.slug}`);
+        flash(`Deleted ${target.slug.replace(/^local:/, "local ")}`);
       } catch (error) {
         flash(error instanceof Error ? error.message : "Could not delete");
       }

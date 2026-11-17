@@ -7,6 +7,8 @@ type RawFix = {
   alt: number;
   time: number;
   speedMps?: number;
+  positionAlt?: number;
+  accuracyM?: number;
 };
 
 export function enrichFlight(
@@ -47,6 +49,8 @@ export function enrichFlight(
       varioMps,
       distanceM,
       headingRad,
+      positionAlt: cur.positionAlt,
+      accuracyM: cur.accuracyM,
     });
   }
 

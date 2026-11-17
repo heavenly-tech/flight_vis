@@ -368,6 +368,14 @@ select,
   gap: 8px;
 }
 
+.library-local-badge {
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #a5f3fc;
+}
+
 .library-list {
   list-style: none;
   margin: 0;
@@ -614,9 +622,11 @@ body.live-session .timeline-live-mark {
 .live-slot {
   flex: 0 0 auto;
   min-width: 44px;
+  font-variant-numeric: tabular-nums;
 }
 
-.live-slot:disabled {
+.live-slot[hidden],
+.live-slot.is-live-edge {
   visibility: hidden;
   pointer-events: none;
   padding-left: 0;
@@ -626,6 +636,61 @@ body.live-session .timeline-live-mark {
   min-width: 44px;
   max-width: 44px;
   overflow: hidden;
+}
+
+body.live-session .live-slot:not([hidden]):not(.is-live-edge) {
+  visibility: visible;
+  border-color: rgba(103, 232, 249, 0.55);
+  color: #a5f3fc;
+}
+
+#btn-record.recording {
+  border-color: #f87171;
+  color: #fecaca;
+}
+
+.live-status {
+  top: 52%;
+  max-width: min(92vw, 26rem);
+  text-align: center;
+}
+
+body.live-session #btn-live-sessions,
+body.live-session #btn-record {
+  display: inline-flex;
+}
+
+.live-trim-dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: min(92vw, 22rem);
+  margin: 0;
+}
+
+.live-trim-presets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.live-trim-presets .chip.active {
+  border-color: rgba(103, 232, 249, 0.7);
+  color: #a5f3fc;
+}
+
+.live-trim-manual {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#hud.hud-low-accuracy .hud-stat strong {
+  opacity: 0.45;
+}
+
+body.live-session .timeline-scrub canvas#profile {
+  border-radius: 10px;
 }
 
 .tags-panel .tag-list {
@@ -829,9 +894,12 @@ dialog input {
     gap: 6px;
   }
 
-  .transport-compact .live-slot:disabled {
+  .transport-compact .live-slot[hidden],
+  .transport-compact .live-slot.is-live-edge {
     visibility: visible;
     opacity: 0;
+    min-width: 44px;
+    max-width: 44px;
   }
 
   .transport .play,
@@ -997,8 +1065,8 @@ dialog input {
 }
 
 @media (min-width: 1024px) {
-  .transport-compact .live-slot {
-    display: none;
+  body.live-session .transport-compact .live-slot {
+    display: inline-flex;
   }
 
   #ui {
