@@ -316,4 +316,29 @@ FdfgleEWxIJ9soS53wIDAQAB
         let mailer = Mailer::from_env(MailOutbox::default());
         assert!(!mailer.verify_postal_signature(b"{}", "abc"));
     }
+
+    #[tokio::test]
+    async fn smtp_send_failure_does_not_capture_magic_link() {
+        let dir = crate::i18n::Catalogs::resolve_dir(std::path::Path::new("dist"));
+        let _ = crate::i18n::init_global(&dir);
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let mailer = {
+            let _g = ENV_LOCK.lock().unwrap();
+            std::env::set_var("SMTP_HOST", "127.0.0.1");
+            std::env::set_var("SMTP_PORT", "9");
+            Mailer::from_env(MailOutbox::default())
+        };
+        mailer
+            .send_localized(
+                "p@test",
+                "es",
+                "magicLink",
+                &[("minutes", "15"), ("url", "https://example.invalid/secret")],
+            )
+            .await;
+        assert!(mailer.captured().is_empty());
+        let _g = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("SMTP_HOST");
+        std::env::remove_var("SMTP_PORT");
+    }
 }
