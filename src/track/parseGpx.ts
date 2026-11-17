@@ -1,4 +1,4 @@
-import { ellipsoidToMsl } from "../geo/geoid";
+import { ellipsoidToMsl, isGeoidReady } from "../geo/geoid";
 import { enrichFlight } from "./enrich";
 import type { Flight } from "./types";
 import { ALT_REF_WGS84_ELLIPSOID } from "../live/types";
@@ -49,7 +49,7 @@ export function parseGpx(xml: string, fileName: string): Flight {
       if (mslText != null && Number.isFinite(Number(mslText))) {
         altMsl = Number(mslText);
       } else if (positionAlt != null) {
-        altMsl = ellipsoidToMsl(lat, lon, positionAlt);
+        altMsl = isGeoidReady() ? ellipsoidToMsl(lat, lon, positionAlt) : positionAlt;
       }
     }
     const accuracyM = accText != null && Number.isFinite(Number(accText)) ? Number(accText) : undefined;

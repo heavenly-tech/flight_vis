@@ -1,7 +1,7 @@
 import { parseGpx, gpxNeedsGeoid } from "./parseGpx";
 import { parseIgc } from "./parseIgc";
 import type { Flight, Sample } from "./types";
-import { ensureGeoidLoaded } from "../geo/geoid";
+import { ensureGeoidLoaded, ensureGeoidLoading } from "../geo/geoid";
 
 export function needsGeoidForTrack(text: string, fileName: string): boolean {
   const trimmed = text.trim();
@@ -17,14 +17,20 @@ export async function parseFlight(text: string, fileName: string): Promise<Fligh
   const lower = fileName.toLowerCase();
   const trimmed = text.trim();
   if (lower.endsWith(".gpx") || trimmed.startsWith("<") || trimmed.includes("<gpx")) {
-    if (gpxNeedsGeoid(text)) await ensureGeoidLoaded();
+    if (gpxNeedsGeoid(text)) {
+      ensureGeoidLoading();
+      await ensureGeoidLoaded();
+    }
     return parseGpx(text, fileName);
   }
   if (lower.endsWith(".igc") || /^[a-z]/i.test(trimmed[0] ?? "")) {
     return parseIgc(text, fileName);
   }
   try {
-    if (gpxNeedsGeoid(text)) await ensureGeoidLoaded();
+    if (gpxNeedsGeoid(text)) {
+      ensureGeoidLoading();
+      await ensureGeoidLoaded();
+    }
     return parseGpx(text, fileName);
   } catch {
     return parseIgc(text, fileName);

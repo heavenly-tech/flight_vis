@@ -5,7 +5,9 @@ export function createIngestQueue<T>(worker: (batch: T) => Promise<void>): {
   let tail: Promise<void> = Promise.resolve();
   return {
     enqueue(batch: T) {
-      tail = tail.then(() => worker(batch));
+      tail = tail
+        .catch(() => undefined)
+        .then(() => worker(batch));
       return tail;
     },
     idle() {

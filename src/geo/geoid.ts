@@ -15,6 +15,9 @@ export type GeoidMeta = {
 
 const GRID_BASE = `${import.meta.env.BASE_URL}geoid/`;
 
+const RETRY_BASE_MS = 1000;
+const RETRY_MAX_MS = 60_000;
+
 function geoidAssetUrl(name: string): string {
   const rel = `${GRID_BASE}${name}`;
   if (typeof window !== "undefined" && window.location?.origin) {
@@ -25,8 +28,10 @@ function geoidAssetUrl(name: string): string {
 
 let meta: GeoidMeta | null = null;
 let undulation: Float32Array | null = null;
-let loadPromise: Promise<void> | null = null;
-const readyWaiters: Array<() => void> = [];
+let loadPromise: Promise<boolean> | null = null;
+let retryDelayMs = RETRY_BASE_MS;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+const readyListeners = new Set<() => void>();
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -61,40 +66,94 @@ function bilinear(meta: GeoidMeta, grid: Float32Array, lat: number, lon: number)
   return n0 * (1 - ty) + n1 * ty;
 }
 
+function notifyReady(): void {
+  retryDelayMs = RETRY_BASE_MS;
+  for (const wake of readyListeners) wake();
+}
+
+function scheduleRetry(): void {
+  if (retryTimer != null || isGeoidReady()) return;
+  const delay = retryDelayMs;
+  retryDelayMs = Math.min(retryDelayMs * 2, RETRY_MAX_MS);
+  retryTimer = setTimeout(() => {
+    retryTimer = null;
+    loadPromise = null;
+    void ensureGeoidLoaded();
+  }, delay);
+}
+
+async function fetchGeoidAssets(): Promise<void> {
+  const metaRes = await fetch(geoidAssetUrl("egm96-025deg.json"));
+  if (!metaRes.ok) throw new Error("Could not load geoid metadata");
+  const nextMeta = (await metaRes.json()) as GeoidMeta;
+  const binRes = await fetch(geoidAssetUrl("egm96-025deg.bin"));
+  if (!binRes.ok) throw new Error("Could not load geoid grid");
+  const buffer = await binRes.arrayBuffer();
+  installGeoidGrid(nextMeta, new Float32Array(buffer));
+}
+
 /** @internal test hook — inject a grid without fetch. */
 export function installGeoidGrid(nextMeta: GeoidMeta, values: Float32Array): void {
   meta = nextMeta;
   undulation = values;
-  loadPromise = Promise.resolve();
-  for (const wake of readyWaiters.splice(0)) wake();
+  loadPromise = Promise.resolve(true);
+  if (retryTimer != null) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  notifyReady();
+}
+
+/** @internal reset module state for tests */
+export function resetGeoidForTests(): void {
+  meta = null;
+  undulation = null;
+  loadPromise = null;
+  retryDelayMs = RETRY_BASE_MS;
+  if (retryTimer != null) {
+    clearTimeout(retryTimer);
+    retryTimer = null;
+  }
+  readyListeners.clear();
 }
 
 export function isGeoidReady(): boolean {
   return undulation != null && meta != null;
 }
 
-export function whenGeoidReady(): Promise<void> {
-  if (isGeoidReady()) return Promise.resolve();
-  return ensureGeoidLoaded();
+export function onGeoidReady(listener: () => void): () => void {
+  readyListeners.add(listener);
+  if (isGeoidReady()) listener();
+  return () => readyListeners.delete(listener);
 }
 
-export async function ensureGeoidLoaded(): Promise<void> {
-  if (isGeoidReady()) return;
+/** Fire-and-forget load with background retries (never throws). */
+export function ensureGeoidLoading(): void {
+  void ensureGeoidLoaded();
+}
+
+export function whenGeoidReady(): Promise<void> {
+  if (isGeoidReady()) return Promise.resolve();
+  return ensureGeoidLoaded().then(() => undefined);
+}
+
+/** Attempt load; returns true when the grid is ready. Retries in the background on failure. */
+export async function ensureGeoidLoaded(): Promise<boolean> {
+  if (isGeoidReady()) return true;
+  if (retryTimer != null) return false;
   if (!loadPromise) {
-    loadPromise = (async () => {
-      const metaRes = await fetch(geoidAssetUrl("egm96-025deg.json"));
-      if (!metaRes.ok) throw new Error("Could not load geoid metadata");
-      const nextMeta = (await metaRes.json()) as GeoidMeta;
-      const binRes = await fetch(geoidAssetUrl("egm96-025deg.bin"));
-      if (!binRes.ok) throw new Error("Could not load geoid grid");
-      const buffer = await binRes.arrayBuffer();
-      installGeoidGrid(nextMeta, new Float32Array(buffer));
-    })().catch((error) => {
-      loadPromise = null;
-      throw error;
-    });
+    loadPromise = fetchGeoidAssets()
+      .then(() => {
+        notifyReady();
+        return true;
+      })
+      .catch(() => {
+        loadPromise = null;
+        scheduleRetry();
+        return false;
+      });
   }
-  await loadPromise;
+  return loadPromise;
 }
 
 /** Geoid undulation N (m): ellipsoidal height = MSL + N. Requires loaded grid. */

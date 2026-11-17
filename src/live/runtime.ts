@@ -8,7 +8,7 @@ import { fixesToFlight } from "./fixesToFlight";
 import { flightToGpx } from "./flightToGpx";
 import { createIngestQueue } from "./ingestQueue";
 import { dedupeFixes } from "./sseClient";
-import { ensureGeoidLoaded } from "../geo/geoid";
+import { ensureGeoidLoading, isGeoidReady, onGeoidReady } from "../geo/geoid";
 import { getLocalFlight, putLocalFlight } from "./localFlights";
 import { liveFixesFromGpx } from "./gpxLive";
 import { detectLang, msg, setLiveLang, type LiveLang } from "./messages";
@@ -110,7 +110,19 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     sessionsBtn.textContent = msg("liveSessions", lang);
     trimTitle.textContent = msg("trimTitle", lang);
     liveBtn.title = msg("followLive", lang);
+    syncGeoidNotice();
   }
+
+  function syncGeoidNotice(): void {
+    if (!active || isGeoidReady()) return;
+    setLiveStatus(msg("geoidPending", lang));
+  }
+
+  const offGeoidReady = onGeoidReady(() => {
+    if (!active) return;
+    setLiveStatus(null);
+    void rebuildFromAllFixes();
+  });
 
   function recordingLocalId(): string | null {
     return sessionId ? `local:${sessionId}` : null;
@@ -300,12 +312,10 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
       setLiveStatus(null);
       return;
     }
-    setLiveStatus(
-      lang === "es" ? "Cargando modelo de altitud…" : "Loading altitude model…",
-    );
-    await ensureGeoidLoaded();
-    setLiveStatus(null);
+    ensureGeoidLoading();
+    syncGeoidNotice();
     await seedBufferedFixes(initial);
+    if (isGeoidReady()) setLiveStatus(null);
 
     stream = openLiveStream(id, {
       onOpen: () => setLiveStatus(null),
@@ -478,6 +488,7 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     startList,
     startSession,
     stop: () => {
+      offGeoidReady();
       stream?.close();
       stream = null;
       active = false;

@@ -167,6 +167,7 @@ export async function classifyStreamError(
     });
     if (res.status === 401 || res.status === 403) return "auth";
     if (res.status === 404) return "notfound";
+    await res.body?.cancel();
     return "network";
   } catch {
     return "network";

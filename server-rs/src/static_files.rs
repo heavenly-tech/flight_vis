@@ -3,10 +3,12 @@
 //! cache-control rules (immutable hashed assets, no-cache HTML entries).
 use axum::{
     body::Body,
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
 };
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use tokio::fs::File;
+use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 
 fn mime_for(ext: &str) -> &'static str {
@@ -78,21 +80,110 @@ fn is_hashed_asset(relative: &str) -> bool {
     false
 }
 
+fn is_geoid_asset(relative: &str) -> bool {
+    relative.starts_with("geoid/")
+}
+
 fn ext_of(relative: &str) -> &str {
     relative.rsplit('.').next().unwrap_or("")
+}
+
+fn accepts_encoding(headers: &HeaderMap) -> &'static str {
+    headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.to_ascii_lowercase())
+        .map(|v| {
+            if v.contains("br") {
+                "br"
+            } else if v.contains("gzip") {
+                "gzip"
+            } else {
+                "identity"
+            }
+        })
+        .unwrap_or("identity")
+}
+
+fn sidecar_path(base: &Path, encoding: &str) -> PathBuf {
+    let suffix = match encoding {
+        "br" => ".br",
+        "gzip" => ".gz",
+        _ => return base.to_path_buf(),
+    };
+    PathBuf::from(format!("{}{}", base.to_string_lossy(), suffix))
+}
+
+fn cache_for(relative: &str) -> &'static str {
+    if is_geoid_asset(relative) {
+        "public, max-age=31536000"
+    } else if is_hashed_asset(relative) {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    }
+}
+
+async fn file_etag(path: &Path) -> Result<String, StatusCode> {
+    let mut file = File::open(path).await.map_err(|_| StatusCode::NOT_FOUND)?;
+    let meta = file.metadata().await.map_err(|_| StatusCode::NOT_FOUND)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file
+            .read(&mut buf)
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let digest = hasher.finalize();
+    let len = meta.len();
+    Ok(format!("\"{digest:x}-{len}\""))
+}
+
+fn header_str(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
+    headers.get(name).and_then(|v| v.to_str().ok())
 }
 
 async fn file_response(
     path: &Path,
     content_type: &str,
     cache: &str,
+    etag: &str,
+    content_encoding: Option<&str>,
+    vary_encoding: bool,
+    not_modified: bool,
 ) -> Result<axum::response::Response, StatusCode> {
+    if not_modified {
+        let mut builder = axum::response::Response::builder().status(StatusCode::NOT_MODIFIED);
+        builder = builder
+            .header(header::CACHE_CONTROL, cache)
+            .header(header::ETAG, etag);
+        if vary_encoding {
+            builder = builder.header(header::VARY, "Accept-Encoding");
+        }
+        return builder
+            .body(Body::empty())
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
     let file = File::open(path).await.map_err(|_| StatusCode::NOT_FOUND)?;
     let body = Body::from_stream(ReaderStream::new(file));
-    axum::response::Response::builder()
+    let mut builder = axum::response::Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CACHE_CONTROL, cache)
+        .header(header::ETAG, etag);
+    if let Some(enc) = content_encoding {
+        builder = builder.header(header::CONTENT_ENCODING, enc);
+    }
+    if vary_encoding {
+        builder = builder.header(header::VARY, "Accept-Encoding");
+    }
+    builder
         .body(body)
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
@@ -100,6 +191,7 @@ async fn file_response(
 pub async fn serve(
     dist_dir: &Path,
     url_path: &str,
+    headers: &HeaderMap,
 ) -> Result<axum::response::Response, StatusCode> {
     if let Some(joined) = safe_join(dist_dir, url_path) {
         if tokio::fs::metadata(&joined)
@@ -112,12 +204,36 @@ pub async fn serve(
                 .ok()
                 .and_then(|p| p.to_str())
                 .unwrap_or("");
-            let cache = if is_hashed_asset(relative) {
-                "public, max-age=31536000, immutable"
-            } else {
-                "no-cache"
-            };
-            return file_response(&joined, mime_for(&ext_of(relative).to_lowercase()), cache).await;
+            let cache = cache_for(relative);
+            let encoding = accepts_encoding(headers);
+            let mut serve_path = joined.clone();
+            let mut content_encoding: Option<&str> = None;
+            let mut vary = false;
+            if is_geoid_asset(relative) && encoding != "identity" {
+                let sidecar = sidecar_path(&joined, encoding);
+                if tokio::fs::metadata(&sidecar)
+                    .await
+                    .map(|m| m.is_file())
+                    .unwrap_or(false)
+                {
+                    serve_path = sidecar;
+                    content_encoding = Some(if encoding == "br" { "br" } else { "gzip" });
+                    vary = true;
+                }
+            }
+            let etag = file_etag(&joined).await?;
+            let if_none_match = header_str(headers, header::IF_NONE_MATCH);
+            let not_modified = if_none_match == Some(etag.as_str());
+            return file_response(
+                &serve_path,
+                mime_for(&ext_of(relative).to_lowercase()),
+                cache,
+                &etag,
+                content_encoding,
+                vary,
+                not_modified,
+            )
+            .await;
         }
     }
     let index = dist_dir.join("index.html");
@@ -126,7 +242,18 @@ pub async fn serve(
         .map(|m| m.is_file())
         .unwrap_or(false)
     {
-        return file_response(&index, "text/html; charset=UTF-8", "no-cache").await;
+        let etag = file_etag(&index).await?;
+        let if_none_match = header_str(headers, header::IF_NONE_MATCH);
+        return file_response(
+            &index,
+            "text/html; charset=UTF-8",
+            "no-cache",
+            &etag,
+            None,
+            false,
+            if_none_match == Some(etag.as_str()),
+        )
+        .await;
     }
     Err(StatusCode::INTERNAL_SERVER_ERROR)
 }
@@ -134,9 +261,9 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
 
-    #[test]
-    fn join_resolves_subpaths() {
+    fn temp_dist() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "flight-vis-static-{}-{}",
             std::process::id(),
@@ -145,6 +272,13 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
+        std::fs::create_dir_all(dir.join("geoid")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn join_resolves_subpaths() {
+        let dir = temp_dist();
         std::fs::create_dir_all(dir.join("assets")).unwrap();
         std::fs::write(dir.join("login.html"), "login").unwrap();
         std::fs::write(dir.join("assets/app.js"), "js").unwrap();
@@ -169,5 +303,66 @@ mod tests {
         assert!(!is_hashed_asset("cesiumStatic/Workers/worker.js"));
         assert!(!is_hashed_asset("a-b.js"));
         assert!(!is_hashed_asset("a-bcdefg.JS"));
+    }
+
+    #[tokio::test]
+    async fn geoid_serves_cache_headers_and_br_encoding() {
+        let dir = temp_dist();
+        let bin = dir.join("geoid/egm96-025deg.bin");
+        let payload = vec![0u8; 128];
+        std::fs::write(&bin, &payload).unwrap();
+        std::fs::write(bin.to_string_lossy().to_string() + ".br", b"br-payload").unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("br, gzip"),
+        );
+        let res = serve(&dir, "/geoid/egm96-025deg.bin", &headers)
+            .await
+            .expect("geoid bin");
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("public, max-age=31536000")
+        );
+        assert!(res.headers().get(header::ETAG).is_some());
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_ENCODING)
+                .and_then(|v| v.to_str().ok()),
+            Some("br")
+        );
+        assert_eq!(
+            res.headers()
+                .get(header::VARY)
+                .and_then(|v| v.to_str().ok()),
+            Some("Accept-Encoding")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn geoid_returns_304_when_etag_matches() {
+        let dir = temp_dist();
+        let bin = dir.join("geoid/grid.bin");
+        std::fs::write(&bin, b"abc").unwrap();
+        let etag = file_etag(&bin).await.unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::IF_NONE_MATCH, HeaderValue::from_str(&etag).unwrap());
+        let res = serve(&dir, "/geoid/grid.bin", &headers)
+            .await
+            .expect("geoid");
+        assert_eq!(res.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(
+            res.headers()
+                .get(header::ETAG)
+                .and_then(|v| v.to_str().ok()),
+            Some(etag.as_str())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

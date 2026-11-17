@@ -234,12 +234,11 @@ function renderHud(): void {
   const sample = sampleAt(flight, cursorMs);
   const p = sample.point;
   const altEl = document.querySelector("#stat-alt")!;
-  const mslPending =
-    liveRuntime?.isActive() &&
-    p.positionAlt != null &&
-    !isGeoidReady() &&
-    Math.abs(p.alt - p.positionAlt) < 0.5;
-  altEl.textContent = mslPending ? "…" : `${Math.round(p.alt)} m`;
+  if (p.positionAlt != null && !isGeoidReady() && Math.abs(p.alt - p.positionAlt) < 0.5) {
+    altEl.textContent = `${Math.round(p.positionAlt)} m ellip.`;
+  } else {
+    altEl.textContent = `${Math.round(p.alt)} m`;
+  }
   document.querySelector("#stat-spd")!.textContent = `${(p.speedMps * 3.6).toFixed(0)} km/h`;
   document.querySelector("#stat-vario")!.textContent = `${p.varioMps >= 0 ? "+" : ""}${p.varioMps.toFixed(1)} m/s`;
   document.querySelector("#stat-dist")!.textContent = `${(p.distanceM / 1000).toFixed(1)} km`;

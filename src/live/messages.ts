@@ -30,6 +30,8 @@ const COPY = {
     noLiveSessions: "No active live sessions",
     pickSession: "Choose a live session",
     accuracyLabel: "GPS accuracy",
+    geoidPending:
+      "MSL altitude unavailable — geoid model still loading (showing ellipsoid height).",
   },
   es: {
     connecting: "Conectando a la transmisión en vivo…",
@@ -49,6 +51,8 @@ const COPY = {
     noLiveSessions: "No hay sesiones en vivo",
     pickSession: "Elige una sesión en vivo",
     accuracyLabel: "Precisión GPS",
+    geoidPending:
+      "Altitud MSL no disponible: modelo geoidal en carga (mostrando altura elipsoidal).",
   },
 } as const;
 

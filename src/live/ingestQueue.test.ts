@@ -14,4 +14,17 @@ describe("createIngestQueue", () => {
     await queue.idle();
     expect(order).toEqual([1, 11, 2, 12]);
   });
+
+  it("continues after a worker throws", async () => {
+    const order: string[] = [];
+    const queue = createIngestQueue(async (label: string) => {
+      order.push(label);
+      if (label === "bad") throw new Error("boom");
+    });
+    void queue.enqueue("ok");
+    void queue.enqueue("bad");
+    void queue.enqueue("ok2");
+    await queue.idle();
+    expect(order).toEqual(["ok", "bad", "ok2"]);
+  });
 });

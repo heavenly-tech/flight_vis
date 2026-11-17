@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
-import { geoidUndulationM, installGeoidGrid, type GeoidMeta } from "../geo/geoid";
+import { geoidUndulationM, installGeoidGrid, resetGeoidForTests, type GeoidMeta } from "../geo/geoid";
 import { fixesToFlight } from "./fixesToFlight";
 import type { LiveFix } from "./types";
 
@@ -28,5 +28,17 @@ describe("fixesToFlight", () => {
     const n = geoidUndulationM(lat, lon);
     expect(flight.points[0].positionAlt).toBe(hEllipsoid);
     expect(flight.points[0].alt).toBeCloseTo(hEllipsoid - n, 3);
+  });
+
+  it("preserves ellipsoid height in track when geoid is unavailable", async () => {
+    resetGeoidForTests();
+    const hEllipsoid = 900;
+    const fixes: LiveFix[] = [
+      { t: 0, lat: -33.4, lon: -70.57, alt: hEllipsoid, alt_ref: "wgs84_ellipsoid" },
+      { t: 1000, lat: -33.41, lon: -70.57, alt: hEllipsoid, alt_ref: "wgs84_ellipsoid" },
+    ];
+    const flight = await fixesToFlight(fixes);
+    expect(flight.points[0].positionAlt).toBe(hEllipsoid);
+    expect(flight.points[0].alt).toBe(hEllipsoid);
   });
 });

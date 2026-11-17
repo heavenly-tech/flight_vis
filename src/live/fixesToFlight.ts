@@ -1,4 +1,4 @@
-import { ellipsoidToMsl, ensureGeoidLoaded, isGeoidReady } from "../geo/geoid";
+import { ellipsoidToMsl, ensureGeoidLoading, isGeoidReady } from "../geo/geoid";
 import { enrichFlight } from "../track/enrich";
 import type { Flight } from "../track/types";
 import { ALT_REF_WGS84_ELLIPSOID, type LiveFix } from "./types";
@@ -31,7 +31,7 @@ export async function fixesToFlight(
   }
 
   const needsEllipsoid = fixes.some((f) => f.alt_ref === ALT_REF_WGS84_ELLIPSOID);
-  if (needsEllipsoid) await ensureGeoidLoaded();
+  if (needsEllipsoid) ensureGeoidLoading();
   const ellipsoidReady = !needsEllipsoid || isGeoidReady();
 
   const sorted = [...fixes].sort((a, b) => a.t - b.t);
