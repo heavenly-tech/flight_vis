@@ -57,10 +57,7 @@ pub async fn post_ingest(
     if let Some(db) = &state.club {
         if let Some(device_id) = db.resolve_device_token(token) {
             if let Some(flight_id) = db.open_flight_for_device(&device_id) {
-                let accepted = fixes
-                    .iter()
-                    .filter(|f| db.append_fix(&flight_id, &device_id, f).is_ok())
-                    .count();
+                let accepted = db.append_fixes(&flight_id, &device_id, &fixes).unwrap_or(0);
                 return (
                     StatusCode::OK,
                     Json(json!({ "ok": true, "accepted": accepted })),
@@ -231,7 +228,10 @@ pub async fn osmand_ingest(
     if let Some(db) = &state.club {
         if let Some(device_id) = db.resolve_device_token(&token) {
             if let Some(flight_id) = db.open_flight_for_device(&device_id) {
-                if db.append_fix(&flight_id, &device_id, &fix).is_ok() {
+                if db
+                    .append_fixes(&flight_id, &device_id, std::slice::from_ref(&fix))
+                    .is_ok()
+                {
                     return (StatusCode::OK, "OK").into_response();
                 }
             }

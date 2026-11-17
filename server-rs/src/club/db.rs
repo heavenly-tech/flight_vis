@@ -15,9 +15,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-const MIGRATION_001: &str = include_str!("../../migrations/001_init.sql");
-const MIGRATION_002: &str = include_str!("../../migrations/002_checkin.sql");
-const MIGRATION_003: &str = include_str!("../../migrations/003_device_pair_qr.sql");
+const MIGRATION_001: &str = include_str!("../../sqlite-legacy/001_init.sql");
+const MIGRATION_002: &str = include_str!("../../sqlite-legacy/002_checkin.sql");
+const MIGRATION_003: &str = include_str!("../../sqlite-legacy/003_device_pair_qr.sql");
 
 #[derive(Clone)]
 pub struct ClubDb {
@@ -615,27 +615,48 @@ impl ClubDb {
         device_id: &str,
         fix: &LiveFix,
     ) -> Result<(), rusqlite::Error> {
+        self.append_fixes(flight_id, device_id, std::slice::from_ref(fix))
+            .map(|_| ())
+    }
+
+    pub fn append_fixes(
+        &self,
+        flight_id: &str,
+        device_id: &str,
+        fixes: &[LiveFix],
+    ) -> Result<usize, rusqlite::Error> {
+        if fixes.is_empty() {
+            return Ok(0);
+        }
         self.with_conn(|conn| {
-            conn.execute(
-                "INSERT OR IGNORE INTO fixes (flight_id, device_id, t_ms, lat, lon, alt, speed, course, accuracy)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![
-                    flight_id,
-                    device_id,
-                    fix.t,
-                    fix.lat,
-                    fix.lon,
-                    fix.alt,
-                    fix.speed,
-                    fix.course,
-                    fix.accuracy
-                ],
-            )?;
+            let tx = conn.unchecked_transaction()?;
+            let mut inserted = 0usize;
+            let mut last_t = fixes[0].t;
+            for fix in fixes {
+                let changed = conn.execute(
+                    "INSERT OR IGNORE INTO fixes (flight_id, device_id, t_ms, lat, lon, alt, speed, course, accuracy)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    params![
+                        flight_id,
+                        device_id,
+                        fix.t,
+                        fix.lat,
+                        fix.lon,
+                        fix.alt,
+                        fix.speed,
+                        fix.course,
+                        fix.accuracy
+                    ],
+                )?;
+                inserted += changed;
+                last_t = fix.t;
+            }
             conn.execute(
                 "UPDATE flights SET last_fix_at = ?1 WHERE id = ?2",
-                params![fix.t, flight_id],
+                params![last_t, flight_id],
             )?;
-            Ok(())
+            tx.commit()?;
+            Ok(inserted)
         })
     }
 
