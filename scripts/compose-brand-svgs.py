@@ -117,7 +117,7 @@ def svg_doc(
     <clipPath id="mapClip">
       <rect x="{mx}" y="{my}" width="{mw}" height="{mh}" rx="{rx}" ry="{rx}"/>
     </clipPath>
-    <radialGradient id="oceanGrad" cx="46%" cy="42%" r="68%" fx="40%" fy="36%">
+    <radialGradient id="oceanGrad" cx="48%" cy="44%" r="62%" fx="44%" fy="40%">
       <stop offset="0%" stop-color="{ocean_hi}"/>
       <stop offset="100%" stop-color="{ocean_lo}"/>
     </radialGradient>
@@ -193,8 +193,8 @@ def main() -> None:
         path.write_text(body, encoding="utf-8")
         print(f"wrote {path} ({path.stat().st_size} bytes)")
     print(
-        f"land IoU vs ref mask: {metrics.get('land_iou_ref')}, "
-        f"vs chart mask: {metrics.get('land_iou_chart_mask')}"
+        f"land IoU vs ref-land-mask: {metrics.get('land_iou_ref_mask')}, "
+        f"paths: {metrics.get('land_eps_full')} eps, {metrics.get('graticule_paths')} grid paths"
     )
 
 

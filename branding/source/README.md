@@ -4,7 +4,7 @@ Owner-approved raster primitives and the approved Pillow compose script. Vector 
 
 ## Re-render the approved PNG
 
-Requirements: Python 3, [Pillow](https://pypi.org/project/pillow/), [cairosvg](https://pypi.org/project/cairosvg/), [numpy](https://pypi.org/project/numpy/), [opencv-python-headless](https://pypi.org/project/opencv-python-headless/), [scipy](https://pypi.org/project/scipy/).
+Requirements: Python 3, [Pillow](https://pypi.org/project/pillow/), [cairosvg](https://pypi.org/project/cairosvg/), [numpy](https://pypi.org/project/numpy/), [opencv-python-headless](https://pypi.org/project/opencv-python-headless/), [scipy](https://pypi.org/project/scipy/), [scikit-image](https://pypi.org/project/scikit-image/).
 
 ```bash
 pip install pillow cairosvg numpy
@@ -65,7 +65,7 @@ Vector SVG (`assets/brand/flightvis-logo*.svg`) uses the same polygon split (whi
 | Compose SVGs (track/plane unchanged) | `scripts/compose-brand-svgs.py` |
 | PNG icons / favicon | `npm run export:icons` |
 
-Land is traced from **`chart.jpg`** (HSV green 70–140° + int16-safe RGB, morph open/close, specks &lt; 40 px dropped, `approxPolyDP` paths at 1024). IoU is reported against `flightvis-logo-final.png` green mask and the chart land mask.
+Land is traced from **`chart.jpg`** at native 1024: **`(G > R+25) & (G > B+15)`** (int16), fill holes &lt; 30 px, `findContours` + `approxPolyDP`. QA mask: `ref-land-mask.png`; `python3 scripts/check-brand-land-iou.py` must report IoU ≥ 0.93 (extract fails below 0.93).
 
 Natural Earth / projection scripts under `scripts/` remain for experiments but are not used by `npm run brand:compose`.
 
