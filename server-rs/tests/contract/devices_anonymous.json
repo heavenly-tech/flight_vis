@@ -1,0 +1,7 @@
+{
+  "method": "POST",
+  "path": "/api/devices/anonymous",
+  "body": { "name": "Contract Guest" },
+  "expectStatus": 200,
+  "expectBodyKeys": ["ok"]
+}

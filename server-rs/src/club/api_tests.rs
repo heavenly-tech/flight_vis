@@ -632,6 +632,51 @@ async fn cross_club_admin_cannot_approve_other_club_pilot() {
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }
 
+#[tokio::test]
+#[serial]
+async fn cross_club_admin_pending_list_is_scoped() {
+    let mut fx = setup().await;
+    let club_a = fx.club.default_club_id().await.unwrap();
+    let slug = format!("club-b-{}", &crate::club::auth::new_id()[..8]);
+    let club_b = seed_second_club(&fx.club, &slug).await;
+    let pending_b = fx
+        .club
+        .register(&club_b, "Pending B", "scoped-b@test", "", "password12")
+        .await
+        .unwrap();
+    sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
+        .bind(&fx.pilot_a)
+        .execute(&fx.club.pool)
+        .await
+        .unwrap();
+    fx.club
+        .ensure_membership_row(&fx.pilot_a, &club_a, "admin", "approved")
+        .await
+        .unwrap();
+    let cookie_a = login_cookie(&mut fx.router, "a@test").await;
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/admin/pilots/pending")
+                .header(header::COOKIE, cookie_a)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let ids: Vec<&str> = json["pilots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p.get("id").and_then(|v| v.as_str()))
+        .collect();
+    assert!(!ids.contains(&pending_b.as_str()));
+}
+
 #[derive(Deserialize)]
 struct ContractCase {
     method: String,
@@ -657,7 +702,8 @@ async fn contract_client_api_aliases() {
         .unwrap();
     let magic_case = include_str!("../../tests/contract/magic_send.json");
     let club_case = include_str!("../../tests/contract/club_by_slug.json");
-    for raw in [magic_case, club_case] {
+    let anon_case = include_str!("../../tests/contract/devices_anonymous.json");
+    for raw in [magic_case, club_case, anon_case] {
         let case: ContractCase = serde_json::from_str(raw).expect("contract json");
         let path = if case.path_template.is_empty() {
             case.path
@@ -687,19 +733,6 @@ async fn contract_client_api_aliases() {
             assert!(json.get(&key).is_some(), "missing key {key}");
         }
     }
-    let anon = fx
-        .router
-        .call(
-            Request::builder()
-                .method("POST")
-                .uri("/api/devices/anonymous")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"name":"Contract Guest"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(anon.status(), StatusCode::OK);
 }
 
 #[tokio::test]
