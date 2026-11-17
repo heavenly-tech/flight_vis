@@ -7,6 +7,9 @@ export type TrackPoint = {
   varioMps: number;
   distanceM: number;
   headingRad: number;
+  /** MSL or display altitude when distinct from ellipsoid `alt`. */
+  positionAlt?: number;
+  accuracyM?: number;
 };
 
 export type ColorMode = "altitude" | "speed" | "vario";

@@ -8,12 +8,15 @@
     "dev": "vite",
     "dev:api": "cargo run --manifest-path server-rs/Cargo.toml",
     "build": "tsc --noEmit && vitest run && vite build",
+    "lint": "tsc --noEmit",
     "test:unit": "vitest run",
+    "test:e2e": "playwright test",
     "preview": "vite preview",
     "start": "cargo run --release --manifest-path server-rs/Cargo.toml",
     "test": "cargo test --manifest-path server-rs/Cargo.toml"
   },
   "devDependencies": {
+    "@playwright/test": "^1.56.0",
     "cesium": "^1.134.0",
     "typescript": "^5.9.2",
     "vite": "^7.1.5",
