@@ -866,11 +866,7 @@ impl ClubDb {
         })
     }
 
-    pub fn device_pair_token_for_pilot(
-        &self,
-        device_id: &str,
-        pilot_id: &str,
-    ) -> Option<String> {
+    pub fn device_pair_token_for_pilot(&self, device_id: &str, pilot_id: &str) -> Option<String> {
         self.with_conn(|conn| {
             conn.query_row(
                 "SELECT dpt.token FROM device_pair_tokens dpt

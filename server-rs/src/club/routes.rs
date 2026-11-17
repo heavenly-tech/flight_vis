@@ -1356,11 +1356,7 @@ fn html_csp_header() -> (header::HeaderName, &'static str) {
 async fn club_screen_page(State(state): State<AppState>) -> impl IntoResponse {
     let path = state.dist_dir.join("club-screen.html");
     match tokio::fs::read_to_string(&path).await {
-        Ok(html) => (
-            [(html_csp_header())],
-            Html(html),
-        )
-            .into_response(),
+        Ok(html) => ([(html_csp_header())], Html(html)).into_response(),
         Err(_) => (
             StatusCode::NOT_FOUND,
             "Club screen page not built (npm run build)",

@@ -294,15 +294,24 @@ async fn server_qr_svg_endpoints() {
         .unwrap();
     assert_eq!(pair.status(), StatusCode::OK);
     assert_eq!(
-        pair.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+        pair.headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok()),
         Some("image/svg+xml; charset=utf-8")
     );
     assert_eq!(
-        pair.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+        pair.headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
         Some("no-store")
     );
-    let svg = String::from_utf8(to_bytes(pair.into_body(), usize::MAX).await.unwrap().to_vec())
-        .unwrap();
+    let svg = String::from_utf8(
+        to_bytes(pair.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
     assert!(svg.contains("<svg"));
     assert!(!svg.contains("qrserver"));
 
@@ -310,11 +319,7 @@ async fn server_qr_svg_endpoints() {
         .club
         .create_display_session(&fx.pilot_a, "kiosk")
         .unwrap();
-    let display_cookie = format!(
-        "{}={}",
-        crate::club::auth::DISPLAY_COOKIE,
-        display_token
-    );
+    let display_cookie = format!("{}={}", crate::club::auth::DISPLAY_COOKIE, display_token);
 
     let screen_qr = fx
         .router
@@ -328,9 +333,13 @@ async fn server_qr_svg_endpoints() {
         .await
         .unwrap();
     assert_eq!(screen_qr.status(), StatusCode::OK);
-    let screen_svg =
-        String::from_utf8(to_bytes(screen_qr.into_body(), usize::MAX).await.unwrap().to_vec())
-            .unwrap();
+    let screen_svg = String::from_utf8(
+        to_bytes(screen_qr.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
     assert!(screen_svg.contains("<svg"));
     assert!(!screen_svg.contains("qrserver"));
 }
