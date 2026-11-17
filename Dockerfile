@@ -11,7 +11,7 @@ RUN npm run build
 # cargo-chef keeps dependency compilation cached across rebuilds.
 FROM rust:1.98.0-alpine AS chef
 WORKDIR /app/server-rs
-RUN apk add --no-cache musl-dev && cargo install cargo-chef --locked
+RUN apk add --no-cache musl-dev openssl-dev pkgconfig && cargo install cargo-chef --locked
 COPY server-rs/ ./
 RUN cargo chef prepare --recipe-path /recipe.json
 
