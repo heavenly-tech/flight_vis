@@ -12,12 +12,18 @@ RUN npm run build
 FROM rust:1.98.0-alpine AS chef
 WORKDIR /app/server-rs
 RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig && cargo install cargo-chef --locked
+ENV OPENSSL_STATIC=1 \
+    OPENSSL_LIB_DIR=/usr/lib \
+    OPENSSL_INCLUDE_DIR=/usr/include
 COPY server-rs/ ./
 RUN cargo chef prepare --recipe-path /recipe.json
 
 FROM rust:1.98.0-alpine AS backend
 WORKDIR /app/server-rs
 RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig
+ENV OPENSSL_STATIC=1 \
+    OPENSSL_LIB_DIR=/usr/lib \
+    OPENSSL_INCLUDE_DIR=/usr/include
 COPY --from=chef /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
 COPY --from=chef /recipe.json /recipe.json
 RUN cargo chef cook --release --recipe-path /recipe.json
