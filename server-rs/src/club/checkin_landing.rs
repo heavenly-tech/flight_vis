@@ -328,7 +328,10 @@ mod tests {
         }
     }
 
-    async fn fixture(release_available: bool, with_apk: bool) -> (tempfile::TempDir, axum::Router, ClubDb) {
+    async fn fixture(
+        release_available: bool,
+        with_apk: bool,
+    ) -> (tempfile::TempDir, axum::Router, ClubDb) {
         let locales = crate::i18n::Catalogs::resolve_dir(std::path::Path::new("dist"));
         let _ = crate::i18n::init_global(&locales);
         let dir = tempfile::tempdir().unwrap();
@@ -373,12 +376,7 @@ mod tests {
     async fn get_landing_api(router: &axum::Router, uri: &str) -> Value {
         let res = router
             .clone()
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::OK);
@@ -443,11 +441,7 @@ mod tests {
         let (_dir, router, db) = fixture(false, false).await;
         let club_id = db.default_club_id().await.unwrap();
         let token = db.mint_checkin_qr_token(&club_id, now_ms()).await.unwrap();
-        let body = get_landing_api(
-            &router,
-            &format!("/api/c/demo/q/{token}/landing"),
-        )
-        .await;
+        let body = get_landing_api(&router, &format!("/api/c/demo/q/{token}/landing")).await;
         assert_eq!(body["releaseAvailable"], false);
         assert_eq!(body["publicMapPath"], "/public-map.html");
         assert_eq!(body["clubName"], "Demo & Club <script>");
@@ -459,11 +453,7 @@ mod tests {
         let (_dir, router, db) = fixture(true, true).await;
         let club_id = db.default_club_id().await.unwrap();
         let token = db.mint_checkin_qr_token(&club_id, now_ms()).await.unwrap();
-        let body = get_landing_api(
-            &router,
-            &format!("/api/c/demo/q/{token}/landing"),
-        )
-        .await;
+        let body = get_landing_api(&router, &format!("/api/c/demo/q/{token}/landing")).await;
         assert_eq!(body["releaseAvailable"], true);
         assert_eq!(body["apkUrl"], "/app/flightvis.apk");
     }
