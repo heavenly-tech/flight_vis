@@ -39,6 +39,7 @@ pub(crate) struct AppState {
     pub(crate) video_queue: tokio::sync::mpsc::Sender<video::VideoJob>,
     pub(crate) login_throttle: LoginThrottle,
     pub(crate) device_register_throttle: LoginThrottle,
+    pub(crate) share_lookup_throttle: LoginThrottle,
     pub(crate) mailer: club::mail::Mailer,
 }
 
@@ -61,6 +62,7 @@ fn app_state(
             video_queue,
             login_throttle: LoginThrottle::default(),
             device_register_throttle: LoginThrottle::default(),
+            share_lookup_throttle: LoginThrottle::default(),
             mailer: club::mail::Mailer::from_env(club::mail::MailOutbox::default()),
         },
         queue_rx,
@@ -294,6 +296,7 @@ fn login_fields(headers: &HeaderMap, body: &[u8]) -> LoginFields {
 /// peer is trusted, `X-Real-IP` wins, then the last `X-Forwarded-For` entry
 /// (the one appended by our own proxy).
 pub(crate) const LOGIN_MAX_ATTEMPTS: usize = 8;
+pub(crate) const SHARE_LOOKUP_MAX_ATTEMPTS: usize = 60;
 const LOGIN_WINDOW_SECS: u64 = 60;
 
 #[derive(Clone, Default)]
@@ -302,13 +305,17 @@ pub(crate) struct LoginThrottle {
 }
 
 impl LoginThrottle {
-    fn allow(&self, ip: &str, now: u64) -> bool {
+    pub(crate) fn allow(&self, ip: &str, now: u64) -> bool {
+        self.allow_up_to(ip, now, LOGIN_MAX_ATTEMPTS)
+    }
+
+    pub(crate) fn allow_up_to(&self, ip: &str, now: u64, max_attempts: usize) -> bool {
         let mut hits = self.hits.lock().unwrap_or_else(|err| err.into_inner());
         let cutoff = now.saturating_sub(LOGIN_WINDOW_SECS);
         let allowed = {
             let entry = hits.entry(ip.to_string()).or_default();
             entry.retain(|stamp| *stamp > cutoff);
-            if entry.len() >= LOGIN_MAX_ATTEMPTS {
+            if entry.len() >= max_attempts {
                 false
             } else {
                 entry.push(now);
@@ -554,6 +561,7 @@ fn build_router(state: AppState) -> Router {
         .route("/login", get(login_page).post(login_post))
         .route("/login.html", get(login_html_redirect))
         .route("/logout", get(logout).post(logout));
+    app = app.merge(club::android_assetlinks::well_known_routes());
     if state.club.is_some() {
         app = app.merge(club::router());
     }

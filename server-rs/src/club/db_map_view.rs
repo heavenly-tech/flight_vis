@@ -377,7 +377,7 @@ mod tests {
             conn.execute(
                 "INSERT INTO clubs (id, name, slug, created_at, latitude, longitude, show_public_tracks)
                  VALUES (?1, ?2, ?3, ?4, -33.0, -70.0, 1)",
-                params![id, "Club B", slug, now_ms()],
+                params![id, "Club B", slug, now_ms() + 1000],
             )
         })
         .unwrap();

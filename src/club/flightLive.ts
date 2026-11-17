@@ -1,15 +1,61 @@
 import { createFlightViewer } from "../viz/viewer";
 import { fixesToFlight } from "../live/fixesToFlight";
+import { createShare, listShares, revokeShare } from "./flightSharePanel";
 
 const params = new URLSearchParams(location.search);
 const id = params.get("id");
 const title = document.querySelector<HTMLHeadingElement>("#title")!;
+const sharePanel = document.querySelector<HTMLElement>("#share-panel")!;
+const shareCreate = document.querySelector<HTMLButtonElement>("#btn-share-create")!;
+const shareCopy = document.querySelector<HTMLButtonElement>("#btn-share-copy")!;
+const shareList = document.querySelector<HTMLUListElement>("#share-list")!;
+const shareQr = document.querySelector<HTMLDivElement>("#share-qr")!;
+
+let lastShareUrl = "";
+
+async function refreshShares(flightId: string): Promise<void> {
+  const shares = await listShares(flightId);
+  shareList.replaceChildren(
+    ...shares
+      .filter((s) => !s.revoked)
+      .map((s) => {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = "Revocar";
+        btn.addEventListener("click", async () => {
+          await revokeShare(flightId, s.id);
+          await refreshShares(flightId);
+        });
+        li.append(document.createTextNode(`Enlace · ${new Date(s.createdAt).toLocaleString()} `), btn);
+        return li;
+      }),
+  );
+}
+
+shareCreate.addEventListener("click", async () => {
+  if (!id) return;
+  const created = await createShare(id);
+  lastShareUrl = created.url;
+  shareCopy.hidden = false;
+  shareQr.hidden = false;
+  shareQr.innerHTML = created.qrSvg;
+  await refreshShares(id);
+});
+
+shareCopy.addEventListener("click", async () => {
+  if (!lastShareUrl) return;
+  await navigator.clipboard.writeText(lastShareUrl);
+  shareCopy.textContent = "Copiado";
+});
 
 async function run(): Promise<void> {
   if (!id) {
     title.textContent = "Missing flight id";
     return;
   }
+  sharePanel.hidden = false;
+  await refreshShares(id);
   const viewer = await createFlightViewer(document.getElementById("cesiumContainer")!);
   const fixesRes = await fetch(`/api/flights/${id}/fixes`, { credentials: "same-origin" });
   if (fixesRes.ok) {

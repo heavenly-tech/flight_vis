@@ -31,18 +31,18 @@ use std::{convert::Infallible, time::Duration};
 use axum::routing::patch;
 use tokio_stream::StreamExt as _;
 
-fn club_db(state: &AppState) -> Option<&ClubDb> {
+pub(crate) fn club_db(state: &AppState) -> Option<&ClubDb> {
     state.club.as_ref()
 }
 
-fn is_secure(headers: &HeaderMap) -> bool {
+pub(crate) fn is_secure(headers: &HeaderMap) -> bool {
     let forwarded = headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok());
     crate::auth::is_secure_request(forwarded)
 }
 
-fn viewer(state: &AppState, headers: &HeaderMap) -> Viewer {
+pub(crate) fn viewer(state: &AppState, headers: &HeaderMap) -> Viewer {
     let session = parse_session_cookie(headers);
     let now = now_ms();
     state
@@ -2031,7 +2031,11 @@ async fn club_screen_qr_svg(
         Ok(t) => t,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let svg = match crate::club::qr::svg_for_payload(&token, 280) {
+    let slug = db.club_slug(&club_id).unwrap_or_else(|| "default".to_string());
+    let path = crate::club::club_scope::checkin_qr_path(&slug, &token);
+    let payload =
+        crate::club::android_assetlinks::absolute_https_url(&headers, &path);
+    let svg = match crate::club::qr::svg_for_payload(&payload, 280) {
         Ok(s) => s,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -2202,4 +2206,6 @@ pub fn router() -> Router<AppState> {
             "/api/admin/access-requests/{id}/reject",
             post(admin_reject_access),
         )
+        .merge(crate::club::checkin_landing::routes())
+        .merge(crate::club::share_routes::routes())
 }

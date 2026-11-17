@@ -42,6 +42,7 @@ mod tests {
             video_queue,
             login_throttle: LoginThrottle::default(),
             device_register_throttle: LoginThrottle::default(),
+            share_lookup_throttle: LoginThrottle::default(),
             mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         };
         (build_router(state), data_dir)

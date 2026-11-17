@@ -172,6 +172,11 @@ impl ClubDb {
                 conn.execute_batch(MIGRATION_011)?;
                 conn.execute("INSERT INTO schema_migrations (version) VALUES (11)", [])?;
             }
+            const MIGRATION_012: &str = include_str!("../../sqlite-legacy/012_flight_shares.sql");
+            if version < 12 {
+                conn.execute_batch(MIGRATION_012)?;
+                conn.execute("INSERT INTO schema_migrations (version) VALUES (12)", [])?;
+            }
             Ok(())
         })
     }

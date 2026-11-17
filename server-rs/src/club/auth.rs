@@ -49,6 +49,10 @@ pub fn new_device_token() -> String {
     hex::encode(bytes)
 }
 
+pub fn new_share_token() -> String {
+    new_device_token()
+}
+
 pub fn new_id() -> String {
     new_session_id()
 }
