@@ -30,9 +30,10 @@ pub enum GuestClaimError {
 impl ClubDb {
     pub async fn create_pilot_session(&self, pilot_id: &str, now: i64) -> Result<String, DbError> {
         let session_id = new_session_id();
+        let session_db_id = digest_token(&session_id);
         let exp = now + SESSION_TTL_SEC * 1000;
         sqlx::query("INSERT INTO pilot_sessions (id, pilot_id, expires_at) VALUES ($1, $2, $3)")
-            .bind(&session_id)
+            .bind(&session_db_id)
             .bind(pilot_id)
             .bind(exp)
             .execute(&self.pool)

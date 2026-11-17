@@ -279,21 +279,23 @@ impl ClubDb {
     }
 
     pub async fn logout(&self, session_id: &str) -> Result<(), DbError> {
+        let session_db_id = auth::digest_token(session_id);
         sqlx::query("DELETE FROM pilot_sessions WHERE id = $1")
-            .bind(session_id)
+            .bind(&session_db_id)
             .execute(&self.pool)
             .await?;
         Ok(())
     }
 
     pub async fn pilot_from_session(&self, session_id: &str, now: i64) -> Option<PilotRow> {
+        let session_db_id = auth::digest_token(session_id);
         let row = sqlx::query(
             "SELECT p.id, p.club_id, p.name, p.email, p.license_no, p.status, p.role, p.locale
              FROM pilot_sessions s
              JOIN pilots p ON p.id = s.pilot_id
              WHERE s.id = $1 AND s.expires_at > $2",
         )
-        .bind(session_id)
+        .bind(&session_db_id)
         .bind(now)
         .fetch_optional(&self.pool)
         .await
