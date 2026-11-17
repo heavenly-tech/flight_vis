@@ -12,9 +12,17 @@ use serde::Serialize;
 use sqlx::{PgPool, Row};
 pub type DbError = sqlx::Error;
 
+#[cfg(test)]
+struct TestPgLease {
+    #[allow(dead_code)]
+    _guard: tokio::sync::MutexGuard<'static, ()>,
+}
+
 #[derive(Clone)]
 pub struct ClubDb {
     pub(crate) pool: PgPool,
+    #[cfg(test)]
+    _test_pg_lease: Option<std::sync::Arc<TestPgLease>>,
 }
 
 pub const MAX_DEVICES_PER_PILOT: usize = 10;
@@ -120,7 +128,11 @@ impl ClubDb {
     pub async fn connect() -> Result<Self, DbConnectError> {
         let pool = database::connect_pool().await?;
         database::run_migrations(&pool).await?;
-        let db = Self { pool };
+        let db = Self {
+            pool,
+            #[cfg(test)]
+            _test_pg_lease: None,
+        };
         db.bootstrap().await?;
         let _ = db.import_device_tokens_from_env().await;
         Ok(db)
@@ -128,9 +140,13 @@ impl ClubDb {
 
     #[cfg(test)]
     pub async fn open_test() -> Result<Self, DbConnectError> {
+        let guard = database::acquire_test_pg_integration_lock().await;
         let pool = database::open_test_pool().await?;
         database::run_migrations(&pool).await?;
-        let db = Self { pool };
+        let db = Self {
+            pool,
+            _test_pg_lease: Some(std::sync::Arc::new(TestPgLease { _guard: guard })),
+        };
         db.truncate_all().await.map_err(DbConnectError::from)?;
         db.bootstrap().await?;
         Ok(db)

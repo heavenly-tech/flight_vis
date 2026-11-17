@@ -144,6 +144,16 @@ pub async fn connect_pool() -> Result<PgPool, DbConnectError> {
 #[cfg(test)]
 static TEST_MIGRATE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// One shared Postgres database in CI; hold this for the whole `ClubDb::open_test` lifetime.
+#[cfg(test)]
+static TEST_PG_INTEGRATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) async fn acquire_test_pg_integration_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    TEST_PG_INTEGRATION_LOCK.lock().await
+}
+
 #[allow(dead_code)]
 pub async fn run_migrations(pool: &PgPool) -> Result<(), DbConnectError> {
     #[cfg(test)]
@@ -239,6 +249,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn flightvis_owner_migrations() {
+        let _db_guard = acquire_test_pg_integration_lock().await;
         let pool = connect_pool()
             .await
             .expect("database url for owner smoke test");
