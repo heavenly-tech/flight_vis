@@ -8,14 +8,22 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import method_port as mp
 
-SRC = ROOT / "src/club/db_sqlite_source.rs"
-DB = ROOT / "src/club/db_pg.rs"
+SRC = ROOT / "src/club/db_sqlite_merged.rs"
+DB = ROOT / "src/club/db.rs"
 
 def extract_method(src: str, name: str) -> str:
-    m = re.search(rf"\n    pub fn {name}\(", src)
-    if not m:
-        m = re.search(rf"\n    fn {name}\(", src)
-    if not m:
+    for pat in (
+        rf"\n    pub async fn {name}\(",
+        rf"\n    pub fn {name}\(",
+        rf"\n    async fn {name}\(",
+        rf"\n    fn {name}\(",
+        rf"\n    pub\(crate\) fn {name}\(",
+        rf"\n    pub\(crate\) async fn {name}\(",
+    ):
+        m = re.search(pat, src)
+        if m:
+            break
+    else:
         raise SystemExit(f"method {name} not found in sqlite source")
     start = m.start() + 1
     brace = src.find("{", start)
@@ -23,12 +31,18 @@ def extract_method(src: str, name: str) -> str:
     return src[start : end + 1]
 
 def replace_method(db: str, name: str, new_body: str, async_pub: bool = True) -> str:
-    m = re.search(rf"\n    pub async fn {name}\(", db)
-    if not m:
-        m = re.search(rf"\n    async fn {name}\(", db)
-    if not m:
-        m = re.search(rf"\n    pub fn {name}\(", db)
-    if not m:
+    for pat in (
+        rf"\n    pub async fn {name}\(",
+        rf"\n    async fn {name}\(",
+        rf"\n    pub fn {name}\(",
+        rf"\n    fn {name}\(",
+        rf"\n    pub\(crate\) async fn {name}\(",
+        rf"\n    pub\(crate\) fn {name}\(",
+    ):
+        m = re.search(pat, db)
+        if m:
+            break
+    else:
         raise SystemExit(f"method {name} not in db.rs")
     start = m.start() + 1
     brace = db.find("{", start)

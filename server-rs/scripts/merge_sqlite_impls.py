@@ -10,6 +10,7 @@ FILES = [
     "db_map_view.rs",
     "db_kiosk_layout.rs",
     "db_shares.rs",
+    "db_access.rs",
     "club_scope.rs",
     "mail_suppress.rs",
 ]
