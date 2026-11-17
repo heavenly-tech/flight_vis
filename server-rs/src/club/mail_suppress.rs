@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::club::db::{now_ms, ClubDb};
 use rusqlite::params;
 
@@ -31,7 +33,6 @@ impl ClubDb {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::club::db::ClubDb;
 
     #[test]

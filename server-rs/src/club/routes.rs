@@ -26,6 +26,9 @@ use futures_util::stream;
 use serde::Deserialize;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
+
+#[allow(unused_imports)]
+use axum::routing::patch;
 use tokio_stream::StreamExt as _;
 
 fn club_db(state: &AppState) -> Option<&ClubDb> {
@@ -1315,7 +1318,10 @@ async fn create_device(
         )
             .into_response();
     };
-    if !state.device_register_throttle.allow(&client_ip.0, crate::now_secs()) {
+    if !state
+        .device_register_throttle
+        .allow(&client_ip.0, crate::now_secs())
+    {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(json!({ "error": "too many attempts" })),
@@ -1329,12 +1335,7 @@ async fn create_device(
         .filter(|s| !s.is_empty())
     {
         let label = body.label.trim();
-        match db.register_device_for_install(
-            &id,
-            label,
-            body.model.as_deref(),
-            install_id,
-        ) {
+        match db.register_device_for_install(&id, label, body.model.as_deref(), install_id) {
             Ok(reg) => return Json(reg).into_response(),
             Err(DeviceRegisterError::CapExceeded) => {
                 return (
@@ -1403,17 +1404,11 @@ async fn delete_device(
     let revoked = db
         .revoke_device_by_install(&id, &install_or_id)
         .unwrap_or(false)
-        || db
-            .revoke_device_by_id(&id, &install_or_id)
-            .unwrap_or(false);
+        || db.revoke_device_by_id(&id, &install_or_id).unwrap_or(false);
     if revoked {
         Json(json!({ "ok": true })).into_response()
     } else {
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not found" })),
-        )
-            .into_response()
+        (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
     }
 }
 
@@ -1660,11 +1655,17 @@ async fn admin_create_display(
         )
             .into_response();
     };
+    let screen_url = db
+        .pilot_club_id(&id)
+        .ok()
+        .and_then(|cid| db.club_slug(&cid))
+        .map(|slug| format!("/c/{slug}/screen"))
+        .unwrap_or_else(|| "/club/screen".to_string());
     match db.create_display_session(&id, body.label.trim()) {
         Ok((session_id, token)) => Json(json!({
             "id": session_id,
             "token": token,
-            "screenUrl": "/club/screen",
+            "screenUrl": screen_url,
         }))
         .into_response(),
         Err(_) => (
@@ -1751,6 +1752,268 @@ async fn club_screen_page(State(state): State<AppState>) -> impl IntoResponse {
         )
             .into_response(),
     }
+}
+
+async fn club_slug_screen_page(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "Club disabled").into_response();
+    };
+    if db.club_id_for_slug(&slug).is_none() {
+        return (StatusCode::NOT_FOUND, "Club not found").into_response();
+    }
+    let path = state.dist_dir.join("club-screen.html");
+    match tokio::fs::read_to_string(&path).await {
+        Ok(html) => ([(html_csp_header())], Html(html)).into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            "Club screen page not built (npm run build)",
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct KioskLayoutBody {
+    x: f64,
+    y: f64,
+    size: f64,
+    #[serde(default)]
+    aspect: Option<f64>,
+}
+
+fn layout_aspect(body: &KioskLayoutBody) -> f64 {
+    body.aspect
+        .filter(|a| *a > 0.05 && *a < 8.0)
+        .unwrap_or(crate::club::kiosk_qr::DEFAULT_PREVIEW_ASPECT)
+}
+
+async fn admin_get_kiosk_layout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    let Viewer::Pilot {
+        id,
+        role: PilotRole::Admin,
+        ..
+    } = v
+    else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin required" })),
+        )
+            .into_response();
+    };
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let club_id = match db.pilot_club_id(&id) {
+        Ok(c) => c,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "db error" })),
+            )
+                .into_response();
+        }
+    };
+    let _ = db.ensure_kiosk_qr_defaults(&club_id);
+    match db.kiosk_qr_layout(&club_id) {
+        Ok(row) => Json(row).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn admin_patch_kiosk_layout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<KioskLayoutBody>,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    let Viewer::Pilot {
+        id,
+        role: PilotRole::Admin,
+        ..
+    } = v
+    else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin required" })),
+        )
+            .into_response();
+    };
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let club_id = match db.pilot_club_id(&id) {
+        Ok(c) => c,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "db error" })),
+            )
+                .into_response();
+        }
+    };
+    if !body.size.is_finite() || !body.x.is_finite() || !body.y.is_finite() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid layout" })),
+        )
+            .into_response();
+    }
+    let aspect = layout_aspect(&body);
+    match db.set_kiosk_qr_layout(&club_id, body.x, body.y, body.size, aspect) {
+        Ok(row) => Json(row).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn admin_reset_kiosk_layout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Option<Json<KioskLayoutBody>>,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    let Viewer::Pilot {
+        id,
+        role: PilotRole::Admin,
+        ..
+    } = v
+    else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin required" })),
+        )
+            .into_response();
+    };
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let club_id = match db.pilot_club_id(&id) {
+        Ok(c) => c,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "db error" })),
+            )
+                .into_response();
+        }
+    };
+    let aspect = body
+        .as_ref()
+        .map(|b| layout_aspect(b))
+        .unwrap_or(crate::club::kiosk_qr::DEFAULT_PREVIEW_ASPECT);
+    match db.reset_kiosk_qr_layout(&club_id, aspect) {
+        Ok(row) => Json(row).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn display_kiosk_layout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let Some((club_id, _admin)) = display_context(&headers, db) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "display session required" })),
+        )
+            .into_response();
+    };
+    let _ = db.ensure_kiosk_qr_defaults(&club_id);
+    match db.kiosk_qr_layout(&club_id) {
+        Ok(row) => Json(row).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn display_kiosk_layout_stream(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state).cloned() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let Some((club_id, _admin)) = display_context(&headers, &db) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "display session required" })),
+        )
+            .into_response();
+    };
+    let _ = db.ensure_kiosk_qr_defaults(&club_id);
+    let club_id2 = club_id.clone();
+    let stream = stream::unfold((db, 0i64), move |(db, mut last_rev)| {
+        let club_id = club_id2.clone();
+        async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let layout = match db.kiosk_qr_layout(&club_id) {
+                Ok(l) => l,
+                Err(_) => return None,
+            };
+            if layout.rev == last_rev {
+                return Some((
+                    Ok::<_, Infallible>(Event::default().comment("ping")),
+                    (db, last_rev),
+                ));
+            }
+            last_rev = layout.rev;
+            let payload = match serde_json::to_string(&layout) {
+                Ok(p) => p,
+                Err(_) => return None,
+            };
+            Some((
+                Ok(Event::default().event("layout").data(payload)),
+                (db, last_rev),
+            ))
+        }
+    });
+    Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+        .into_response()
 }
 
 async fn club_screen_qr_svg(
@@ -1852,12 +2115,26 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/webhooks/postal/bounce", post(postal_bounce_webhook))
         .route("/club/screen", get(club_screen_page))
+        .route("/c/{slug}/screen", get(club_slug_screen_page))
         .route("/api/checkin", post(post_checkin))
         .route("/api/display/activate", post(display_activate))
         .route("/api/display/checkin-qr", get(display_checkin_qr))
         .route("/api/club/screen/qr.svg", get(club_screen_qr_svg))
         .route("/api/devices/pair/{id}/qr.svg", get(device_pair_qr_svg))
         .route("/api/display/map", get(display_map))
+        .route("/api/display/kiosk-layout", get(display_kiosk_layout))
+        .route(
+            "/api/display/kiosk-layout/stream",
+            get(display_kiosk_layout_stream),
+        )
+        .route(
+            "/api/admin/kiosk-layout",
+            get(admin_get_kiosk_layout).patch(admin_patch_kiosk_layout),
+        )
+        .route(
+            "/api/admin/kiosk-layout/reset",
+            post(admin_reset_kiosk_layout),
+        )
         .route(
             "/api/admin/display-sessions",
             get(admin_list_display).post(admin_create_display),
@@ -1876,10 +2153,7 @@ pub fn router() -> Router<AppState> {
             "/api/me/flights/{id}",
             axum::routing::delete(delete_my_flight),
         )
-        .route(
-            "/api/me/devices",
-            get(list_devices).post(create_device),
-        )
+        .route("/api/me/devices", get(list_devices).post(create_device))
         .route("/api/me/devices/{id}", axum::routing::delete(delete_device))
         .route("/api/flights/{id}/end", post(end_club_flight))
         .route("/api/flights/{id}/fixes", get(club_flight_fixes))

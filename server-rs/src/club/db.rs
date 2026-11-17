@@ -167,6 +167,11 @@ impl ClubDb {
                 conn.execute_batch(MIGRATION_010)?;
                 conn.execute("INSERT INTO schema_migrations (version) VALUES (10)", [])?;
             }
+            const MIGRATION_011: &str = include_str!("../../sqlite-legacy/011_kiosk_qr_layout.sql");
+            if version < 11 {
+                conn.execute_batch(MIGRATION_011)?;
+                conn.execute("INSERT INTO schema_migrations (version) VALUES (11)", [])?;
+            }
             Ok(())
         })
     }
@@ -400,6 +405,7 @@ impl ClubDb {
         (viewer, Some(pilot))
     }
 
+    #[allow(dead_code)]
     pub fn approve_pilot(&self, pilot_id: &str) -> Result<(), rusqlite::Error> {
         self.with_conn(|conn| {
             conn.execute(

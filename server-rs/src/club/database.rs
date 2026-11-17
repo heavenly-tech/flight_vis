@@ -3,6 +3,7 @@ use sqlx::PgPool;
 use std::{env, path::Path, time::Duration};
 
 /// Minimum Postgres major version supported in production and CI (no extensions required).
+#[allow(dead_code)]
 pub const MIN_POSTGRES_MAJOR: u32 = 14;
 
 #[derive(Debug)]
@@ -80,7 +81,13 @@ pub fn database_url_from_pg_env() -> Result<Option<String>, DbConnectError> {
     };
     let port = env::var("PGPORT")
         .ok()
-        .and_then(|p| if p.trim().is_empty() { None } else { Some(p.trim().to_string()) })
+        .and_then(|p| {
+            if p.trim().is_empty() {
+                None
+            } else {
+                Some(p.trim().to_string())
+            }
+        })
         .unwrap_or_else(|| "5432".to_string());
     let dbname = match env::var("PGDATABASE") {
         Ok(d) if !d.trim().is_empty() => d.trim().to_string(),
@@ -134,6 +141,7 @@ pub async fn connect_pool() -> Result<PgPool, DbConnectError> {
     Ok(pool)
 }
 
+#[allow(dead_code)]
 pub async fn run_migrations(pool: &PgPool) -> Result<(), DbConnectError> {
     sqlx::migrate!("./migrations")
         .run(pool)

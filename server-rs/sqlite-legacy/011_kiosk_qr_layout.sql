@@ -1,0 +1,4 @@
+ALTER TABLE clubs ADD COLUMN kiosk_qr_x REAL;
+ALTER TABLE clubs ADD COLUMN kiosk_qr_y REAL;
+ALTER TABLE clubs ADD COLUMN kiosk_qr_size REAL;
+ALTER TABLE clubs ADD COLUMN kiosk_layout_rev INTEGER NOT NULL DEFAULT 0;

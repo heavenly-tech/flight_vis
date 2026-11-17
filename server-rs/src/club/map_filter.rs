@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::club::{
     dem::{DemIndex, DemSample},
     geo::{egm96_undulation_m, haversine_km, METERS_PER_FOOT},
@@ -87,11 +89,7 @@ pub fn evaluate_public_altitude(
 }
 
 /// Drop or keep a **non-member** public track; members are exempt (caller skips).
-pub fn public_track_passes(
-    row: &DeviceFix,
-    filter: &MapViewFilter,
-    dem: &DemIndex,
-) -> bool {
+pub fn public_track_passes(row: &DeviceFix, filter: &MapViewFilter, dem: &DemIndex) -> bool {
     if !filter.show_public_tracks {
         return false;
     }
@@ -110,7 +108,11 @@ pub fn public_track_passes(
     )
 }
 
-pub fn apply_public_cap(mut positions: Vec<TailLivePosition>, cap: usize, center: (f64, f64)) -> Vec<TailLivePosition> {
+pub fn apply_public_cap(
+    mut positions: Vec<TailLivePosition>,
+    cap: usize,
+    center: (f64, f64),
+) -> Vec<TailLivePosition> {
     if positions.len() <= cap {
         return positions;
     }
@@ -125,7 +127,9 @@ pub fn apply_public_cap(mut positions: Vec<TailLivePosition>, cap: usize, center
 }
 
 pub fn visibility_is_public(vis: &str) -> bool {
-    FlightVisibility::parse(vis).map(|v| v == FlightVisibility::Public).unwrap_or(false)
+    FlightVisibility::parse(vis)
+        .map(|v| v == FlightVisibility::Public)
+        .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -177,7 +181,7 @@ mod tests {
     #[test]
     fn cap_keeps_nearest() {
         let center = (-33.0, -70.0);
-        let mut pos = vec![
+        let pos = vec![
             TailLivePosition {
                 tail: "FAR".into(),
                 flight_id: "1".into(),

@@ -23,6 +23,7 @@ pub struct DeviceFix {
     pub pilot_id: String,
     pub pilot_name: String,
     pub visibility: String,
+    #[allow(dead_code)]
     pub club_id: String,
     pub fix: LiveFix,
 }

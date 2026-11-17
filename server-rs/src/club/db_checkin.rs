@@ -1,6 +1,8 @@
+#![allow(dead_code)]
+
 use crate::club::{
     auth::new_id,
-    db::{now_ms, CheckinRecord, ClubDb, StartFlightError},
+    db::{CheckinRecord, ClubDb, StartFlightError},
 };
 use rusqlite::{params, OptionalExtension};
 
@@ -38,7 +40,7 @@ impl ClubDb {
         club_id: &str,
         hours: i64,
     ) -> Result<(), rusqlite::Error> {
-        if hours < 1 || hours > 24 * 365 {
+        if !(1..=24 * 365).contains(&hours) {
             return Err(rusqlite::Error::InvalidParameterName(
                 "checkin_window_hours".into(),
             ));
@@ -57,7 +59,7 @@ impl ClubDb {
         admin_id: &str,
         hours: i64,
     ) -> Result<i64, SetCheckinWindowError> {
-        if hours < 1 || hours > 24 * 365 {
+        if !(1..=24 * 365).contains(&hours) {
             return Err(SetCheckinWindowError::Invalid);
         }
         let (club_id, role): (String, String) = self
@@ -336,11 +338,15 @@ impl ClubDb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::club::{db::ClubDb, visibility::FlightVisibility};
+    use crate::club::{
+        db::{now_ms, ClubDb},
+        visibility::FlightVisibility,
+    };
 
     fn seed_with_window(db: &ClubDb, window_hours: i64) -> (String, String, String) {
         let club = db.default_club_id().unwrap();
-        db.set_club_checkin_window_hours(&club, window_hours).unwrap();
+        db.set_club_checkin_window_hours(&club, window_hours)
+            .unwrap();
         let type_id = db.upsert_type(&club, "C152").unwrap();
         let _ = type_id;
         db.upsert_aircraft(&club, "N123", "C152", true).unwrap();
@@ -444,14 +450,7 @@ mod tests {
         ));
         db.end_flight(&a, &f1, t + 2).unwrap();
         assert!(db
-            .start_flight_atomic(
-                &a,
-                &dev,
-                "N123",
-                FlightVisibility::Club,
-                false,
-                t + 3
-            )
+            .start_flight_atomic(&a, &dev, "N123", FlightVisibility::Club, false, t + 3)
             .is_ok());
     }
 }

@@ -448,9 +448,7 @@ async fn api_me_devices_auto_register_idempotent_and_revoke_on_logout() {
                 .uri("/api/club/logout")
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::COOKIE, cookie)
-                .body(Body::from(
-                    r#"{"installId":"install-api-test-01"}"#,
-                ))
+                .body(Body::from(r#"{"installId":"install-api-test-01"}"#))
                 .unwrap(),
         )
         .await
@@ -481,4 +479,63 @@ async fn pending_pilot_cannot_load_club_map() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn kiosk_layout_admin_clamps_and_display_sse_rev() {
+    let mut fx = setup();
+    let club_id = fx.club.default_club_id().unwrap();
+    fx.club.ensure_kiosk_qr_defaults(&club_id).unwrap();
+    fx.club
+        .with_conn(|conn| {
+            conn.execute(
+                "UPDATE pilots SET role = 'admin' WHERE id = ?1",
+                rusqlite::params![fx.pilot_a],
+            )
+        })
+        .unwrap();
+    let cookie = login_cookie(&mut fx.router, "a@test").await;
+    let patch = fx
+        .router
+        .call(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/admin/kiosk-layout")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, cookie.clone())
+                .body(Body::from(
+                    r#"{"x":0.99,"y":0.99,"size":0.9,"aspect":1.7777777778}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(patch.status(), StatusCode::OK);
+    let body = to_bytes(patch.into_body(), usize::MAX).await.unwrap();
+    let layout: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let size = layout.get("size").and_then(|v| v.as_f64()).unwrap();
+    assert!(size <= 0.5 + 1e-9);
+    let rev1 = layout.get("rev").and_then(|v| v.as_i64()).unwrap();
+
+    let (session_id, display_token) = fx.club.create_display_session(&fx.pilot_a, "k").unwrap();
+    let _ = session_id;
+    let display_cookie = format!(
+        "{}={display_token}; Path=/",
+        crate::club::auth::DISPLAY_COOKIE
+    );
+    let disp = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/display/kiosk-layout")
+                .header(header::COOKIE, display_cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(disp.status(), StatusCode::OK);
+    let disp_body = to_bytes(disp.into_body(), usize::MAX).await.unwrap();
+    let disp_layout: serde_json::Value = serde_json::from_slice(&disp_body).unwrap();
+    assert_eq!(disp_layout.get("rev").and_then(|v| v.as_i64()), Some(rev1));
 }

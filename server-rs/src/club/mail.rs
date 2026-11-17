@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::{
@@ -44,14 +46,18 @@ pub struct Mailer {
 impl Mailer {
     pub fn from_env(outbox: MailOutbox) -> Self {
         let smtp_host = std::env::var("SMTP_HOST").ok().filter(|s| !s.is_empty());
-        let smtp_from = std::env::var("SMTP_FROM")
-            .unwrap_or_else(|_| "noreply@heavenly.cl".to_string());
+        let smtp_from =
+            std::env::var("SMTP_FROM").unwrap_or_else(|_| "noreply@heavenly.cl".to_string());
         let public_url = std::env::var("FLIGHT_CLUB_PUBLIC_URL")
             .unwrap_or_else(|_| "https://flight.heavenly.cl".to_string());
         let bounce_secret = std::env::var("POSTAL_WEBHOOK_SECRET_FILE")
             .ok()
             .and_then(|p| std::fs::read(p).ok())
-            .or_else(|| std::env::var("POSTAL_WEBHOOK_SECRET").ok().map(|s| s.into_bytes()));
+            .or_else(|| {
+                std::env::var("POSTAL_WEBHOOK_SECRET")
+                    .ok()
+                    .map(|s| s.into_bytes())
+            });
         Self {
             smtp_host,
             smtp_from,
@@ -102,8 +108,7 @@ impl Mailer {
         let Some(secret) = &self.bounce_secret else {
             return false;
         };
-        let mut mac =
-            HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
+        let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
         mac.update(body);
         let expected = hex::encode(mac.finalize().into_bytes());
         subtle::ConstantTimeEq::ct_eq(expected.as_bytes(), signature.as_bytes()).into()
@@ -138,5 +143,6 @@ mod tests {
         let sig = hex::encode(mac.finalize().into_bytes());
         assert!(mailer.verify_postal_signature(body, &sig));
         assert!(!mailer.verify_postal_signature(body, &sig.replacen('a', "b", 1)));
+        std::env::remove_var("POSTAL_WEBHOOK_SECRET");
     }
 }

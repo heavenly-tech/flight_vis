@@ -1,13 +1,14 @@
 use crate::club::{
+    db::{ClubDb, FlightRow},
     dem::DemIndex,
-    geo::bbox_for_radius_km,
     map::{dedupe_by_tail, DeviceFix, TailLivePosition},
-    map_filter::{apply_public_cap, public_track_passes, visibility_is_public, AltitudeMode, MapViewFilter},
+    map_filter::{
+        apply_public_cap, public_track_passes, visibility_is_public, AltitudeMode, MapViewFilter,
+    },
     visibility::{
         can_view_flight, includes_in_club_map, includes_in_public_map, show_pilot_name,
-        FlightVisibility, PilotRole, PilotStatus, Viewer,
+        FlightVisibility, PilotStatus, Viewer,
     },
-    db::{now_ms, ClubDb, FlightRow},
 };
 use rusqlite::{params, OptionalExtension};
 
@@ -65,19 +66,10 @@ impl ClubDb {
     pub fn user_map_filter(&self, pilot_id: &str, club_id: &str) -> MapViewFilter {
         let mut base = self.club_map_filter(club_id);
         // User prefs can tighten public radius/cap/altitude; inherit club show_public_tracks unless overridden per-user column.
-        if let Ok((
-            radius,
-            show,
-            cap,
-            mode,
-            min_ft,
-            lat,
-            lon,
-            club_lat,
-            club_lon,
-        )) = self.with_conn(|conn| {
-            conn.query_row(
-                "SELECT p.public_radius_km, p.show_public_tracks, p.public_flights_cap,
+        if let Ok((radius, show, cap, mode, min_ft, lat, lon, club_lat, club_lon)) =
+            self.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT p.public_radius_km, p.show_public_tracks, p.public_flights_cap,
                         p.public_altitude_mode, p.public_altitude_min_ft,
                         COALESCE(p.last_latitude, c.latitude, 0),
                         COALESCE(p.last_longitude, c.longitude, 0),
@@ -85,22 +77,23 @@ impl ClubDb {
                  FROM pilots p
                  JOIN clubs c ON c.id = ?2
                  WHERE p.id = ?1",
-                params![pilot_id, club_id],
-                |r| {
-                    Ok((
-                        r.get::<_, f64>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, i64>(2)?,
-                        r.get::<_, String>(3)?,
-                        r.get::<_, f64>(4)?,
-                        r.get::<_, f64>(5)?,
-                        r.get::<_, f64>(6)?,
-                        r.get::<_, f64>(7)?,
-                        r.get::<_, f64>(8)?,
-                    ))
-                },
-            )
-        }) {
+                    params![pilot_id, club_id],
+                    |r| {
+                        Ok((
+                            r.get::<_, f64>(0)?,
+                            r.get::<_, i64>(1)?,
+                            r.get::<_, i64>(2)?,
+                            r.get::<_, String>(3)?,
+                            r.get::<_, f64>(4)?,
+                            r.get::<_, f64>(5)?,
+                            r.get::<_, f64>(6)?,
+                            r.get::<_, f64>(7)?,
+                            r.get::<_, f64>(8)?,
+                        ))
+                    },
+                )
+            })
+        {
             base.radius_km = radius;
             base.show_public_tracks = show != 0;
             base.cap = cap as usize;
@@ -172,13 +165,6 @@ impl ClubDb {
         self.latest_device_fixes_bbox(-90.0, 90.0, -180.0, 180.0)
     }
 
-    pub fn latest_map_fixes(&self, filter: &MapViewFilter) -> Vec<DeviceFix> {
-        let (min_lat, max_lat, min_lon, max_lon) =
-            bbox_for_radius_km(filter.center_lat, filter.center_lon, filter.radius_km);
-        // Bounding-box prefilter in SQL; member rows are not radius-clipped until filter pass.
-        self.latest_device_fixes_bbox(min_lat, max_lat, min_lon, max_lon)
-    }
-
     pub fn latest_map_fixes_global(&self) -> Vec<DeviceFix> {
         self.latest_device_fixes_unbounded()
     }
@@ -193,8 +179,7 @@ impl ClubDb {
     ) -> Vec<DeviceFix> {
         rows.into_iter()
             .filter(|r| {
-                let vis =
-                    FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
+                let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
                 if self.pilot_is_approved_member(&r.pilot_id, viewing_club_id) {
                     return match viewer {
                         Viewer::Pilot {
@@ -225,22 +210,29 @@ impl ClubDb {
                 let club = self.pilot_club_id(id).unwrap_or_default();
                 (club.clone(), self.user_map_filter(id, &club))
             }
-            Viewer::Anonymous | Viewer::Pilot { status: PilotStatus::Pending, .. } => {
+            Viewer::Anonymous
+            | Viewer::Pilot {
+                status: PilotStatus::Pending,
+                ..
+            } => {
                 let club = self.default_club_id().unwrap_or_default();
                 (club.clone(), self.club_map_filter(&club))
             }
         };
         let dem = self.dem_index();
         let rows = self.latest_map_fixes_global();
-        let filtered =
-            self.apply_public_view_policy(rows, viewer, &viewing_club, &filter, &dem);
+        let filtered = self.apply_public_view_policy(rows, viewer, &viewing_club, &filter, &dem);
         let mut positions = dedupe_by_tail(filtered);
         for pos in &mut positions {
             if let Some(f) = self.get_flight(&pos.flight_id) {
                 pos.pilot_name = Some(f.pilot_name);
             }
         }
-        apply_public_cap(positions, filter.cap, (filter.center_lat, filter.center_lon))
+        apply_public_cap(
+            positions,
+            filter.cap,
+            (filter.center_lat, filter.center_lon),
+        )
     }
 
     pub fn public_map(&self) -> Vec<TailLivePosition> {
@@ -272,7 +264,11 @@ impl ClubDb {
                 }
             }
         }
-        apply_public_cap(positions, filter.cap, (filter.center_lat, filter.center_lon))
+        apply_public_cap(
+            positions,
+            filter.cap,
+            (filter.center_lat, filter.center_lon),
+        )
     }
 
     pub fn flight_visible_to(&self, viewer: &Viewer, flight_id: &str) -> Option<FlightRow> {
@@ -369,7 +365,8 @@ mod tests {
     use super::*;
     use crate::club::{
         auth::new_id,
-        db::ClubDb,
+        db::{now_ms, ClubDb},
+        visibility::PilotRole,
         visibility::{FlightVisibility, Viewer},
     };
     use crate::live::LiveFix;
@@ -407,7 +404,8 @@ mod tests {
         db.approve_pilot(&outsider).unwrap();
         db.add_checkout(&outsider, "C152", None, None).unwrap();
         let dev = db.create_device(&outsider, "d").unwrap().0;
-        db.issue_open_checkin(&outsider, &dev, &club_b, now_ms()).unwrap();
+        db.issue_open_checkin(&outsider, &dev, &club_b, now_ms())
+            .unwrap();
         let fid = db
             .start_flight(
                 &outsider,
@@ -455,9 +453,17 @@ mod tests {
         db.approve_pilot(&member).unwrap();
         db.add_checkout(&member, "C152", None, None).unwrap();
         let dev = db.create_device(&member, "d").unwrap().0;
-        db.issue_open_checkin(&member, &dev, &club, now_ms()).unwrap();
+        db.issue_open_checkin(&member, &dev, &club, now_ms())
+            .unwrap();
         let fid = db
-            .start_flight(&member, &dev, "N-M", FlightVisibility::Club, false, now_ms())
+            .start_flight(
+                &member,
+                &dev,
+                "N-M",
+                FlightVisibility::Club,
+                false,
+                now_ms(),
+            )
             .unwrap();
         db.append_fix(
             &fid,

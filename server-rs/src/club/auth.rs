@@ -11,6 +11,7 @@ pub const DISPLAY_COOKIE: &str = "fv_club_display";
 pub const SESSION_TTL_SEC: i64 = 12 * 3600;
 
 /// Argon2 hash of a fixed password; verified on failed login lookups for timing parity.
+#[allow(dead_code)]
 pub const DUMMY_PASSWORD_HASH: &str =
     "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHlzYWx0c2FsdDE$+7K0dWSyNpY2LxqJX5v+fxWuZLq0sP3Q8xZ7d3Y6o2w";
 

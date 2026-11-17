@@ -13,6 +13,7 @@ pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
 }
 
 /// Rough bounding box for SQL prefilter (includes corners slightly outside the circle).
+#[allow(dead_code)]
 pub fn bbox_for_radius_km(lat: f64, lon: f64, radius_km: f64) -> (f64, f64, f64, f64) {
     let dlat = radius_km / EARTH_RADIUS_KM * (180.0 / PI);
     let dlon = radius_km / (EARTH_RADIUS_KM * lat.to_radians().cos()) * (180.0 / PI);

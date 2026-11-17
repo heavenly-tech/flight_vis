@@ -30,6 +30,7 @@ pub struct DeviceRegisterResponse {
 }
 
 impl ClubDb {
+    #[allow(dead_code)]
     pub fn count_devices_for_pilot(&self, pilot_id: &str) -> usize {
         self.with_conn(|conn| {
             let n: i64 = conn.query_row(
@@ -211,7 +212,6 @@ impl ClubDb {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::club::db::ClubDb;
 
     fn approved_pilot(db: &ClubDb) -> String {
@@ -271,7 +271,9 @@ mod tests {
         let reg = db
             .register_device_for_install(&pilot, "X", None, "install-revoke-1")
             .unwrap();
-        assert!(db.revoke_device_by_install(&pilot, "install-revoke-1").unwrap());
+        assert!(db
+            .revoke_device_by_install(&pilot, "install-revoke-1")
+            .unwrap());
         assert!(db.resolve_device_token(&reg.token).is_none());
     }
 }

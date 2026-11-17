@@ -671,8 +671,7 @@ async fn run_server() {
     });
     if club::database::resolve_database_url().is_ok() {
         if let Ok(pg) = club::database::connect_pool().await {
-            if let Err(error) =
-                club::sqlite_import::import_if_present(&config.data_dir, &pg).await
+            if let Err(error) = club::sqlite_import::import_if_present(&config.data_dir, &pg).await
             {
                 eprintln!("warn: club sqlite import failed: {error}");
             }

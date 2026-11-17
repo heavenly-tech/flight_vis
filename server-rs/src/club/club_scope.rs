@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use crate::club::db::ClubDb;
 use rusqlite::{params, OptionalExtension};
 
@@ -20,11 +22,9 @@ impl ClubDb {
             return None;
         }
         self.with_conn(|conn| {
-            conn.query_row(
-                "SELECT id FROM clubs WHERE slug = ?1",
-                params![slug],
-                |r| r.get(0),
-            )
+            conn.query_row("SELECT id FROM clubs WHERE slug = ?1", params![slug], |r| {
+                r.get(0)
+            })
             .optional()
         })
         .ok()
@@ -54,7 +54,7 @@ impl ClubDb {
         })
     }
 
-  pub fn is_superadmin(&self, pilot_id: &str) -> bool {
+    pub fn is_superadmin(&self, pilot_id: &str) -> bool {
         self.with_conn(|conn| {
             conn.query_row(
                 "SELECT global_role FROM pilots WHERE id = ?1",
@@ -66,11 +66,7 @@ impl ClubDb {
         .unwrap_or(false)
     }
 
-    pub fn membership_in_club(
-        &self,
-        pilot_id: &str,
-        club_id: &str,
-    ) -> Option<(String, String)> {
+    pub fn membership_in_club(&self, pilot_id: &str, club_id: &str) -> Option<(String, String)> {
         self.with_conn(|conn| {
             conn.query_row(
                 "SELECT role, status FROM club_memberships
@@ -84,11 +80,7 @@ impl ClubDb {
         .flatten()
     }
 
-    pub fn require_club_admin(
-        &self,
-        pilot_id: &str,
-        club_id: &str,
-    ) -> Result<(), ClubScopeError> {
+    pub fn require_club_admin(&self, pilot_id: &str, club_id: &str) -> Result<(), ClubScopeError> {
         if self.is_superadmin(pilot_id) {
             return Ok(());
         }

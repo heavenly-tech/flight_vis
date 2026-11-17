@@ -1,16 +1,18 @@
 //! Flight-club registry: pilot auth, checkouts, shared live map.
 mod access_request;
 mod auth;
-mod club_scope;
 pub mod checkin;
+mod club_scope;
 pub mod database;
 mod db;
 mod db_access;
 mod db_checkin;
 mod db_devices;
+mod db_kiosk_layout;
 mod db_map_view;
 mod dem;
 mod geo;
+mod kiosk_qr;
 pub mod mail;
 mod mail_suppress;
 mod map;
