@@ -18,6 +18,8 @@ use std::{
 const MIGRATION_001: &str = include_str!("../../sqlite-legacy/001_init.sql");
 const MIGRATION_002: &str = include_str!("../../sqlite-legacy/002_checkin.sql");
 const MIGRATION_003: &str = include_str!("../../sqlite-legacy/003_device_pair_qr.sql");
+const MIGRATION_004: &str = include_str!("../../sqlite-legacy/004_fix_meta.sql");
+const MIGRATION_005: &str = include_str!("../../sqlite-legacy/005_access_requests.sql");
 
 #[derive(Clone)]
 pub struct ClubDb {
@@ -89,9 +91,17 @@ impl ClubDb {
         Ok(db)
     }
 
-    fn with_conn<F, T>(&self, f: F) -> Result<T, rusqlite::Error>
+    pub(crate) fn with_conn<F, T>(&self, f: F) -> Result<T, rusqlite::Error>
     where
         F: FnOnce(&Connection) -> Result<T, rusqlite::Error>,
+    {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        f(&conn)
+    }
+
+    pub(crate) fn with_conn_any<T, E, F>(&self, f: F) -> Result<T, E>
+    where
+        F: FnOnce(&Connection) -> Result<T, E>,
     {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         f(&conn)
@@ -126,6 +136,14 @@ impl ClubDb {
             if version < 3 {
                 conn.execute_batch(MIGRATION_003)?;
                 conn.execute("INSERT INTO schema_migrations (version) VALUES (3)", [])?;
+            }
+            if version < 4 {
+                conn.execute_batch(MIGRATION_004)?;
+                conn.execute("INSERT INTO schema_migrations (version) VALUES (4)", [])?;
+            }
+            if version < 5 {
+                conn.execute_batch(MIGRATION_005)?;
+                conn.execute("INSERT INTO schema_migrations (version) VALUES (5)", [])?;
             }
             Ok(())
         })
@@ -441,11 +459,25 @@ impl ClubDb {
         let Some(aircraft_id) = aircraft_id else {
             return Err(StartFlightError::NoTail);
         };
+        let type_code: String = self
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT t.code FROM aircraft a
+                     JOIN aircraft_types t ON t.id = a.type_id
+                     WHERE a.id = ?1",
+                    params![aircraft_id],
+                    |r| r.get(0),
+                )
+            })
+            .map_err(|_| StartFlightError::NoTail)?;
         let checkout = self
             .with_conn(|conn| Self::checkout_ok(conn, pilot_id, &aircraft_id, now))
             .unwrap_or(false);
         if !checkout {
-            return Err(StartFlightError::NoCheckout);
+            return Err(StartFlightError::NotCleared {
+                tail: tail.to_string(),
+                type_code,
+            });
         }
         let open = self
             .with_conn(|conn| {
@@ -1034,43 +1066,8 @@ impl ClubDb {
         type_code: &str,
         tail: Option<&str>,
         expires_at: Option<i64>,
-    ) -> Result<(), rusqlite::Error> {
-        self.with_conn(|conn| {
-            let club_id: String = conn.query_row(
-                "SELECT club_id FROM pilots WHERE id = ?1",
-                params![pilot_id],
-                |r| r.get(0),
-            )?;
-            let type_id: String = conn.query_row(
-                "SELECT id FROM aircraft_types WHERE club_id = ?1 AND code = ?2",
-                params![club_id, type_code],
-                |r| r.get(0),
-            )?;
-            let aircraft_id: Option<String> = if let Some(tail) = tail {
-                let id = conn
-                    .query_row(
-                        "SELECT id FROM aircraft WHERE club_id = ?1 AND tail = ?2",
-                        params![club_id, tail],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                if id.is_none() {
-                    return Err(rusqlite::Error::SqliteFailure(
-                        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
-                        Some("unknown tail".into()),
-                    ));
-                }
-                id
-            } else {
-                None
-            };
-            conn.execute(
-                "INSERT INTO checkouts (id, pilot_id, type_id, aircraft_id, expires_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![new_id(), pilot_id, type_id, aircraft_id, expires_at],
-            )?;
-            Ok(())
-        })
+    ) -> Result<(), CheckoutError> {
+        self.add_checkout_typed(pilot_id, type_code, tail, expires_at)
     }
 
     pub fn list_pending_pilots(&self) -> Vec<PilotRow> {
@@ -1579,8 +1576,10 @@ impl ClubDb {
         for tail in ["N101", "N202", "N303"] {
             self.upsert_aircraft(&club_id, tail, "C152", true)?;
         }
-        self.add_checkout(&pilot_id, "C152", None, None)?;
-        self.add_checkout(&admin_id, "C152", None, None)?;
+        self.add_checkout(&pilot_id, "C152", None, None)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(format!("checkout: {e:?}")))?;
+        self.add_checkout(&admin_id, "C152", None, None)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(format!("checkout: {e:?}")))?;
         let (dev_pilot, _) = self.create_device(&pilot_id, "Pilot phone")?;
         let (dev_admin, _) = self.create_device(&admin_id, "Admin tablet")?;
         self.issue_open_checkin(&pilot_id, &dev_pilot, &club_id, t)?;
@@ -1646,13 +1645,26 @@ pub enum LoginError {
     Invalid,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartFlightError {
     NoTail,
-    NoCheckout,
+    NotCleared { tail: String, type_code: String },
     NoCheckin,
     AlreadyActive,
     DeviceMismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckoutError {
+    UnknownTail,
+    UnknownType,
+    Internal,
+}
+
+impl From<rusqlite::Error> for CheckoutError {
+    fn from(_: rusqlite::Error) -> Self {
+        Self::Internal
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2176,10 +2188,88 @@ mod tests {
         assert!(db.display_map(&admin).is_empty());
     }
 
+    fn empty_club_with_approved_pilot(db: &ClubDb) -> (String, String) {
+        let club = db.default_club_id().unwrap();
+        let p = db
+            .register(&club, "P", "p@test", "L1", "password12")
+            .unwrap();
+        db.approve_pilot(&p).unwrap();
+        (club, p)
+    }
+
+    #[test]
+    fn access_request_approve_then_start() {
+        let db = ClubDb::open_in_memory().unwrap();
+        let (club, p) = empty_club_with_approved_pilot(&db);
+        let admin = db
+            .register(&club, "A", "admin@test", "", "password12")
+            .unwrap();
+        db.approve_pilot(&admin).unwrap();
+        let dev = db.create_device(&p, "phone").unwrap().0;
+        db.issue_open_checkin(&p, &dev, &club, now_ms()).unwrap();
+        let rid = db
+            .create_access_request(&p, "CC-ABC", None, Some("C152"), now_ms())
+            .unwrap();
+        db.approve_access_request(&admin, &rid, None, now_ms())
+            .unwrap();
+        let tails = db.me_tails(&p, now_ms()).unwrap();
+        assert!(tails.iter().any(|t| t.tail == "CC-ABC"));
+        db.issue_open_checkin(&p, &dev, &club, now_ms()).unwrap();
+        assert!(db
+            .start_flight(&p, &dev, "CC-ABC", FlightVisibility::Club, false, now_ms())
+            .is_ok());
+    }
+
+    #[test]
+    fn access_request_reject_blocks_start() {
+        let db = ClubDb::open_in_memory().unwrap();
+        let (club, p) = empty_club_with_approved_pilot(&db);
+        let admin = db
+            .register(&club, "A", "admin@test", "", "password12")
+            .unwrap();
+        db.approve_pilot(&admin).unwrap();
+        let dev = db.create_device(&p, "phone").unwrap().0;
+        db.issue_open_checkin(&p, &dev, &club, now_ms()).unwrap();
+        let rid = db
+            .create_access_request(&p, "CC-XYZ", None, Some("DA20"), now_ms())
+            .unwrap();
+        db.reject_access_request(&admin, &rid, "not yet", now_ms())
+            .unwrap();
+        let list = db.list_pilot_access_requests(&p);
+        assert_eq!(list[0].status, "rejected");
+        assert_eq!(list[0].reject_reason.as_deref(), Some("not yet"));
+        db.upsert_type(&club, "DA20").unwrap();
+        db.upsert_aircraft(&club, "CC-XYZ", "DA20", true).unwrap();
+        assert!(matches!(
+            db.start_flight(&p, &dev, "CC-XYZ", FlightVisibility::Club, false, now_ms()),
+            Err(StartFlightError::NotCleared { .. })
+        ));
+    }
+
+    #[test]
+    fn pending_access_request_cannot_start_without_checkout() {
+        let db = ClubDb::open_in_memory().unwrap();
+        let (club, p) = empty_club_with_approved_pilot(&db);
+        let dev = db.create_device(&p, "phone").unwrap().0;
+        db.issue_open_checkin(&p, &dev, &club, now_ms()).unwrap();
+        db.create_access_request(&p, "CC-NOP", None, Some("T1"), now_ms())
+            .unwrap();
+        db.upsert_type(&club, "T1").unwrap();
+        db.upsert_aircraft(&club, "CC-NOP", "T1", true).unwrap();
+        assert!(matches!(
+            db.start_flight(&p, &dev, "CC-NOP", FlightVisibility::Club, false, now_ms()),
+            Err(StartFlightError::NotCleared { .. })
+        ));
+    }
+
     #[test]
     fn add_checkout_unknown_tail_errors() {
         let db = ClubDb::open_in_memory().unwrap();
-        let (_, a, _, _) = seed(&db);
-        assert!(db.add_checkout(&a, "C152", Some("NOPE"), None).is_err());
+        let (club, a) = empty_club_with_approved_pilot(&db);
+        db.upsert_type(&club, "C152").unwrap();
+        assert!(matches!(
+            db.add_checkout(&a, "C152", Some("NOPE"), None),
+            Err(CheckoutError::UnknownTail)
+        ));
     }
 }
