@@ -7,16 +7,17 @@
   "scripts": {
     "dev": "vite",
     "dev:api": "cargo run --manifest-path server-rs/Cargo.toml",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vitest run && vite build",
+    "test:unit": "vitest run",
     "preview": "vite preview",
     "start": "cargo run --release --manifest-path server-rs/Cargo.toml",
     "test": "cargo test --manifest-path server-rs/Cargo.toml"
   },
-  "dependencies": {},
   "devDependencies": {
     "cesium": "^1.134.0",
     "typescript": "^5.9.2",
     "vite": "^7.1.5",
-    "vite-plugin-static-copy": "^3.1.2"
+    "vite-plugin-static-copy": "^3.1.2",
+    "vitest": "^3.2.4"
   }
 }

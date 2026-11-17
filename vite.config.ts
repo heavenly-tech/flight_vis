@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig, type ProxyOptions } from "vite";
+import { defineConfig, type ProxyOptions } from "vitest/config";
 import { viteStaticCopy } from "vite-plugin-static-copy";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -23,6 +23,9 @@ const authProxy: Record<string, string | ProxyOptions> = {
 };
 
 export default defineConfig({
+  test: {
+    include: ["src/**/*.test.ts"],
+  },
   base: "/",
   define: {
     CESIUM_BASE_URL: JSON.stringify(`/${cesiumBaseUrl}/`),

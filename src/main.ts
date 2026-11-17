@@ -8,6 +8,7 @@ import { isValidSlug, normalizeSlug, slugFromFileName, slugFromPath } from "./tr
 import type { ColorMode, Flight, FlightTag, TrimRange } from "./track/types";
 import { clampTrim, fullRange, newTagId, rangeStats, suggestTrim } from "./track/trim";
 import { cssForUnit } from "./viz/colors";
+import { nextChromeTap, shouldToggleChrome, type ChromeTap } from "./viz/globeChrome";
 import { createFlightViewer, type PathMode } from "./viz/viewer";
 
 const SAMPLE_URL = `${import.meta.env.BASE_URL}samples/vuelo5.gpx`;
@@ -42,6 +43,9 @@ const tagsButton = document.querySelector<HTMLButtonElement>("#btn-tags")!;
 const tagsPanel = document.querySelector<HTMLDivElement>("#tags-panel")!;
 const moreButton = document.querySelector<HTMLButtonElement>("#btn-more")!;
 const morePanel = document.querySelector<HTMLDivElement>("#more-panel")!;
+const hudGrid = document.querySelector<HTMLElement>("#hud-grid")!;
+const chromeRestore = document.querySelector<HTMLButtonElement>("#btn-chrome-restore")!;
+const cesiumContainer = document.getElementById("cesiumContainer")!;
 const shareButtonLabel = shareButton.textContent ?? "Save & copy link";
 const authHint = document.querySelector<HTMLParagraphElement>("#auth-hint")!;
 const loginLink = document.querySelector<HTMLAnchorElement>("#btn-login")!;
@@ -254,7 +258,15 @@ function refreshTrimStats(): void {
   summaryEl.textContent = `${(stats.distanceM / 1000).toFixed(1)} km · ${formatDuration(stats.durationMs)} · ${Math.round(stats.maxAlt)} m max`;
 }
 
+function isMobileLayout(): boolean {
+  return window.matchMedia("(max-width: 1023px)").matches;
+}
+
 function layoutHud(): void {
+  if (isMobileLayout()) {
+    hudToggle.hidden = true;
+    return;
+  }
   if (hud.hidden) {
     hudToggle.hidden = true;
     document.body.classList.remove("hud-clipped", "hud-rows-1", "hud-rows-2", "hud-open");
@@ -389,25 +401,81 @@ async function boot(): Promise<void> {
       renderHud();
     }
     lastFrame = now;
-    sampleQuality(now, playing);
+    sampleQuality(now, playing || globeInteracting);
     requestAnimationFrame(tick);
   }
 
-  // Feed the viewer's auto quality governor a 2s rolling fps, but only
-  // while playing: paused frames are free and must not skew the average.
+  // Feed the viewer's auto quality governor a 2s rolling fps, only while the
+  // globe is actively rendering (playback or camera interaction).
   let qualityFrames = 0;
   let qualityWindowStart = 0;
+  let globeInteracting = false;
 
   function sampleQuality(now: number, active: boolean): void {
+    if (!active) {
+      qualityFrames = 0;
+      qualityWindowStart = now;
+      return;
+    }
     if (!qualityWindowStart) qualityWindowStart = now;
     qualityFrames += 1;
     if (now - qualityWindowStart >= 2000) {
       const fps = (qualityFrames * 1000) / Math.max(1, now - qualityWindowStart);
-      if (active) viewer.stepQuality(fps);
+      viewer.stepQuality(fps);
       qualityFrames = 0;
       qualityWindowStart = now;
     }
   }
+
+  const globePointers = new Set<number>();
+  let chromeTap: ChromeTap | null = null;
+
+  cesiumContainer.addEventListener(
+    "pointerdown",
+    (event) => {
+      const onGlobe =
+        event.target === event.currentTarget || Boolean((event.target as Element).closest(".cesium-widget"));
+      if (!onGlobe) return;
+      chromeTap = nextChromeTap(chromeTap, globePointers.size, event, performance.now());
+      globePointers.add(event.pointerId);
+      globeInteracting = globePointers.size > 0;
+    },
+    true,
+  );
+
+  function endGlobePointer(event: PointerEvent): void {
+    if (globePointers.delete(event.pointerId)) {
+      globeInteracting = globePointers.size > 0;
+    }
+  }
+
+  function endGlobePointerChrome(event: PointerEvent): void {
+    endGlobePointer(event);
+    const tap = chromeTap;
+    if (tap?.pointerId === event.pointerId) chromeTap = null;
+    if (!shouldToggleChrome(tap, event, performance.now())) return;
+    const hidden = document.body.classList.toggle("chrome-hidden");
+    chromeRestore.hidden = !hidden;
+  }
+
+  function cancelChromeTap(event: PointerEvent): void {
+    endGlobePointer(event);
+    if (chromeTap?.pointerId === event.pointerId) chromeTap = null;
+  }
+
+  window.addEventListener("pointerup", endGlobePointerChrome, true);
+  window.addEventListener("pointercancel", cancelChromeTap, true);
+
+  chromeRestore.addEventListener("click", () => {
+    document.body.classList.remove("chrome-hidden");
+    chromeRestore.hidden = true;
+  });
+
+  hudGrid.addEventListener("click", () => {
+    if (!isMobileLayout()) return;
+    const open = document.body.classList.toggle("hud-strip-expanded");
+    hudGrid.setAttribute("aria-expanded", String(open));
+  });
 
   playButton.addEventListener("click", () => {
     if (!flight || !trim) return;
@@ -601,10 +669,16 @@ async function boot(): Promise<void> {
     }
   });
 
+  function syncColorModeUi(): void {
+    document.querySelectorAll<HTMLElement>("[data-mode]").forEach((el) => {
+      el.classList.toggle("active", el.dataset.mode === colorMode);
+    });
+  }
+
   document.querySelectorAll<HTMLButtonElement>("[data-mode]").forEach((button) => {
     button.addEventListener("click", async () => {
       colorMode = button.dataset.mode as ColorMode;
-      document.querySelectorAll("[data-mode]").forEach((el) => el.classList.toggle("active", el === button));
+      syncColorModeUi();
       if (flight) await viewer.setColorMode(colorMode);
     });
   });
