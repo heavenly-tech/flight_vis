@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Admin · pilots</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main { max-width: 44rem; margin: 1rem auto; padding: 0 1rem 2rem; }
+      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
+      button { font: inherit; padding: .3rem .5rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Pilots</h1>
+      <div id="admin-nav"></div>
+      <h2 style="font-size:1rem">Pending approval</h2>
+      <ul id="pending"></ul>
+      <h2 style="font-size:1rem">All pilots</h2>
+      <ul id="all"></ul>
+    </main>
+    <script type="module" src="/src/club/adminPilots.ts"></script>
+  </body>
+</html>

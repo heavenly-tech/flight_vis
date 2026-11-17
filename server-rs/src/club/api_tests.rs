@@ -2,7 +2,7 @@
 use crate::{
     auth::Auth,
     build_router,
-    club::{ClubDb, db::now_ms, visibility::FlightVisibility},
+    club::{db::now_ms, visibility::FlightVisibility, ClubDb},
     device_auth::DeviceAuth,
     live::LiveEngine,
     store::Store,
@@ -121,13 +121,7 @@ async fn fixes_denied_after_mid_flight_private() {
     let mut fx = setup();
     let cookie_a = login_cookie(&mut fx.router, "a@test").await;
     let cookie_b = login_cookie(&mut fx.router, "b@test").await;
-    let flight_id = start_flight(
-        &mut fx.router,
-        &cookie_a,
-        &fx.device_token,
-        "club",
-    )
-    .await;
+    let flight_id = start_flight(&mut fx.router, &cookie_a, &fx.device_token, "club").await;
 
     let visible = fx
         .router
@@ -169,13 +163,7 @@ async fn fixes_denied_after_mid_flight_private() {
 async fn anonymous_public_map_and_name_flag() {
     let mut fx = setup();
     let cookie_a = login_cookie(&mut fx.router, "a@test").await;
-    let flight_id = start_flight(
-        &mut fx.router,
-        &cookie_a,
-        &fx.device_token,
-        "club",
-    )
-    .await;
+    let flight_id = start_flight(&mut fx.router, &cookie_a, &fx.device_token, "club").await;
     let _ = flight_id;
     let q = format!(
         "id={}&lat=-33.4&lon=-70.6&timestamp={}",

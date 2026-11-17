@@ -1,5 +1,5 @@
 use crate::club::{
-    auth::{self, new_id, digest_token, SESSION_TTL_SEC},
+    auth::{self, digest_token, new_id, SESSION_TTL_SEC},
     map::{dedupe_by_tail, filter_admin_tails, DeviceFix, TailLivePosition},
     visibility::{
         can_view_flight, includes_in_club_map, includes_in_public_map, show_pilot_name,
@@ -8,11 +8,11 @@ use crate::club::{
 };
 use crate::live::LiveFix;
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
-use serde::Serialize;
 
 const MIGRATION_001: &str = include_str!("../../migrations/001_init.sql");
 
@@ -239,17 +239,7 @@ impl ClubDb {
                 .optional()
             })
             .map_err(|_| LoginError::Invalid)?;
-        let Some((
-            id,
-            club_id,
-            name,
-            email,
-            license_no,
-            status,
-            role,
-            hash,
-        )) = row
-        else {
+        let Some((id, club_id, name, email, license_no, status, role, hash)) = row else {
             return Err(LoginError::Invalid);
         };
         if !auth::verify_password(password, &hash) {
@@ -314,11 +304,7 @@ impl ClubDb {
         .flatten()
     }
 
-    pub fn viewer_from_session(
-        &self,
-        session_id: Option<&str>,
-        now: i64,
-    ) -> Viewer {
+    pub fn viewer_from_session(&self, session_id: Option<&str>, now: i64) -> Viewer {
         let Some(session_id) = session_id else {
             return Viewer::Anonymous;
         };
@@ -340,7 +326,11 @@ impl ClubDb {
         }
     }
 
-    pub fn viewer_with_pilot(&self, session_id: Option<&str>, now: i64) -> (Viewer, Option<PilotRow>) {
+    pub fn viewer_with_pilot(
+        &self,
+        session_id: Option<&str>,
+        now: i64,
+    ) -> (Viewer, Option<PilotRow>) {
         let Some(session_id) = session_id else {
             return (Viewer::Anonymous, None);
         };
@@ -578,7 +568,12 @@ impl ClubDb {
         .flatten()
     }
 
-    pub fn append_fix(&self, flight_id: &str, device_id: &str, fix: &LiveFix) -> Result<(), rusqlite::Error> {
+    pub fn append_fix(
+        &self,
+        flight_id: &str,
+        device_id: &str,
+        fix: &LiveFix,
+    ) -> Result<(), rusqlite::Error> {
         self.with_conn(|conn| {
             conn.execute(
                 "INSERT OR IGNORE INTO fixes (flight_id, device_id, t_ms, lat, lon, alt, speed, course, accuracy)
@@ -750,8 +745,7 @@ impl ClubDb {
             .latest_device_fixes()
             .into_iter()
             .filter(|r| {
-                let vis =
-                    FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
+                let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
                 includes_in_public_map(vis)
             })
             .collect();
@@ -794,7 +788,11 @@ impl ClubDb {
         .unwrap_or_default()
     }
 
-    pub fn set_admin_map_tails(&self, admin_id: &str, tails: &[String]) -> Result<(), rusqlite::Error> {
+    pub fn set_admin_map_tails(
+        &self,
+        admin_id: &str,
+        tails: &[String],
+    ) -> Result<(), rusqlite::Error> {
         let json = serde_json::to_string(tails).unwrap_or_else(|_| "[]".to_string());
         self.with_conn(|conn| {
             conn.execute(
@@ -806,7 +804,11 @@ impl ClubDb {
         })
     }
 
-    pub fn create_device(&self, pilot_id: &str, label: &str) -> Result<(String, String), rusqlite::Error> {
+    pub fn create_device(
+        &self,
+        pilot_id: &str,
+        label: &str,
+    ) -> Result<(String, String), rusqlite::Error> {
         let token = auth::new_device_token();
         let hash = digest_token(&token);
         let id = new_id();
@@ -880,8 +882,10 @@ impl ClubDb {
         if owner != pilot_id {
             return Err(DeleteError::Forbidden);
         }
-        self.with_conn(|conn| conn.execute("DELETE FROM flights WHERE id = ?1", params![flight_id]))
-            .map_err(DeleteError::Db)?;
+        self.with_conn(|conn| {
+            conn.execute("DELETE FROM flights WHERE id = ?1", params![flight_id])
+        })
+        .map_err(DeleteError::Db)?;
         Ok(())
     }
 
@@ -1005,6 +1009,183 @@ impl ClubDb {
         })
         .unwrap_or_default()
     }
+
+    pub fn list_types(&self, club_id: &str) -> Vec<TypeRow> {
+        self.with_conn(|conn| {
+            let mut stmt = conn
+                .prepare("SELECT id, code FROM aircraft_types WHERE club_id = ?1 ORDER BY code")?;
+            let rows = stmt.query_map(params![club_id], |r| {
+                Ok(TypeRow {
+                    id: r.get(0)?,
+                    code: r.get(1)?,
+                })
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn list_aircraft(&self, club_id: &str) -> Vec<AircraftRow> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT a.id, a.tail, t.code, a.active
+                 FROM aircraft a JOIN aircraft_types t ON t.id = a.type_id
+                 WHERE a.club_id = ?1 ORDER BY a.tail",
+            )?;
+            let rows = stmt.query_map(params![club_id], |r| {
+                Ok(AircraftRow {
+                    id: r.get(0)?,
+                    tail: r.get(1)?,
+                    type_code: r.get(2)?,
+                    active: r.get::<_, i64>(3)? != 0,
+                })
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn list_all_pilots(&self) -> Vec<PilotRow> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, club_id, name, email, license_no, status, role
+                 FROM pilots ORDER BY email",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(PilotRow {
+                    id: r.get(0)?,
+                    club_id: r.get(1)?,
+                    name: r.get(2)?,
+                    email: r.get(3)?,
+                    license_no: r.get(4)?,
+                    status: r.get(5)?,
+                    role: r.get(6)?,
+                })
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn list_checkouts(&self) -> Vec<CheckoutRow> {
+        self.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT c.id, c.pilot_id, p.name, p.email, t.code, a.tail, c.expires_at
+                 FROM checkouts c
+                 JOIN pilots p ON p.id = c.pilot_id
+                 JOIN aircraft_types t ON t.id = c.type_id
+                 LEFT JOIN aircraft a ON a.id = c.aircraft_id
+                 ORDER BY p.email, t.code",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok(CheckoutRow {
+                    id: r.get(0)?,
+                    pilot_id: r.get(1)?,
+                    pilot_name: r.get(2)?,
+                    pilot_email: r.get(3)?,
+                    type_code: r.get(4)?,
+                    tail: r.get(5)?,
+                    expires_at: r.get(6)?,
+                })
+            })?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn seed_demo_if_empty(&self) -> Result<(), rusqlite::Error> {
+        let club_id = self.default_club_id()?;
+        let exists: i64 = self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM pilots WHERE email = 'admin@demo.test'",
+                [],
+                |r| r.get(0),
+            )
+        })?;
+        if exists > 0 {
+            return Ok(());
+        }
+        let admin_id = new_id();
+        let pilot_id = new_id();
+        let pending_id = new_id();
+        let hash = auth::hash_password("password12")
+            .map_err(|_| rusqlite::Error::InvalidParameterName("hash".into()))?;
+        let t = now_ms();
+        self.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at) VALUES
+                 (?1, ?4, 'Demo Admin', 'admin@demo.test', 'ADM-1', 'approved', 'admin', ?5, ?6),
+                 (?2, ?4, 'Demo Pilot', 'pilot@demo.test', 'P-1', 'approved', 'pilot', ?5, ?6),
+                 (?3, ?4, 'Demo Pending', 'pending@demo.test', 'P-2', 'pending', 'pilot', ?5, ?6)",
+                params![admin_id, pilot_id, pending_id, club_id, hash, t],
+            )?;
+            Ok(())
+        })?;
+        for code in ["DA20-C1", "C152"] {
+            self.upsert_type(&club_id, code)?;
+        }
+        for tail in ["N101", "N202", "N303"] {
+            self.upsert_aircraft(&club_id, tail, "C152", true)?;
+        }
+        self.add_checkout(&pilot_id, "C152", None, None)?;
+        self.add_checkout(&admin_id, "C152", None, None)?;
+        let (dev_pilot, _) = self.create_device(&pilot_id, "Pilot phone")?;
+        let (dev_admin, _) = self.create_device(&admin_id, "Admin tablet")?;
+        let seed_flight_err = |e: StartFlightError| {
+            rusqlite::Error::InvalidParameterName(format!("seed_demo flight: {e:?}"))
+        };
+        let pub_id = self
+            .start_flight(
+                &pilot_id,
+                &dev_pilot,
+                "N101",
+                FlightVisibility::Public,
+                true,
+                t,
+            )
+            .map_err(seed_flight_err)?;
+        let club_f = self
+            .start_flight(
+                &admin_id,
+                &dev_admin,
+                "N202",
+                FlightVisibility::Club,
+                false,
+                t,
+            )
+            .map_err(seed_flight_err)?;
+        let fix = |offset: i64, lat: f64| LiveFix {
+            t: t + offset,
+            lat,
+            lon: -70.6,
+            alt: Some(900.0),
+            alt_ref: None,
+            speed: Some(28.0),
+            course: Some(120.0),
+            accuracy: Some(6.0),
+        };
+        self.append_fix(&pub_id, &dev_pilot, &fix(100, -33.40))?;
+        self.append_fix(&pub_id, &dev_pilot, &fix(200, -33.39))?;
+        self.append_fix(&club_f, &dev_admin, &fix(150, -33.38))?;
+        self.append_fix(&club_f, &dev_admin, &fix(250, -33.37))?;
+        Ok(())
+    }
 }
 
 pub fn now_ms() -> i64 {
@@ -1069,6 +1250,31 @@ pub struct DeviceInfo {
 }
 
 #[derive(Clone, Serialize)]
+pub struct TypeRow {
+    pub id: String,
+    pub code: String,
+}
+
+#[derive(Clone, Serialize)]
+pub struct AircraftRow {
+    pub id: String,
+    pub tail: String,
+    pub type_code: String,
+    pub active: bool,
+}
+
+#[derive(Clone, Serialize)]
+pub struct CheckoutRow {
+    pub id: String,
+    pub pilot_id: String,
+    pub pilot_name: String,
+    pub pilot_email: String,
+    pub type_code: String,
+    pub tail: Option<String>,
+    pub expires_at: Option<i64>,
+}
+
+#[derive(Clone, Serialize)]
 pub struct FlightSummary {
     pub id: String,
     pub tail: String,
@@ -1109,9 +1315,7 @@ mod tests {
         db.upsert_type(&club, "DA20").unwrap();
         db.upsert_type(&club, "C152").unwrap();
         db.upsert_aircraft(&club, "N1", "C152", true).unwrap();
-        let a = db
-            .register(&club, "A", "a@test", "", "password12")
-            .unwrap();
+        let a = db.register(&club, "A", "a@test", "", "password12").unwrap();
         db.approve_pilot(&a).unwrap();
         db.add_checkout(&a, "DA20", None, None).unwrap();
         let tails = db.me_tails(&a, now_ms()).unwrap();
@@ -1124,13 +1328,10 @@ mod tests {
         let club = db.default_club_id().unwrap();
         db.upsert_type(&club, "C152").unwrap();
         db.upsert_aircraft(&club, "N123", "C152", true).unwrap();
-        let a = db
-            .register(&club, "A", "a@test", "", "password12")
-            .unwrap();
+        let a = db.register(&club, "A", "a@test", "", "password12").unwrap();
         db.approve_pilot(&a).unwrap();
         let expired = now_ms() - 1000;
-        db.add_checkout(&a, "C152", None, Some(expired))
-            .unwrap();
+        db.add_checkout(&a, "C152", None, Some(expired)).unwrap();
         let tails = db.me_tails(&a, now_ms()).unwrap();
         assert!(tails.is_empty());
     }
@@ -1141,9 +1342,7 @@ mod tests {
         let club = db.default_club_id().unwrap();
         db.upsert_type(&club, "DA20").unwrap();
         db.upsert_aircraft(&club, "N999", "DA20", false).unwrap();
-        let p = db
-            .register(&club, "P", "p@test", "", "password12")
-            .unwrap();
+        let p = db.register(&club, "P", "p@test", "", "password12").unwrap();
         db.approve_pilot(&p).unwrap();
         db.add_checkout(&p, "DA20", None, None).unwrap();
         let tails = db.me_tails(&p, now_ms()).unwrap();
@@ -1156,14 +1355,7 @@ mod tests {
         let (_club, a, b, _ac) = seed(&db);
         let dev = db.create_device(&a, "phone").unwrap().0;
         let fid = db
-            .start_flight(
-                &a,
-                &dev,
-                "N123",
-                FlightVisibility::Private,
-                false,
-                now_ms(),
-            )
+            .start_flight(&a, &dev, "N123", FlightVisibility::Private, false, now_ms())
             .unwrap();
         let fix = LiveFix {
             t: now_ms(),
@@ -1203,7 +1395,14 @@ mod tests {
             .unwrap();
         db.end_flight(&a, &f1, now_ms()).unwrap();
         let f2 = db
-            .start_flight(&a, &dev, "N456", FlightVisibility::Club, false, now_ms() + 1)
+            .start_flight(
+                &a,
+                &dev,
+                "N456",
+                FlightVisibility::Club,
+                false,
+                now_ms() + 1,
+            )
             .unwrap();
         let fix = LiveFix {
             t: now_ms(),
@@ -1232,7 +1431,15 @@ mod tests {
     fn pending_pilot_club_map_empty() {
         let db = ClubDb::open_in_memory().unwrap();
         let (_club, _a, _b, _ac) = seed(&db);
-        let pending = db.register(&db.default_club_id().unwrap(), "P", "p2@test", "", "password12").unwrap();
+        let pending = db
+            .register(
+                &db.default_club_id().unwrap(),
+                "P",
+                "p2@test",
+                "",
+                "password12",
+            )
+            .unwrap();
         let viewer = Viewer::Pilot {
             id: pending,
             status: PilotStatus::Pending,
@@ -1247,14 +1454,7 @@ mod tests {
         let (_club, a, _b, _ac) = seed(&db);
         let dev = db.create_device(&a, "phone").unwrap().0;
         let fid = db
-            .start_flight(
-                &a,
-                &dev,
-                "N123",
-                FlightVisibility::Public,
-                false,
-                now_ms(),
-            )
+            .start_flight(&a, &dev, "N123", FlightVisibility::Public, false, now_ms())
             .unwrap();
         db.append_fix(
             &fid,

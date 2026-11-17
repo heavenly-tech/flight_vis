@@ -97,9 +97,6 @@ mod tests {
 
     #[test]
     fn token_digest_stable() {
-        assert_eq!(
-            digest_token("abc"),
-            digest_token("abc")
-        );
+        assert_eq!(digest_token("abc"), digest_token("abc"));
     }
 }

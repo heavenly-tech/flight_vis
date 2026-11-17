@@ -53,7 +53,11 @@ pub enum Viewer {
 }
 
 /// Whether this viewer may read fixes/history/stream for the flight.
-pub fn can_view_flight(viewer: &Viewer, owner_pilot_id: &str, visibility: FlightVisibility) -> bool {
+pub fn can_view_flight(
+    viewer: &Viewer,
+    owner_pilot_id: &str,
+    visibility: FlightVisibility,
+) -> bool {
     match viewer {
         Viewer::Anonymous => visibility == FlightVisibility::Public,
         Viewer::Pilot {
@@ -157,11 +161,7 @@ mod tests {
     #[test]
     fn private_hidden_from_other_pilots() {
         let v = approved_pilot("b");
-        assert!(!can_view_flight(
-            &v,
-            "a",
-            FlightVisibility::Private
-        ));
+        assert!(!can_view_flight(&v, "a", FlightVisibility::Private));
     }
 
     #[test]

@@ -63,7 +63,10 @@ pub fn dedupe_by_tail(inputs: Vec<DeviceFix>) -> Vec<TailLivePosition> {
 }
 
 /// Admin display map only: filter by selected tail numbers (empty = show all).
-pub fn filter_admin_tails(positions: Vec<TailLivePosition>, tails: &[String]) -> Vec<TailLivePosition> {
+pub fn filter_admin_tails(
+    positions: Vec<TailLivePosition>,
+    tails: &[String],
+) -> Vec<TailLivePosition> {
     if tails.is_empty() {
         return positions;
     }
@@ -76,8 +79,8 @@ pub fn filter_admin_tails(positions: Vec<TailLivePosition>, tails: &[String]) ->
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::LiveFix;
+    use super::*;
 
     fn fix(t: i64, acc: Option<f64>) -> LiveFix {
         LiveFix {

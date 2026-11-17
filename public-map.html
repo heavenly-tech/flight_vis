@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Public live map</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>main{padding:1rem} li{padding:.35rem 0;border-bottom:1px solid rgba(255,255,255,.08)}</style>
+  </head>
+  <body>
+    <main>
+      <h1>Public live map</h1>
+      <p class="muted">Anonymous — public flights only. Pilot names only when allowed.</p>
+      <ul id="list"></ul>
+      <p><a href="/club-map.html">Club map (members)</a> · <a href="/">Home</a></p>
+    </main>
+    <script type="module">
+      const list = document.getElementById("list");
+      const res = await fetch("/api/club/map/public");
+      const data = await res.json();
+      for (const row of data.aircraft ?? []) {
+        const li = document.createElement("li");
+        const name = row.pilotName ? ` · ${row.pilotName}` : "";
+        li.textContent = `${row.tail}${name}`;
+        list.appendChild(li);
+      }
+    </script>
+  </body>
+</html>

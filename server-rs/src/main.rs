@@ -666,7 +666,14 @@ async fn run_server() {
         }
     });
     let club = match club::ClubDb::open(&config.data_dir) {
-        Ok(db) => Some(db),
+        Ok(db) => {
+            if std::env::var("FLIGHT_CLUB_SEED_DEMO").as_deref() == Ok("1") {
+                if let Err(error) = db.seed_demo_if_empty() {
+                    eprintln!("warn: demo seed failed: {error}");
+                }
+            }
+            Some(db)
+        }
         Err(error) => {
             eprintln!("warn: club database unavailable: {error}");
             None

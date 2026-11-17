@@ -61,7 +61,10 @@ pub async fn post_ingest(
                     .iter()
                     .filter(|f| db.append_fix(&flight_id, &device_id, f).is_ok())
                     .count();
-                return (StatusCode::OK, Json(json!({ "ok": true, "accepted": accepted })))
+                return (
+                    StatusCode::OK,
+                    Json(json!({ "ok": true, "accepted": accepted })),
+                )
                     .into_response();
             }
             return bad_request("no active flight").into_response();

@@ -1,10 +1,8 @@
 use crate::club::{
     auth::{self, parse_session_cookie},
-    db::{
-        now_ms, ClubDb, EndError, PatchError, RegisterError, StartFlightError, DeleteError,
-    },
-    visibility::{FlightVisibility, PilotRole, PilotStatus, Viewer},
+    db::{now_ms, ClubDb, DeleteError, EndError, PatchError, RegisterError, StartFlightError},
     map::TailLivePosition,
+    visibility::{FlightVisibility, PilotRole, PilotStatus, Viewer},
 };
 use crate::AppState;
 use axum::{
@@ -116,7 +114,11 @@ async fn register(
         body.license_no.trim(),
         &body.password,
     ) {
-        Ok(id) => (StatusCode::CREATED, Json(json!({ "ok": true, "pilotId": id }))).into_response(),
+        Ok(id) => (
+            StatusCode::CREATED,
+            Json(json!({ "ok": true, "pilotId": id })),
+        )
+            .into_response(),
         Err(RegisterError::EmailExists) => (
             StatusCode::CONFLICT,
             Json(json!({ "error": "email exists" })),
@@ -220,7 +222,12 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
 
 async fn me_tails(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let v = viewer(&state, &headers);
-    let Viewer::Pilot { id, status: PilotStatus::Approved, .. } = v else {
+    let Viewer::Pilot {
+        id,
+        status: PilotStatus::Approved,
+        ..
+    } = v
+    else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "unauthorized" })),
@@ -324,11 +331,7 @@ pub async fn post_club_flight_start(
     let visibility = match parse_visibility(parsed.visibility.as_deref()) {
         Ok(v) => v,
         Err(msg) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": msg })),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
         }
     };
     let show_name = parsed.show_pilot_name_public.unwrap_or(false);
@@ -396,31 +399,18 @@ pub async fn patch_club_flight_by_id(
         Some(s) => match parse_visibility(Some(s.as_str())) {
             Ok(v) => Some(v),
             Err(msg) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": msg })),
-                )
-                    .into_response();
+                return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
             }
         },
     };
-    match db.patch_flight(
-        &id,
-        &flight_id,
-        visibility,
-        body.show_pilot_name_public,
-    ) {
+    match db.patch_flight(&id, &flight_id, visibility, body.show_pilot_name_public) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(PatchError::NotFound) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not found" })),
-        )
-            .into_response(),
-        Err(PatchError::Forbidden) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "forbidden" })),
-        )
-            .into_response(),
+        Err(PatchError::NotFound) => {
+            (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+        }
+        Err(PatchError::Forbidden) => {
+            (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
+        }
     }
 }
 
@@ -446,21 +436,15 @@ async fn end_club_flight(
     };
     match db.end_flight(&id, &flight_id, now_ms()) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(EndError::NotFound) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not found" })),
-        )
-            .into_response(),
-        Err(EndError::Forbidden) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "forbidden" })),
-        )
-            .into_response(),
-        Err(EndError::NotActive) => (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "not active" })),
-        )
-            .into_response(),
+        Err(EndError::NotFound) => {
+            (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+        }
+        Err(EndError::Forbidden) => {
+            (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
+        }
+        Err(EndError::NotActive) => {
+            (StatusCode::CONFLICT, Json(json!({ "error": "not active" }))).into_response()
+        }
     }
 }
 
@@ -514,6 +498,31 @@ struct AdminTailsBody {
     tails: Vec<String>,
 }
 
+async fn get_admin_map_tails(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    if require_admin(&v).is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    }
+    let Viewer::Pilot { id, .. } = v else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    };
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "tails": [] })).into_response();
+    };
+    Json(json!({ "tails": db.admin_map_tails(&id) })).into_response()
+}
+
 async fn put_admin_map_tails(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -565,11 +574,7 @@ async fn club_flight_fixes(
             .into_response();
     };
     if db.flight_visible_to(&v, &flight_id).is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not found" })),
-        )
-            .into_response();
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     }
     let fixes = db.fixes_for_flight(&flight_id);
     Json(json!({ "fixes": fixes })).into_response()
@@ -589,11 +594,7 @@ async fn club_flight_gpx(
             .into_response();
     };
     let Some(flight) = db.flight_visible_to(&v, &flight_id) else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not found" })),
-        )
-            .into_response();
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     };
     let fixes = db.fixes_for_flight(&flight_id);
     let gpx = fixes_to_gpx(&flight.tail, &fixes);
@@ -610,10 +611,7 @@ fn fixes_to_gpx(name: &str, fixes: &[crate::live::LiveFix]) -> String {
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<gpx version=\"1.1\" creator=\"flight_vis\"><trk><name>{name}</name><trkseg>\n"
     );
     for f in fixes {
-        out.push_str(&format!(
-            "<trkpt lat=\"{}\" lon=\"{}\">",
-            f.lat, f.lon
-        ));
+        out.push_str(&format!("<trkpt lat=\"{}\" lon=\"{}\">", f.lat, f.lon));
         if let Some(alt) = f.alt {
             out.push_str(&format!("<ele>{alt}</ele>"));
         }
@@ -650,11 +648,7 @@ async fn club_flight_stream(
             .into_response();
     };
     if db.flight_visible_to(&v, &flight_id).is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not found" })),
-        )
-            .into_response();
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     }
     let db = state.club.clone().unwrap();
     let viewer = v;
@@ -667,25 +661,28 @@ async fn club_flight_stream(
         (db, flight_id_capture, viewer, 0_i64),
         #[allow(clippy::question_mark)]
         |(db, fid, viewer, mut last_t)| async move {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        if db.flight_visible_to(&viewer, &fid).is_none() {
-            return None;
-        }
-        let fixes = db.fixes_for_flight(&fid);
-        let fresh: Vec<_> = fixes.into_iter().filter(|f| f.t > last_t).collect();
-        if let Some(t) = fresh.last().map(|f| f.t) {
-            last_t = t;
-        }
-        let event = if fresh.is_empty() {
-            Event::default().comment("ping")
-        } else {
-            Event::default()
-                .json_data(json!({ "fixes": fresh }))
-                .unwrap()
-        };
-        Some((Ok(event), (db, fid, viewer, last_t)))
-    }));
-    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if db.flight_visible_to(&viewer, &fid).is_none() {
+                return None;
+            }
+            let fixes = db.fixes_for_flight(&fid);
+            let fresh: Vec<_> = fixes.into_iter().filter(|f| f.t > last_t).collect();
+            if let Some(t) = fresh.last().map(|f| f.t) {
+                last_t = t;
+            }
+            let event = if fresh.is_empty() {
+                Event::default().comment("ping")
+            } else {
+                Event::default()
+                    .json_data(json!({ "fixes": fresh }))
+                    .unwrap()
+            };
+            Some((Ok(event), (db, fid, viewer, last_t)))
+        },
+    ));
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
 async fn my_flights(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
@@ -725,16 +722,12 @@ async fn delete_my_flight(
     };
     match db.delete_my_flight(&id, &flight_id) {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(DeleteError::NotFound) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not found" })),
-        )
-            .into_response(),
-        Err(DeleteError::Forbidden) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "forbidden" })),
-        )
-            .into_response(),
+        Err(DeleteError::NotFound) => {
+            (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+        }
+        Err(DeleteError::Forbidden) => {
+            (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
+        }
         Err(DeleteError::Db(_)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "db error" })),
@@ -747,6 +740,22 @@ async fn delete_my_flight(
 #[derive(Deserialize)]
 struct TypeBody {
     code: String,
+}
+
+async fn list_types(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    if require_admin(&v).is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "types": [] })).into_response();
+    };
+    let club = db.default_club_id().unwrap_or_default();
+    Json(json!({ "types": db.list_types(&club) })).into_response()
 }
 
 async fn admin_add_type(
@@ -793,6 +802,22 @@ fn default_true() -> bool {
     true
 }
 
+async fn list_aircraft(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    if require_admin(&v).is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "aircraft": [] })).into_response();
+    };
+    let club = db.default_club_id().unwrap_or_default();
+    Json(json!({ "aircraft": db.list_aircraft(&club) })).into_response()
+}
+
 async fn admin_add_aircraft(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -822,6 +847,21 @@ async fn admin_add_aircraft(
         )
             .into_response(),
     }
+}
+
+async fn list_pilots_admin(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    if require_admin(&v).is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "pilots": [] })).into_response();
+    };
+    Json(json!({ "pilots": db.list_all_pilots() })).into_response()
 }
 
 async fn admin_pending(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
@@ -878,6 +918,24 @@ struct CheckoutBody {
     expires_at: Option<i64>,
 }
 
+async fn list_checkouts_admin(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    if require_admin(&v).is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "checkouts": [] })).into_response();
+    };
+    Json(json!({ "checkouts": db.list_checkouts() })).into_response()
+}
+
 async fn admin_checkout(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -915,7 +973,7 @@ async fn admin_checkout(
 
 #[derive(Deserialize)]
 struct DeviceBody {
-  #[serde(default)]
+    #[serde(default)]
     label: String,
 }
 
@@ -925,7 +983,12 @@ async fn create_device(
     Json(body): Json<DeviceBody>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers);
-    let Viewer::Pilot { id, status: PilotStatus::Approved, .. } = v else {
+    let Viewer::Pilot {
+        id,
+        status: PilotStatus::Approved,
+        ..
+    } = v
+    else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "unauthorized" })),
@@ -977,7 +1040,10 @@ pub fn router() -> Router<AppState> {
         .route("/api/club/me", get(club_me))
         .route("/api/me/tails", get(me_tails))
         .route("/api/me/flights", get(my_flights))
-        .route("/api/me/flights/{id}", axum::routing::delete(delete_my_flight))
+        .route(
+            "/api/me/flights/{id}",
+            axum::routing::delete(delete_my_flight),
+        )
         .route("/api/me/devices", get(list_devices).post(create_device))
         .route("/api/flights/{id}/end", post(end_club_flight))
         .route("/api/flights/{id}/fixes", get(club_flight_fixes))
@@ -986,10 +1052,23 @@ pub fn router() -> Router<AppState> {
         .route("/api/club/map", get(club_map))
         .route("/api/club/map/public", get(public_map))
         .route("/api/admin/map", get(admin_map))
-        .route("/api/admin/map/tails", post(put_admin_map_tails))
-        .route("/api/admin/aircraft-types", post(admin_add_type))
-        .route("/api/admin/aircraft", post(admin_add_aircraft))
+        .route(
+            "/api/admin/map/tails",
+            get(get_admin_map_tails).post(put_admin_map_tails),
+        )
+        .route(
+            "/api/admin/aircraft-types",
+            get(list_types).post(admin_add_type),
+        )
+        .route(
+            "/api/admin/aircraft",
+            get(list_aircraft).post(admin_add_aircraft),
+        )
+        .route("/api/admin/pilots", get(list_pilots_admin))
         .route("/api/admin/pilots/pending", get(admin_pending))
+        .route(
+            "/api/admin/checkouts",
+            get(list_checkouts_admin).post(admin_checkout),
+        )
         .route("/api/admin/pilots/{id}/approve", post(admin_approve))
-        .route("/api/admin/checkouts", post(admin_checkout))
 }

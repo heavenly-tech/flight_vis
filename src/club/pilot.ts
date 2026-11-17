@@ -1,4 +1,5 @@
 const who = document.querySelector<HTMLParagraphElement>("#who")!;
+const profile = document.querySelector<HTMLParagraphElement>("#profile")!;
 const tokenReveal = document.querySelector<HTMLDivElement>("#token-reveal")!;
 const tokenText = document.querySelector<HTMLDivElement>("#token-text")!;
 const qr = document.querySelector<HTMLImageElement>("#qr")!;
@@ -6,6 +7,7 @@ const devices = document.querySelector<HTMLUListElement>("#devices")!;
 const flights = document.querySelector<HTMLUListElement>("#flights")!;
 const labelInput = document.querySelector<HTMLInputElement>("#dev-label")!;
 const newDeviceBtn = document.querySelector<HTMLButtonElement>("#btn-new-device")!;
+const logoutBtn = document.querySelector<HTMLButtonElement>("#btn-logout")!;
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: "same-origin", ...init });
@@ -18,12 +20,22 @@ function qrUrl(text: string): string {
 }
 
 async function boot(): Promise<void> {
-  const me = await api<{ pilot: { name: string; status: string; role: string } | null }>("/api/club/me");
+  const me = await api<{
+    pilot: {
+      name: string;
+      status: string;
+      role: string;
+      email: string;
+      licenseNo: string;
+    } | null;
+  }>("/api/club/me");
   if (!me.pilot) {
-    who.textContent = "Not signed in. Use /api/club/login from the club login page.";
+    who.textContent = "Not signed in.";
+    profile.textContent = "Log in at /club-login.html";
     return;
   }
   who.textContent = `${me.pilot.name} · ${me.pilot.status} · ${me.pilot.role}`;
+  profile.textContent = `Email: ${me.pilot.email} · Licence: ${me.pilot.licenseNo || "—"}`;
   const devs = await api<{ devices: { id: string; label: string }[] }>("/api/me/devices");
   devices.replaceChildren(
     ...devs.devices.map((d) => {
@@ -32,18 +44,29 @@ async function boot(): Promise<void> {
       return li;
     }),
   );
-  const list = await api<{ flights: { id: string; tail: string; status: string }[] }>("/api/me/flights");
+  const list = await api<{
+    flights: { id: string; tail: string; status: string; visibility: string }[];
+  }>("/api/me/flights");
   flights.replaceChildren(
     ...list.flights.map((f) => {
       const li = document.createElement("li");
-      const a = document.createElement("a");
-      a.href = `/club-flight.html?id=${encodeURIComponent(f.id)}`;
-      a.textContent = `${f.tail} · ${f.status}`;
-      li.append(a, document.createTextNode(" "));
+      const live = document.createElement("a");
+      live.href = `/club-flight.html?id=${encodeURIComponent(f.id)}`;
+      live.textContent = `${f.tail} · ${f.status} · ${f.visibility}`;
       const gpx = document.createElement("a");
       gpx.href = `/api/flights/${f.id}/gpx`;
       gpx.textContent = "GPX";
-      li.append(gpx);
+      gpx.style.marginLeft = ".5rem";
+      const del = document.createElement("button");
+      del.type = "button";
+      del.textContent = "Delete";
+      del.style.marginLeft = ".5rem";
+      del.addEventListener("click", async () => {
+        if (!confirm("Delete this track?")) return;
+        await api(`/api/me/flights/${encodeURIComponent(f.id)}`, { method: "DELETE" });
+        await boot();
+      });
+      li.append(live, gpx, del);
       return li;
     }),
   );
@@ -59,6 +82,11 @@ newDeviceBtn.addEventListener("click", async () => {
   qr.src = qrUrl(body.token);
   tokenReveal.hidden = false;
   await boot();
+});
+
+logoutBtn?.addEventListener("click", async () => {
+  await api("/api/club/logout", { method: "POST" });
+  location.href = "/club-login.html";
 });
 
 void boot();

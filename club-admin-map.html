@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Admin · live map</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main { max-width: 44rem; margin: 1rem auto; padding: 0 1rem 2rem; }
+      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
+      #ticks label { display: inline-block; margin: 0 .65rem .35rem 0; }
+      button { font: inherit; padding: .45rem .7rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Admin live map</h1>
+      <p class="muted">Tail ticks filter this view only (persisted).</p>
+      <div id="admin-nav"></div>
+      <section>
+        <h2 style="font-size:1rem">Show tails</h2>
+        <div id="ticks"></div>
+        <button type="button" id="save">Save selection</button>
+      </section>
+      <section>
+        <h2 style="font-size:1rem">Live aircraft</h2>
+        <ul id="live"></ul>
+      </section>
+    </main>
+    <script type="module" src="/src/club/adminMap.ts"></script>
+  </body>
+</html>

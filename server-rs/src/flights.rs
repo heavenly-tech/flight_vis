@@ -129,7 +129,11 @@ async fn patch_flight(
     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) {
         let club_patch = (value.get("visibility").is_some()
             || value.get("show_pilot_name_public").is_some())
-            && state.club.as_ref().and_then(|db| db.get_flight(&raw)).is_some();
+            && state
+                .club
+                .as_ref()
+                .and_then(|db| db.get_flight(&raw))
+                .is_some();
         if club_patch {
             return crate::club::patch_club_flight_by_id(
                 State(state),
