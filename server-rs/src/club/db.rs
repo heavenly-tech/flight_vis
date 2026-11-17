@@ -869,26 +869,51 @@ pub async fn append_fixes(
         Ok(id)
     }
 
-    pub fn upsert_aircraft(
+    pub async fn upsert_aircraft(
         &self,
         club_id: &str,
         tail: &str,
         type_code: &str,
         active: bool,
     ) -> Result<String, DbError> {
-        
-            let type_id: String = sqlx::query("SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2").bind(club_id).bind(type_code).fetch_optional(&self.pool).await?
-            {
-                sqlx::query("UPDATE aircraft SET type_id = $1, active = $2 WHERE id = $3").bind(type_id).bind(i64::from(active)).bind(id).execute(&self.pool).await?;
-                return Ok(id);
-            }
-            let id = new_id();
-            sqlx::query("INSERT INTO aircraft (id, club_id, tail, type_id, active) VALUES ($1, $2, $3, $4, $5)").bind(id).bind(club_id).bind(tail).bind(type_id).bind(i64::from(active)).execute(&self.pool).await?;
-            Ok(id)
-        
+        let type_id: String = sqlx::query_scalar(
+            "SELECT id FROM aircraft_types WHERE club_id = $1 AND code = $2",
+        )
+        .bind(club_id)
+        .bind(type_code)
+        .fetch_one(&self.pool)
+        .await?;
+        if let Some(id) = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM aircraft WHERE club_id = $1 AND tail = $2",
+        )
+        .bind(club_id)
+        .bind(tail)
+        .fetch_optional(&self.pool)
+        .await?
+        {
+            sqlx::query("UPDATE aircraft SET type_id = $1, active = $2 WHERE id = $3")
+                .bind(&type_id)
+                .bind(active)
+                .bind(&id)
+                .execute(&self.pool)
+                .await?;
+            return Ok(id);
+        }
+        let id = new_id();
+        sqlx::query(
+            "INSERT INTO aircraft (id, club_id, tail, type_id, active) VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(&id)
+        .bind(club_id)
+        .bind(tail)
+        .bind(&type_id)
+        .bind(active)
+        .execute(&self.pool)
+        .await?;
+        Ok(id)
     }
 
-    pub fn add_checkout(
+    pub async fn add_checkout(
         &self,
         pilot_id: &str,
         type_code: &str,
@@ -896,6 +921,7 @@ pub async fn append_fixes(
         expires_at: Option<i64>,
     ) -> Result<(), CheckoutError> {
         self.add_checkout_typed(pilot_id, type_code, tail, expires_at)
+            .await
     }
 
     pub async fn list_pending_pilots(&self) -> Vec<PilotRow> {

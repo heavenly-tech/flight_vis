@@ -2,10 +2,7 @@ use crate::club::{
     auth::{self, digest_token, new_device_token, new_id, SESSION_TTL_SEC},
     checkin::{self, CheckinTokenError},
     map::{dedupe_by_tail, filter_admin_tails, DeviceFix, TailLivePosition},
-    visibility::{
-        can_view_flight, includes_in_club_map, includes_in_public_map, show_pilot_name,
-        FlightVisibility, PilotRole, PilotStatus, Viewer,
-    },
+    visibility::{show_pilot_name, FlightVisibility, PilotRole, PilotStatus, Viewer},
 };
 use crate::live::LiveFix;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -18,6 +15,11 @@ use std::{
 const MIGRATION_001: &str = include_str!("../../sqlite-legacy/001_init.sql");
 const MIGRATION_002: &str = include_str!("../../sqlite-legacy/002_checkin.sql");
 const MIGRATION_003: &str = include_str!("../../sqlite-legacy/003_device_pair_qr.sql");
+const MIGRATION_004: &str = include_str!("../../sqlite-legacy/004_fix_meta.sql");
+const MIGRATION_005: &str = include_str!("../../sqlite-legacy/005_access_requests.sql");
+const MIGRATION_006: &str = include_str!("../../sqlite-legacy/006_device_install.sql");
+const MIGRATION_007: &str = include_str!("../../sqlite-legacy/007_checkin_window_hours.sql");
+const MIGRATION_008: &str = include_str!("../../sqlite-legacy/008_multi_club.sql");
 
 #[derive(Clone)]
 pub struct ClubDb {
@@ -89,9 +91,17 @@ impl ClubDb {
         Ok(db)
     }
 
-    fn with_conn<F, T>(&self, f: F) -> Result<T, rusqlite::Error>
+    pub(crate) fn with_conn<F, T>(&self, f: F) -> Result<T, rusqlite::Error>
     where
         F: FnOnce(&Connection) -> Result<T, rusqlite::Error>,
+    {
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        f(&conn)
+    }
+
+    pub(crate) fn with_conn_any<T, E, F>(&self, f: F) -> Result<T, E>
+    where
+        F: FnOnce(&Connection) -> Result<T, E>,
     {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         f(&conn)
@@ -127,6 +137,41 @@ impl ClubDb {
                 conn.execute_batch(MIGRATION_003)?;
                 conn.execute("INSERT INTO schema_migrations (version) VALUES (3)", [])?;
             }
+            if version < 4 {
+                conn.execute_batch(MIGRATION_004)?;
+                conn.execute("INSERT INTO schema_migrations (version) VALUES (4)", [])?;
+            }
+            if version < 5 {
+                conn.execute_batch(MIGRATION_005)?;
+                conn.execute("INSERT INTO schema_migrations (version) VALUES (5)", [])?;
+            }
+            if version < 6 {
+                conn.execute_batch(MIGRATION_006)?;
+                conn.execute("INSERT INTO schema_migrations (version) VALUES (6)", [])?;
+            }
+            if version < 7 {
+                conn.execute_batch(MIGRATION_007)?;
+                conn.execute("INSERT INTO schema_migrations (version) VALUES (7)", [])?;
+            }
+            if version < 8 {
+                conn.execute_batch(MIGRATION_008)?;
+                conn.execute("INSERT INTO schema_migrations (version) VALUES (8)", [])?;
+            }
+            const MIGRATION_009: &str = include_str!("../../sqlite-legacy/009_club_auth.sql");
+            const MIGRATION_010: &str = include_str!("../../sqlite-legacy/010_map_view_filters.sql");
+            if version < 9 {
+                conn.execute_batch(MIGRATION_009)?;
+                conn.execute("INSERT INTO schema_migrations (version) VALUES (9)", [])?;
+            }
+            if version < 10 {
+                conn.execute_batch(MIGRATION_010)?;
+                conn.execute("INSERT INTO schema_migrations (version) VALUES (10)", [])?;
+            }
+            const MIGRATION_011: &str = include_str!("../../sqlite-legacy/011_kiosk_qr_layout.sql");
+            if version < 11 {
+                conn.execute_batch(MIGRATION_011)?;
+                conn.execute("INSERT INTO schema_migrations (version) VALUES (11)", [])?;
+            }
             Ok(())
         })
     }
@@ -138,12 +183,16 @@ impl ClubDb {
             if count == 0 {
                 let now = now_ms();
                 let club_id = new_id();
+                let slug = std::env::var("FLIGHT_CLUB_SLUG")
+                    .unwrap_or_else(|_| "default".to_string());
                 conn.execute(
-                    "INSERT INTO clubs (id, name, created_at) VALUES (?1, ?2, ?3)",
+                    "INSERT INTO clubs (id, name, slug, created_at, checkin_window_hours, latitude, longitude)
+                     VALUES (?1, ?2, ?3, ?4, 12, -33.4489, -70.6693)",
                     params![
                         club_id,
                         std::env::var("FLIGHT_CLUB_NAME")
                             .unwrap_or_else(|_| "Flight Club".to_string()),
+                        slug,
                         now
                     ],
                 )?;
@@ -153,8 +202,11 @@ impl ClubDb {
                 std::env::var("FLIGHT_CLUB_BOOTSTRAP_ADMIN_PASSWORD"),
             ) {
                 if !email.is_empty() && !password.is_empty() {
-                    let club_id: String =
-                        conn.query_row("SELECT id FROM clubs LIMIT 1", [], |r| r.get(0))?;
+                    let club_id: String = conn.query_row(
+                        "SELECT id FROM clubs ORDER BY created_at ASC, id ASC LIMIT 1",
+                        [],
+                        |r| r.get(0),
+                    )?;
                     let exists: i64 = conn.query_row(
                         "SELECT COUNT(*) FROM pilots WHERE club_id = ?1 AND email = ?2",
                         params![club_id, email],
@@ -184,7 +236,13 @@ impl ClubDb {
     }
 
     pub fn default_club_id(&self) -> Result<String, rusqlite::Error> {
-        self.with_conn(|conn| conn.query_row("SELECT id FROM clubs LIMIT 1", [], |r| r.get(0)))
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT id FROM clubs ORDER BY created_at ASC, id ASC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+        })
     }
 
     pub fn register(
@@ -205,6 +263,11 @@ impl ClubDb {
                 "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, 'pending', 'pilot', ?6, ?7)",
                 params![id, club_id, name, email, license_no, hash, now_ms()],
+            )?;
+            conn.execute(
+                "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
+                 VALUES (?1, ?2, ?3, 'pilot', 'pending', ?4)",
+                params![new_id(), id, club_id, now_ms()],
             )?;
             Ok(id)
         }) {
@@ -351,17 +414,22 @@ impl ClubDb {
         (viewer, Some(pilot))
     }
 
+    #[allow(dead_code)]
     pub fn approve_pilot(&self, pilot_id: &str) -> Result<(), rusqlite::Error> {
         self.with_conn(|conn| {
             conn.execute(
                 "UPDATE pilots SET status = 'approved' WHERE id = ?1",
                 params![pilot_id],
             )?;
+            conn.execute(
+                "UPDATE club_memberships SET status = 'approved' WHERE pilot_id = ?1",
+                params![pilot_id],
+            )?;
             Ok(())
         })
     }
 
-    fn checkout_ok(
+    pub(crate) fn checkout_ok(
         conn: &Connection,
         pilot_id: &str,
         aircraft_id: &str,
@@ -428,77 +496,14 @@ impl ClubDb {
         show_pilot_name_public: bool,
         now: i64,
     ) -> Result<String, StartFlightError> {
-        let aircraft_id = self
-            .with_conn(|conn| {
-                conn.query_row(
-                    "SELECT id FROM aircraft WHERE tail = ?1 AND active = 1",
-                    params![tail],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()
-            })
-            .map_err(|_| StartFlightError::NoTail)?;
-        let Some(aircraft_id) = aircraft_id else {
-            return Err(StartFlightError::NoTail);
-        };
-        let checkout = self
-            .with_conn(|conn| Self::checkout_ok(conn, pilot_id, &aircraft_id, now))
-            .unwrap_or(false);
-        if !checkout {
-            return Err(StartFlightError::NoCheckout);
-        }
-        let open = self
-            .with_conn(|conn| {
-                conn.query_row(
-                    "SELECT COUNT(*) FROM flights WHERE pilot_id = ?1 AND status = 'active'",
-                    params![pilot_id],
-                    |r| r.get::<_, i64>(0),
-                )
-            })
-            .unwrap_or(0);
-        if open > 0 {
-            return Err(StartFlightError::AlreadyActive);
-        }
-        let club_id: String = self
-            .with_conn(|conn| {
-                conn.query_row(
-                    "SELECT club_id FROM aircraft WHERE id = ?1",
-                    params![aircraft_id],
-                    |r| r.get(0),
-                )
-            })
-            .map_err(|_| StartFlightError::NoTail)?;
-        if self.device_pilot_id(device_id).as_deref() != Some(pilot_id) {
-            return Err(StartFlightError::DeviceMismatch);
-        }
-        if !self
-            .consume_checkin(pilot_id, device_id, &club_id, now)
-            .map_err(|_| StartFlightError::NoCheckin)?
-        {
-            return Err(StartFlightError::NoCheckin);
-        }
-        let flight_id = new_id();
-        self.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO flights (id, pilot_id, aircraft_id, status, started_at, visibility, show_pilot_name_public)
-                 VALUES (?1, ?2, ?3, 'active', ?4, ?5, ?6)",
-                params![
-                    flight_id,
-                    pilot_id,
-                    aircraft_id,
-                    now,
-                    visibility.as_str(),
-                    i64::from(show_pilot_name_public)
-                ],
-            )?;
-            conn.execute(
-                "INSERT INTO flight_devices (flight_id, device_id) VALUES (?1, ?2)",
-                params![flight_id, device_id],
-            )?;
-            Ok(())
-        })
-        .map_err(|_| StartFlightError::NoTail)?;
-        Ok(flight_id)
+        self.start_flight_atomic(
+            pilot_id,
+            device_id,
+            tail,
+            visibility,
+            show_pilot_name_public,
+            now,
+        )
     }
 
     pub fn patch_flight(
@@ -655,9 +660,29 @@ impl ClubDb {
                 "UPDATE flights SET last_fix_at = ?1 WHERE id = ?2",
                 params![last_t, flight_id],
             )?;
+            if let Ok(pilot_id) = conn.query_row(
+                "SELECT pilot_id FROM flights WHERE id = ?1",
+                params![flight_id],
+                |r| r.get::<_, String>(0),
+            ) {
+                if let Some(last) = fixes.last() {
+                    let _ = conn.execute(
+                        "UPDATE pilots SET last_latitude = ?1, last_longitude = ?2, last_position_at = ?3 WHERE id = ?4",
+                        params![last.lat, last.lon, last.t, pilot_id],
+                    );
+                }
+            }
             tx.commit()?;
             Ok(inserted)
         })
+    }
+
+    pub(crate) fn data_dir(&self) -> &Path {
+        // SQLite `:memory:` has no parent; do not fall back to cwd (tests may share `./dem`).
+        if self.path.as_os_str() == ":memory:" {
+            return Path::new("/__flight_vis_in_memory_no_dem");
+        }
+        self.path.parent().unwrap_or(Path::new("."))
     }
 
     pub fn auto_end_idle(&self, idle_ms: i64, now: i64) -> Result<usize, rusqlite::Error> {
@@ -704,20 +729,10 @@ impl ClubDb {
         .flatten()
     }
 
-    pub fn flight_visible_to(&self, viewer: &Viewer, flight_id: &str) -> Option<FlightRow> {
-        let flight = self.get_flight(flight_id)?;
-        let vis = FlightVisibility::parse(&flight.visibility)?;
-        if can_view_flight(viewer, &flight.pilot_id, vis) {
-            Some(flight)
-        } else {
-            None
-        }
-    }
-
     pub fn fixes_for_flight(&self, flight_id: &str) -> Vec<LiveFix> {
         self.with_conn(|conn| {
             let mut stmt = conn.prepare(
-                "SELECT t_ms, lat, lon, alt, speed, course, accuracy
+                "SELECT t_ms, lat, lon, alt, speed, course, accuracy, alt_ref
                  FROM fixes WHERE flight_id = ?1 ORDER BY t_ms ASC",
             )?;
             let rows = stmt.query_map(params![flight_id], |r| {
@@ -726,10 +741,10 @@ impl ClubDb {
                     lat: r.get(1)?,
                     lon: r.get(2)?,
                     alt: r.get(3)?,
-                    alt_ref: None,
                     speed: r.get(4)?,
                     course: r.get(5)?,
                     accuracy: r.get(6)?,
+                    alt_ref: r.get(7)?,
                 })
             })?;
             let mut out = Vec::new();
@@ -739,90 +754,6 @@ impl ClubDb {
             Ok(out)
         })
         .unwrap_or_default()
-    }
-
-    fn latest_device_fixes(&self) -> Vec<DeviceFix> {
-        self.with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT f.id, a.tail, f.pilot_id, p.name, f.visibility,
-                        fx.t_ms, fx.lat, fx.lon, fx.alt, fx.speed, fx.course, fx.accuracy
-                 FROM flights f
-                 JOIN aircraft a ON a.id = f.aircraft_id
-                 JOIN pilots p ON p.id = f.pilot_id
-                 JOIN fixes fx ON fx.flight_id = f.id
-                 WHERE f.status = 'active'
-                   AND fx.t_ms = (
-                     SELECT MAX(fx2.t_ms) FROM fixes fx2 WHERE fx2.flight_id = f.id
-                   )",
-            )?;
-            let rows = stmt.query_map([], |r| {
-                Ok(DeviceFix {
-                    flight_id: r.get(0)?,
-                    tail: r.get(1)?,
-                    pilot_id: r.get(2)?,
-                    pilot_name: r.get(3)?,
-                    visibility: r.get(4)?,
-                    fix: LiveFix {
-                        t: r.get(5)?,
-                        lat: r.get(6)?,
-                        lon: r.get(7)?,
-                        alt: r.get(8)?,
-                        alt_ref: None,
-                        speed: r.get(9)?,
-                        course: r.get(10)?,
-                        accuracy: r.get(11)?,
-                    },
-                })
-            })?;
-            let mut out = Vec::new();
-            for row in rows {
-                out.push(row?);
-            }
-            Ok(out)
-        })
-        .unwrap_or_default()
-    }
-
-    pub fn club_map_for_viewer(&self, viewer: &Viewer) -> Vec<TailLivePosition> {
-        let rows = self.latest_device_fixes();
-        let filtered: Vec<DeviceFix> = rows
-            .into_iter()
-            .filter(|r| {
-                let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
-                includes_in_club_map(viewer, &r.pilot_id, vis)
-                    && can_view_flight(viewer, &r.pilot_id, vis)
-            })
-            .collect();
-        let mut positions = dedupe_by_tail(filtered);
-        for pos in &mut positions {
-            if let Some(f) = self.get_flight(&pos.flight_id) {
-                pos.pilot_name = Some(f.pilot_name);
-            }
-        }
-        positions
-    }
-
-    pub fn public_map(&self) -> Vec<TailLivePosition> {
-        let rows: Vec<DeviceFix> = self
-            .latest_device_fixes()
-            .into_iter()
-            .filter(|r| {
-                let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
-                includes_in_public_map(vis)
-            })
-            .collect();
-        let mut positions = dedupe_by_tail(rows);
-        for pos in &mut positions {
-            let flight = self.get_flight(&pos.flight_id);
-            if let Some(f) = flight {
-                if show_pilot_name(&Viewer::Anonymous, &f.pilot_id, f.show_pilot_name_public) {
-                    pos.pilot_name = Some(f.pilot_name);
-                } else {
-                    pos.pilot_name = None;
-                }
-            }
-        }
-        positions
     }
 
     pub fn admin_map(&self, admin_id: &str) -> Vec<TailLivePosition> {
@@ -1034,43 +965,8 @@ impl ClubDb {
         type_code: &str,
         tail: Option<&str>,
         expires_at: Option<i64>,
-    ) -> Result<(), rusqlite::Error> {
-        self.with_conn(|conn| {
-            let club_id: String = conn.query_row(
-                "SELECT club_id FROM pilots WHERE id = ?1",
-                params![pilot_id],
-                |r| r.get(0),
-            )?;
-            let type_id: String = conn.query_row(
-                "SELECT id FROM aircraft_types WHERE club_id = ?1 AND code = ?2",
-                params![club_id, type_code],
-                |r| r.get(0),
-            )?;
-            let aircraft_id: Option<String> = if let Some(tail) = tail {
-                let id = conn
-                    .query_row(
-                        "SELECT id FROM aircraft WHERE club_id = ?1 AND tail = ?2",
-                        params![club_id, tail],
-                        |r| r.get(0),
-                    )
-                    .optional()?;
-                if id.is_none() {
-                    return Err(rusqlite::Error::SqliteFailure(
-                        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
-                        Some("unknown tail".into()),
-                    ));
-                }
-                id
-            } else {
-                None
-            };
-            conn.execute(
-                "INSERT INTO checkouts (id, pilot_id, type_id, aircraft_id, expires_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![new_id(), pilot_id, type_id, aircraft_id, expires_at],
-            )?;
-            Ok(())
-        })
+    ) -> Result<(), CheckoutError> {
+        self.add_checkout_typed(pilot_id, type_code, tail, expires_at)
     }
 
     pub fn list_pending_pilots(&self) -> Vec<PilotRow> {
@@ -1209,9 +1105,9 @@ impl ClubDb {
     }
 
     pub fn club_checkin_settings(&self, club_id: &str) -> Result<(String, i64), rusqlite::Error> {
-        let (secret, minutes): (String, i64) = self.with_conn(|conn| {
+        let (secret, hours): (String, i64) = self.with_conn(|conn| {
             conn.query_row(
-                "SELECT checkin_hmac_secret, checkin_valid_minutes FROM clubs WHERE id = ?1",
+                "SELECT checkin_hmac_secret, checkin_window_hours FROM clubs WHERE id = ?1",
                 params![club_id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
@@ -1221,7 +1117,7 @@ impl ClubDb {
         } else {
             secret
         };
-        Ok((secret, minutes.max(1)))
+        Ok((secret, hours.max(1)))
     }
 
     pub fn ensure_checkin_secret(&self, club_id: &str) -> Result<String, rusqlite::Error> {
@@ -1326,7 +1222,7 @@ impl ClubDb {
         let pilot_club = self
             .pilot_club_id(pilot_id)
             .map_err(|_| CheckinReject::WrongClub)?;
-        let (secret, valid_min) = self
+        let (secret, window_hours) = self
             .club_checkin_settings(&pilot_club)
             .map_err(|_| CheckinReject::ForgedHmac)?;
         let digest = checkin::token_digest(token);
@@ -1363,7 +1259,7 @@ impl ClubDb {
         {
             return Err(fail("replay", CheckinReject::Replay));
         }
-        let expires = now + valid_min * 60_000;
+        let expires = now + window_hours * 3_600_000;
         let id = self
             .insert_checkin_row(
                 &pilot_club,
@@ -1384,36 +1280,6 @@ impl ClubDb {
         })
     }
 
-    pub fn consume_checkin(
-        &self,
-        pilot_id: &str,
-        device_id: &str,
-        club_id: &str,
-        now: i64,
-    ) -> Result<bool, rusqlite::Error> {
-        self.with_conn(|conn| {
-            let checkin_id: Option<String> = conn
-                .query_row(
-                    "SELECT id FROM checkins
-                     WHERE outcome = 'ok' AND pilot_id = ?1 AND club_id = ?2
-                       AND consumed_at IS NULL AND expires_at IS NOT NULL AND expires_at > ?3
-                       AND (device_id IS NULL OR device_id = ?4)
-                     ORDER BY created_at DESC LIMIT 1",
-                    params![pilot_id, club_id, now, device_id],
-                    |r| r.get(0),
-                )
-                .optional()?;
-            let Some(id) = checkin_id else {
-                return Ok(false);
-            };
-            conn.execute(
-                "UPDATE checkins SET consumed_at = ?1 WHERE id = ?2 AND consumed_at IS NULL",
-                params![now, id],
-            )?;
-            Ok(true)
-        })
-    }
-
     /// Internal/demo: grant a valid open check-in without scanning the kiosk QR.
     pub fn issue_open_checkin(
         &self,
@@ -1422,8 +1288,8 @@ impl ClubDb {
         club_id: &str,
         now: i64,
     ) -> Result<(), rusqlite::Error> {
-        let (_, valid_min) = self.club_checkin_settings(club_id)?;
-        let expires = now + valid_min * 60_000;
+        let (_, window_hours) = self.club_checkin_settings(club_id)?;
+        let expires = now + window_hours * 3_600_000;
         let digest = checkin::token_digest(&format!("internal:{pilot_id}:{now}"));
         let _ = self.insert_checkin_row(
             club_id,
@@ -1523,15 +1389,24 @@ impl ClubDb {
     }
 
     pub fn display_map(&self, admin_creator_id: &str) -> Vec<TailLivePosition> {
-        let rows: Vec<DeviceFix> = self
-            .latest_device_fixes()
+        let club = self.pilot_club_id(admin_creator_id).unwrap_or_default();
+        let filter = self.club_map_filter(&club);
+        let dem = self.dem_index();
+        let rows = self.latest_map_fixes_global();
+        let filtered: Vec<DeviceFix> = rows
             .into_iter()
             .filter(|r| {
-                let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
-                matches!(vis, FlightVisibility::Club | FlightVisibility::Public)
+                if self.pilot_is_approved_member(&r.pilot_id, &club) {
+                    let vis =
+                        FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
+                    return matches!(vis, FlightVisibility::Club | FlightVisibility::Public);
+                }
+                filter.show_public_tracks
+                    && crate::club::map_filter::visibility_is_public(&r.visibility)
+                    && crate::club::map_filter::public_track_passes(r, &filter, &dem)
             })
             .collect();
-        let mut positions = dedupe_by_tail(rows);
+        let mut positions = dedupe_by_tail(filtered);
         for pos in &mut positions {
             if let Some(f) = self.get_flight(&pos.flight_id) {
                 if show_pilot_name(&Viewer::Anonymous, &f.pilot_id, f.show_pilot_name_public) {
@@ -1542,7 +1417,11 @@ impl ClubDb {
             }
         }
         let prefs = self.admin_map_tails(admin_creator_id);
-        filter_admin_tails(positions, &prefs)
+        crate::club::map_filter::apply_public_cap(
+            filter_admin_tails(positions, &prefs),
+            filter.cap,
+            (filter.center_lat, filter.center_lon),
+        )
     }
 
     pub fn seed_demo_if_empty(&self) -> Result<(), rusqlite::Error> {
@@ -1579,8 +1458,10 @@ impl ClubDb {
         for tail in ["N101", "N202", "N303"] {
             self.upsert_aircraft(&club_id, tail, "C152", true)?;
         }
-        self.add_checkout(&pilot_id, "C152", None, None)?;
-        self.add_checkout(&admin_id, "C152", None, None)?;
+        self.add_checkout(&pilot_id, "C152", None, None)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(format!("checkout: {e:?}")))?;
+        self.add_checkout(&admin_id, "C152", None, None)
+            .map_err(|e| rusqlite::Error::InvalidParameterName(format!("checkout: {e:?}")))?;
         let (dev_pilot, _) = self.create_device(&pilot_id, "Pilot phone")?;
         let (dev_admin, _) = self.create_device(&admin_id, "Admin tablet")?;
         self.issue_open_checkin(&pilot_id, &dev_pilot, &club_id, t)?;
@@ -1646,13 +1527,26 @@ pub enum LoginError {
     Invalid,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartFlightError {
     NoTail,
-    NoCheckout,
+    NotCleared { tail: String, type_code: String },
     NoCheckin,
     AlreadyActive,
     DeviceMismatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckoutError {
+    UnknownTail,
+    UnknownType,
+    Internal,
+}
+
+impl From<rusqlite::Error> for CheckoutError {
+    fn from(_: rusqlite::Error) -> Self {
+        Self::Internal
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1756,6 +1650,15 @@ mod tests {
 
     fn seed(db: &ClubDb) -> (String, String, String, String) {
         let club = db.default_club_id().unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE clubs SET public_altitude_mode = 'msl', public_altitude_min_ft = 0,
+                 show_public_tracks = 1, public_radius_km = 500
+                 WHERE id = ?1",
+                params![club],
+            )
+        })
+        .ok();
         let type_id = db.upsert_type(&club, "C152").unwrap();
         let _ = type_id;
         let ac = db.upsert_aircraft(&club, "N123", "C152", true).unwrap();
@@ -1997,18 +1900,20 @@ mod tests {
     }
 
     #[test]
-    fn checkin_consumed_on_start_not_reused() {
+    fn checkin_window_allows_second_start_after_end() {
         let db = ClubDb::open_in_memory().unwrap();
         let (club, a, _, _) = seed(&db);
+        db.set_club_checkin_window_hours(&club, 4).unwrap();
         let dev = db.create_device(&a, "phone").unwrap().0;
         let t = now_ms();
         db.issue_open_checkin(&a, &dev, &club, t).unwrap();
-        db.start_flight(&a, &dev, "N123", FlightVisibility::Club, false, t)
+        let f1 = db
+            .start_flight(&a, &dev, "N123", FlightVisibility::Club, false, t)
             .unwrap();
-        assert!(matches!(
-            db.start_flight(&a, &dev, "N123", FlightVisibility::Club, false, t + 1),
-            Err(StartFlightError::NoCheckin) | Err(StartFlightError::AlreadyActive)
-        ));
+        db.end_flight(&a, &f1, t + 1).unwrap();
+        assert!(db
+            .start_flight(&a, &dev, "N123", FlightVisibility::Club, false, t + 2)
+            .is_ok());
     }
 
     #[test]
@@ -2084,22 +1989,17 @@ mod tests {
     }
 
     #[test]
-    fn checkin_expires_at_uses_club_valid_minutes() {
+    fn checkin_expires_at_uses_club_window_hours() {
         let db = ClubDb::open_in_memory().unwrap();
         let (club, a, _, _) = seed(&db);
         let dev = db.create_device(&a, "phone").unwrap().0;
-        db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE clubs SET checkin_valid_minutes = 45 WHERE id = ?1",
-                params![club],
-            )
-        })
-        .unwrap();
+        db.set_club_checkin_window_hours(&club, 3)
+            .expect("set hours");
         let t = 1_700_000_123_000_i64;
         let token = db.mint_checkin_qr_token(&club, t).unwrap();
         let rec = db.submit_checkin(&a, Some(&dev), &token, t).unwrap();
         assert_eq!(rec.created_at, t);
-        assert_eq!(rec.expires_at, t + 45 * 60_000);
+        assert_eq!(rec.expires_at, t + 3 * 3_600_000);
         let stored: (i64, i64) = db
             .with_conn(|conn| {
                 conn.query_row(
@@ -2109,7 +2009,7 @@ mod tests {
                 )
             })
             .unwrap();
-        assert_eq!(stored.0 + 45 * 60_000, stored.1);
+        assert_eq!(stored.0 + 3 * 3_600_000, stored.1);
     }
 
     #[test]
@@ -2176,10 +2076,88 @@ mod tests {
         assert!(db.display_map(&admin).is_empty());
     }
 
+    fn empty_club_with_approved_pilot(db: &ClubDb) -> (String, String) {
+        let club = db.default_club_id().unwrap();
+        let p = db
+            .register(&club, "P", "p@test", "L1", "password12")
+            .unwrap();
+        db.approve_pilot(&p).unwrap();
+        (club, p)
+    }
+
+    #[test]
+    fn access_request_approve_then_start() {
+        let db = ClubDb::open_in_memory().unwrap();
+        let (club, p) = empty_club_with_approved_pilot(&db);
+        let admin = db
+            .register(&club, "A", "admin@test", "", "password12")
+            .unwrap();
+        db.approve_pilot(&admin).unwrap();
+        let dev = db.create_device(&p, "phone").unwrap().0;
+        db.issue_open_checkin(&p, &dev, &club, now_ms()).unwrap();
+        let rid = db
+            .create_access_request(&p, "CC-ABC", None, Some("C152"), now_ms())
+            .unwrap();
+        db.approve_access_request(&admin, &rid, None, now_ms())
+            .unwrap();
+        let tails = db.me_tails(&p, now_ms()).unwrap();
+        assert!(tails.iter().any(|t| t.tail == "CC-ABC"));
+        db.issue_open_checkin(&p, &dev, &club, now_ms()).unwrap();
+        assert!(db
+            .start_flight(&p, &dev, "CC-ABC", FlightVisibility::Club, false, now_ms())
+            .is_ok());
+    }
+
+    #[test]
+    fn access_request_reject_blocks_start() {
+        let db = ClubDb::open_in_memory().unwrap();
+        let (club, p) = empty_club_with_approved_pilot(&db);
+        let admin = db
+            .register(&club, "A", "admin@test", "", "password12")
+            .unwrap();
+        db.approve_pilot(&admin).unwrap();
+        let dev = db.create_device(&p, "phone").unwrap().0;
+        db.issue_open_checkin(&p, &dev, &club, now_ms()).unwrap();
+        let rid = db
+            .create_access_request(&p, "CC-XYZ", None, Some("DA20"), now_ms())
+            .unwrap();
+        db.reject_access_request(&admin, &rid, "not yet", now_ms())
+            .unwrap();
+        let list = db.list_pilot_access_requests(&p);
+        assert_eq!(list[0].status, "rejected");
+        assert_eq!(list[0].reject_reason.as_deref(), Some("not yet"));
+        db.upsert_type(&club, "DA20").unwrap();
+        db.upsert_aircraft(&club, "CC-XYZ", "DA20", true).unwrap();
+        assert!(matches!(
+            db.start_flight(&p, &dev, "CC-XYZ", FlightVisibility::Club, false, now_ms()),
+            Err(StartFlightError::NotCleared { .. })
+        ));
+    }
+
+    #[test]
+    fn pending_access_request_cannot_start_without_checkout() {
+        let db = ClubDb::open_in_memory().unwrap();
+        let (club, p) = empty_club_with_approved_pilot(&db);
+        let dev = db.create_device(&p, "phone").unwrap().0;
+        db.issue_open_checkin(&p, &dev, &club, now_ms()).unwrap();
+        db.create_access_request(&p, "CC-NOP", None, Some("T1"), now_ms())
+            .unwrap();
+        db.upsert_type(&club, "T1").unwrap();
+        db.upsert_aircraft(&club, "CC-NOP", "T1", true).unwrap();
+        assert!(matches!(
+            db.start_flight(&p, &dev, "CC-NOP", FlightVisibility::Club, false, now_ms()),
+            Err(StartFlightError::NotCleared { .. })
+        ));
+    }
+
     #[test]
     fn add_checkout_unknown_tail_errors() {
         let db = ClubDb::open_in_memory().unwrap();
-        let (_, a, _, _) = seed(&db);
-        assert!(db.add_checkout(&a, "C152", Some("NOPE"), None).is_err());
+        let (club, a) = empty_club_with_approved_pilot(&db);
+        db.upsert_type(&club, "C152").unwrap();
+        assert!(matches!(
+            db.add_checkout(&a, "C152", Some("NOPE"), None),
+            Err(CheckoutError::UnknownTail)
+        ));
     }
 }

@@ -92,7 +92,6 @@ NAMES = [
     "list_my_flights",
     "delete_my_flight",
     "upsert_type",
-    "upsert_aircraft",
     "list_types",
     "list_aircraft",
     "list_all_pilots",
