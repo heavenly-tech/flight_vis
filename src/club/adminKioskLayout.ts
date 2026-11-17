@@ -2,6 +2,8 @@ import { api, mountAdminNav, requireAdmin } from "./adminCommon";
 import {
   applyLayoutToEl,
   clampKioskQrLayout,
+  defaultKioskQrLayout,
+  DEFAULT_PREVIEW_ASPECT,
   type KioskQrLayout,
 } from "./kioskQrLayout";
 
@@ -13,7 +15,7 @@ const saveBtn = document.querySelector<HTMLButtonElement>("#btn-save")!;
 const resetBtn = document.querySelector<HTMLButtonElement>("#btn-reset")!;
 const saveStatus = document.querySelector<HTMLSpanElement>("#save-status")!;
 
-let layout: KioskQrLayout = { x: 0.76, y: 0.76, size: 0.22 };
+let layout: KioskQrLayout = defaultKioskQrLayout(DEFAULT_PREVIEW_ASPECT);
 
 function aspect(): number {
   return Number(aspectSel.value);
@@ -118,6 +120,8 @@ aspectSel.addEventListener("change", () => {
   layout = clampKioskQrLayout(layout.x, layout.y, layout.size, aspect());
   paint();
 });
+
+paint();
 
 void (async () => {
   mountAdminNav();

@@ -202,8 +202,11 @@ impl ClubDb {
                 std::env::var("FLIGHT_CLUB_BOOTSTRAP_ADMIN_PASSWORD"),
             ) {
                 if !email.is_empty() && !password.is_empty() {
-                    let club_id: String =
-                        conn.query_row("SELECT id FROM clubs LIMIT 1", [], |r| r.get(0))?;
+                    let club_id: String = conn.query_row(
+                        "SELECT id FROM clubs ORDER BY created_at ASC, id ASC LIMIT 1",
+                        [],
+                        |r| r.get(0),
+                    )?;
                     let exists: i64 = conn.query_row(
                         "SELECT COUNT(*) FROM pilots WHERE club_id = ?1 AND email = ?2",
                         params![club_id, email],
@@ -233,7 +236,13 @@ impl ClubDb {
     }
 
     pub fn default_club_id(&self) -> Result<String, rusqlite::Error> {
-        self.with_conn(|conn| conn.query_row("SELECT id FROM clubs LIMIT 1", [], |r| r.get(0)))
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT id FROM clubs ORDER BY created_at ASC, id ASC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+        })
     }
 
     pub fn register(
