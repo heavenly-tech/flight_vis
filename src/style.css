@@ -368,6 +368,14 @@ select,
   gap: 8px;
 }
 
+.library-local-badge {
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #a5f3fc;
+}
+
 .library-list {
   list-style: none;
   margin: 0;
@@ -614,9 +622,11 @@ body.live-session .timeline-live-mark {
 .live-slot {
   flex: 0 0 auto;
   min-width: 44px;
+  font-variant-numeric: tabular-nums;
 }
 
-.live-slot:disabled {
+.live-slot[hidden],
+.live-slot.is-live-edge {
   visibility: hidden;
   pointer-events: none;
   padding-left: 0;
@@ -626,6 +636,102 @@ body.live-session .timeline-live-mark {
   min-width: 44px;
   max-width: 44px;
   overflow: hidden;
+}
+
+body.live-session .live-slot:not([hidden]):not(.is-live-edge) {
+  visibility: visible;
+  border-color: rgba(103, 232, 249, 0.55);
+  color: #a5f3fc;
+}
+
+#btn-record.recording {
+  border-color: #f87171;
+  color: #fecaca;
+}
+
+.live-status {
+  top: 52%;
+  max-width: min(92vw, 26rem);
+  text-align: center;
+}
+
+body.live-session #btn-live-sessions {
+  display: inline-flex;
+}
+
+.more-live-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.live-trim-dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: min(92vw, 22rem);
+  margin: 0;
+}
+
+.live-trim-presets {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (max-width: 420px) {
+  .live-trim-presets {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.live-trim-presets .chip.active {
+  border-color: rgba(103, 232, 249, 0.7);
+  color: #a5f3fc;
+}
+
+.live-trim-manual {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.live-trim-dialog .dialog-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.live-trim-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 420px) {
+  .live-trim-dialog {
+    max-width: min(100vw - 24px, 22rem);
+  }
+
+  .live-trim-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    width: 100%;
+  }
+
+  .live-trim-actions .play,
+  .live-trim-actions .chip {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+#hud.hud-low-accuracy .hud-stat strong {
+  opacity: 0.45;
+}
+
+body.live-session .timeline-scrub canvas#profile {
+  border-radius: 10px;
 }
 
 .tags-panel .tag-list {
@@ -711,8 +817,12 @@ dialog input {
       "brand actions"
       "library library";
     gap: 6px;
-    max-height: 20vh;
-    overflow: hidden;
+    max-height: none;
+    overflow: visible;
+  }
+
+  body.library-open .topbar {
+    max-height: min(52vh, 420px);
   }
 
   .brand {
@@ -722,7 +832,7 @@ dialog input {
   .flight-name {
     font-size: 16px;
     margin: 0;
-    max-width: 55vw;
+    max-width: min(72vw, 20rem);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -730,7 +840,20 @@ dialog input {
 
   .library-panel {
     max-width: none;
-    max-height: 24vh;
+    max-height: none;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  body.library-open .library-panel {
+    max-height: min(40vh, 360px);
+  }
+
+  .library-list {
+    overflow-y: auto;
+    min-height: 0;
+    flex: 1 1 auto;
   }
 
   .top-actions {
@@ -829,9 +952,12 @@ dialog input {
     gap: 6px;
   }
 
-  .transport-compact .live-slot:disabled {
+  .transport-compact .live-slot[hidden],
+  .transport-compact .live-slot.is-live-edge {
     visibility: visible;
     opacity: 0;
+    min-width: 44px;
+    max-width: 44px;
   }
 
   .transport .play,
@@ -997,8 +1123,8 @@ dialog input {
 }
 
 @media (min-width: 1024px) {
-  .transport-compact .live-slot {
-    display: none;
+  body.live-session .transport-compact .live-slot {
+    display: inline-flex;
   }
 
   #ui {

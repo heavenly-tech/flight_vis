@@ -1,3 +1,4 @@
+import type { LiveSessionSummary } from "./live/types";
 import type { FlightTag } from "./track/types";
 
 export type FlightRecord = {
@@ -23,6 +24,7 @@ export type FlightListItem = {
   updatedAt: string | null;
   createdAt: string | null;
   size: number;
+  local?: boolean;
 };
 
 function throwAuthOr(res: Response, body: { error?: string }, fallback: string): never {
@@ -147,5 +149,57 @@ export async function deleteFlight(slug: string): Promise<void> {
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throwAuthOr(res, body, body.error || "Could not delete flight");
+  }
+}
+
+export async function listLiveSessions(): Promise<LiveSessionSummary[]> {
+  const res = await fetch("/api/live", { credentials: "same-origin" });
+  if (res.status === 401 || res.status === 403) {
+    throw new Error("Log in to list live sessions.");
+  }
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error || "Could not list live sessions");
+  }
+  const body = (await res.json()) as { sessions?: LiveSessionSummary[] };
+  return body.sessions ?? [];
+}
+
+export async function stopLiveSession(id: string): Promise<void> {
+  const res = await fetch(`/api/live/${encodeURIComponent(id)}/stop`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+  });
+  if (res.status === 401 || res.status === 403) {
+    throw new Error("Log in to stop live sessions.");
+  }
+  if (res.status === 404) {
+    throw new Error("Live session not found");
+  }
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error || "Could not stop live session");
+  }
+}
+
+export async function ackLiveSession(id: string): Promise<void> {
+  const res = await fetch(`/api/live/${encodeURIComponent(id)}/ack`, {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { Accept: "application/json" },
+  });
+  if (res.status === 401 || res.status === 403) {
+    throw new Error("Log in to acknowledge live sessions.");
+  }
+  if (res.status === 404) {
+    throw new Error("Live session not found");
+  }
+  if (res.status === 409) {
+    throw new Error("Session still active");
+  }
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error || "Could not acknowledge live session");
   }
 }

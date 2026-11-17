@@ -3,12 +3,15 @@ import "./style.css";
 import { getAuth, getFlight, loginUrl, logout, saveFlight, shareUrl, type AuthStatus } from "./api";
 import { isTrackFile, mountLibrary, type LibraryHandle } from "./library";
 import { formatClock, formatDuration } from "./track/geo";
+import { isGeoidReady } from "./geo/geoid";
 import { parseFlight, sampleAt } from "./track/parse";
 import { isValidSlug, normalizeSlug, slugFromFileName, slugFromPath } from "./track/slug";
 import type { ColorMode, Flight, FlightTag, TrimRange } from "./track/types";
 import { clampTrim, fullRange, newTagId, rangeStats, suggestTrim } from "./track/trim";
 import { cssForUnit } from "./viz/colors";
 import { nextChromeTap, shouldToggleChrome, type ChromeTap } from "./viz/globeChrome";
+import { getLocalFlight, isLocalSlug } from "./live/localFlights";
+import { ACC_DIM_M, createLiveRuntime, parseLivePath } from "./live/runtime";
 import { createFlightViewer, type PathMode } from "./viz/viewer";
 
 const SAMPLE_URL = `${import.meta.env.BASE_URL}samples/vuelo5.gpx`;
@@ -91,6 +94,8 @@ let playSpeed = Number(speedSelect.value);
 let drag: "start" | "end" | "seek" | null = null;
 let applyTrim: ((fly?: boolean) => Promise<void>) | null = null;
 let seekPlayhead: ((timeMs: number) => void) | null = null;
+let liveFollowing = true;
+let liveRuntime: ReturnType<typeof createLiveRuntime> | null = null;
 
 function pathSlug(): string | null {
   return slugFromPath(window.location.pathname);
@@ -228,12 +233,27 @@ function renderHud(): void {
   if (!flight || !trim) return;
   const sample = sampleAt(flight, cursorMs);
   const p = sample.point;
-  document.querySelector("#stat-alt")!.textContent = `${Math.round(p.alt)} m`;
+  const altEl = document.querySelector("#stat-alt")!;
+  if (p.positionAlt != null && !isGeoidReady() && Math.abs(p.alt - p.positionAlt) < 0.5) {
+    altEl.textContent = `${Math.round(p.positionAlt)} m ellip.`;
+  } else {
+    altEl.textContent = `${Math.round(p.alt)} m`;
+  }
   document.querySelector("#stat-spd")!.textContent = `${(p.speedMps * 3.6).toFixed(0)} km/h`;
   document.querySelector("#stat-vario")!.textContent = `${p.varioMps >= 0 ? "+" : ""}${p.varioMps.toFixed(1)} m/s`;
   document.querySelector("#stat-dist")!.textContent = `${(p.distanceM / 1000).toFixed(1)} km`;
   document.querySelector("#stat-time")!.textContent = formatDuration(p.time - trim.startMs);
   document.querySelector("#stat-utc")!.textContent = formatClock(p.time);
+  const accRow = document.querySelector<HTMLElement>("#hud-acc-row")!;
+  const accEl = document.querySelector<HTMLElement>("#stat-acc")!;
+  if (p.accuracyM != null && Number.isFinite(p.accuracyM)) {
+    accRow.hidden = false;
+    accEl.textContent = `±${Math.round(p.accuracyM)} m`;
+  } else {
+    accRow.hidden = true;
+    accEl.textContent = "—";
+  }
+  hud.classList.toggle("hud-low-accuracy", (p.accuracyM ?? 0) > ACC_DIM_M);
   if (hud.hidden) {
     hud.hidden = false;
     layoutHud();
@@ -310,8 +330,15 @@ function hitHandle(x: number, width: number): "start" | "end" | null {
 }
 
 async function boot(): Promise<void> {
+  const liveRouteEarly = parseLivePath(window.location.pathname);
   setStatus("Preparing 3D globe…");
+  if (liveRouteEarly.sessionId) {
+    nameEl.textContent = "Live session";
+  }
   const viewer = await createFlightViewer(document.getElementById("cesiumContainer")!);
+  if (liveRouteEarly.sessionId) {
+    setStatus(null);
+  }
   (window as unknown as { __fv: typeof viewer }).__fv = viewer;
 
   if (new URLSearchParams(window.location.search).has("perf")) {
@@ -352,10 +379,12 @@ async function boot(): Promise<void> {
 
   seekPlayhead = (timeMs: number) => {
     if (!flight || !trim) return;
-    cursorMs = Math.min(Math.max(timeMs, trim.startMs), trim.endMs);
+    const endCap = liveRuntime?.playCap() ?? trim.endMs;
+    cursorMs = Math.min(Math.max(timeMs, trim.startMs), Math.min(trim.endMs, endCap));
     playing = false;
     playButton.textContent = "Play";
     viewer.seekSample(sampleAt(flight, cursorMs), follow);
+    liveRuntime?.onScrub();
     renderHud();
   };
 
@@ -384,14 +413,15 @@ async function boot(): Promise<void> {
 
   async function loadText(text: string, fileName: string, opts?: { trim?: TrimRange; tags?: FlightTag[]; slug?: string }): Promise<void> {
     setStatus("Parsing track…");
-    await loadParsed(parseFlight(text, fileName), text, opts);
+    await loadParsed(await parseFlight(text, fileName), text, opts);
   }
 
   function tick(now: number): void {
     if (playing && flight && trim) {
       const dt = lastFrame ? now - lastFrame : 16;
-      cursorMs = Math.min(trim.endMs, cursorMs + dt * playSpeed);
-      if (cursorMs >= trim.endMs) {
+      const endCap = liveRuntime?.playCap() ?? trim.endMs;
+      cursorMs = Math.min(endCap, trim.endMs, cursorMs + dt * playSpeed);
+      if (cursorMs >= Math.min(trim.endMs, endCap)) {
         playing = false;
         playButton.textContent = "Play";
         viewer.flyOverview();
@@ -400,6 +430,7 @@ async function boot(): Promise<void> {
       }
       renderHud();
     }
+    liveRuntime?.tickFollow();
     lastFrame = now;
     sampleQuality(now, playing || globeInteracting);
     requestAnimationFrame(tick);
@@ -730,8 +761,10 @@ async function boot(): Promise<void> {
     drag = hitHandle(x, rect.width) ?? "seek";
     profile.setPointerCapture(event.pointerId);
     if (drag === "seek") {
-      cursorMs = timeForX(x, rect.width, 10);
+      const endCap = liveRuntime?.playCap() ?? trim.endMs;
+      cursorMs = Math.min(timeForX(x, rect.width, 10), endCap);
       viewer.setSample(sampleAt(flight, cursorMs), follow);
+      liveRuntime?.onScrub();
       renderHud();
     }
   });
@@ -743,8 +776,10 @@ async function boot(): Promise<void> {
     if (drag === "start") trim = clampTrim(flight, { startMs: t, endMs: trim.endMs });
     if (drag === "end") trim = clampTrim(flight, { startMs: trim.startMs, endMs: t });
     if (drag === "seek") {
-      cursorMs = t;
+      const endCap = liveRuntime?.playCap() ?? trim.endMs;
+      cursorMs = Math.min(t, endCap);
       viewer.setSample(sampleAt(flight, cursorMs), follow);
+      liveRuntime?.onScrub();
     } else {
       refreshTrimStats();
     }
@@ -778,7 +813,26 @@ async function boot(): Promise<void> {
   resizeProfile();
   requestAnimationFrame(tick);
 
+  async function loadFromLocalId(id: string): Promise<boolean> {
+    try {
+      const stored = await getLocalFlight(id);
+      if (!stored) return false;
+      history.replaceState({ slug: stored.id }, "", `/${stored.id}`);
+      await loadText(stored.track, stored.fileName, {
+        slug: stored.id,
+        trim: { startMs: stored.trimStartMs, endMs: stored.trimEndMs },
+        tags: stored.tags ?? [],
+      });
+      nameEl.textContent = stored.name;
+      library?.setCurrentSlug(stored.id);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async function loadFromSlug(slug: string): Promise<boolean> {
+    if (isLocalSlug(slug)) return loadFromLocalId(slug);
     try {
       const stored = await getFlight(slug);
       if (!stored) return false;
@@ -806,6 +860,58 @@ async function boot(): Promise<void> {
     auth = { authenticated: false, configured: true };
   }
 
+  liveRuntime = createLiveRuntime({
+    viewer,
+    getAuth: () => auth,
+    getFlight: () => flight,
+    setFlight: (next) => {
+      flight = next;
+    },
+    getTrim: () => trim,
+    setTrim: (next) => {
+      trim = next;
+    },
+    getCursor: () => cursorMs,
+    setCursor: (ms) => {
+      cursorMs = ms;
+    },
+    isFollow: () => follow,
+    getFollowingLive: () => liveFollowing,
+    setFollowingLive: (v) => {
+      liveFollowing = v;
+    },
+    setPlaying: (v) => {
+      playing = v;
+    },
+    syncPlayLabel: () => {
+      playButton.textContent = playing ? "Pause" : "Play";
+    },
+    applyTrim: async (fly) => applyTrim?.(fly),
+    afterSeek: () => {
+      maybeDrawProfile(true);
+      renderHud();
+    },
+    refreshHud: () => renderHud(),
+    refreshProfile: () => maybeDrawProfile(true),
+    setStatus,
+    setFlightName: (text) => {
+      nameEl.textContent = text;
+    },
+    enableFollow: () => {
+      follow = true;
+      followButton.setAttribute("aria-pressed", "true");
+    },
+    refreshLibrary: async () => library?.refresh(),
+    getColorMode: () => colorMode,
+    loadRecording: async (track, fileName, nextTrim, name, localId) => {
+      liveRuntime?.stop();
+      document.body.classList.remove("live-session");
+      await loadText(track, fileName, { trim: nextTrim, slug: localId });
+      nameEl.textContent = name;
+      library?.setCurrentSlug(localId ?? null);
+    },
+  });
+
   library = mountLibrary({
     getAuth: () => auth,
     currentSlug: () => pathSlug() || slugInput.value || null,
@@ -830,7 +936,20 @@ async function boot(): Promise<void> {
     setStatus,
   });
   syncAuthUi();
-  if (auth.authenticated) library.setOpen(true);
+
+  const liveRoute = parseLivePath(window.location.pathname);
+  if (auth.authenticated && !liveRoute.sessionId && !liveRoute.listOnly) {
+    library.setOpen(true);
+  }
+
+  if (liveRoute.sessionId) {
+    await liveRuntime.startSession(liveRoute.sessionId);
+    return;
+  }
+  if (liveRoute.listOnly) {
+    document.querySelector<HTMLButtonElement>("#btn-live-sessions")!.hidden = false;
+    await liveRuntime.startList();
+  }
 
   try {
     const slug = pathSlug();

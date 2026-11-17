@@ -1,0 +1,11 @@
+{
+  "source": "NGA EGM96 via egm96-universal",
+  "license": "MIT (grid generator); NGA geoid data (public domain)",
+  "stepDeg": 0.25,
+  "latMin": -90,
+  "latMax": 90,
+  "lonMin": -180,
+  "lonMax": 179.75,
+  "latCount": 721,
+  "lonCount": 1440
+}

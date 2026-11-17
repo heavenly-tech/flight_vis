@@ -7,6 +7,11 @@ export type TrackPoint = {
   varioMps: number;
   distanceM: number;
   headingRad: number;
+  /** WGS84 ellipsoid height for the globe; `alt` is MSL for HUD/labels. */
+  positionAlt?: number;
+  /** True when `alt` was derived from EGM96, not a geoid-pending placeholder. */
+  mslFromGeoid?: boolean;
+  accuracyM?: number;
 };
 
 export type ColorMode = "altitude" | "speed" | "vario";

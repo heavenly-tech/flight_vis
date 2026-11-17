@@ -38,6 +38,7 @@ export function nameFromFileName(fileName: string): string {
 export function slugFromPath(pathname: string): string | null {
   const raw = pathname.replace(/^\//, "").replace(/\/$/, "");
   if (!raw || raw.includes("/")) return null;
+  if (raw.startsWith("local:")) return raw;
   const slug = normalizeSlug(raw);
   return isValidSlug(slug) ? slug : null;
 }

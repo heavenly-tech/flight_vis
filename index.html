@@ -84,6 +84,7 @@
           <div class="hud-stat hud-primary"><span>TIME</span><strong id="stat-time">—</strong></div>
           <div class="hud-stat hud-secondary"><span>DIST</span><strong id="stat-dist">—</strong></div>
           <div class="hud-stat hud-secondary"><span>UTC</span><strong id="stat-utc">—</strong></div>
+          <div class="hud-stat hud-secondary" id="hud-acc-row" hidden><span>ACC</span><strong id="stat-acc">—</strong></div>
         </div>
         <button type="button" id="btn-hud" class="chip disclosure hud-toggle" hidden aria-expanded="false">
           Stats <span class="caret" aria-hidden="true">^</span>
@@ -91,22 +92,14 @@
       </aside>
 
       <p id="status" class="status">Preparing 3D globe…</p>
+      <p id="live-status" class="status live-status" hidden></p>
 
       <footer class="transport">
         <div class="transport-row transport-primary transport-compact">
           <button type="button" id="btn-play" class="play">Play</button>
           <button type="button" id="btn-follow" class="chip" aria-pressed="true">Follow</button>
-          <button
-            type="button"
-            id="btn-live"
-            class="chip live-slot"
-            disabled
-            aria-hidden="true"
-            tabindex="-1"
-            title="Reserved for Live follow (upcoming)"
-          >
-            Live
-          </button>
+          <button type="button" id="btn-record" class="chip transport-extra" hidden>Record</button>
+          <button type="button" id="btn-live" class="chip live-slot" hidden title="Jump to live edge">Live</button>
           <div class="modes transport-extra" role="group" aria-label="Follow heading">
             <button type="button" data-follow-mode="fixed" class="chip">Fixed</button>
             <button type="button" data-follow-mode="relative" class="chip active">Relative</button>
@@ -129,6 +122,10 @@
           <div id="tag-list" class="tag-list" hidden></div>
         </div>
         <div id="more-panel" class="more-panel" hidden>
+          <div class="more-live-row transport-extra" role="group" aria-label="Live and language">
+            <button type="button" id="btn-live-sessions" class="chip" hidden aria-label="Browse live sessions">Live</button>
+            <button type="button" id="btn-lang" class="chip" title="Language" aria-label="Toggle language">EN</button>
+          </div>
           <div class="modes color-modes mobile-color" role="group" aria-label="Track color">
             <span class="group-label">Color</span>
             <button type="button" data-mode="altitude" class="chip active">Alt</button>
@@ -188,6 +185,35 @@
         <div class="dialog-actions">
           <button type="submit" value="ok" class="chip danger">Delete</button>
           <button type="submit" value="cancel" formnovalidate class="chip">Cancel</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="live-trim-dialog" class="live-trim-dialog">
+      <form id="live-trim-form" method="dialog">
+        <p id="live-trim-title">Trim tail before save</p>
+        <div class="live-trim-presets" role="group" aria-label="Tail trim minutes">
+          <button type="button" class="chip" data-tail-min="5">5m</button>
+          <button type="button" class="chip" data-tail-min="10">10m</button>
+          <button type="button" class="chip" data-tail-min="15">15m</button>
+          <button type="button" class="chip" data-tail-min="20">20m</button>
+          <button type="button" class="chip" data-tail-min="25">25m</button>
+          <button type="button" class="chip" data-tail-min="30">30m</button>
+        </div>
+        <div class="live-trim-manual">
+          <p id="live-trim-tz" class="dialog-hint"></p>
+          <label class="dialog-field">
+            <span>Start (local)</span>
+            <input id="live-trim-start" type="datetime-local" step="1" />
+          </label>
+          <label class="dialog-field">
+            <span>End (local)</span>
+            <input id="live-trim-end" type="datetime-local" step="1" />
+          </label>
+        </div>
+        <div class="dialog-actions live-trim-actions">
+          <button type="submit" value="save" class="play">Save</button>
+          <button type="submit" value="cancel" class="chip" formnovalidate>Cancel</button>
         </div>
       </form>
     </dialog>

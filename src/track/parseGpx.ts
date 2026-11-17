@@ -1,9 +1,22 @@
+import { ellipsoidToMsl, isGeoidReady } from "../geo/geoid";
 import { enrichFlight } from "./enrich";
 import type { Flight } from "./types";
+import { ALT_REF_WGS84_ELLIPSOID } from "../live/types";
+
+export function gpxNeedsGeoid(xml: string): boolean {
+  return /wgs84_ellipsoid/i.test(xml) || /fv:altRef/i.test(xml);
+}
+
+const FV_NS = "http://flight_vis.local/gpx/1";
 
 function textOf(el: Element, tag: string): string | null {
   const node = el.getElementsByTagName(tag)[0];
   return node?.textContent?.trim() || null;
+}
+
+function fvText(el: Element, tag: string): string | null {
+  const node = el.getElementsByTagNameNS(FV_NS, tag)[0] ?? el.getElementsByTagName(`fv:${tag}`)[0];
+  return node?.textContent?.trim() ?? null;
 }
 
 export function parseGpx(xml: string, fileName: string): Flight {
@@ -22,15 +35,39 @@ export function parseGpx(xml: string, fileName: string): Flight {
     const lon = Number(el.getAttribute("lon"));
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return [];
     const ele = Number(textOf(el, "ele") ?? "0");
+    const mslText = fvText(el, "msl");
+    const altRef = fvText(el, "altRef");
+    const accText = fvText(el, "accuracy");
     const timeText = textOf(el, "time");
     const time = timeText ? Date.parse(timeText) : Number.NaN;
     const speedText = textOf(el, "speed");
     const speedMps = speedText != null ? Number(speedText) : undefined;
+    let altMsl = Number.isFinite(ele) ? ele : 0;
+    let positionAlt: number | undefined;
+    let mslFromGeoid = false;
+    if (altRef === ALT_REF_WGS84_ELLIPSOID || mslText != null) {
+      positionAlt = Number.isFinite(ele) ? ele : undefined;
+      if (mslText != null && Number.isFinite(Number(mslText))) {
+        altMsl = Number(mslText);
+        mslFromGeoid = true;
+      } else if (positionAlt != null) {
+        if (isGeoidReady()) {
+          altMsl = ellipsoidToMsl(lat, lon, positionAlt);
+          mslFromGeoid = true;
+        } else {
+          altMsl = positionAlt;
+        }
+      }
+    }
+    const accuracyM = accText != null && Number.isFinite(Number(accText)) ? Number(accText) : undefined;
     return [
       {
         lat,
         lon,
-        alt: Number.isFinite(ele) ? ele : 0,
+        alt: altMsl,
+        positionAlt,
+        mslFromGeoid,
+        accuracyM,
         time: Number.isFinite(time) ? time : 0,
         speedMps: speedMps != null && Number.isFinite(speedMps) ? speedMps : undefined,
       },
@@ -49,5 +86,11 @@ export function parseGpx(xml: string, fileName: string): Flight {
     textOf(doc.documentElement, "name") ||
     fileName.replace(/\.[^.]+$/, "");
 
-  return enrichFlight(name, "gpx", fileName, raw);
+  const flight = enrichFlight(name, "gpx", fileName, raw);
+  for (let i = 0; i < flight.points.length; i += 1) {
+    if (raw[i].positionAlt != null) flight.points[i].positionAlt = raw[i].positionAlt;
+    if (raw[i].mslFromGeoid) flight.points[i].mslFromGeoid = true;
+    if (raw[i].accuracyM != null) flight.points[i].accuracyM = raw[i].accuracyM;
+  }
+  return flight;
 }

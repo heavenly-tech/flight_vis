@@ -7,14 +7,20 @@
   "scripts": {
     "dev": "vite",
     "dev:api": "cargo run --manifest-path server-rs/Cargo.toml",
+    "prebuild": "node scripts/build-egm96-grid.mjs",
     "build": "tsc --noEmit && vitest run && vite build",
+    "lint": "tsc --noEmit",
     "test:unit": "vitest run",
+    "test:e2e": "playwright test",
     "preview": "vite preview",
     "start": "cargo run --release --manifest-path server-rs/Cargo.toml",
     "test": "cargo test --manifest-path server-rs/Cargo.toml"
   },
   "devDependencies": {
+    "@playwright/test": "^1.56.0",
     "cesium": "^1.134.0",
+    "egm96-universal": "^1.1.1",
+    "jsdom": "^26.1.0",
     "typescript": "^5.9.2",
     "vite": "^7.1.5",
     "vite-plugin-static-copy": "^3.1.2",

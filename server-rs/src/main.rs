@@ -140,8 +140,9 @@ async fn auth_me(State(state): State<AppState>, headers: HeaderMap) -> Json<serd
 async fn fallback(
     State(state): State<AppState>,
     uri: Uri,
+    headers: HeaderMap,
 ) -> Result<axum::response::Response, StatusCode> {
-    static_files::serve(&state.dist_dir, uri.path()).await
+    static_files::serve(&state.dist_dir, uri.path(), &headers).await
 }
 
 const LOGIN_FALLBACK_HEAD: &str = r#"<!doctype html>
