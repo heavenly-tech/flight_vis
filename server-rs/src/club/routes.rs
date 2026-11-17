@@ -1011,9 +1011,8 @@ async fn create_device(
             .into_response();
     };
     match db.create_device(&id, body.label.trim()) {
-        Ok((device_id, token)) => Json(json!({
+        Ok((device_id, _token)) => Json(json!({
             "id": device_id,
-            "token": token,
             "label": body.label,
         }))
         .into_response(),
@@ -1206,10 +1205,9 @@ async fn display_checkin_qr(
     };
     let now = now_ms();
     match db.mint_checkin_qr_token(&club_id, now) {
-        Ok(token) => {
+        Ok(_token) => {
             let step = crate::club::checkin::current_step(now);
             Json(json!({
-                "token": token,
                 "step": step,
                 "stepSeconds": crate::club::checkin::CHECKIN_STEP_SEC,
                 "serverTimeMs": now,
@@ -1273,7 +1271,7 @@ async fn admin_create_display(
         Ok((session_id, token)) => Json(json!({
             "id": session_id,
             "token": token,
-            "screenUrl": format!("/club/screen?token={token}"),
+            "screenUrl": "/club/screen",
         }))
         .into_response(),
         Err(_) => (
@@ -1343,10 +1341,21 @@ async fn admin_revoke_display(
     }
 }
 
+fn html_csp_header() -> (header::HeaderName, &'static str) {
+    (
+        header::CONTENT_SECURITY_POLICY,
+        crate::static_files::HTML_CSP,
+    )
+}
+
 async fn club_screen_page(State(state): State<AppState>) -> impl IntoResponse {
     let path = state.dist_dir.join("club-screen.html");
     match tokio::fs::read_to_string(&path).await {
-        Ok(html) => Html(html).into_response(),
+        Ok(html) => (
+            [(html_csp_header())],
+            Html(html),
+        )
+            .into_response(),
         Err(_) => (
             StatusCode::NOT_FOUND,
             "Club screen page not built (npm run build)",
@@ -1355,12 +1364,77 @@ async fn club_screen_page(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+async fn club_screen_qr_svg(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Some((club_id, _admin)) = display_context(&headers, db) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let now = now_ms();
+    let token = match db.mint_checkin_qr_token(&club_id, now) {
+        Ok(t) => t,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let svg = match crate::club::qr::svg_for_payload(&token, 280) {
+        Ok(s) => s,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    (
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::CONTENT_TYPE, "image/svg+xml; charset=utf-8"),
+        ],
+        svg,
+    )
+        .into_response()
+}
+
+async fn device_pair_qr_svg(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(device_id): Path<String>,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers);
+    let Viewer::Pilot {
+        id,
+        status: PilotStatus::Approved,
+        ..
+    } = v
+    else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Some(db) = club_db(&state) else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Some(token) = db.device_pair_token_for_pilot(&device_id, &id) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let svg = match crate::club::qr::svg_for_payload(&token, 180) {
+        Ok(s) => s,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    (
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::CONTENT_TYPE, "image/svg+xml; charset=utf-8"),
+        ],
+        svg,
+    )
+        .into_response()
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/club/screen", get(club_screen_page))
         .route("/api/checkin", post(post_checkin))
         .route("/api/display/activate", post(display_activate))
         .route("/api/display/checkin-qr", get(display_checkin_qr))
+        .route("/api/club/screen/qr.svg", get(club_screen_qr_svg))
+        .route("/api/devices/pair/{id}/qr.svg", get(device_pair_qr_svg))
         .route("/api/display/map", get(display_map))
         .route(
             "/api/admin/display-sessions",

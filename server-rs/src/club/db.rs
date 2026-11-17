@@ -17,6 +17,7 @@ use std::{
 
 const MIGRATION_001: &str = include_str!("../../migrations/001_init.sql");
 const MIGRATION_002: &str = include_str!("../../migrations/002_checkin.sql");
+const MIGRATION_003: &str = include_str!("../../migrations/003_device_pair_qr.sql");
 
 #[derive(Clone)]
 pub struct ClubDb {
@@ -121,6 +122,10 @@ impl ClubDb {
             if version < 2 {
                 conn.execute_batch(MIGRATION_002)?;
                 conn.execute("INSERT INTO schema_migrations (version) VALUES (2)", [])?;
+            }
+            if version < 3 {
+                conn.execute_batch(MIGRATION_003)?;
+                conn.execute("INSERT INTO schema_migrations (version) VALUES (3)", [])?;
             }
             Ok(())
         })
@@ -850,8 +855,31 @@ impl ClubDb {
                 "INSERT INTO devices (id, pilot_id, token_hash, label, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![id, pilot_id, hash, label, now_ms()],
             )?;
+            conn.execute(
+                "INSERT INTO device_pair_tokens (device_id, token) VALUES (?1, ?2)",
+                params![id, token],
+            )?;
             Ok((id, token))
         })
+    }
+
+    pub fn device_pair_token_for_pilot(
+        &self,
+        device_id: &str,
+        pilot_id: &str,
+    ) -> Option<String> {
+        self.with_conn(|conn| {
+            conn.query_row(
+                "SELECT dpt.token FROM device_pair_tokens dpt
+                 JOIN devices d ON d.id = dpt.device_id
+                 WHERE dpt.device_id = ?1 AND d.pilot_id = ?2",
+                params![device_id, pilot_id],
+                |r| r.get(0),
+            )
+            .optional()
+        })
+        .ok()
+        .flatten()
     }
 
     pub fn list_my_devices(&self, pilot_id: &str) -> Vec<DeviceInfo> {

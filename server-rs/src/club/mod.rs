@@ -3,6 +3,7 @@ mod auth;
 pub mod checkin;
 mod db;
 mod map;
+mod qr;
 mod routes;
 mod visibility;
 

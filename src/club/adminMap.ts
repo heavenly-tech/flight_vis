@@ -38,8 +38,8 @@ kiosk?.addEventListener("click", async () => {
     body: JSON.stringify({ label: "Kiosk" }),
   });
   const url = `${location.origin}${body.screenUrl}`;
-  kioskOut.textContent = `Open on the kiosk: ${url}`;
-  kioskOut.innerHTML = `Open on the kiosk: <a href="${url}" target="_blank" rel="noopener">${url}</a>`;
+  kioskOut.innerHTML = `Open on the kiosk: <a href="${url}" target="_blank" rel="noopener">${url}</a><br />
+    Activation token (paste on that page, not in the URL): <code>${body.token}</code>`;
 });
 
 save.addEventListener("click", async () => {

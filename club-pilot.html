@@ -23,14 +23,13 @@
       <p><a href="/app.html">Download Android tracker app</a></p>
       <section>
         <h2 style="margin:0;font-size:1rem">Device token</h2>
-        <p class="muted">Shown once. Scan the QR or paste into the Traccar/OsmAnd client.</p>
+        <p class="muted">Scan the QR into the Traccar/OsmAnd client. The token stays on the server.</p>
         <div class="row">
           <input id="dev-label" placeholder="Phone label" />
           <button type="button" id="btn-new-device">Create device</button>
         </div>
         <div id="token-reveal" hidden>
-          <div class="token-box" id="token-text"></div>
-          <img id="qr" alt="device token qr" />
+          <img id="qr" alt="device token qr" width="180" height="180" />
         </div>
         <ul id="devices"></ul>
       </section>

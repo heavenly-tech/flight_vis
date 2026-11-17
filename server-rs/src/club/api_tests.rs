@@ -264,6 +264,78 @@ async fn anonymous_public_map_and_name_flag() {
 }
 
 #[tokio::test]
+async fn server_qr_svg_endpoints() {
+    let mut fx = setup();
+    let cookie_a = login_cookie(&mut fx.router, "a@test").await;
+    let (device_id, _) = fx.club.create_device(&fx.pilot_a, "qr-phone").unwrap();
+
+    let unauth = fx
+        .router
+        .call(
+            Request::builder()
+                .uri(format!("/api/devices/pair/{device_id}/qr.svg"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauth.status(), StatusCode::UNAUTHORIZED);
+
+    let pair = fx
+        .router
+        .call(
+            Request::builder()
+                .uri(format!("/api/devices/pair/{device_id}/qr.svg"))
+                .header(header::COOKIE, cookie_a.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pair.status(), StatusCode::OK);
+    assert_eq!(
+        pair.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()),
+        Some("image/svg+xml; charset=utf-8")
+    );
+    assert_eq!(
+        pair.headers().get(header::CACHE_CONTROL).and_then(|v| v.to_str().ok()),
+        Some("no-store")
+    );
+    let svg = String::from_utf8(to_bytes(pair.into_body(), usize::MAX).await.unwrap().to_vec())
+        .unwrap();
+    assert!(svg.contains("<svg"));
+    assert!(!svg.contains("qrserver"));
+
+    let (_sess, display_token) = fx
+        .club
+        .create_display_session(&fx.pilot_a, "kiosk")
+        .unwrap();
+    let display_cookie = format!(
+        "{}={}",
+        crate::club::auth::DISPLAY_COOKIE,
+        display_token
+    );
+
+    let screen_qr = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/club/screen/qr.svg")
+                .header(header::COOKIE, display_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(screen_qr.status(), StatusCode::OK);
+    let screen_svg =
+        String::from_utf8(to_bytes(screen_qr.into_body(), usize::MAX).await.unwrap().to_vec())
+            .unwrap();
+    assert!(screen_svg.contains("<svg"));
+    assert!(!screen_svg.contains("qrserver"));
+}
+
+#[tokio::test]
 async fn pending_pilot_cannot_load_club_map() {
     let mut fx = setup();
     let club_id = fx.club.default_club_id().unwrap();

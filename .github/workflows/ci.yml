@@ -37,6 +37,14 @@ jobs:
       - name: frontend
         run: npm ci && npm run build
 
+      - name: bundle has no external QR hosts
+        run: |
+          if rg -q 'qrserver\\.com' dist/; then
+            echo "dist/ must not reference external QR image hosts"
+            rg 'qrserver\\.com' dist/
+            exit 1
+          fi
+
       - name: frontend lint
         run: npm run lint
 

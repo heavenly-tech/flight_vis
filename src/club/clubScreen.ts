@@ -1,17 +1,21 @@
 export {};
 
+import { CHECKIN_STEP_SEC } from "./checkinStep";
+
 const statusEl = document.querySelector<HTMLParagraphElement>("#status")!;
 const qr = document.querySelector<HTMLImageElement>("#qr")!;
-const tokenText = document.querySelector<HTMLParagraphElement>("#token-text")!;
 const map = document.querySelector<HTMLUListElement>("#map")!;
+const activatePanel = document.querySelector<HTMLDivElement>("#activate")!;
+const activateToken = document.querySelector<HTMLInputElement>("#activate-token")!;
+const activateBtn = document.querySelector<HTMLButtonElement>("#btn-activate")!;
 
-function qrUrl(text: string): string {
-  return `https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=${encodeURIComponent(text)}`;
+async function displaySessionActive(): Promise<boolean> {
+  const res = await fetch("/api/display/map", { credentials: "same-origin" });
+  return res.ok;
 }
 
-async function activateFromQuery(): Promise<boolean> {
-  const params = new URLSearchParams(location.search);
-  const token = params.get("token")?.trim();
+async function activateDisplay(): Promise<boolean> {
+  const token = activateToken.value.trim();
   if (!token) return false;
   const res = await fetch("/api/display/activate", {
     method: "POST",
@@ -23,20 +27,13 @@ async function activateFromQuery(): Promise<boolean> {
     statusEl.textContent = "Invalid display token.";
     return false;
   }
-  history.replaceState({}, "", "/club/screen");
+  activatePanel.hidden = true;
+  statusEl.textContent = "Display activated.";
   return true;
 }
 
-async function refreshQr(): Promise<void> {
-  const res = await fetch("/api/display/checkin-qr", { credentials: "same-origin" });
-  if (!res.ok) {
-    statusEl.textContent = "Display session required. Ask an admin to open this screen.";
-    return;
-  }
-  const data = (await res.json()) as { token: string; stepSeconds: number };
-  tokenText.textContent = data.token;
-  qr.src = qrUrl(data.token);
-  statusEl.textContent = `QR rotates every ${data.stepSeconds}s.`;
+function refreshQrImage(): void {
+  qr.src = `/api/club/screen/qr.svg?t=${Date.now()}`;
 }
 
 async function refreshMap(): Promise<void> {
@@ -54,10 +51,25 @@ async function refreshMap(): Promise<void> {
   );
 }
 
+activateBtn.addEventListener("click", () => {
+  void (async () => {
+    if (await activateDisplay()) {
+      refreshQrImage();
+      await refreshMap();
+    }
+  })();
+});
+
 void (async () => {
-  await activateFromQuery();
-  await refreshQr();
+  if (!(await displaySessionActive())) {
+    activatePanel.hidden = false;
+    statusEl.textContent = "Paste the display activation token from the admin map page.";
+    return;
+  }
+  activatePanel.hidden = true;
+  refreshQrImage();
+  statusEl.textContent = `QR rotates every ${CHECKIN_STEP_SEC}s.`;
   await refreshMap();
-  setInterval(() => void refreshQr(), 10_000);
+  setInterval(() => refreshQrImage(), CHECKIN_STEP_SEC * 1000);
   setInterval(() => void refreshMap(), 5000);
 })();

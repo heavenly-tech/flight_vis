@@ -1,0 +1,4 @@
+CREATE TABLE IF NOT EXISTS device_pair_tokens (
+    device_id TEXT PRIMARY KEY NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    token TEXT NOT NULL
+);

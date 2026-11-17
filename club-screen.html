@@ -20,11 +20,17 @@
     <main>
       <h1>Club check-in</h1>
       <p id="status" class="muted">Starting kiosk…</p>
+      <div id="activate" hidden>
+        <p class="muted">Activation token (from admin):</p>
+        <div class="row" style="display:flex;gap:.5rem;flex-wrap:wrap;margin:.75rem 0">
+          <input id="activate-token" type="password" autocomplete="off" style="flex:1;min-width:12rem;font:inherit" />
+          <button type="button" id="btn-activate">Activate display</button>
+        </div>
+      </div>
       <div class="grid">
         <section>
           <h2>Scan to check in</h2>
           <img id="qr" alt="Check-in QR" width="280" height="280" />
-          <p class="token" id="token-text"></p>
         </section>
         <section>
           <h2>Live club map</h2>

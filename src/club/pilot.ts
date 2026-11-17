@@ -3,7 +3,6 @@ export {};
 const who = document.querySelector<HTMLParagraphElement>("#who")!;
 const profile = document.querySelector<HTMLParagraphElement>("#profile")!;
 const tokenReveal = document.querySelector<HTMLDivElement>("#token-reveal")!;
-const tokenText = document.querySelector<HTMLDivElement>("#token-text")!;
 const qr = document.querySelector<HTMLImageElement>("#qr")!;
 const devices = document.querySelector<HTMLUListElement>("#devices")!;
 const flights = document.querySelector<HTMLUListElement>("#flights")!;
@@ -15,10 +14,6 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { credentials: "same-origin", ...init });
   if (!res.ok) throw new Error(`${res.status}`);
   return (await res.json()) as T;
-}
-
-function qrUrl(text: string): string {
-  return `https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(text)}`;
 }
 
 async function boot(): Promise<void> {
@@ -75,13 +70,12 @@ async function boot(): Promise<void> {
 }
 
 newDeviceBtn.addEventListener("click", async () => {
-  const body = await api<{ token: string }>("/api/me/devices", {
+  const body = await api<{ id: string }>("/api/me/devices", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ label: labelInput.value.trim() }),
   });
-  tokenText.textContent = body.token;
-  qr.src = qrUrl(body.token);
+  qr.src = `/api/devices/pair/${encodeURIComponent(body.id)}/qr.svg`;
   tokenReveal.hidden = false;
   await boot();
 });
