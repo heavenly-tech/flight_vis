@@ -1487,9 +1487,10 @@ impl ClubDb {
         let hash = digest_token(&token);
         let id = new_id();
         let now = now_ms();
+        let expires_at = now + 90 * 24 * 3600 * 1000;
         sqlx::query(
-            "INSERT INTO display_sessions (id, club_id, created_by_pilot_id, token_hash, label, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6)",
+            "INSERT INTO display_sessions (id, club_id, created_by_pilot_id, token_hash, label, created_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(&id)
         .bind(&club_id)
@@ -1497,6 +1498,7 @@ impl ClubDb {
         .bind(&hash)
         .bind(label)
         .bind(now)
+        .bind(expires_at)
         .execute(&self.pool)
         .await?;
         Ok((id, token))
@@ -1523,14 +1525,22 @@ impl ClubDb {
 
     pub async fn resolve_display_session(&self, token: &str) -> Option<(String, String, String)> {
         let hash = digest_token(token);
+        let now = now_ms();
         let row = sqlx::query(
-            "SELECT id, club_id, created_by_pilot_id FROM display_sessions
+            "SELECT id, club_id, created_by_pilot_id, expires_at FROM display_sessions
              WHERE token_hash = $1 AND revoked_at IS NULL",
         )
         .bind(hash)
         .fetch_optional(&self.pool)
         .await
         .ok()??;
+        if let Ok(Some(exp)) = row.try_get::<Option<i64>, _>(3) {
+            if let Some(exp) = exp {
+                if now > exp {
+                    return None;
+                }
+            }
+        }
         Some((
             row.try_get(0).ok()?,
             row.try_get(1).ok()?,

@@ -355,8 +355,23 @@ pub(crate) struct GuestBody {
 pub async fn post_guest(
     State(state): State<AppState>,
     headers: HeaderMap,
+    client_ip: ClientIp,
     body: Option<Json<GuestBody>>,
 ) -> impl IntoResponse {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if !state
+        .device_register_throttle
+        .allow_up_to(&client_ip.0, now_secs, 30)
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "rate limited" })),
+        )
+            .into_response();
+    }
     let Some(db) = club_db(&state) else {
         return club_disabled();
     };

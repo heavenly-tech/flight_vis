@@ -134,8 +134,23 @@ struct RegisterBody {
 
 async fn register(
     State(state): State<AppState>,
+    client_ip: ClientIp,
     Json(body): Json<RegisterBody>,
 ) -> impl IntoResponse {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if !state
+        .device_register_throttle
+        .allow_up_to(&client_ip.0, now_secs, 20)
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "rate limited" })),
+        )
+            .into_response();
+    }
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
