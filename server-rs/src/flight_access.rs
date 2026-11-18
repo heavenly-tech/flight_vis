@@ -1,4 +1,4 @@
-//! Disk flight library auth: legacy `fv_session` or club pilot ownership (`disk_flight_owners`).
+//! Disk flight library auth: legacy `fv_session` or club ownership via `disk_flight_owners.owner_id`.
 
 use crate::{
     auth,

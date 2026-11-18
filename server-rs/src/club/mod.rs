@@ -14,6 +14,7 @@ mod db_access_pg;
 mod db_auth_pg;
 pub(crate) mod db_club_lifecycle;
 mod db_devices_pg;
+pub(crate) mod disk_owner;
 mod db_disk_pg;
 mod db_kiosk_pg;
 mod db_locale;

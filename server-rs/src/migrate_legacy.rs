@@ -13,11 +13,12 @@
 //! webauthn_credentials, guest_sessions — never rows owned by other pilot ids or clubs.
 //!
 //! **Disk library**: every `{FLIGHT_DATA}/flights/*` storage slug gets a `disk_flight_owners`
-//! row for the target pilot in the target club (single-tenant legacy gate); files are not moved.
+//! row (`owner_id`, target pilot id today) in the target club; files are not moved.
 
 use crate::{
     club::{
         database::{connect_pool, run_migrations},
+        disk_owner::{INSERT_DISK_FLIGHT_OWNER, INSERT_DISK_LIVE_SESSION_OWNER},
         new_id,
         now_ms,
     },
@@ -362,11 +363,7 @@ async fn apply_disk_ownership(
     let now = now_ms();
     for storage in slugs {
         let public = public_slug_for_storage(&storage);
-        let r = sqlx::query(
-            "INSERT INTO disk_flight_owners (public_slug, storage_slug, pilot_id, club_id, migrated_at)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (public_slug) DO NOTHING",
-        )
+        let r = sqlx::query(INSERT_DISK_FLIGHT_OWNER)
         .bind(&public)
         .bind(&storage)
         .bind(target_id)
@@ -385,11 +382,7 @@ async fn apply_disk_ownership(
                 .await
                 .map(|m| m.len())
                 .unwrap_or(0) as i64;
-            let r = sqlx::query(
-                "INSERT INTO disk_live_session_owners (session_id, pilot_id, club_id, device_label, fix_count, log_bytes, migrated_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)
-                 ON CONFLICT (session_id) DO NOTHING",
-            )
+            let r = sqlx::query(INSERT_DISK_LIVE_SESSION_OWNER)
             .bind(&session_id)
             .bind(target_id)
             .bind(club_id)
