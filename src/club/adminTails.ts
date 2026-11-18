@@ -1,3 +1,4 @@
+import { ensureClubAdminOrRedirect } from "./adminGate";
 import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 
 const list = document.querySelector<HTMLUListElement>("#list")!;
@@ -44,6 +45,7 @@ form.addEventListener("submit", async (e) => {
 });
 
 void (async () => {
+  if (!(await ensureClubAdminOrRedirect())) return;
   mountAdminNav();
   try {
     await requireAdmin();

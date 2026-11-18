@@ -1,7 +1,7 @@
 import { mountLangSwitcher, t } from "../i18n/index";
 import { redirectToClubLogin } from "./safeNext";
 
-/** Set when `requireAdmin` sends the browser to club login (PR #20 admin pages should import this module). */
+/** Set when `requireAdmin` sends the browser to club login. Admin pages should `await ensureClubAdminOrRedirect()` from `./adminGate` first (PR #20 matrix/import/audit too). */
 export const CLUB_ADMIN_REDIRECT = "club-admin-redirect";
 
 const NAV_KEYS = [

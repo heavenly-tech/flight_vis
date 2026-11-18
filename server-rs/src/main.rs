@@ -174,11 +174,38 @@ async fn legacy_demo_api_redirect(uri: Uri) -> Redirect {
     ))
 }
 
+async fn club_admin_login_redirect(
+    state: &AppState,
+    headers: &HeaderMap,
+    path: &str,
+    query: Option<&str>,
+) -> Option<axum::response::Response> {
+    if !path.starts_with("/club-admin-") || !path.ends_with(".html") {
+        return None;
+    }
+    let db = state.club.as_ref()?;
+    let session = club::parse_session_cookie(headers);
+    let now = club::now_ms();
+    let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
+    if pilot.as_ref().is_some_and(|p| p.role == "admin") {
+        return None;
+    }
+    let raw_next = match query {
+        Some(q) if !q.is_empty() => format!("{path}?{q}"),
+        _ => path.to_string(),
+    };
+    let next = auth::safe_next(&raw_next);
+    Some(redirect_found(&format!("/club-login.html?next={}", url_encode(&next))).into_response())
+}
+
 async fn fallback(
     State(state): State<AppState>,
     uri: Uri,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, StatusCode> {
+    if let Some(resp) = club_admin_login_redirect(&state, &headers, uri.path(), uri.query()).await {
+        return Ok(resp);
+    }
     static_files::serve(&state.dist_dir, uri.path(), &headers).await
 }
 

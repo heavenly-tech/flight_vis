@@ -1,3 +1,4 @@
+import { ensureClubAdminOrRedirect } from "./adminGate";
 import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 
 const list = document.querySelector<HTMLDivElement>("#list")!;
@@ -58,6 +59,7 @@ async function refresh(): Promise<void> {
 }
 
 void (async () => {
+  if (!(await ensureClubAdminOrRedirect())) return;
   mountAdminNav();
   try {
     await requireAdmin();
