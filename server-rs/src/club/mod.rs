@@ -46,8 +46,10 @@ mod club_signup_tests;
 mod load_test;
 
 pub use auth::{hash_password, new_id};
+pub(crate) use auth::parse_session_cookie;
 pub use contract_routes::router as contract_router;
 pub use db::{now_ms, ClubDb};
 pub use routes::{patch_club_flight_by_id, post_club_flight_start, router};
 pub use visibility::FlightVisibility;
+pub(crate) use visibility::{PilotStatus, Viewer};
 pub use database::DbConnectError;

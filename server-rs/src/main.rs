@@ -622,7 +622,8 @@ pub(crate) fn build_router(state: AppState) -> Router {
         .merge(video::router())
         .merge(live::router().layer(DefaultBodyLimit::max(256 * 1024)))
         .fallback(fallback)
-        .with_state(state)
+        .with_state(state);
+    app
 }
 
 /// Container healthcheck. The runtime image is `FROM scratch`, so there is no

@@ -2,10 +2,7 @@
 
 use crate::{
     auth,
-    club::{
-        auth::parse_session_cookie,
-        visibility::{PilotStatus, Viewer},
-    },
+    club::{parse_session_cookie, PilotStatus, Viewer},
     store::{is_valid_slug, normalize_slug, Store},
     AppState,
 };

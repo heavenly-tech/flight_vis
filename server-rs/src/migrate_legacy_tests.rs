@@ -3,7 +3,7 @@
 use crate::{
     auth::Auth,
     build_router,
-    club::{auth, ClubDb, DbConnectError, FlightVisibility},
+    club::{hash_password, new_id, ClubDb, DbConnectError, FlightVisibility},
     demo_flight::{DEMO_FLIGHT_SLUG, LEGACY_DEMO_SLUG},
     migrate_legacy::{parse_cli_args, run_legacy_migrate, LegacyMigrateOpts},
     store::Store,
@@ -20,8 +20,8 @@ const FIXTURE_EMAIL: &str = "legacy-migrate-fixture@test.invalid";
 const LEGACY_EMAIL: &str = "legacy-owner-fixture@test.invalid";
 
 async fn seed_legacy_owner(db: &ClubDb, club_id: &str) -> (String, String, String) {
-    let hash = auth::hash_password("password12").unwrap();
-    let legacy_id = auth::new_id();
+    let hash = hash_password("password12").unwrap();
+    let legacy_id = new_id();
     let now = crate::club::now_ms();
     sqlx::query(
         "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
@@ -54,7 +54,10 @@ async fn seed_legacy_owner(db: &ClubDb, club_id: &str) -> (String, String, Strin
         )
         .await
         .unwrap();
-    let (_row, token) = db.create_flight_share(&legacy_id, &fid).await.unwrap();
+    let (_row, token) = db
+        .create_flight_share(&legacy_id, &fid)
+        .await
+        .expect("create_flight_share");
     (legacy_id, fid, token)
 }
 
@@ -161,7 +164,7 @@ async fn migrate_legacy_dry_run_and_apply_idempotent() {
         StatusCode::PERMANENT_REDIRECT
     );
 
-    let mut app = build_router(test_router(data_dir.path(), db, "secret"));
+    let mut app = build_router(test_router(data_dir.path(), db.clone(), "secret"));
     let login = Request::builder()
         .method("POST")
         .uri("/login")
@@ -201,8 +204,8 @@ async fn seed_second_club_pilot_with_flight(db: &ClubDb, slug: &str) -> (String,
     .execute(&db.pool)
     .await
     .unwrap();
-    let hash = auth::hash_password("password12").unwrap();
-    let pilot_id = auth::new_id();
+    let hash = hash_password("password12").unwrap();
+    let pilot_id = new_id();
     sqlx::query(
         "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
          VALUES ($1, $2, 'Other', $3, '', 'approved', 'pilot', $4, $5)",
@@ -256,7 +259,7 @@ async fn migrate_legacy_does_not_touch_other_club_rows() {
         .unwrap();
 
     let (_legacy_id, cas_flight_id, _) = seed_legacy_owner(&db, &club_id).await;
-    let slug_b = format!("other-club-{}", &auth::new_id()[..8]);
+    let slug_b = format!("other-club-{}", &new_id()[..8]);
     let (club_b, other_pilot, other_flight) =
         seed_second_club_pilot_with_flight(&db, &slug_b).await;
 
