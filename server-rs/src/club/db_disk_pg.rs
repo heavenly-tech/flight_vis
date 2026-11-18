@@ -55,6 +55,7 @@ impl ClubDb {
         self.list_disk_public_slugs_for_owner(pilot_id).await
     }
 
+    #[allow(dead_code)]
     pub async fn upsert_disk_flight_owner(
         &self,
         public_slug: &str,
@@ -74,6 +75,7 @@ impl ClubDb {
         Ok(r.rows_affected() > 0)
     }
 
+    #[allow(dead_code)]
     pub async fn count_disk_flight_owners_for_owner(&self, owner_id: &str) -> i64 {
         let sql = format!("SELECT COUNT(*) FROM disk_flight_owners WHERE {OWNER_COL} = $1");
         sqlx::query_scalar(&sql)
@@ -83,10 +85,12 @@ impl ClubDb {
             .unwrap_or(0)
     }
 
+    #[allow(dead_code)]
     pub async fn count_disk_flight_owners_for_pilot(&self, pilot_id: &str) -> i64 {
         self.count_disk_flight_owners_for_owner(pilot_id).await
     }
 
+    #[allow(dead_code)]
     pub async fn count_unowned_disk_mappings(&self, storage_slugs: &[String]) -> i64 {
         if storage_slugs.is_empty() {
             return 0;
@@ -101,6 +105,7 @@ impl ClubDb {
         .unwrap_or(0)
     }
 
+    #[allow(dead_code)]
     pub async fn upsert_live_session_owner(
         &self,
         session_id: &str,

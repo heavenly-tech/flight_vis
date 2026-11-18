@@ -54,6 +54,7 @@ impl MigrateCounts {
 pub enum MigrateError {
     Usage(String),
     Db(String),
+    #[allow(dead_code)]
     Store(String),
     ClubNotFound(String),
     TargetExistsOnOtherClub,
@@ -158,7 +159,7 @@ pub fn parse_cli_args(args: &[String]) -> Result<LegacyMigrateOpts, MigrateError
             "at least one of --source-pilot-id or --source-email is required (or set FLIGHT_LEGACY_MIGRATE_SOURCE_EMAIL)".into(),
         ));
     }
-    let dry_run = if apply { false } else { true };
+    let dry_run = !apply;
     Ok(LegacyMigrateOpts {
         email: email.trim().to_string(),
         club_slug: club.trim().to_string(),
@@ -513,7 +514,7 @@ async fn apply_disk_ownership(
 
 fn merge_counts(base: &mut MigrateCounts, extra: &MigrateCounts) {
     for (k, v) in &extra.rows {
-        *base.rows.entry(k.clone()).or_insert(0) += v;
+        *base.rows.entry(k.to_string()).or_insert(0) += v;
     }
 }
 
@@ -660,6 +661,7 @@ async fn apply_row_updates(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn gather_counts(
     pool: &PgPool,
     data_dir: &Path,

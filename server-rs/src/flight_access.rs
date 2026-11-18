@@ -54,6 +54,7 @@ pub async fn storage_slug_for(
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub async fn require_flight_write(
     state: &AppState,
     headers: &HeaderMap,
@@ -78,6 +79,7 @@ pub async fn require_flight_write(
     }
 }
 
+#[allow(clippy::result_large_err)]
 pub async fn list_library_flights(
     state: &AppState,
     store: &Store,
@@ -125,5 +127,3 @@ pub async fn list_library_flights(
     }
     Ok(out)
 }
-
-pub(crate) use storage_slug_for as resolve_storage_slug;
