@@ -1,0 +1,7 @@
+{
+  "method": "POST",
+  "path": "/api/auth/magic/send",
+  "body": { "email": "pilot@example.test" },
+  "expectStatus": 200,
+  "expectBodyKeys": ["ok"]
+}

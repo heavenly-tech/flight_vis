@@ -12,7 +12,8 @@ import { cssForUnit } from "./viz/colors";
 import { nextChromeTap, shouldToggleChrome, type ChromeTap } from "./viz/globeChrome";
 import { getLocalFlight, isLocalSlug } from "./live/localFlights";
 import { ACC_DIM_M, createLiveRuntime, parseLivePath } from "./live/runtime";
-import { createFlightViewer, type PathMode } from "./viz/viewer";
+import { createE2eFlightViewer } from "./viz/e2eViewerStub";
+import type { FlightViewer, PathMode } from "./viz/viewer";
 
 const SAMPLE_URL = `${import.meta.env.BASE_URL}samples/vuelo5.gpx`;
 const HANDLE = 10;
@@ -331,12 +332,19 @@ function hitHandle(x: number, width: number): "start" | "end" | null {
 
 async function boot(): Promise<void> {
   const liveRouteEarly = parseLivePath(window.location.pathname);
-  setStatus("Preparing 3D globe…");
   if (liveRouteEarly.sessionId) {
     nameEl.textContent = "Live session";
+    setStatus(null);
+  } else {
+    setStatus("Preparing 3D globe…");
   }
-  const viewer = await createFlightViewer(document.getElementById("cesiumContainer")!);
-  if (liveRouteEarly.sessionId) {
+  const skipGlobe = import.meta.env.VITE_E2E_SKIP_GLOBE === "1";
+  const viewer: FlightViewer = skipGlobe
+    ? createE2eFlightViewer()
+    : await import("./viz/viewer").then((m) =>
+        m.createFlightViewer(document.getElementById("cesiumContainer")!),
+      );
+  if (!liveRouteEarly.sessionId) {
     setStatus(null);
   }
   (window as unknown as { __fv: typeof viewer }).__fv = viewer;

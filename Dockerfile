@@ -11,13 +11,19 @@ RUN npm run build
 # cargo-chef keeps dependency compilation cached across rebuilds.
 FROM rust:1.98.0-alpine AS chef
 WORKDIR /app/server-rs
-RUN apk add --no-cache musl-dev && cargo install cargo-chef --locked
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig && cargo install cargo-chef --locked
+ENV OPENSSL_STATIC=1 \
+    OPENSSL_LIB_DIR=/usr/lib \
+    OPENSSL_INCLUDE_DIR=/usr/include
 COPY server-rs/ ./
 RUN cargo chef prepare --recipe-path /recipe.json
 
 FROM rust:1.98.0-alpine AS backend
 WORKDIR /app/server-rs
-RUN apk add --no-cache musl-dev
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig
+ENV OPENSSL_STATIC=1 \
+    OPENSSL_LIB_DIR=/usr/lib \
+    OPENSSL_INCLUDE_DIR=/usr/include
 COPY --from=chef /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
 COPY --from=chef /recipe.json /recipe.json
 RUN cargo chef cook --release --recipe-path /recipe.json
@@ -46,11 +52,11 @@ RUN set -eux; \
     mkdir -p /out/etc/ssl; \
     cp -a /etc/ssl/certs /out/etc/ssl/; \
     cp -a /etc/ssl/cert.pem /out/etc/ssl/; \
-    printf 'root:x:0:0:root:/root:/sbin/nologin\napp:x:10001:10001:app:/home/app:/sbin/nologin\n' > /out/etc/passwd; \
-    printf 'root:x:0:\napp:x:10001:\n' > /out/etc/group; \
+    printf 'root:x:0:0:root:/root:/sbin/nologin\nnobody:x:65534:65534:nobody:/:/sbin/nologin\n' > /out/etc/passwd; \
+    printf 'root:x:0:\nnobody:x:65534:\n' > /out/etc/group; \
     chmod 1777 /out/tmp; \
     touch /out/data/.keep; \
-    chown -R 10001:10001 /out/data
+    chown -R 65534:65534 /out/data
 
 # Runtime: scratch. Static musl binary + frontend bundle + CA certs, ffmpeg and
 # the exact shared-library closure it needs. No shell, package manager or
@@ -61,16 +67,18 @@ ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ENV PORT=8080
 ENV FLIGHT_DATA=/data
 ENV FLIGHT_VIS_DIST=/app/dist
+ENV FLIGHT_I18N_LOCALES_DIR=/app/dist/locales
 COPY --from=runtime-deps /out/bin /usr/bin
 COPY --from=runtime-deps /out/lib /lib
 COPY --from=runtime-deps /out/usr /usr
 COPY --from=runtime-deps /out/etc /etc
-COPY --from=runtime-deps --chown=10001:10001 /out/data /data
+COPY --from=runtime-deps --chown=65534:65534 /out/data /data
 COPY --from=runtime-deps --chmod=1777 /out/tmp /tmp
 COPY --from=frontend /app/dist ./dist
+COPY --chown=65534:65534 locales/manifest.json locales/es.json locales/en.json ./dist/locales/
 COPY --from=backend /app/server-rs/target/release/flight_vis ./flight_vis
 EXPOSE 8080
-USER 10001:10001
+USER 65534:65534
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD ["/app/flight_vis", "healthcheck"]
 CMD ["/app/flight_vis"]

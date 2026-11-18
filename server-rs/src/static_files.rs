@@ -24,6 +24,7 @@ fn mime_for(ext: &str) -> &'static str {
         "wasm" => "application/wasm",
         "woff" => "font/woff",
         "woff2" => "font/woff2",
+        "apk" => "application/vnd.android.package-archive",
         _ => "application/octet-stream",
     }
 }
@@ -114,6 +115,8 @@ fn sidecar_path(base: &Path, encoding: &str) -> PathBuf {
     PathBuf::from(format!("{}{}", base.to_string_lossy(), suffix))
 }
 
+pub const HTML_CSP: &str = "default-src 'self'; img-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+
 fn cache_for(relative: &str) -> &'static str {
     if is_geoid_asset(relative) {
         "public, max-age=31536000"
@@ -187,6 +190,9 @@ async fn file_response(opts: FileResponseOpts<'_>) -> Result<axum::response::Res
         .header(header::CONTENT_TYPE, opts.content_type)
         .header(header::CACHE_CONTROL, opts.cache)
         .header(header::ETAG, opts.etag);
+    if opts.content_type.starts_with("text/html") {
+        builder = builder.header(header::CONTENT_SECURITY_POLICY, HTML_CSP);
+    }
     if let Some(len) = content_length {
         builder = builder.header(header::CONTENT_LENGTH, len.to_string());
     }

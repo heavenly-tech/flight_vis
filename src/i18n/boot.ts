@@ -1,0 +1,1 @@
+export { bootI18n, applyI18nDocument, t, apiErrorMessage, formatDate, getLocale, setLocale } from "./index";

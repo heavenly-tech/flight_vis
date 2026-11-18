@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Live E2E fixture</title>
+  </head>
+  <body>
+    <div id="live-status">idle</div>
+    <div id="live-count">0</div>
+    <script type="module">
+      import { connectLiveStream } from "/src/live/sseClient.ts";
+
+      const params = new URLSearchParams(location.search);
+      const sessionId = params.get("id") ?? "demo-session";
+      const statusEl = document.getElementById("live-status");
+      const countEl = document.getElementById("live-count");
+      if (!statusEl || !countEl) throw new Error("live-status elements missing");
+      let fixCount = 0;
+      statusEl.textContent = "reconnecting";
+      connectLiveStream(sessionId, {
+        onFix: () => {
+          fixCount += 1;
+          countEl.textContent = String(fixCount);
+          statusEl.textContent = `fixes:${fixCount}`;
+        },
+        onEnd: () => {
+          statusEl.textContent = "ended";
+        },
+        onError: () => {
+          statusEl.textContent = "error";
+        },
+      });
+    </script>
+  </body>
+</html>

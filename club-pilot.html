@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="es-CL">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="pilot.title">flight_vis</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main { max-width: 46rem; margin: 1.5rem auto; padding: 0 1rem 3rem; }
+      section { border: 1px solid rgba(255,255,255,.12); border-radius: 14px; padding: 1rem 1.1rem; margin-top: 1rem; background: #10151d; }
+      input, select, button { font: inherit; }
+      .row { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+      .token-box { word-break: break-all; font-family: monospace; font-size: .85rem; padding: .6rem; background: #0b0f16; border-radius: 8px; margin: .5rem 0; }
+      #qr { max-width: 180px; background: #fff; padding: 8px; border-radius: 8px; }
+      #lang-slot { font-size: .9rem; margin-bottom: .5rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div id="lang-slot"></div>
+      <h1 data-i18n="pilot.title"></h1>
+      <p id="who" class="muted" data-i18n="pilot.checking"></p>
+      <p id="profile" class="muted"></p>
+      <button type="button" id="btn-logout" data-i18n="pilot.logOut"></button>
+      <p><a href="/app.html" data-i18n="pilot.downloadApp"></a></p>
+      <section>
+        <h2 style="margin:0;font-size:1rem" data-i18n="pilot.deviceToken"></h2>
+        <p class="muted" data-i18n="pilot.deviceTokenHelp"></p>
+        <div class="row">
+          <input id="dev-label" data-i18n-placeholder="pilot.phoneLabel" />
+          <button type="button" id="btn-new-device" data-i18n="pilot.createDevice"></button>
+        </div>
+        <div id="token-reveal" hidden>
+          <img id="qr" alt="qr" width="180" height="180" />
+        </div>
+        <ul id="devices"></ul>
+      </section>
+      <section>
+        <h2 style="margin:0;font-size:1rem" data-i18n="pilot.myFlights"></h2>
+        <ul id="flights"></ul>
+      </section>
+      <p><a href="/club-map.html" data-i18n="nav.clubMap"></a> · <a href="/" data-i18n="nav.globe"></a></p>
+    </main>
+    <script type="module" src="/src/club/pilot.ts"></script>
+  </body>
+</html>

@@ -1,6 +1,8 @@
 mod auth;
+mod club;
 mod device_auth;
 mod flights;
+mod i18n;
 mod live;
 mod static_files;
 mod store;
@@ -34,8 +36,14 @@ pub(crate) struct AppState {
     pub(crate) device_auth: DeviceAuth,
     pub(crate) live: Arc<LiveEngine>,
     pub(crate) store: Store,
+    pub(crate) club: Option<club::ClubDb>,
     pub(crate) video_queue: tokio::sync::mpsc::Sender<video::VideoJob>,
     pub(crate) login_throttle: LoginThrottle,
+    pub(crate) device_register_throttle: LoginThrottle,
+    pub(crate) share_lookup_throttle: LoginThrottle,
+    pub(crate) mailer: club::mail::Mailer,
+    pub(crate) webauthn: Option<club::webauthn::WebauthnState>,
+    pub(crate) sse_limiter: std::sync::Arc<club::sse_limit::SseLimiter>,
 }
 
 fn app_state(
@@ -53,8 +61,14 @@ fn app_state(
             device_auth,
             live,
             store,
+            club: None,
             video_queue,
             login_throttle: LoginThrottle::default(),
+            device_register_throttle: LoginThrottle::default(),
+            share_lookup_throttle: LoginThrottle::default(),
+            mailer: club::mail::Mailer::from_env(club::mail::MailOutbox::default()),
+            webauthn: club::webauthn::WebauthnState::from_env(),
+            sse_limiter: std::sync::Arc::new(club::sse_limit::SseLimiter::default()),
         },
         queue_rx,
     )
@@ -287,6 +301,7 @@ fn login_fields(headers: &HeaderMap, body: &[u8]) -> LoginFields {
 /// peer is trusted, `X-Real-IP` wins, then the last `X-Forwarded-For` entry
 /// (the one appended by our own proxy).
 pub(crate) const LOGIN_MAX_ATTEMPTS: usize = 8;
+pub(crate) const SHARE_LOOKUP_MAX_ATTEMPTS: usize = 60;
 const LOGIN_WINDOW_SECS: u64 = 60;
 
 #[derive(Clone, Default)]
@@ -295,6 +310,25 @@ pub(crate) struct LoginThrottle {
 }
 
 impl LoginThrottle {
+    pub(crate) fn allow_up_to(&self, ip: &str, now: u64, max_attempts: usize) -> bool {
+        let mut hits = self.hits.lock().unwrap_or_else(|err| err.into_inner());
+        let cutoff = now.saturating_sub(LOGIN_WINDOW_SECS);
+        let allowed = {
+            let entry = hits.entry(ip.to_string()).or_default();
+            entry.retain(|stamp| *stamp > cutoff);
+            if entry.len() >= max_attempts {
+                false
+            } else {
+                entry.push(now);
+                true
+            }
+        };
+        if hits.len() > 4096 {
+            hits.retain(|_, times| times.last().is_some_and(|stamp| *stamp > cutoff));
+        }
+        allowed
+    }
+
     fn allow(&self, ip: &str, now: u64) -> bool {
         let mut hits = self.hits.lock().unwrap_or_else(|err| err.into_inner());
         let cutoff = now.saturating_sub(LOGIN_WINDOW_SECS);
@@ -541,13 +575,16 @@ fn require_auth(
 }
 
 fn build_router(state: AppState) -> Router {
-    Router::new()
+    let mut app = Router::new()
         .route("/api/health", get(health))
         .route("/api/auth/me", get(auth_me))
         .route("/login", get(login_page).post(login_post))
         .route("/login.html", get(login_html_redirect))
-        .route("/logout", get(logout).post(logout))
-        .merge(flights::router().layer(DefaultBodyLimit::max(64 * 1024 * 1024)))
+        .route("/logout", get(logout).post(logout));
+    if state.club.is_some() {
+        app = app.merge(club::router()).merge(club::contract_router());
+    }
+    app.merge(flights::router().layer(DefaultBodyLimit::max(64 * 1024 * 1024)))
         .merge(video::router())
         .merge(live::router().layer(DefaultBodyLimit::max(256 * 1024)))
         .fallback(fallback)
@@ -558,6 +595,7 @@ fn build_router(state: AppState) -> Router {
 /// wget/curl/busybox to probe `/api/health`; the binary does it itself over
 /// loopback, honouring the same `PORT` as the server.
 const HEALTHCHECK_ARG: &str = "healthcheck";
+const CHECK_I18N_ARG: &str = "check-i18n";
 const HEALTHCHECK_HOST: IpAddr = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
 const HEALTHCHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -634,11 +672,45 @@ fn run_healthcheck() -> bool {
     healthcheck_at(SocketAddr::new(HEALTHCHECK_HOST, port_from_env()))
 }
 
+fn run_check_i18n() -> bool {
+    let config = config_from_env();
+    let dir = i18n::Catalogs::resolve_dir(&config.dist_dir);
+    match i18n::Catalogs::load_from_dir(&dir) {
+        Ok(cat) => {
+            if cat.canonical != "es" {
+                eprintln!("check-i18n: expected canonical locale es");
+                return false;
+            }
+            let has_es_cl = cat
+                .locale_labels()
+                .any(|(id, _, bcp)| id == "es" && bcp == "es-CL");
+            if !has_es_cl {
+                eprintln!("check-i18n: es locale must be es-CL");
+                return false;
+            }
+            let sample = cat.t("es", "club.login.title", &[]);
+            if sample == "club.login.title" || sample.is_empty() {
+                eprintln!("check-i18n: missing Spanish catalog strings");
+                return false;
+            }
+            true
+        }
+        Err(error) => {
+            eprintln!("check-i18n: {error}");
+            false
+        }
+    }
+}
+
 fn main() {
     // Any other argument (or none) still starts the server, as before.
     // `args_os` so a non-UTF-8 argument cannot panic the process.
-    if std::env::args_os().nth(1).as_deref() == Some(std::ffi::OsStr::new(HEALTHCHECK_ARG)) {
+    let arg = std::env::args_os().nth(1);
+    if arg.as_deref() == Some(std::ffi::OsStr::new(HEALTHCHECK_ARG)) {
         std::process::exit(if run_healthcheck() { 0 } else { 1 });
+    }
+    if arg.as_deref() == Some(std::ffi::OsStr::new(CHECK_I18N_ARG)) {
+        std::process::exit(if run_check_i18n() { 0 } else { 1 });
     }
     run_server();
 }
@@ -646,6 +718,13 @@ fn main() {
 #[tokio::main]
 async fn run_server() {
     let config = config_from_env();
+    match i18n::init_global(&i18n::Catalogs::resolve_dir(&config.dist_dir)) {
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("error: i18n catalogs: {error}");
+            std::process::exit(1);
+        }
+    }
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let live = Arc::new(LiveEngine::new(&config.data_dir));
     if let Err(error) = live.load_from_disk().await {
@@ -659,7 +738,21 @@ async fn run_server() {
             live_task.tick_idle_and_prune().await;
         }
     });
-    let (state, queue_rx) = app_state(
+    let club = match club::ClubDb::connect().await {
+        Ok(db) => {
+            if std::env::var("FLIGHT_CLUB_SEED_DEMO").as_deref() == Ok("1") {
+                if let Err(error) = db.seed_demo_if_empty().await {
+                    eprintln!("warn: demo seed failed: {error}");
+                }
+            }
+            Some(db)
+        }
+        Err(error) => {
+            eprintln!("warn: club database unavailable: {error}");
+            None
+        }
+    };
+    let mut state_bundle = app_state(
         config.dist_dir,
         Auth::from_env(),
         DeviceAuth::from_env().unwrap_or_else(|error| {
@@ -669,6 +762,18 @@ async fn run_server() {
         live,
         Store::new(&config.data_dir),
     );
+    state_bundle.0.club = club.clone();
+    let (state, queue_rx) = state_bundle;
+    if let Some(db) = club.clone() {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                let now = club::now_ms();
+                let _ = db.auto_end_idle(10 * 60 * 1000, now).await;
+            }
+        });
+    }
     state
         .store
         .seed(

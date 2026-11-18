@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="es-CL">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="club.map.title">flight_vis</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>main{padding:1rem} ul{list-style:none;padding:0} li{padding:.35rem 0;border-bottom:1px solid rgba(255,255,255,.08)} #lang-slot{font-size:.9rem;margin-bottom:.5rem}</style>
+  </head>
+  <body>
+    <main>
+      <div id="lang-slot"></div>
+      <h1 data-i18n="club.map.title"></h1>
+      <p class="muted" data-i18n="club.map.membersOnly"></p>
+      <ul id="list"></ul>
+      <p class="muted"><a href="/public-map.html" data-i18n="club.map.publicLink"></a></p>
+    </main>
+    <script type="module">
+      import { startClubPage } from "/src/club/i18nPage.ts";
+      import { t } from "/src/i18n/boot.ts";
+      await startClubPage({ persistUser: true });
+      const list = document.getElementById("list");
+      const res = await fetch("/api/club/map", { credentials: "same-origin" });
+      if (!res.ok) {
+        list.innerHTML = `<li>${t("club.map.signInApproved")}</li>`;
+      } else {
+        const data = await res.json();
+        for (const row of data.aircraft ?? []) {
+          const li = document.createElement("li");
+          li.textContent = `${row.tail} · ${row.pilotName ?? "—"}`;
+          list.appendChild(li);
+        }
+      }
+    </script>
+  </body>
+</html>

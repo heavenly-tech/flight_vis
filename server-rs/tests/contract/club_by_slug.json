@@ -1,0 +1,6 @@
+{
+  "method": "GET",
+  "pathTemplate": "/api/clubs/{slug}",
+  "expectStatus": 200,
+  "expectBodyKeys": ["club"]
+}

@@ -1,0 +1,1 @@
+ALTER TABLE display_sessions ADD COLUMN IF NOT EXISTS expires_at BIGINT;

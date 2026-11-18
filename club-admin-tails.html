@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="es-CL">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="nav.tails">flight_vis</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main { max-width: 44rem; margin: 1rem auto; padding: 0 1rem 2rem; }
+      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
+      input, button, select { font: inherit; padding: .45rem .6rem; }
+      li { margin: .35rem 0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Tails</h1>
+      <div id="admin-nav"></div>
+      <form id="form" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem">
+        <input name="tail" placeholder="N123AB" required />
+        <input name="type" placeholder="C152" required />
+        <button type="submit">Upsert tail</button>
+      </form>
+      <ul id="list"></ul>
+    </main>
+    <script type="module" src="/src/club/adminTails.ts"></script>
+  </body>
+</html>

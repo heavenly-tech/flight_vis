@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="es-CL">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="nav.types">flight_vis</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main { max-width: 40rem; margin: 1rem auto; padding: 0 1rem 2rem; }
+      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
+      input, button { font: inherit; padding: .45rem .6rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Aircraft types</h1>
+      <p id="who" class="muted"></p>
+      <div id="admin-nav"></div>
+      <form id="form" class="row" style="display:flex;gap:.5rem;flex-wrap:wrap">
+        <input id="code" placeholder="e.g. C152" required />
+        <button type="submit">Add / update</button>
+      </form>
+      <ul id="list"></ul>
+    </main>
+    <script type="module" src="/src/club/adminTypes.ts"></script>
+  </body>
+</html>

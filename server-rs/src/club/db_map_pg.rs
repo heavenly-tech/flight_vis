@@ -1,0 +1,412 @@
+//! Club-scoped map views and flight visibility (Postgres).
+
+use crate::club::{
+    db::{ClubDb, DbError, FlightRow},
+    dem::DemIndex,
+    map::{dedupe_by_tail, DeviceFix, TailLivePosition},
+    map_filter::{
+        apply_public_cap, public_track_passes, visibility_is_public, AltitudeMode, MapViewFilter,
+    },
+    visibility::{
+        can_view_flight, includes_in_club_map, includes_in_public_map, show_pilot_name,
+        FlightVisibility, PilotStatus, Viewer,
+    },
+};
+use sqlx::Row;
+use std::path::PathBuf;
+
+fn club_data_dir() -> PathBuf {
+    std::env::var("FLIGHT_DATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("data"))
+}
+
+impl ClubDb {
+    pub fn dem_index(&self) -> DemIndex {
+        DemIndex::new(&club_data_dir())
+    }
+
+    pub async fn pilot_is_approved_member(&self, pilot_id: &str, club_id: &str) -> bool {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM club_memberships
+             WHERE pilot_id = $1 AND club_id = $2 AND status = 'approved'",
+        )
+        .bind(pilot_id)
+        .bind(club_id)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(0);
+        n > 0
+    }
+
+    pub async fn flight_aircraft_club_id(&self, flight_id: &str) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT a.club_id FROM flights f JOIN aircraft a ON a.id = f.aircraft_id WHERE f.id = $1",
+        )
+        .bind(flight_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+    }
+
+    pub async fn club_map_filter(&self, club_id: &str) -> MapViewFilter {
+        let row = sqlx::query(
+            "SELECT COALESCE(latitude, 0), COALESCE(longitude, 0), public_radius_km,
+                    show_public_tracks, public_flights_cap, public_altitude_mode, public_altitude_min_ft
+             FROM clubs WHERE id = $1",
+        )
+        .bind(club_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten();
+
+        row.map(|r| MapViewFilter {
+            center_lat: r.try_get(0).unwrap_or(0.0),
+            center_lon: r.try_get(1).unwrap_or(0.0),
+            radius_km: r.try_get(2).unwrap_or(100.0),
+            show_public_tracks: r.try_get::<i64, _>(3).unwrap_or(1) != 0,
+            cap: r.try_get::<i64, _>(4).unwrap_or(50) as usize,
+            altitude_mode: AltitudeMode::parse(
+                &r.try_get::<String, _>(5)
+                    .unwrap_or_else(|_| "agl".to_string()),
+            ),
+            altitude_min_ft: r.try_get(6).unwrap_or(300.0),
+            club_id: club_id.to_string(),
+        })
+        .unwrap_or_else(|| MapViewFilter {
+            center_lat: 0.0,
+            center_lon: 0.0,
+            radius_km: 100.0,
+            show_public_tracks: true,
+            cap: 50,
+            altitude_mode: AltitudeMode::Agl,
+            altitude_min_ft: 300.0,
+            club_id: club_id.to_string(),
+        })
+    }
+
+    pub async fn user_map_filter(&self, pilot_id: &str, club_id: &str) -> MapViewFilter {
+        let mut base = self.club_map_filter(club_id).await;
+        let row = sqlx::query(
+            "SELECT p.public_radius_km, p.show_public_tracks, p.public_flights_cap,
+                    p.public_altitude_mode, p.public_altitude_min_ft,
+                    COALESCE(p.last_latitude, c.latitude, 0),
+                    COALESCE(p.last_longitude, c.longitude, 0),
+                    COALESCE(c.latitude, 0), COALESCE(c.longitude, 0)
+             FROM pilots p
+             JOIN clubs c ON c.id = $2
+             WHERE p.id = $1",
+        )
+        .bind(pilot_id)
+        .bind(club_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten();
+
+        if let Some(r) = row {
+            base.radius_km = r.try_get(0).unwrap_or(base.radius_km);
+            base.show_public_tracks = r.try_get::<i64, _>(1).unwrap_or(1) != 0;
+            base.cap = r.try_get::<i64, _>(2).unwrap_or(base.cap as i64) as usize;
+            base.altitude_mode = AltitudeMode::parse(
+                &r.try_get::<String, _>(3)
+                    .unwrap_or_else(|_| "agl".to_string()),
+            );
+            base.altitude_min_ft = r.try_get(4).unwrap_or(base.altitude_min_ft);
+            let lat: f64 = r.try_get(5).unwrap_or(0.0);
+            let lon: f64 = r.try_get(6).unwrap_or(0.0);
+            let club_lat: f64 = r.try_get(7).unwrap_or(0.0);
+            let club_lon: f64 = r.try_get(8).unwrap_or(0.0);
+            if lat != 0.0 || lon != 0.0 {
+                base.center_lat = lat;
+                base.center_lon = lon;
+            } else if club_lat != 0.0 || club_lon != 0.0 {
+                base.center_lat = club_lat;
+                base.center_lon = club_lon;
+            }
+        }
+        base
+    }
+
+    async fn apply_public_view_policy(
+        &self,
+        rows: Vec<DeviceFix>,
+        viewer: &Viewer,
+        viewing_club_id: &str,
+        filter: &MapViewFilter,
+        dem: &DemIndex,
+    ) -> Vec<DeviceFix> {
+        let mut out = Vec::new();
+        for r in rows {
+            let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
+            if self
+                .pilot_is_approved_member(&r.pilot_id, viewing_club_id)
+                .await
+            {
+                let keep = match viewer {
+                    Viewer::Pilot {
+                        status: PilotStatus::Approved,
+                        ..
+                    } => {
+                        if r.club_id != viewing_club_id && vis != FlightVisibility::Public {
+                            false
+                        } else {
+                            includes_in_club_map(viewer, &r.pilot_id, vis)
+                                && can_view_flight(viewer, &r.pilot_id, vis)
+                        }
+                    }
+                    _ => false,
+                };
+                if keep {
+                    out.push(r);
+                }
+                continue;
+            }
+            if !filter.show_public_tracks || !visibility_is_public(&r.visibility) {
+                continue;
+            }
+            if public_track_passes(&r, filter, dem) {
+                out.push(r);
+            }
+        }
+        out
+    }
+
+    #[allow(dead_code)]
+    pub async fn viewing_club_id(&self, viewer: &Viewer) -> Result<String, DbError> {
+        match viewer {
+            Viewer::Pilot {
+                id,
+                status: PilotStatus::Approved,
+                ..
+            } => self.pilot_club_id(id).await,
+            Viewer::Anonymous
+            | Viewer::Pilot {
+                status: PilotStatus::Pending,
+                ..
+            } => self.default_club_id().await,
+        }
+    }
+
+    pub async fn flight_visible_to_scoped(
+        &self,
+        viewer: &Viewer,
+        flight_id: &str,
+    ) -> Option<FlightRow> {
+        let flight = self.get_flight(flight_id).await?;
+        let vis = FlightVisibility::parse(&flight.visibility)?;
+        if !can_view_flight(viewer, &flight.pilot_id, vis) {
+            return None;
+        }
+        let club_id = self.flight_aircraft_club_id(flight_id).await?;
+        let viewing_club = match viewer {
+            Viewer::Pilot {
+                id,
+                status: PilotStatus::Approved,
+                ..
+            } => self.pilot_club_id(id).await.unwrap_or(club_id.clone()),
+            Viewer::Anonymous | Viewer::Pilot { .. } => {
+                self.default_club_id().await.unwrap_or(club_id.clone())
+            }
+        };
+
+        if self
+            .pilot_is_approved_member(&flight.pilot_id, &viewing_club)
+            .await
+        {
+            if club_id != viewing_club && vis != FlightVisibility::Public {
+                return None;
+            }
+            if vis == FlightVisibility::Private {
+                let viewer_id = match viewer {
+                    Viewer::Pilot { id, .. } => id.as_str(),
+                    _ => "",
+                };
+                if flight.pilot_id != viewer_id
+                    && self.require_club_admin(viewer_id, &club_id).await.is_err()
+                {
+                    return None;
+                }
+            }
+            return Some(flight);
+        }
+
+        if vis != FlightVisibility::Public {
+            return None;
+        }
+        let filter = match viewer {
+            Viewer::Pilot {
+                id,
+                status: PilotStatus::Approved,
+                ..
+            } => self.user_map_filter(id, &club_id).await,
+            Viewer::Pilot { .. } | Viewer::Anonymous => self.club_map_filter(&club_id).await,
+        };
+        if !filter.show_public_tracks {
+            return None;
+        }
+        let dem = self.dem_index();
+        let row: Option<DeviceFix> = sqlx::query(
+            "SELECT f.id, a.tail, f.pilot_id, p.name, f.visibility, a.club_id,
+                    fx.t_ms, fx.lat, fx.lon, fx.alt, fx.alt_ref, fx.speed, fx.course, fx.accuracy
+             FROM flights f
+             JOIN aircraft a ON a.id = f.aircraft_id
+             JOIN pilots p ON p.id = f.pilot_id
+             JOIN fixes fx ON fx.flight_id = f.id
+             WHERE f.id = $1
+             ORDER BY fx.t_ms DESC LIMIT 1",
+        )
+        .bind(flight_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|r| {
+            Some(DeviceFix {
+                flight_id: flight_id.to_string(),
+                tail: r.try_get(1).ok()?,
+                pilot_id: r.try_get(2).ok()?,
+                pilot_name: r.try_get(3).ok()?,
+                visibility: r.try_get(4).ok()?,
+                club_id: r.try_get(5).ok()?,
+                fix: crate::live::LiveFix {
+                    t: r.try_get(6).ok()?,
+                    lat: r.try_get(7).ok()?,
+                    lon: r.try_get(8).ok()?,
+                    alt: r.try_get(9).ok()?,
+                    alt_ref: r.try_get(10).ok(),
+                    speed: r.try_get(11).ok()?,
+                    course: r.try_get(12).ok()?,
+                    accuracy: r.try_get(13).ok()?,
+                },
+            })
+        });
+        let row = row?;
+        if public_track_passes(&row, &filter, &dem) {
+            Some(flight)
+        } else {
+            None
+        }
+    }
+
+    pub async fn club_map_for_viewer_scoped(&self, viewer: &Viewer) -> Vec<TailLivePosition> {
+        let (viewing_club, filter) = match viewer {
+            Viewer::Pilot {
+                id,
+                status: PilotStatus::Approved,
+                ..
+            } => {
+                let club = self.pilot_club_id(id).await.unwrap_or_default();
+                let f = self.user_map_filter(id, &club).await;
+                (club, f)
+            }
+            Viewer::Anonymous
+            | Viewer::Pilot {
+                status: PilotStatus::Pending,
+                ..
+            } => {
+                let club = self.default_club_id().await.unwrap_or_default();
+                let f = self.club_map_filter(&club).await;
+                (club, f)
+            }
+        };
+        let dem = self.dem_index();
+        let rows = self.latest_device_fixes().await;
+        let filtered = self
+            .apply_public_view_policy(rows, viewer, &viewing_club, &filter, &dem)
+            .await;
+        let mut positions = dedupe_by_tail(filtered);
+        for pos in &mut positions {
+            if let Some(f) = self.get_flight(&pos.flight_id).await {
+                if show_pilot_name(viewer, &f.pilot_id, f.show_pilot_name_public) {
+                    pos.pilot_name = Some(f.pilot_name);
+                } else {
+                    pos.pilot_name = None;
+                }
+            }
+        }
+        apply_public_cap(
+            positions,
+            filter.cap,
+            (filter.center_lat, filter.center_lon),
+        )
+    }
+
+    pub async fn public_map_scoped(&self) -> Vec<TailLivePosition> {
+        let club = self.default_club_id().await.unwrap_or_default();
+        let filter = self.club_map_filter(&club).await;
+        let dem = self.dem_index();
+        let rows = self.latest_device_fixes().await;
+        let filtered: Vec<DeviceFix> = {
+            let mut out = Vec::new();
+            for r in rows {
+                let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
+                if self.pilot_is_approved_member(&r.pilot_id, &club).await {
+                    if includes_in_public_map(vis) {
+                        out.push(r);
+                    }
+                    continue;
+                }
+                if filter.show_public_tracks
+                    && visibility_is_public(&r.visibility)
+                    && public_track_passes(&r, &filter, &dem)
+                {
+                    out.push(r);
+                }
+            }
+            out
+        };
+        let mut positions = dedupe_by_tail(filtered);
+        for pos in &mut positions {
+            if let Some(f) = self.get_flight(&pos.flight_id).await {
+                if show_pilot_name(&Viewer::Anonymous, &f.pilot_id, f.show_pilot_name_public) {
+                    pos.pilot_name = Some(f.pilot_name);
+                } else {
+                    pos.pilot_name = None;
+                }
+            }
+        }
+        apply_public_cap(
+            positions,
+            filter.cap,
+            (filter.center_lat, filter.center_lon),
+        )
+    }
+
+    pub async fn display_map_scoped(
+        &self,
+        display_club_id: &str,
+        admin_creator_id: &str,
+    ) -> Vec<TailLivePosition> {
+        let filter = self.club_map_filter(display_club_id).await;
+        let dem = self.dem_index();
+        let rows: Vec<DeviceFix> = self
+            .latest_device_fixes()
+            .await
+            .into_iter()
+            .filter(|r| {
+                if r.club_id != display_club_id {
+                    return filter.show_public_tracks
+                        && visibility_is_public(&r.visibility)
+                        && public_track_passes(r, &filter, &dem);
+                }
+                let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
+                matches!(vis, FlightVisibility::Club | FlightVisibility::Public)
+            })
+            .collect();
+        let mut positions = dedupe_by_tail(rows);
+        for pos in &mut positions {
+            if let Some(f) = self.get_flight(&pos.flight_id).await {
+                if show_pilot_name(&Viewer::Anonymous, &f.pilot_id, f.show_pilot_name_public) {
+                    pos.pilot_name = Some(f.pilot_name);
+                } else {
+                    pos.pilot_name = None;
+                }
+            }
+        }
+        let prefs = self.admin_map_tails(admin_creator_id).await;
+        crate::club::map::filter_admin_tails(positions, &prefs)
+    }
+}

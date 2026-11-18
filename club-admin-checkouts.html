@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es-CL">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="nav.checkouts">flight_vis</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main { max-width: 46rem; margin: 1rem auto; padding: 0 1rem 2rem; }
+      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
+      input, button, select { font: inherit; padding: .45rem .6rem; margin: .2rem 0; display: block; width: 100%; max-width: 20rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Checkouts</h1>
+      <div id="admin-nav"></div>
+      <form id="form">
+        <select id="pilot" required></select>
+        <input name="type" placeholder="Type code (C152)" required />
+        <input name="tail" placeholder="Optional tail override" />
+        <input name="expires_at" type="datetime-local" placeholder="Expiry (optional)" />
+        <button type="submit">Add checkout</button>
+      </form>
+      <ul id="list"></ul>
+    </main>
+    <script type="module" src="/src/club/adminCheckouts.ts"></script>
+  </body>
+</html>

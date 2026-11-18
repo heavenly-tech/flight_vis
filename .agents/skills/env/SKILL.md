@@ -20,4 +20,6 @@ Copy `.env.example` to `.env`. Do not commit `.env`.
 
 Docker sets `PORT`, `FLIGHT_DATA=/data`, and `FLIGHT_VIS_DIST=/app/dist`. Compose also sets `FLIGHT_VIS_PASSWORD` from the host and the proxy hostnames `VIRTUAL_HOST`, `LETSENCRYPT_HOST`, and `VIRTUAL_PORT` (those three are for the reverse proxy, not read by the binary).
 
+Production mail (`SMTP_HOST=postal-smtp`, `SMTP_PORT=25`, `SMTP_PASS` as the Postal credential key, `SMTP_FROM=noreply@heavenly.cl`) and bounce webhooks (`POSTAL_WEBHOOK_PUBLIC_KEY_FILE`, header `X-Postal-Signature-256`) are documented in `.env.example`. Postgres is `DATABASE_URL` only against shared heavenly PG 18; app role `flightvis` is NOSUPERUSER with no PostGIS.
+
 There is no `NODE_ENV`. The Rust binary does not read `CARGO_MANIFEST_DIR` for data, dist, or the login page. Those paths come only from the environment variables above, or the cwd-relative defaults. Sample seeding still looks up the compile-time sample GPX paths.
