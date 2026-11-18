@@ -506,8 +506,12 @@ async fn pending_pilot_cannot_load_club_map() {
         .register(&club_id, "P", "p@test", "", "password12")
         .await
         .unwrap();
-    let cookie = login_cookie(&mut fx.router, "p@test").await;
-    let _ = pending;
+    let sess = fx
+        .club
+        .create_pilot_session(&pending, now_ms())
+        .await
+        .unwrap();
+    let cookie = format!("fv_club_session={sess}");
     let res = fx
         .router
         .call(

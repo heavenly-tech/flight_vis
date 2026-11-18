@@ -40,6 +40,8 @@ pub mod webauthn;
 #[cfg(test)]
 mod api_tests;
 #[cfg(test)]
+mod club_security_tests;
+#[cfg(test)]
 mod club_signup_tests;
 #[cfg(test)]
 mod load_test;
