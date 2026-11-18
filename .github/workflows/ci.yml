@@ -78,6 +78,9 @@ jobs:
       - name: frontend lint
         run: npm run lint
 
+      - name: no Argentine voseo in Spanish UI
+        run: node scripts/voseo-check.mjs
+
       - name: playwright e2e
         run: npx playwright install --with-deps && npm run test:e2e
 
