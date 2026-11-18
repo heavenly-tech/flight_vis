@@ -1,4 +1,4 @@
-import { parseLivePath } from "./runtime";
+import { parseLivePath } from "./path";
 
 const live = parseLivePath(window.location.pathname);
 if (live.sessionId) {

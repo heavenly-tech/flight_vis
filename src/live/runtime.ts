@@ -15,15 +15,10 @@ import { detectLang, msg, setLiveLang, type LiveLang } from "./messages";
 import { openLiveStream, type LiveStreamHandle } from "./sseClient";
 import type { LiveFix } from "./types";
 
-const LIVE_PATH = /^\/live(?:\/([A-Za-z0-9._-]+))?\/?$/i;
+export { parseLivePath } from "./path";
+
 const LIVE_LAG_MS = 2000;
 const ACC_DIM_M = 50;
-
-export function parseLivePath(pathname: string): { listOnly: boolean; sessionId: string | null } {
-  const match = pathname.match(LIVE_PATH);
-  if (!match) return { listOnly: false, sessionId: null };
-  return { listOnly: !match[1], sessionId: match[1] ?? null };
-}
 
 export type LiveHost = {
   viewer: FlightViewer;
