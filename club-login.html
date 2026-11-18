@@ -19,29 +19,6 @@
       <p id="msg" class="muted"></p>
       <p class="muted"><a href="/club-register.html" data-i18n="nav.register"></a> · <a href="/club-pilot.html" data-i18n="nav.pilotProfile"></a> · <a href="/app.html" data-i18n="nav.androidApp"></a></p>
     </main>
-    <script type="module">
-      import { startClubPage } from "/src/club/i18nPage.ts";
-      import { t, apiErrorMessage } from "/src/i18n/boot.ts";
-      await startClubPage({ persistUser: false });
-      const form = document.getElementById("form");
-      const msg = document.getElementById("msg");
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const body = Object.fromEntries(new FormData(form));
-        const res = await fetch("/api/club/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          body: JSON.stringify(body),
-        });
-        if (res.ok) {
-          msg.textContent = t("club.login.success");
-          location.href = "/club-pilot.html";
-        } else {
-          const err = (await res.json().catch(() => ({}))).error ?? "unauthorized";
-          msg.textContent = apiErrorMessage(String(err));
-        }
-      });
-    </script>
+    <script type="module" src="/src/club/clubLoginPage.ts"></script>
   </body>
 </html>

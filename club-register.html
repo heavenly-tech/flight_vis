@@ -20,22 +20,6 @@
       </form>
       <p id="msg" class="muted"></p>
     </main>
-    <script type="module">
-      import { startClubPage } from "/src/club/i18nPage.ts";
-      import { t, apiErrorMessage } from "/src/i18n/boot.ts";
-      await startClubPage({ persistUser: false });
-      document.getElementById("form").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const body = Object.fromEntries(new FormData(e.target));
-        const res = await fetch("/api/club/register", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        document.getElementById("msg").textContent = res.ok
-          ? t("club.register.success")
-          : apiErrorMessage((await res.json().catch(() => ({}))).error ?? "register failed");
-      });
-    </script>
+    <script type="module" src="/src/club/clubRegisterPage.ts"></script>
   </body>
 </html>

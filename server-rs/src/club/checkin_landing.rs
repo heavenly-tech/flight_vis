@@ -6,6 +6,7 @@ use crate::club::{
     db::{now_ms, ClubDb},
     routes::club_db,
 };
+use crate::static_files::{HTML_CSP, HTML_REFERRER_POLICY};
 use crate::AppState;
 use axum::{
     extract::{Path, State},
@@ -139,15 +140,25 @@ fn localize_data_i18n(html: &str, locale: &str) -> String {
     out
 }
 
+fn qr_landing_page_headers() -> [(header::HeaderName, &'static str); 3] {
+    [
+        (header::CACHE_CONTROL, "no-store"),
+        (header::CONTENT_SECURITY_POLICY, HTML_CSP),
+        (header::REFERRER_POLICY, HTML_REFERRER_POLICY),
+    ]
+}
+
+fn qr_landing_api_headers() -> [(header::HeaderName, &'static str); 2] {
+    [
+        (header::CACHE_CONTROL, "no-store"),
+        (header::REFERRER_POLICY, HTML_REFERRER_POLICY),
+    ]
+}
+
 async fn serve_landing_html(state: &AppState) -> axum::response::Response {
     let path = state.dist_dir.join("club-checkin-landing.html");
     match tokio::fs::read_to_string(&path).await {
-        Ok(html) => (
-            StatusCode::OK,
-            [(header::CACHE_CONTROL, "no-store")],
-            Html(html),
-        )
-            .into_response(),
+        Ok(html) => (StatusCode::OK, qr_landing_page_headers(), Html(html)).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "missing landing").into_response(),
     }
 }
@@ -189,7 +200,7 @@ async fn checkin_not_found_page(state: &AppState, headers: &HeaderMap) -> axum::
     match tokio::fs::read_to_string(&path).await {
         Ok(html) => (
             StatusCode::NOT_FOUND,
-            [(header::CACHE_CONTROL, "no-store")],
+            qr_landing_page_headers(),
             Html(localize_data_i18n(&html, &locale)),
         )
             .into_response(),
@@ -256,7 +267,7 @@ async fn checkin_landing_config(
     let https_url = absolute_https_url(&headers, &https_path);
     let intent = intent_url_for_https(&https_url, ANDROID_PACKAGE);
     match build_landing_json(&state, db, &headers, &slug, Some(intent)).await {
-        Ok(body) => Json(body).into_response(),
+        Ok(body) => (qr_landing_api_headers(), Json(body)).into_response(),
         Err(LandingError::NotFound) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
         }
@@ -273,7 +284,7 @@ async fn club_slug_landing_config(
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     };
     match build_landing_json(&state, db, &headers, &slug, None).await {
-        Ok(body) => Json(body).into_response(),
+        Ok(body) => (qr_landing_api_headers(), Json(body)).into_response(),
         Err(LandingError::NotFound) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
         }
@@ -382,6 +393,65 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&body).unwrap()
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn qr_landing_pages_send_csp_and_referrer_policy() {
+        let (_dir, router, db) = fixture(false, false).await;
+        let club_id = db.default_club_id().await.unwrap();
+        let token = db.mint_checkin_qr_token(&club_id, now_ms()).await.unwrap();
+        for uri in [format!("/c/demo/q/{token}"), "/c/demo".to_string()] {
+            let res = router
+                .clone()
+                .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+            assert_eq!(
+                res.headers()
+                    .get(header::CONTENT_SECURITY_POLICY)
+                    .and_then(|v| v.to_str().ok()),
+                Some(HTML_CSP)
+            );
+            assert_eq!(
+                res.headers()
+                    .get(header::REFERRER_POLICY)
+                    .and_then(|v| v.to_str().ok()),
+                Some(HTML_REFERRER_POLICY)
+            );
+        }
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn qr_landing_json_apis_send_cache_control_and_referrer() {
+        let (_dir, router, db) = fixture(false, false).await;
+        let club_id = db.default_club_id().await.unwrap();
+        let token = db.mint_checkin_qr_token(&club_id, now_ms()).await.unwrap();
+        for uri in [
+            format!("/api/c/demo/q/{token}/landing"),
+            "/api/c/demo/qr-landing".to_string(),
+        ] {
+            let res = router
+                .clone()
+                .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+            assert_eq!(
+                res.headers()
+                    .get(header::CACHE_CONTROL)
+                    .and_then(|v| v.to_str().ok()),
+                Some("no-store")
+            );
+            assert_eq!(
+                res.headers()
+                    .get(header::REFERRER_POLICY)
+                    .and_then(|v| v.to_str().ok()),
+                Some(HTML_REFERRER_POLICY)
+            );
+        }
     }
 
     #[serial]

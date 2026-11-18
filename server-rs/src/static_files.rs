@@ -117,6 +117,8 @@ fn sidecar_path(base: &Path, encoding: &str) -> PathBuf {
 
 pub const HTML_CSP: &str = "default-src 'self'; img-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
+pub const HTML_REFERRER_POLICY: &str = "no-referrer";
+
 fn cache_for(relative: &str) -> &'static str {
     if is_geoid_asset(relative) {
         "public, max-age=31536000"

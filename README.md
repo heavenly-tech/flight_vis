@@ -24,7 +24,7 @@ Shareable slug pages are public. Saving, uploading, and the library need a login
 
 Set `FLIGHT_VIS_PASSWORD`. If it is unset, existing slugs still render and writes stay locked.
 
-Copy [`.env.example`](.env.example) to `.env`. Do not commit `.env`.
+Copy [`.env.example`](.env.example) to `.env`. Do not commit `.env`. Postal SMTP credentials can be set with `SMTP_PASS` or read from `SMTP_PASS_FILE` (trailing newline trimmed).
 
 ## Local
 

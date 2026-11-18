@@ -126,34 +126,6 @@
         <p class="err" id="err"></p>
       </div>
     </form>
-    <script>
-      (function () {
-        var q = new URLSearchParams(location.search);
-        var err = document.getElementById("err");
-        var next = document.getElementById("next");
-        var dest = q.get("next") || "/";
-        if (!dest.startsWith("/") || dest.startsWith("//") || dest.indexOf("://") !== -1) dest = "/";
-        next.value = dest;
-        if (q.get("e") === "1") err.textContent = "Wrong password.";
-        function showLocked() {
-          document.getElementById("body").innerHTML =
-            '<p class="lock">Upload is locked. Administrator must set <code>FLIGHT_VIS_PASSWORD</code>.</p>';
-        }
-        if (q.get("locked") === "1") showLocked();
-        document.getElementById("login-form").addEventListener("submit", function () {
-          var button = this.querySelector("button");
-          if (button) button.disabled = true;
-        });
-        fetch("/api/auth/me", { credentials: "same-origin" })
-          .then(function (res) {
-            return res.ok ? res.json() : { authenticated: false, configured: true };
-          })
-          .then(function (me) {
-            if (me.authenticated) location.replace(next.value || "/");
-            else if (!me.configured) showLocked();
-          })
-          .catch(function () {});
-      })();
-    </script>
+    <script type="module" src="/src/pages/flightLogin.ts"></script>
   </body>
 </html>

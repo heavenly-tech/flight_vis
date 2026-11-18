@@ -15,18 +15,6 @@
       <ul id="list"></ul>
       <p><a href="/club-map.html" data-i18n="club.publicMap.membersLink"></a> · <a href="/" data-i18n="common.home"></a></p>
     </main>
-    <script type="module">
-      import { startClubPage } from "/src/club/i18nPage.ts";
-      await startClubPage({ persistUser: false });
-      const list = document.getElementById("list");
-      const res = await fetch("/api/club/map/public");
-      const data = await res.json();
-      for (const row of data.aircraft ?? []) {
-        const li = document.createElement("li");
-        const name = row.pilotName ? ` · ${row.pilotName}` : "";
-        li.textContent = `${row.tail}${name}`;
-        list.appendChild(li);
-      }
-    </script>
+    <script type="module" src="/src/club/publicMapPage.ts"></script>
   </body>
 </html>

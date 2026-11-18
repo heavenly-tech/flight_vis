@@ -9,7 +9,7 @@ use crate::club::{
     },
     visibility::{
         can_view_flight, includes_in_club_map, includes_in_public_map, show_pilot_name,
-        FlightVisibility, PilotStatus, Viewer,
+        show_pilot_name_admin_map, FlightVisibility, PilotRole, PilotStatus, Viewer,
     },
 };
 use sqlx::Row;
@@ -320,7 +320,21 @@ impl ClubDb {
         let mut positions = dedupe_by_tail(filtered);
         for pos in &mut positions {
             if let Some(f) = self.get_flight(&pos.flight_id).await {
-                if show_pilot_name(viewer, &f.pilot_id, f.show_pilot_name_public) {
+                let home = self
+                    .pilot_is_approved_member(&f.pilot_id, &viewing_club)
+                    .await;
+                let show = if matches!(
+                    viewer,
+                    Viewer::Pilot {
+                        role: PilotRole::Admin,
+                        ..
+                    }
+                ) {
+                    show_pilot_name_admin_map(viewer, home, &f.pilot_id, f.show_pilot_name_public)
+                } else {
+                    show_pilot_name(viewer, &f.pilot_id, f.show_pilot_name_public)
+                };
+                if show {
                     pos.pilot_name = Some(f.pilot_name);
                 } else {
                     pos.pilot_name = None;
