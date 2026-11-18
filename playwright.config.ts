@@ -25,6 +25,7 @@ export default defineConfig({
     {
       name: "prod-csp",
       testMatch: /csp-prod\.spec\.ts/,
+      timeout: 240_000,
       use: {
         baseURL: "http://127.0.0.1:8080",
       },
@@ -33,7 +34,7 @@ export default defineConfig({
   webServer: [
     {
       command:
-        "VITE_E2E_SKIP_GLOBE=1 npm run build && cargo +1.98.0 run --release --manifest-path server-rs/Cargo.toml",
+        "npm run build && cargo +1.98.0 run --release --manifest-path server-rs/Cargo.toml",
       url: "http://127.0.0.1:8080/api/health",
       env: apiEnv,
       timeout: 300_000,

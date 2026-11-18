@@ -89,6 +89,19 @@ fn ext_of(relative: &str) -> &str {
     relative.rsplit('.').next().unwrap_or("")
 }
 
+/// `/app/*` paths with a file extension must not fall back to the SPA when the file is absent.
+fn is_app_extension_path(url_path: &str) -> bool {
+    let trimmed = url_path.trim_start_matches('/');
+    if !trimmed.starts_with("app/") {
+        return false;
+    }
+    trimmed
+        .rsplit('/')
+        .next()
+        .map(|name| name.contains('.'))
+        .unwrap_or(false)
+}
+
 fn accepts_encoding(headers: &HeaderMap) -> &'static str {
     headers
         .get(header::ACCEPT_ENCODING)
@@ -115,7 +128,8 @@ fn sidecar_path(base: &Path, encoding: &str) -> PathBuf {
     PathBuf::from(format!("{}{}", base.to_string_lossy(), suffix))
 }
 
-pub const HTML_CSP: &str = "default-src 'self'; img-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+/// Production HTML CSP (must match nginx vhost `script-src` including Cesium WASM).
+pub const HTML_CSP: &str = "default-src 'self'; img-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 pub const HTML_REFERRER_POLICY: &str = "no-referrer";
 
@@ -267,6 +281,9 @@ pub async fn serve(
             .await;
         }
     }
+    if is_app_extension_path(url_path) {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let index = dist_dir.join("index.html");
     if tokio::fs::metadata(&index)
         .await
@@ -404,6 +421,40 @@ mod tests {
             Some("5")
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn missing_app_apk_returns_404_not_spa() {
+        let dir = temp_dist();
+        std::fs::write(dir.join("index.html"), "<!doctype html><title>spa</title>").unwrap();
+        let res = serve(&dir, "/app/flightvis.apk", &HeaderMap::new()).await;
+        assert!(matches!(res, Err(StatusCode::NOT_FOUND)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn present_app_apk_serves_apk_mime() {
+        let dir = temp_dist();
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        std::fs::write(dir.join("app/flightvis.apk"), b"PK-fake").unwrap();
+        std::fs::write(dir.join("index.html"), "x").unwrap();
+        let res = serve(&dir, "/app/flightvis.apk", &HeaderMap::new())
+            .await
+            .expect("apk");
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/vnd.android.package-archive")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn html_csp_includes_wasm_unsafe_eval_and_font_self() {
+        assert!(HTML_CSP.contains("script-src 'self' 'wasm-unsafe-eval'"));
+        assert!(HTML_CSP.contains("font-src 'self'"));
     }
 
     #[tokio::test]

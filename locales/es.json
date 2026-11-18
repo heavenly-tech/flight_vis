@@ -70,13 +70,13 @@
       "license": "N.º licencia",
       "password": "Contraseña",
       "submit": "Registrarse (pendiente de aprobación)",
-      "success": "Registro enviado — esperá la aprobación del administrador.",
+      "success": "Registro enviado — espera la aprobación del administrador.",
       "failed": "No se pudo registrar."
     },
     "map": {
       "title": "Mapa del club",
       "membersOnly": "Solo miembros aprobados. La visibilidad la define el servidor.",
-      "signInApproved": "Iniciá sesión como piloto aprobado",
+      "signInApproved": "Inicia sesión como piloto aprobado",
       "publicLink": "Mapa público anónimo",
       "publicHint": "usa /api/club/map/public"
     },
@@ -90,11 +90,11 @@
     "title": "Piloto",
     "checking": "Verificando sesión…",
     "notSignedIn": "Sin sesión.",
-    "logInLink": "Ingresá en /club-login.html",
+    "logInLink": "Ingresa en /club-login.html",
     "logOut": "Cerrar sesión",
     "downloadApp": "Descargar app rastreador Android",
     "deviceToken": "Token de dispositivo",
-    "deviceTokenHelp": "Escaneá el QR en el cliente Traccar/OsmAnd. El token queda en el servidor.",
+    "deviceTokenHelp": "Escanea el QR en el cliente Traccar/OsmAnd. El token queda en el servidor.",
     "phoneLabel": "Etiqueta del teléfono",
     "createDevice": "Crear dispositivo",
     "myFlights": "Mis vuelos",
@@ -123,33 +123,33 @@
   },
   "checkin": {
     "landingTitle": "Club",
-    "landingLead": "Instalá la app de flight_vis para volar con el club.",
+    "landingLead": "Instala la app de flight_vis para volar con el club.",
     "downloadApp": "Descargar app",
     "comingSoon": "Próximamente",
     "androidInstallTitle": "Android",
-    "androidStep1": "En Android, permití instalar apps desde esta fuente (navegador) en Ajustes.",
-    "androidStep2": "Descargá el APK con el botón de arriba y abrilo para instalar.",
-    "androidStep3": "Abrí la app y escaneá el QR del club para hacer check-in.",
+    "androidStep1": "En Android, permite instalar apps desde esta fuente (navegador) en Ajustes.",
+    "androidStep2": "Descarga el APK con el botón de arriba y ábrelo para instalar.",
+    "androidStep3": "Abre la app y escanea el QR del club para hacer check-in.",
     "iosSoon": "iOS: próximamente.",
     "viewLiveMap": "Ver mapa en vivo",
     "installSteps": "(instrucciones de instalación).",
     "openApp": "Abrir la app",
     "publicMapTitle": "Mapa en vivo (público)",
     "expiredTitle": "QR no válido",
-    "expiredBody": "El código expiró o no es válido. Pedí un nuevo QR en el club y escanealo de nuevo."
+    "expiredBody": "El código expiró o no es válido. Pide un nuevo QR en el club y escanéalo de nuevo."
   },
   "app": {
     "badge": "flight_vis · Android",
     "title": "Instalar la app rastreadora",
-    "subtitle": "Instalá el rastreador de vuelos heavenly.cl en tu teléfono. No hace falta Play Store.",
+    "subtitle": "Instala el rastreador de vuelos heavenly.cl en tu teléfono. No hace falta Play Store.",
     "loadingRelease": "Cargando información de la versión…",
     "downloadApk": "Descargar APK",
     "sideloadTitle": "Pasos para instalar",
-    "sideloadStep1": "En Android, abrí **Ajustes → Aplicaciones → Acceso especial → Instalar apps desconocidas** y permití que el navegador instale paquetes.",
-    "sideloadStep2": "Descargá el APK con el botón de arriba (cuando esté disponible) y abrilo para instalar.",
-    "sideloadStep3": "Después de instalar, concedé ubicación **Permitir todo el tiempo** para que los fixes sigan en segundo plano.",
-    "sideloadStep4": "Configurá el uso de batería de la app en **Sin restricciones** para que Android no corte el rastreo durante el vuelo.",
-    "sideloadStep5": "Copiá el token de dispositivo desde el **perfil piloto** hacia la app.",
+    "sideloadStep1": "En Android, abre **Ajustes → Aplicaciones → Acceso especial → Instalar apps desconocidas** y permite que el navegador instale paquetes.",
+    "sideloadStep2": "Descarga el APK con el botón de arriba (cuando esté disponible) y ábrelo para instalar.",
+    "sideloadStep3": "Después de instalar, concede ubicación **Permitir todo el tiempo** para que los fixes sigan en segundo plano.",
+    "sideloadStep4": "Configura el uso de batería de la app en **Sin restricciones** para que Android no corte el rastreo durante el vuelo.",
+    "sideloadStep5": "Copia el token de dispositivo desde el **perfil piloto** hacia la app.",
     "releaseSoon": "App próximamente",
     "releaseReady": "Versión lista para instalar.",
     "versionLabel": "Versión {version}"
@@ -173,27 +173,27 @@
     "clubDefaultLanguageHelp": "Pantalla del club, página /c/{{slug}} y fallback QR.",
     "clubDefaultLanguageSaved": "Idioma del club guardado.",
     "kioskQrTitle": "QR en pantalla kiosk",
-    "kioskQrHint": "Arrastrá para mover; esquina inferior para redimensionar (cuadrado). Vista previa según relación de aspecto.",
+    "kioskQrHint": "Arrastra para mover; esquina inferior para redimensionar (cuadrado). Vista previa según relación de aspecto.",
     "aspectRatio": "Relación de aspecto",
     "reset": "Restablecer",
     "saving": "Guardando…",
     "saved": "Guardado",
     "resetDone": "Restablecido",
-    "kioskOpenUrl": "Abrí en el kiosk:",
-    "kioskActivationToken": "Token de activación (pegalo en esa página, no en la URL):"
+    "kioskOpenUrl": "Abre en el kiosk:",
+    "kioskActivationToken": "Token de activación (pégalo en esa página, no en la URL):"
   },
   "kiosk": {
     "screenTitle": "Pantalla de check-in",
     "invalidToken": "Token de pantalla inválido.",
     "activated": "Pantalla activada.",
-    "pasteToken": "Pegá el token de activación de pantalla desde el mapa admin."
+    "pasteToken": "Pega el token de activación de pantalla desde el mapa admin."
   },
   "viewer": {
     "connecting": "Conectando a la transmisión en vivo…",
     "reconnecting": "Reconectando…",
     "sessionEnded": "Sesión en vivo finalizada",
     "notFound": "Sesión en vivo no encontrada",
-    "loginRequired": "Iniciá sesión para ver esta transmisión",
+    "loginRequired": "Inicia sesión para ver esta transmisión",
     "followLive": "En vivo",
     "recordOn": "Grabando",
     "recordOff": "Grabar",
@@ -202,25 +202,25 @@
     "trimTitle": "Editar grabación (recorte opcional)",
     "recorded": "Guardado en la biblioteca del dispositivo",
     "noLiveSessions": "No hay sesiones en vivo",
-    "pickSession": "Elegí una sesión en vivo",
+    "pickSession": "Elige una sesión en vivo",
     "accuracyLabel": "Precisión GPS",
     "geoidPending": "Altitud MSL no disponible: modelo geoidal en carga (mostrando altura elipsoidal)."
   },
   "mail": {
     "magicLink": {
       "subject": "Tu enlace de acceso a flight_vis",
-      "bodyPlain": "Hola,\n\nUsá este enlace para ingresar (vence en {minutes} minutos):\n{url}\n\nSi no pediste este correo, ignoralo.",
-      "bodyHtml": "<p>Hola,</p><p><a href=\"{url}\">Ingresar a flight_vis</a> (vence en {minutes} minutos).</p><p>Si no pediste este correo, ignoralo.</p>"
+      "bodyPlain": "Hola,\n\nUsa este enlace para ingresar (vence en {minutes} minutos):\n{url}\n\nSi no pediste este correo, ignóralo.",
+      "bodyHtml": "<p>Hola,</p><p><a href=\"{url}\">Ingresar a flight_vis</a> (vence en {minutes} minutos).</p><p>Si no pediste este correo, ignóralo.</p>"
     },
     "verifyEmail": {
-      "subject": "Confirmá tu correo en flight_vis",
-      "bodyPlain": "Hola {name},\n\nConfirmá tu correo con este enlace:\n{url}\n",
+      "subject": "Confirma tu correo en flight_vis",
+      "bodyPlain": "Hola {name},\n\nConfirma tu correo con este enlace:\n{url}\n",
       "bodyHtml": "<p>Hola {name},</p><p><a href=\"{url}\">Confirmar correo</a></p>"
     },
     "pilotApproved": {
       "subject": "Tu cuenta de piloto fue aprobada",
-      "bodyPlain": "Hola {name},\n\nYa podés ingresar y volar con el club.\n{loginUrl}\n",
-      "bodyHtml": "<p>Hola {name},</p><p>Ya podés <a href=\"{loginUrl}\">ingresar</a> y volar con el club.</p>"
+      "bodyPlain": "Hola {name},\n\nYa puedes ingresar y volar con el club.\n{loginUrl}\n",
+      "bodyHtml": "<p>Hola {name},</p><p>Ya puedes <a href=\"{loginUrl}\">ingresar</a> y volar con el club.</p>"
     },
     "accessApproved": {
       "subject": "Habilitación aprobada",
