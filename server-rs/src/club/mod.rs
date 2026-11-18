@@ -44,6 +44,7 @@ mod club_signup_tests;
 #[cfg(test)]
 mod load_test;
 
+pub use auth::parse_session_cookie;
 pub use contract_routes::router as contract_router;
 pub use db::{now_ms, ClubDb};
 pub use routes::{patch_club_flight_by_id, post_club_flight_start, router};

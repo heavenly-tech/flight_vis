@@ -1,6 +1,7 @@
 import path from "node:path";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
-import { defineConfig, type ProxyOptions } from "vitest/config";
+import { defineConfig, type Plugin, type ProxyOptions } from "vitest/config";
 import { viteStaticCopy } from "vite-plugin-static-copy";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +26,58 @@ const authProxy: Record<string, string | ProxyOptions> = {
   },
 };
 
+function clubAdminHtmlGateMiddleware(
+  apiOrigin: string,
+):
+  | ((req: IncomingMessage, res: ServerResponse, next: () => void) => void)
+  | undefined {
+  return (req, res, next) => {
+    const method = req.method ?? "GET";
+    const raw = req.url ?? "";
+    const pathOnly = raw.split("?")[0] ?? "";
+    if ((method !== "GET" && method !== "HEAD") || !/^\/club-admin-[^/]+\.html$/.test(pathOnly)) {
+      next();
+      return;
+    }
+    const search = raw.includes("?") ? raw.slice(raw.indexOf("?")) : "";
+    void fetch(`${apiOrigin}/api/club/me`, {
+      headers: { cookie: req.headers.cookie ?? "" },
+    })
+      .then(async (meRes) => {
+        if (meRes.ok) {
+          const me = (await meRes.json()) as { pilot?: { role?: string } | null };
+          if (me.pilot?.role === "admin") {
+            next();
+            return;
+          }
+        }
+        res.statusCode = 302;
+        res.setHeader(
+          "Location",
+          `/club-login.html?next=${encodeURIComponent(pathOnly + search)}`,
+        );
+        res.end();
+      })
+      .catch(() => {
+        res.statusCode = 302;
+        res.setHeader("Location", `/club-login.html?next=${encodeURIComponent(pathOnly + search)}`);
+        res.end();
+      });
+  };
+}
+
+function clubAdminHtmlGatePlugin(apiOrigin: string): Plugin {
+  const attach = (server: { middlewares: { use: (fn: ReturnType<typeof clubAdminHtmlGateMiddleware>) => void } }) => {
+    const gate = clubAdminHtmlGateMiddleware(apiOrigin);
+    if (gate) server.middlewares.use(gate);
+  };
+  return {
+    name: "club-admin-html-gate",
+    configureServer: attach,
+    configurePreviewServer: attach,
+  };
+}
+
 export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
@@ -38,6 +91,7 @@ export default defineConfig({
     ),
   },
   plugins: [
+    clubAdminHtmlGatePlugin(process.env.FLIGHT_VIS_API_ORIGIN ?? api),
     viteStaticCopy({
       targets: [
         { src: "locales/*", dest: "locales" },

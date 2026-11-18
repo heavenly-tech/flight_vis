@@ -1,13 +1,9 @@
 import { expect, test } from "@playwright/test";
 
 test("unauthenticated club admin redirects to club login with next", async ({ page }) => {
-  await Promise.all([
-    page.waitForURL(/\/club-login\.html/, { timeout: 20_000 }),
-    page.goto("/club-admin-types.html", { waitUntil: "commit" }),
-  ]);
-  const url = new URL(page.url());
-  expect(url.pathname).toBe("/club-login.html");
-  expect(url.searchParams.get("next")).toBe("/club-admin-types.html");
+  await page.goto("/club-admin-types.html", { waitUntil: "load" });
+  await expect(page).toHaveURL(/\/club-login\.html/);
+  expect(new URL(page.url()).searchParams.get("next")).toBe("/club-admin-types.html");
 });
 
 test("club login honours safe next when session already exists", async ({ page }) => {
@@ -18,7 +14,7 @@ test("club login honours safe next when session already exists", async ({ page }
   await Promise.all([
     page.waitForURL(/\/club-admin-kiosk-layout\.html/, { timeout: 20_000 }),
     page.goto("/club-login.html?next=/club-admin-kiosk-layout.html", {
-      waitUntil: "commit",
+      waitUntil: "load",
     }),
   ]);
 });
