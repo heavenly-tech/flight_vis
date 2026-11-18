@@ -192,10 +192,7 @@ async fn patch_flight(
         overwrite: None,
     });
     match state.store.rename_flight(&storage, parsed).await {
-        Ok(mut item) => {
-            item.slug = slug;
-            Json(item).into_response()
-        }
+        Ok(item) => Json(item).into_response(),
         Err(error) => store_error(error),
     }
 }

@@ -43,6 +43,9 @@ async fn seed_legacy_owner(db: &ClubDb, club_id: &str) -> (String, String, Strin
     db.issue_open_checkin(&legacy_id, &dev, club_id, now)
         .await
         .unwrap();
+    db.add_checkout(&legacy_id, "C152", None, None)
+        .await
+        .unwrap();
     let fid = db
         .start_flight(
             &legacy_id,

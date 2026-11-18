@@ -118,6 +118,17 @@ async fn start_flight(
     token: &str,
     visibility: &str,
 ) -> String {
+    start_flight_on_tail(router, club, cookie, token, "N1", visibility).await
+}
+
+async fn start_flight_on_tail(
+    router: &mut axum::Router,
+    club: &ClubDb,
+    cookie: &str,
+    token: &str,
+    tail: &str,
+    visibility: &str,
+) -> String {
     let club_id = club.default_club_id().await.expect("club");
     let qr = club
         .mint_checkin_qr_token(&club_id, now_ms())
@@ -146,7 +157,7 @@ async fn start_flight(
                 .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .header(header::COOKIE, cookie)
                 .body(Body::from(format!(
-                    r#"{{"tail":"N1","visibility":"{visibility}"}}"#
+                    r#"{{"tail":"{tail}","visibility":"{visibility}"}}"#
                 )))
                 .unwrap(),
         )
@@ -1014,7 +1025,8 @@ async fn public_live_summary_counts_and_hides_non_public() {
         .await
         .unwrap();
 
-    let club_only_id = start_flight(&mut fx.router, &fx.club, &cookie_b, &token_b, "club").await;
+    let club_only_id =
+        start_flight_on_tail(&mut fx.router, &fx.club, &cookie_b, &token_b, "N2", "club").await;
     post_osmand_fix(&mut fx.router, &token_b, &club_only_id).await;
     assert!(
         live_summary_flights(&mut fx.router, "/api/public/live-summary")
