@@ -496,7 +496,7 @@ mod tests {
         let token = db.mint_checkin_qr_token(&club_id, now_ms()).await.unwrap();
         let body = get_landing_api(&router, &format!("/api/c/demo/q/{token}/landing")).await;
         assert_eq!(body["releaseAvailable"], false);
-        assert_eq!(body["publicMapPath"], "/public-map.html");
+        assert_eq!(body["publicMapPath"], "/public-map.html?club=demo");
         assert_eq!(body["clubName"], "Demo & Club <script>");
     }
 

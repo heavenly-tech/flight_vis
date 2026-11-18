@@ -717,66 +717,39 @@ async fn cross_club_public_map_isolated_by_slug_query() {
         .add_checkout(&pilot_b, "C152", None, None)
         .await
         .unwrap();
-    let (_dev, token_b) = fx.club.create_device(&pilot_b, "b2").await.unwrap();
-    let cookie_b = login_cookie(&mut fx.router, "b2-map@test").await;
-    let qr_b = fx
-        .club
-        .mint_checkin_qr_token(&club_b, now_ms())
-        .await
-        .unwrap();
-    let checkin = fx
-        .router
-        .call(
-            Request::builder()
-                .method("POST")
-                .uri("/api/checkin")
-                .header(header::CONTENT_TYPE, "application/json")
-                .header(header::AUTHORIZATION, format!("Bearer {token_b}"))
-                .header(header::COOKIE, &cookie_b)
-                .body(Body::from(format!(r#"{{"token":"{qr_b}"}}"#)))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(checkin.status(), StatusCode::OK);
-    let start = fx
-        .router
-        .call(
-            Request::builder()
-                .method("POST")
-                .uri("/api/flights")
-                .header(header::CONTENT_TYPE, "application/json")
-                .header(header::AUTHORIZATION, format!("Bearer {token_b}"))
-                .header(header::COOKIE, &cookie_b)
-                .body(Body::from(r#"{"tail":"NX-B","visibility":"public"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(start.status(), StatusCode::OK);
-    let start_json: serde_json::Value =
-        serde_json::from_slice(&to_bytes(start.into_body(), usize::MAX).await.unwrap()).unwrap();
-    let flight_b = start_json["id"].as_str().unwrap().to_string();
+    let now = now_ms();
+    let dev_b = fx.club.create_device(&pilot_b, "b2").await.unwrap().0;
     fx.club
-        .patch_flight(
+        .issue_open_checkin(&pilot_b, &dev_b, &club_b, now)
+        .await
+        .unwrap();
+    let flight_b = fx
+        .club
+        .start_flight(
             &pilot_b,
-            &flight_b,
-            Some(FlightVisibility::Public),
-            Some(false),
+            &dev_b,
+            "NX-B",
+            FlightVisibility::Public,
+            false,
+            now,
         )
         .await
         .unwrap();
-    let q = format!(
-        "id={token_b}&lat=-33.5&lon=-70.7&timestamp={}",
-        now_ms() / 1000
-    );
-    fx.router
-        .call(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/osmand?{q}"))
-                .body(Body::empty())
-                .unwrap(),
+    use crate::live::LiveFix;
+    fx.club
+        .append_fix(
+            &flight_b,
+            &dev_b,
+            &LiveFix {
+                t: now,
+                lat: -33.5,
+                lon: -70.7,
+                alt: Some(1000.0),
+                alt_ref: None,
+                speed: None,
+                course: None,
+                accuracy: Some(5.0),
+            },
         )
         .await
         .unwrap();
