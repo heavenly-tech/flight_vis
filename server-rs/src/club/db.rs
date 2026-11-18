@@ -174,8 +174,9 @@ impl ClubDb {
             let club_id = new_id();
             let slug = std::env::var("FLIGHT_CLUB_SLUG").unwrap_or_else(|_| "default".to_string());
             sqlx::query(
-                "INSERT INTO clubs (id, name, slug, created_at, checkin_window_hours, latitude, longitude)
-                 VALUES ($1, $2, $3, $4, 12, -33.4489, -70.6693)",
+                "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at,
+                 checkin_window_hours, latitude, longitude)
+                 VALUES ($1, $2, $3, $4, 'live', $4, 12, -33.4489, -70.6693)",
             )
             .bind(club_id)
             .bind(std::env::var("FLIGHT_CLUB_NAME").unwrap_or_else(|_| "Flight Club".to_string()))
@@ -204,16 +205,18 @@ impl ClubDb {
                 if exists == 0 {
                     let hash =
                         auth::hash_password(&password).map_err(|_| DbError::protocol("hash"))?;
+                    let boot_now = now_ms();
                     sqlx::query(
-                        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
-                         VALUES ($1, $2, $3, $4, '', 'approved', 'admin', $5, $6)",
+                        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role,
+                         password_hash, email_verified_at, created_at)
+                         VALUES ($1, $2, $3, $4, '', 'approved', 'admin', $5, $6, $6)",
                     )
                     .bind(new_id())
                     .bind(&club_id)
                     .bind("Admin")
                     .bind(&email)
                     .bind(&hash)
-                    .bind(now_ms())
+                    .bind(boot_now)
                     .execute(&self.pool)
                     .await?;
                 }
@@ -367,10 +370,15 @@ impl ClubDb {
 
     #[allow(dead_code)]
     pub async fn approve_pilot(&self, pilot_id: &str) -> Result<(), DbError> {
-        sqlx::query("UPDATE pilots SET status = 'approved' WHERE id = $1")
-            .bind(pilot_id)
-            .execute(&self.pool)
-            .await?;
+        let now = now_ms();
+        sqlx::query(
+            "UPDATE pilots SET status = 'approved',
+             email_verified_at = COALESCE(email_verified_at, $2) WHERE id = $1",
+        )
+        .bind(pilot_id)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
         let club_id: String = sqlx::query_scalar("SELECT club_id FROM pilots WHERE id = $1")
             .bind(pilot_id)
             .fetch_one(&self.pool)
@@ -709,6 +717,19 @@ impl ClubDb {
             .await
             .ok()
             .flatten()
+    }
+
+    pub async fn club_id_for_device(&self, device_id: &str) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT p.club_id FROM devices d
+             JOIN pilots p ON p.id = d.pilot_id
+             WHERE d.id = $1",
+        )
+        .bind(device_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
     }
 
     pub async fn open_flight_for_device(&self, device_id: &str) -> Option<String> {

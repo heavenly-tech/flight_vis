@@ -83,7 +83,8 @@ impl ClubDb {
         self.login_throttled(ip, now).await?;
         let email_norm = email.trim();
         let row = sqlx::query(
-            "SELECT id, club_id, name, email, license_no, status, role, locale, password_hash
+            "SELECT id, club_id, name, email, license_no, status, role, locale, password_hash,
+                    email_verified_at
              FROM pilots WHERE club_id = $1 AND lower(email) = lower($2)",
         )
         .bind(club_id)
@@ -101,6 +102,13 @@ impl ClubDb {
         };
 
         let pilot = row_to_pilot(&row).map_err(|_| LoginError::Invalid)?;
+        let status: String = row.try_get(5).map_err(|_| LoginError::Invalid)?;
+        let verified: Option<i64> = row.try_get(9).ok();
+        if status != "approved" || verified.is_none() {
+            let _ = verify_hash(DUMMY_PASSWORD_HASH);
+            let _ = self.record_login_attempt(ip, email_norm, now).await;
+            return Err(LoginError::Invalid);
+        }
         let hash: String = row.try_get(8).map_err(|_| LoginError::Invalid)?;
         if hash.is_empty() {
             let _ = verify_hash(DUMMY_PASSWORD_HASH);

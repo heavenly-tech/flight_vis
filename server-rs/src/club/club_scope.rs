@@ -1,4 +1,5 @@
 use crate::club::db::{now_ms, ClubDb, DbError};
+use crate::club::db_club_lifecycle::ClubPublicRow;
 use sqlx::Row;
 use std::collections::HashSet;
 
@@ -62,7 +63,7 @@ impl ClubDb {
             .unwrap_or(false)
     }
 
-    /// `pilots.global_role = superadmin` OR email in `FLIGHT_SUPERADMIN_EMAILS`.
+    /// `pilots.global_role = superadmin` OR allowlisted email on an approved, verified pilot.
     pub async fn is_platform_superadmin(
         &self,
         pilot_id: &str,
@@ -71,16 +72,37 @@ impl ClubDb {
         if self.is_superadmin(pilot_id).await {
             return true;
         }
-        let email: Option<String> = sqlx::query_scalar("SELECT email FROM pilots WHERE id = $1")
+        let row = sqlx::query("SELECT email, email_verified_at, status FROM pilots WHERE id = $1")
             .bind(pilot_id)
             .fetch_optional(&self.pool)
             .await
             .ok()
             .flatten();
-        email
-            .as_deref()
-            .map(|e| crate::club::superadmin::is_superadmin_email(env_allowlist, e))
-            .unwrap_or(false)
+        let Some(row) = row else {
+            return false;
+        };
+        let email: String = row.try_get(0).ok().unwrap_or_default();
+        let verified: Option<i64> = row.try_get(1).ok();
+        let status: String = row.try_get(2).ok().unwrap_or_default();
+        if verified.is_none() || status != "approved" {
+            return false;
+        }
+        crate::club::superadmin::is_superadmin_email(env_allowlist, &email)
+    }
+
+    /// Live, email-verified, and not suspended.
+    pub fn club_is_operational(row: &ClubPublicRow) -> bool {
+        Self::is_public_verified(row)
+    }
+
+    pub async fn club_operational(&self, club_id: &str) -> Result<(), ClubScopeError> {
+        let Some(row) = self.club_public_row(club_id).await else {
+            return Err(ClubScopeError::NotFound);
+        };
+        if !Self::club_is_operational(&row) {
+            return Err(ClubScopeError::Forbidden);
+        }
+        Ok(())
     }
 
     pub async fn membership_in_club(
@@ -107,6 +129,7 @@ impl ClubDb {
         if self.is_superadmin(pilot_id).await {
             return Ok(());
         }
+        self.club_operational(club_id).await?;
         match self.membership_in_club(pilot_id, club_id).await {
             Some((role, status)) if role == "admin" && status == "approved" => Ok(()),
             _ => Err(ClubScopeError::Forbidden),

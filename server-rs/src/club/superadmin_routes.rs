@@ -1,6 +1,7 @@
 //! Superadmin club moderation (`FLIGHT_SUPERADMIN_EMAILS`).
 
 use crate::club::{
+    auth::parse_session_cookie,
     db::now_ms,
     routes::{club_db, viewer},
 };
@@ -59,6 +60,11 @@ async fn suspend_club(
     if let Err(e) = require_superadmin(&state, &headers).await {
         return e.into_response();
     }
+    if parse_session_cookie(&headers).is_some() {
+        if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+            return (status, Json(json!({ "error": "csrf" }))).into_response();
+        }
+    }
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -85,6 +91,11 @@ async fn unsuspend_club(
 ) -> impl IntoResponse {
     if let Err(e) = require_superadmin(&state, &headers).await {
         return e.into_response();
+    }
+    if parse_session_cookie(&headers).is_some() {
+        if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+            return (status, Json(json!({ "error": "csrf" }))).into_response();
+        }
     }
     let Some(db) = club_db(&state) else {
         return (
