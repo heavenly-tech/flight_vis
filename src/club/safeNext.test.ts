@@ -11,6 +11,14 @@ describe("safeNextPath", () => {
     expect(safeNextPath("//evil")).toBe("/");
     expect(safeNextPath("https://evil.example")).toBe("/");
     expect(safeNextPath("/path\\evil")).toBe("/");
+    expect(safeNextPath("/\\evil")).toBe("/");
+    expect(safeNextPath("/%09/evil.com")).toBe("/");
+    expect(safeNextPath("/%0a/evil")).toBe("/");
+    expect(safeNextPath("/%0d%0a/evil")).toBe("/");
+    expect(safeNextPath("/%5Cevil")).toBe("/");
+    expect(safeNextPath("/\t/evil")).toBe("/");
+    expect(safeNextPath("/\n/evil")).toBe("/");
+    expect(safeNextPath("/\r/evil")).toBe("/");
   });
 
   it("blocks legacy and club login loops", () => {

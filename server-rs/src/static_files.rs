@@ -29,6 +29,28 @@ fn mime_for(ext: &str) -> &'static str {
     }
 }
 
+/// Collapse `//`, `/./`, and trailing slashes in a URL path (no filesystem join).
+pub fn normalize_url_path(url_path: &str) -> Option<String> {
+    let trimmed = url_path.trim();
+    if trimmed.is_empty() || !trimmed.starts_with('/') {
+        return None;
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for part in trimmed.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            return None;
+        }
+        parts.push(part);
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!("/{}", parts.join("/")))
+}
+
 /// Mirror of the Node guard: strip leading slashes, drop `.` segments, and
 /// refuse to serve anything escaping the directory (any `..` segment).
 fn safe_join(dist_dir: &Path, url_path: &str) -> Option<PathBuf> {
@@ -304,6 +326,22 @@ mod tests {
         ));
         std::fs::create_dir_all(dir.join("geoid")).unwrap();
         dir
+    }
+
+    #[test]
+    fn normalize_url_path_collapses_admin_gate_variants() {
+        assert_eq!(
+            normalize_url_path("//club-admin-types.html"),
+            Some("/club-admin-types.html".to_string())
+        );
+        assert_eq!(
+            normalize_url_path("/./club-admin-types.html"),
+            Some("/club-admin-types.html".to_string())
+        );
+        assert_eq!(
+            normalize_url_path("/club-admin-types.html/"),
+            Some("/club-admin-types.html".to_string())
+        );
     }
 
     #[test]

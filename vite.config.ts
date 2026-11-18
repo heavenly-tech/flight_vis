@@ -9,6 +9,19 @@ const cesiumSource = "node_modules/cesium/Build/Cesium";
 const cesiumBaseUrl = "cesiumStatic";
 const api = "http://127.0.0.1:8080";
 
+function normalizeUrlPath(urlPath: string): string | null {
+  const trimmed = urlPath.trim();
+  if (!trimmed.startsWith("/")) return null;
+  const parts: string[] = [];
+  for (const part of trimmed.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") return null;
+    parts.push(part);
+  }
+  if (!parts.length) return null;
+  return `/${parts.join("/")}`;
+}
+
 const authProxy: Record<string, string | ProxyOptions> = {
   "/.well-known": api,
   "/c/": api,
@@ -34,8 +47,12 @@ function clubAdminHtmlGateMiddleware(
   return (req, res, next) => {
     const method = req.method ?? "GET";
     const raw = req.url ?? "";
-    const pathOnly = raw.split("?")[0] ?? "";
-    if ((method !== "GET" && method !== "HEAD") || !/^\/club-admin-[^/]+\.html$/.test(pathOnly)) {
+    const pathOnly = normalizeUrlPath(raw.split("?")[0] ?? "");
+    if (
+      (method !== "GET" && method !== "HEAD") ||
+      !pathOnly ||
+      !/^\/club-admin-[^/]+\.html$/.test(pathOnly)
+    ) {
       next();
       return;
     }

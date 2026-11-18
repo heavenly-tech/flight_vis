@@ -127,12 +127,40 @@ pub fn parse_cookie(header: Option<&str>) -> Option<String> {
     None
 }
 
+fn percent_decode_path(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+            {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn has_unsafe_path_chars(s: &str) -> bool {
+    s.bytes().any(|b| b < 0x20 || b == 0x7f) || s.contains('\\')
+}
+
 pub fn safe_next(input: &str) -> String {
-    let value = input.trim();
+    let raw = input.trim();
+    let value = percent_decode_path(raw);
+    if has_unsafe_path_chars(raw) || has_unsafe_path_chars(&value) {
+        return "/".to_string();
+    }
     if !value.starts_with('/') || value.starts_with("//") {
         return "/".to_string();
     }
-    if value.contains('\\') || value.contains("://") {
+    if value.contains("://") {
         return "/".to_string();
     }
     if value == "/login" || value.starts_with("/login?") {
@@ -233,5 +261,11 @@ mod tests {
         assert_eq!(safe_next("https://evil.example"), "/");
         assert_eq!(safe_next("/login"), "/");
         assert_eq!(safe_next("/club-login.html?next=/x"), "/");
+        assert_eq!(safe_next("/%09/evil.com"), "/");
+        assert_eq!(safe_next("/%0a/evil"), "/");
+        assert_eq!(safe_next("/%0d%0a/evil"), "/");
+        assert_eq!(safe_next("/%5Cevil"), "/");
+        assert_eq!(safe_next("/\t/evil"), "/");
+        assert_eq!(safe_next("/\n/evil"), "/");
     }
 }
