@@ -430,6 +430,7 @@ use futures_util::StreamExt;
 use http_body_util::BodyDataStream;
 use serde_json::json;
 
+#[allow(clippy::result_large_err)]
 async fn storage_for_video(
     state: &AppState,
     headers: &HeaderMap,
