@@ -191,9 +191,10 @@ async fn patch_flight(
         slug: None,
         overwrite: None,
     });
+    let renamed_slug = parsed.slug.is_some();
     match state.store.rename_flight(&storage, parsed).await {
         Ok(mut item) => {
-            if parsed.slug.is_none() {
+            if !renamed_slug {
                 item.slug = slug;
             }
             Json(item).into_response()
