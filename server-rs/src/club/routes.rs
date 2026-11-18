@@ -408,6 +408,13 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
     let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
     match pilot {
         Some(p) => {
+            if db.club_operational(&p.club_id).await.is_err() {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({ "error": "club unavailable" })),
+                )
+                    .into_response();
+            }
             let club_default = db
                 .club_default_locale(&p.club_id)
                 .await
@@ -665,6 +672,15 @@ pub async fn post_club_flight_start(
                 .into_response();
         }
     };
+    if let Some(club_id) = db.club_id_for_device(&device_id).await {
+        if db.club_operational(&club_id).await.is_err() {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "club unavailable" })),
+            )
+                .into_response();
+        }
+    }
     let visibility = match parse_visibility(parsed.visibility.as_deref()) {
         Ok(v) => v,
         Err(msg) => {
@@ -813,6 +829,17 @@ async fn club_map(State(state): State<AppState>, headers: HeaderMap) -> impl Int
     let Some(db) = club_db(&state) else {
         return Json(json!({ "aircraft": [] })).into_response();
     };
+    if let Viewer::Pilot { id, .. } = &v {
+        if let Ok(club_id) = db.pilot_club_id(id).await {
+            if db.club_operational(&club_id).await.is_err() {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({ "error": "club unavailable" })),
+                )
+                    .into_response();
+            }
+        }
+    }
     let positions: Vec<TailLivePosition> = db.club_map_for_viewer(&v).await;
     Json(json!({ "aircraft": positions })).into_response()
 }
@@ -1896,6 +1923,15 @@ async fn post_checkin(
         )
             .into_response();
     };
+    if let Ok(club_id) = db.pilot_club_id(&pilot_id).await {
+        if db.club_operational(&club_id).await.is_err() {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "club unavailable" })),
+            )
+                .into_response();
+        }
+    }
     if let Some(dev) = &device_id {
         if db.device_pilot_id(dev).await.as_deref() != Some(pilot_id.as_str()) {
             return (
@@ -2000,6 +2036,13 @@ async fn display_checkin_qr(
         )
             .into_response();
     };
+    if db.club_operational(&club_id).await.is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "club unavailable" })),
+        )
+            .into_response();
+    }
     let now = now_ms();
     match db.mint_checkin_qr_token(&club_id, now).await {
         Ok(_token) => {

@@ -119,14 +119,54 @@ impl ClubDb {
     }
 
     pub async fn set_club_suspended(&self, club_id: &str, now: i64) -> Result<bool, DbError> {
+        let mut tx = self.pool.begin().await?;
         let r = sqlx::query(
             "UPDATE clubs SET suspended_at = $1 WHERE id = $2 AND suspended_at IS NULL",
         )
         .bind(now)
         .bind(club_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
-        Ok(r.rows_affected() > 0)
+        if r.rows_affected() == 0 {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        sqlx::query(
+            "DELETE FROM pilot_sessions
+             WHERE pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE devices SET token_hash = 'revoked-suspend-' || id || '-' || $1::text
+             WHERE pilot_id IN (SELECT id FROM pilots WHERE club_id = $2)",
+        )
+        .bind(now)
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "DELETE FROM device_pair_tokens
+             WHERE device_id IN (
+                 SELECT d.id FROM devices d
+                 JOIN pilots p ON p.id = d.pilot_id
+                 WHERE p.club_id = $1
+             )",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE display_sessions SET revoked_at = $1
+             WHERE club_id = $2 AND revoked_at IS NULL",
+        )
+        .bind(now)
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     pub async fn clear_club_suspended(&self, club_id: &str) -> Result<bool, DbError> {
@@ -150,7 +190,8 @@ impl ClubDb {
         let name = name.trim();
         let slug = normalize_slug(slug);
         let email = contact_email.trim().to_ascii_lowercase();
-        if name.is_empty() || email.is_empty() || !email.contains('@') {
+        if name.is_empty() || name.chars().count() > 80 || email.is_empty() || !email.contains('@')
+        {
             return Err(ClubSignupError::InvalidEmail);
         }
         if validate_slug(&slug).is_err() {

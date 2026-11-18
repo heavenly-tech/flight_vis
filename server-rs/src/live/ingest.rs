@@ -56,6 +56,15 @@ pub async fn post_ingest(
         .collect();
     if let Some(db) = &state.club {
         if let Some(device_id) = db.resolve_device_token(token).await {
+            if let Some(club_id) = db.club_id_for_device(&device_id).await {
+                if db.club_operational(&club_id).await.is_err() {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({ "error": "club unavailable" })),
+                    )
+                        .into_response();
+                }
+            }
             if let Some(flight_id) = db.open_flight_for_device(&device_id).await {
                 let accepted = db
                     .append_fixes(&flight_id, &device_id, &fixes)
@@ -244,6 +253,15 @@ pub async fn osmand_ingest(
     }
     if let Some(db) = &state.club {
         if let Some(device_id) = db.resolve_device_token(&token).await {
+            if let Some(club_id) = db.club_id_for_device(&device_id).await {
+                if db.club_operational(&club_id).await.is_err() {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({ "error": "club unavailable" })),
+                    )
+                        .into_response();
+                }
+            }
             if let Some(flight_id) = db.open_flight_for_device(&device_id).await {
                 if db
                     .append_fixes(&flight_id, &device_id, std::slice::from_ref(&fix))

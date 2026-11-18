@@ -164,6 +164,12 @@ async fn magic_consume_post(
             .into_response();
     };
     let now = now_ms();
+    if db.try_consume_magic_club_verify(&token, now).await.is_ok() {
+        if wants_html(&headers) {
+            return (StatusCode::FOUND, [(header::LOCATION, "/".to_string())]).into_response();
+        }
+        return Json(json!({ "ok": true, "verified": true, "clubVerified": true })).into_response();
+    }
     if db.try_consume_magic_verify(&token, now).await.is_ok() {
         return Json(json!({ "ok": true, "verified": true })).into_response();
     }
