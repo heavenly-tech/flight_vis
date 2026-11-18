@@ -3,6 +3,7 @@
 //! Writes go through temp-file + rename and are serialized by a global
 //! mutex (Node interleaves async handlers the same way; serializing keeps
 //! read-modify-write paths like rename/overwrite race-free).
+use crate::demo_flight::{DEMO_FLIGHT_SLUG, LEGACY_DEMO_SLUG};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     collections::HashSet,
@@ -329,6 +330,35 @@ impl Store {
         Ok(meta)
     }
 
+    pub fn summarize(&self, storage_slug: &str, meta: &FlightMeta) -> FlightListItem {
+        self.summarize_inner(storage_slug, meta)
+    }
+
+    fn summarize_inner(&self, slug: &str, meta: &FlightMeta) -> FlightListItem {
+        let size = self
+            .flight_dir(slug)
+            .join("track")
+            .metadata()
+            .map(|m| m.len())
+            .unwrap_or(0);
+        FlightListItem {
+            slug: slug.to_string(),
+            name: if meta.name.is_empty() {
+                slug.to_string()
+            } else {
+                meta.name.clone()
+            },
+            file_name: if meta.file_name.is_empty() {
+                "track".to_string()
+            } else {
+                meta.file_name.clone()
+            },
+            updated_at: meta.updated_at.clone(),
+            created_at: meta.created_at.clone(),
+            size,
+        }
+    }
+
     pub async fn read_meta(&self, slug: &str) -> Option<FlightRecord> {
         let dir = self.flight_dir(slug);
         let meta_raw = tokio::fs::read_to_string(dir.join("meta.json"))
@@ -423,26 +453,48 @@ impl Store {
         Ok(FlightRecord { meta, track })
     }
 
-    fn summarize(&self, slug: &str, meta: &FlightMeta) -> FlightListItem {
-        let size = std::fs::metadata(self.flight_dir(slug).join("track"))
+    pub async fn list_storage_slugs(&self) -> Vec<String> {
+        let _ = tokio::fs::create_dir_all(&self.flights_dir).await;
+        let mut entries = match tokio::fs::read_dir(&self.flights_dir).await {
+            Ok(entries) => entries,
+            Err(_) => return vec![],
+        };
+        let mut slugs = vec![];
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let slug = entry.file_name().to_string_lossy().into_owned();
+            if !is_valid_slug(&slug) {
+                continue;
+            }
+            if self.exists(&slug) {
+                slugs.push(slug);
+            }
+        }
+        slugs.sort();
+        slugs
+    }
+
+    /// Track bytes, videos in meta, total bytes of video files on disk.
+    pub async fn flight_disk_stats(&self, storage_slug: &str) -> (u64, i64, u64) {
+        let dir = self.flight_dir(storage_slug);
+        let track_bytes = tokio::fs::metadata(dir.join("track"))
+            .await
             .map(|m| m.len())
             .unwrap_or(0);
-        FlightListItem {
-            slug: slug.to_string(),
-            name: if meta.name.is_empty() {
-                slug.to_string()
-            } else {
-                meta.name.clone()
-            },
-            file_name: if meta.file_name.is_empty() {
-                "track".to_string()
-            } else {
-                meta.file_name.clone()
-            },
-            updated_at: meta.updated_at.clone(),
-            created_at: meta.created_at.clone(),
-            size,
+        let meta_raw = tokio::fs::read_to_string(dir.join("meta.json"))
+            .await
+            .unwrap_or_default();
+        let meta: FlightMeta = serde_json::from_str(&meta_raw).unwrap_or_default();
+        let video_count = meta.videos.len() as i64;
+        let mut video_bytes = 0u64;
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.starts_with("video-") {
+                    video_bytes += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                }
+            }
         }
+        (track_bytes, video_count, video_bytes)
     }
 
     pub async fn list_flights(&self) -> Vec<FlightListItem> {
@@ -473,7 +525,7 @@ impl Store {
             let Ok(meta) = serde_json::from_str::<FlightMeta>(&raw) else {
                 continue;
             };
-            items.push(self.summarize(&slug, &meta));
+            items.push(self.summarize_inner(&slug, &meta));
         }
         items.sort_by(|a, b| {
             b.updated_at
@@ -650,7 +702,7 @@ impl Store {
         tokio::fs::create_dir_all(&self.flights_dir)
             .await
             .map_err(|error| StoreError::status(500, error.to_string()))?;
-        if self.exists("vuelo-5") {
+        if self.exists(DEMO_FLIGHT_SLUG) || self.exists(LEGACY_DEMO_SLUG) {
             return Ok(());
         }
         let track = match sample_text {
@@ -670,9 +722,9 @@ impl Store {
             }
         };
         self.write_flight(
-            "vuelo-5",
+            DEMO_FLIGHT_SLUG,
             WriteFlightBody {
-                name: Some("Vuelo5".to_string()),
+                name: Some("Demo".to_string()),
                 file_name: Some("vuelo5.gpx".to_string()),
                 trim_start_ms: None,
                 trim_end_ms: None,

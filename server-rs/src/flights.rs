@@ -1,5 +1,6 @@
 //! Flight CRUD routes with response parity to the Node implementation.
 use crate::{
+    flight_access::{list_library_flights, require_flight_write, storage_slug_for},
     require_auth,
     store::{is_valid_slug, normalize_slug, RenameBody, StoreError, UploadFile, WriteFlightBody},
     AppState,
@@ -29,10 +30,10 @@ async fn list_flights(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
-        return *denied;
+    match list_library_flights(&state, &state.store, &headers).await {
+        Ok(items) => Json(items).into_response(),
+        Err(denied) => denied,
     }
-    Json(state.store.list_flights().await).into_response()
 }
 
 async fn get_flight(
@@ -47,8 +48,14 @@ async fn get_flight(
         )
             .into_response();
     }
-    match state.store.read_meta(&slug).await {
-        Some(record) => Json(record).into_response(),
+    let Some(storage) = storage_slug_for(&state, &state.store, &slug).await else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response();
+    };
+    match state.store.read_meta(&storage).await {
+        Some(mut record) => {
+            record.meta.slug = slug;
+            Json(record).into_response()
+        }
         None => (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response(),
     }
 }
@@ -59,9 +66,6 @@ async fn put_flight(
     Path(raw): Path<String>,
     body: Bytes,
 ) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
-        return *denied;
-    }
     let slug = normalize_slug(&raw);
     if !is_valid_slug(&slug) {
         return (
@@ -70,6 +74,27 @@ async fn put_flight(
         )
             .into_response();
     }
+    if let Err(denied) = require_flight_write(&state, &headers, &slug).await {
+        return denied;
+    }
+    let Some(storage) = storage_slug_for(&state, &state.store, &slug).await else {
+        // New flight write uses public slug as storage path until mapped.
+        let storage = slug.clone();
+        let parsed: WriteFlightBody = match serde_json::from_slice(&body) {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "Invalid JSON" })),
+                )
+                    .into_response();
+            }
+        };
+        return match state.store.write_flight(&storage, parsed).await {
+            Ok(record) => Json(record).into_response(),
+            Err(error) => store_error(error),
+        };
+    };
     // Malformed JSON falls through to a 500 here in Node (uncaught throw);
     // Axum rejects earlier with 4xx. Frontend only ever sends valid JSON.
     let parsed: WriteFlightBody = match serde_json::from_slice(&body) {
@@ -82,8 +107,11 @@ async fn put_flight(
                 .into_response();
         }
     };
-    match state.store.write_flight(&slug, parsed).await {
-        Ok(record) => Json(record).into_response(),
+    match state.store.write_flight(&storage, parsed).await {
+        Ok(mut record) => {
+            record.meta.slug = slug;
+            Json(record).into_response()
+        }
         Err(error) => store_error(error),
     }
 }
@@ -144,9 +172,6 @@ async fn patch_flight(
             .into_response();
         }
     }
-    if let Err(denied) = require_auth(&state, &headers) {
-        return *denied;
-    }
     let slug = normalize_slug(&raw);
     if !is_valid_slug(&slug) {
         return (
@@ -155,13 +180,22 @@ async fn patch_flight(
         )
             .into_response();
     }
+    if let Err(denied) = require_flight_write(&state, &headers, &slug).await {
+        return denied;
+    }
+    let Some(storage) = storage_slug_for(&state, &state.store, &slug).await else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response();
+    };
     let parsed: RenameBody = serde_json::from_slice(&body).unwrap_or(RenameBody {
         name: None,
         slug: None,
         overwrite: None,
     });
-    match state.store.rename_flight(&slug, parsed).await {
-        Ok(item) => Json(item).into_response(),
+    match state.store.rename_flight(&storage, parsed).await {
+        Ok(mut item) => {
+            item.slug = slug;
+            Json(item).into_response()
+        }
         Err(error) => store_error(error),
     }
 }
@@ -171,9 +205,6 @@ async fn delete_flight(
     headers: HeaderMap,
     Path(raw): Path<String>,
 ) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
-        return *denied;
-    }
     let slug = normalize_slug(&raw);
     if !is_valid_slug(&slug) {
         return (
@@ -182,7 +213,13 @@ async fn delete_flight(
         )
             .into_response();
     }
-    match state.store.delete_flight(&slug).await {
+    if let Err(denied) = require_flight_write(&state, &headers, &slug).await {
+        return denied;
+    }
+    let Some(storage) = storage_slug_for(&state, &state.store, &slug).await else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response();
+    };
+    match state.store.delete_flight(&storage).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(error) => store_error(error),
     }

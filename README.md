@@ -4,7 +4,7 @@
 
 Host your own instance, add to your library, and share tracks as you wish. You can tag along the track, trim the track start and end, and choose coloring for the track based on height, speed, or vertical velocity.
 
-Live: [flight.heavenly.cl](https://flight.heavenly.cl) · sample flight [`/vuelo-5`](https://flight.heavenly.cl/vuelo-5)
+Live: [flight.heavenly.cl](https://flight.heavenly.cl) · sample flight [`/demo`](https://flight.heavenly.cl/demo) (legacy [`/vuelo-5`](https://flight.heavenly.cl/vuelo-5) → 308)
 
 Shareable slug pages are public. Saving, uploading, and the library need a login.
 

@@ -15,6 +15,7 @@ import { ACC_DIM_M, createLiveRuntime, parseLivePath } from "./live/runtime";
 import { createE2eFlightViewer } from "./viz/e2eViewerStub";
 import type { FlightViewer, PathMode } from "./viz/viewer";
 import { e2eGlobeHooksEnabled, type FvE2eSurface } from "./e2eGlobeHooks";
+import { DEMO_FLIGHT_SLUG } from "./demoFlight";
 
 const SAMPLE_URL = `${import.meta.env.BASE_URL}samples/vuelo5.gpx`;
 const HANDLE = 10;
@@ -969,10 +970,10 @@ async function boot(): Promise<void> {
   try {
     const slug = pathSlug();
     if (slug && (await loadFromSlug(slug))) return;
-    if (await loadFromSlug("vuelo-5")) return;
+    if (await loadFromSlug(DEMO_FLIGHT_SLUG)) return;
     const res = await fetch(SAMPLE_URL);
     if (!res.ok) throw new Error("Could not load Vuelo5");
-    await loadText(await res.text(), "vuelo5.gpx", { slug: "vuelo-5" });
+    await loadText(await res.text(), "vuelo5.gpx", { slug: DEMO_FLIGHT_SLUG });
   } catch (error) {
     setStatus(error instanceof Error ? error.message : "Could not load flight");
   }
