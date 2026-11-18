@@ -3,11 +3,7 @@
 use crate::{
     auth::Auth,
     build_router,
-    club::{
-        auth,
-        db::{ClubDb, DbConnectError},
-        visibility::FlightVisibility,
-    },
+    club::{auth, database::DbConnectError, db::ClubDb, visibility::FlightVisibility},
     demo_flight::{DEMO_FLIGHT_SLUG, LEGACY_DEMO_SLUG},
     migrate_legacy::{parse_cli_args, run_legacy_migrate, LegacyMigrateOpts},
     store::Store,
@@ -64,15 +60,15 @@ async fn seed_legacy_owner(db: &ClubDb, club_id: &str) -> (String, String, Strin
 
 fn test_router(data_dir: &std::path::Path, db: ClubDb, password: &str) -> AppState {
     let live = std::sync::Arc::new(crate::live::LiveEngine::new(data_dir));
-    let (mut bundle, _rx) = crate::app_state(
+    let (mut state, _rx) = crate::app_state(
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist"),
         Auth::with_password(password),
         crate::device_auth::DeviceAuth::empty(),
         live,
         Store::new(data_dir),
     );
-    bundle.0.club = Some(db);
-    bundle.0
+    state.club = Some(db);
+    state
 }
 
 #[serial]
@@ -145,7 +141,7 @@ async fn migrate_legacy_dry_run_and_apply_idempotent() {
         .await
         .expect("second apply");
 
-    let mut app = build_router(test_router(data_dir.path(), db.clone(), ""));
+    let app = build_router(test_router(data_dir.path(), db.clone(), ""));
     let req = Request::builder()
         .method("GET")
         .uri(format!("/api/flights/{DEMO_FLIGHT_SLUG}"))
@@ -165,7 +161,7 @@ async fn migrate_legacy_dry_run_and_apply_idempotent() {
         StatusCode::PERMANENT_REDIRECT
     );
 
-    let mut app = build_router(test_router(data_dir.path(), db, "secret"));
+    let app = build_router(test_router(data_dir.path(), db.clone(), "secret"));
     let login = Request::builder()
         .method("POST")
         .uri("/login")
@@ -174,7 +170,7 @@ async fn migrate_legacy_dry_run_and_apply_idempotent() {
         .unwrap();
     assert_eq!(app.oneshot(login).await.unwrap().status(), StatusCode::OK);
 
-    let mut gate_off = build_router(test_router(data_dir.path(), db, ""));
+    let gate_off = build_router(test_router(data_dir.path(), db.clone(), ""));
     let req = Request::builder()
         .method("GET")
         .uri(format!("/api/flights/{DEMO_FLIGHT_SLUG}"))

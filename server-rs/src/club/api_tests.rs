@@ -946,3 +946,109 @@ async fn postal_bounce_webhook_requires_and_verifies_rsa256() {
     assert_eq!(ok.status(), StatusCode::OK);
     std::env::remove_var("POSTAL_WEBHOOK_PUBLIC_KEY_FILE");
 }
+
+async fn post_osmand_fix(router: &mut axum::Router, device_token: &str, flight_id: &str) {
+    let q = format!(
+        "id={device_token}&lat=-33.4&lon=-70.6&timestamp={}",
+        now_ms() / 1000
+    );
+    let res = router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/osmand?{q}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        StatusCode::OK,
+        "osmand ingest for {flight_id}"
+    );
+}
+
+async fn live_summary_flights(router: &mut axum::Router, uri: &str) -> Vec<String> {
+    let res = router
+        .call(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK, "GET {uri}");
+    let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    serde_json::from_slice::<serde_json::Value>(&body)
+        .unwrap()
+        .get("flights")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| {
+            row.get("flightId")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .collect()
+}
+
+#[tokio::test]
+#[serial]
+async fn public_live_summary_counts_and_hides_non_public() {
+    let mut fx = setup().await;
+    let cookie_a = login_cookie(&mut fx.router, "a@test").await;
+    let cookie_b = login_cookie(&mut fx.router, "b@test").await;
+    assert!(
+        live_summary_flights(&mut fx.router, "/api/public/live-summary")
+            .await
+            .is_empty()
+    );
+
+    let club_id = fx.club.default_club_id().await.unwrap();
+    fx.club
+        .upsert_aircraft(&club_id, "N2", "C152", true)
+        .await
+        .unwrap();
+    let (_dev_b, token_b) = fx
+        .club
+        .create_device(&fx._pilot_b, "phone-b")
+        .await
+        .unwrap();
+
+    let club_only_id = start_flight(&mut fx.router, &fx.club, &cookie_b, &token_b, "club").await;
+    post_osmand_fix(&mut fx.router, &token_b, &club_only_id).await;
+    assert!(
+        live_summary_flights(&mut fx.router, "/api/public/live-summary")
+            .await
+            .is_empty()
+    );
+
+    let public_id = start_flight(
+        &mut fx.router,
+        &fx.club,
+        &cookie_a,
+        &fx.device_token,
+        "public",
+    )
+    .await;
+    post_osmand_fix(&mut fx.router, &fx.device_token, &public_id).await;
+
+    let summary_one = live_summary_flights(&mut fx.router, "/api/public/live-summary").await;
+    assert_eq!(summary_one.len(), 1);
+    assert!(summary_one.contains(&public_id));
+    assert!(!summary_one.contains(&club_only_id));
+
+    fx.club
+        .patch_flight(
+            &fx._pilot_b,
+            &club_only_id,
+            Some(FlightVisibility::Public),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let summary_two = live_summary_flights(&mut fx.router, "/api/public/live-summary").await;
+    assert_eq!(summary_two.len(), 2);
+    assert!(summary_two.contains(&public_id));
+    assert!(summary_two.contains(&club_only_id));
+}

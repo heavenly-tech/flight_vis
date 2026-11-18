@@ -128,5 +128,3 @@ pub async fn list_library_flights(
     }
     Ok(out)
 }
-
-pub(crate) use storage_slug_for as resolve_storage_slug;

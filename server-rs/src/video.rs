@@ -443,9 +443,7 @@ async fn storage_for_video(
         )
             .into_response());
     }
-    if let Err(denied) = require_flight_write(state, headers, &public_slug).await {
-        return Err(denied);
-    }
+    require_flight_write(state, headers, &public_slug).await?;
     let Some(storage) = storage_slug_for(state, &state.store, &public_slug).await else {
         return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response());
     };

@@ -1,6 +1,6 @@
 mod engine;
 mod ingest;
-mod persist;
+pub(crate) mod persist;
 mod routes;
 mod sse;
 mod types;

@@ -16,6 +16,14 @@ import { createE2eFlightViewer } from "./viz/e2eViewerStub";
 import type { FlightViewer, PathMode } from "./viz/viewer";
 import { e2eGlobeHooksEnabled, type FvE2eSurface } from "./e2eGlobeHooks";
 import { DEMO_FLIGHT_SLUG } from "./demoFlight";
+import {
+  demoFallbackPath,
+  isFullGlobeEntry,
+  isSiteRootPath,
+  publicLiveSummaryUrl,
+  resolvePublicRootRedirect,
+  type PublicLiveSummary,
+} from "./publicLiveRoot";
 
 const SAMPLE_URL = `${import.meta.env.BASE_URL}samples/vuelo5.gpx`;
 const HANDLE = 10;
@@ -954,6 +962,34 @@ async function boot(): Promise<void> {
   syncAuthUi();
 
   const liveRoute = parseLivePath(window.location.pathname);
+  const rootPath = window.location.pathname;
+  const rootSearch = window.location.search;
+  const clubFromQuery = new URLSearchParams(rootSearch).get("club");
+
+  if (
+    !pathSlug() &&
+    !liveRoute.sessionId &&
+    !liveRoute.listOnly &&
+    isSiteRootPath(rootPath) &&
+    !isFullGlobeEntry(rootPath, rootSearch)
+  ) {
+    try {
+      const res = await fetch(publicLiveSummaryUrl(clubFromQuery));
+      if (res.ok) {
+        const summary = (await res.json()) as PublicLiveSummary;
+        const redirect = resolvePublicRootRedirect(summary, clubFromQuery);
+        if (redirect) {
+          location.replace(redirect);
+          return;
+        }
+        history.replaceState(null, "", demoFallbackPath());
+        if (await loadFromSlug(DEMO_FLIGHT_SLUG)) return;
+      }
+    } catch {
+      /* fall through to legacy default load */
+    }
+  }
+
   if (auth.authenticated && !liveRoute.sessionId && !liveRoute.listOnly) {
     library.setOpen(true);
   }
