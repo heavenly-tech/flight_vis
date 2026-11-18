@@ -6,7 +6,8 @@ import { viteStaticCopy } from "vite-plugin-static-copy";
 const root = path.dirname(fileURLToPath(import.meta.url));
 const cesiumSource = "node_modules/cesium/Build/Cesium";
 const cesiumBaseUrl = "cesiumStatic";
-const api = "http://127.0.0.1:8080";
+const apiPort = process.env.PORT ?? "8080";
+const api = `http://127.0.0.1:${apiPort}`;
 
 const authProxy: Record<string, string | ProxyOptions> = {
   "/.well-known": api,

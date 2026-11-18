@@ -1,7 +1,5 @@
-import { parseLivePath } from "./path";
-
-const live = parseLivePath(window.location.pathname);
-if (live.sessionId) {
+(function () {
+  if (!/^\/live\/[A-Za-z0-9._-]+/i.test(location.pathname)) return;
   const title = document.getElementById("flight-name");
   if (title) title.textContent = "Live session";
   const status = document.getElementById("status");
@@ -9,4 +7,4 @@ if (live.sessionId) {
     status.hidden = true;
     status.textContent = "";
   }
-}
+})();

@@ -75,6 +75,15 @@ jobs:
             exit 1
           fi
 
+      - name: prod dist has no e2e-only gateway scripts
+        run: |
+          for f in e2e-csp-hooks.js e2e-live-csp-sse.js; do
+            if [ -f "dist/$f" ]; then
+              echo "dist/ must not ship $f (scripts/e2e-gateway only)"
+              exit 1
+            fi
+          done
+
       - name: frontend lint
         run: npm run lint
 

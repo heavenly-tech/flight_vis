@@ -1,28 +1,21 @@
 import { expect, test } from "@playwright/test";
-
-/** Must match `server-rs/src/static_files.rs` `HTML_CSP` (nginx vhost should mirror this). */
-export const PROD_HTML_CSP =
-  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' https://services.arcgisonline.com https://elevation3d.arcgis.com; connect-src 'self' https://services.arcgisonline.com https://elevation3d.arcgis.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+import { PROD_HTML_CSP } from "./csp-constants";
 
 const CSP_VIOLATION =
   /Refused to execute|Refused to load|Content Security Policy|securitypolicyviolation|violates the following Content Security Policy/i;
 
-// TODO(hotfix): drop when separate Cesium `new Function` CSP fix merges — see urgent globe hotfix PR.
-const CESIUM_EVAL_PENDING_HOTFIX = /EvalError|unsafe-eval.*evaluat|new Function/i;
-
-function isPendingCesiumHotfix(message: string): boolean {
-  return CESIUM_EVAL_PENDING_HOTFIX.test(message);
-}
-
-function trackCspViolations(page: import("@playwright/test").Page): string[] {
+function trackCspViolations(page: import("@playwright/test").Page): {
+  violations: string[];
+  pageErrors: string[];
+} {
   const violations: string[] = [];
+  const pageErrors: string[] = [];
   page.on("console", (msg) => {
     const text = msg.text();
-    if (isPendingCesiumHotfix(text)) return;
     if (CSP_VIOLATION.test(text)) violations.push(text);
   });
   page.on("pageerror", (err) => {
-    if (isPendingCesiumHotfix(err.message)) return;
+    pageErrors.push(String(err));
     if (CSP_VIOLATION.test(err.message)) violations.push(err.message);
   });
   void page.addInitScript(() => {
@@ -33,7 +26,7 @@ function trackCspViolations(page: import("@playwright/test").Page): string[] {
       );
     });
   });
-  return violations;
+  return { violations, pageErrors };
 }
 
 async function domViolations(page: import("@playwright/test").Page): Promise<string[]> {
@@ -43,11 +36,10 @@ async function domViolations(page: import("@playwright/test").Page): Promise<str
 function relevantViolations(events: string[]): string[] {
   return events.filter(
     (v) =>
-      !isPendingCesiumHotfix(v) &&
-      (v.startsWith("script-src") ||
-        v.startsWith("style-src") ||
-        v.startsWith("font-src") ||
-        CSP_VIOLATION.test(v)),
+      v.startsWith("script-src") ||
+      v.startsWith("style-src") ||
+      v.startsWith("font-src") ||
+      CSP_VIOLATION.test(v),
   );
 }
 
@@ -86,15 +78,16 @@ test.describe("production CSP (release server)", () => {
   });
 
   test("slug page loads without script/style/font CSP violations", async ({ page }) => {
-    const violations = trackCspViolations(page);
+    const { violations, pageErrors } = trackCspViolations(page);
     await page.goto("/vuelo-5");
     await expect(page.locator("#flight-name")).toBeVisible({ timeout: 60_000 });
+    expect(pageErrors, "uncaught page errors").toEqual([]);
     expect(relevantViolations(violations), "console CSP violations").toEqual([]);
     expect(relevantViolations(await domViolations(page)), "securitypolicyviolation events").toEqual([]);
   });
 
   test("club landing page loads fonts/styles under prod CSP", async ({ page, request }) => {
-    const violations = trackCspViolations(page);
+    const { violations, pageErrors } = trackCspViolations(page);
     await expectProdCspHeader(request, "/club-checkin-landing.html");
     await page.goto("/club-checkin-landing.html");
     await expect(page.locator("main")).toBeVisible({ timeout: 30_000 });
@@ -103,12 +96,13 @@ test.describe("production CSP (release server)", () => {
       return family.includes("outfit");
     });
     expect(fontOk, "Outfit self-hosted font applied").toBe(true);
+    expect(pageErrors, "uncaught page errors").toEqual([]);
     expect(relevantViolations(violations), "console CSP violations").toEqual([]);
     expect(relevantViolations(await domViolations(page)), "securitypolicyviolation events").toEqual([]);
   });
 
   test("/live/{id} chrome loads without script/style/font CSP violations", async ({ page }) => {
-    const violations = trackCspViolations(page);
+    const { violations, pageErrors } = trackCspViolations(page);
     const fixes = [
       { t: 1_700_000_000_000, lat: -33.4, lon: -70.6, alt: 1200, alt_ref: "wgs84_ellipsoid" },
       { t: 1_700_000_001_000, lat: -33.41, lon: -70.61, alt: 1210, alt_ref: "wgs84_ellipsoid" },
@@ -158,6 +152,7 @@ test.describe("production CSP (release server)", () => {
 
     await page.goto("/live/sess-csp");
     await expect(page.locator("#flight-name")).toHaveText("Live session", { timeout: 60_000 });
+    expect(pageErrors, "uncaught page errors").toEqual([]);
     expect(relevantViolations(violations), "console CSP violations").toEqual([]);
     expect(relevantViolations(await domViolations(page)), "securitypolicyviolation events").toEqual([]);
   });
