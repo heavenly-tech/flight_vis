@@ -1,10 +1,19 @@
 import { expect, test } from "@playwright/test";
 
-test("unauthenticated club admin redirects to club login with next", async ({ page }) => {
-  await page.goto("/club-admin-types.html", { waitUntil: "load" });
-  await expect(page).toHaveURL(/\/club-login\.html/);
-  expect(new URL(page.url()).searchParams.get("next")).toBe("/club-admin-types.html");
-});
+const adminPagesRedirectToClubLogin = [
+  "/club-admin-types.html",
+  "/club-admin-matrix.html",
+  "/club-admin-import.html",
+  "/club-admin-audit.html",
+] as const;
+
+for (const adminPath of adminPagesRedirectToClubLogin) {
+  test(`unauthenticated ${adminPath} redirects to club login with next`, async ({ page }) => {
+    await page.goto(adminPath, { waitUntil: "load" });
+    await expect(page).toHaveURL(/\/club-login\.html/);
+    expect(new URL(page.url()).searchParams.get("next")).toBe(adminPath);
+  });
+}
 
 test("club login honours safe next when session already exists", async ({ page }) => {
   const login = await page.request.post("/api/club/login", {

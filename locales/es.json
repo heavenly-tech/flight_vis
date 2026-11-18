@@ -25,6 +25,9 @@
     "pilots": "Pilotos",
     "requests": "Solicitudes",
     "checkouts": "Habilitaciones",
+    "matrix": "Matriz",
+    "import": "Importar CSV",
+    "audit": "Auditoría",
     "adminMap": "Mapa admin",
     "kioskQr": "QR kiosk",
     "login": "Iniciar sesión",
@@ -204,7 +207,25 @@
     "saved": "Guardado",
     "resetDone": "Restablecido",
     "kioskOpenUrl": "Abrí en el kiosk:",
-    "kioskActivationToken": "Token de activación (pegalo en esa página, no en la URL):"
+    "kioskActivationToken": "Token de activación (pegalo en esa página, no en la URL):",
+    "roster": {
+      "approve": "Aprobar",
+      "edit": "Editar",
+      "remove": "Eliminar",
+      "removeConfirm": "¿Confirmas eliminar o desactivar este registro?",
+      "activate": "Activar",
+      "deactivate": "Desactivar",
+      "namePrompt": "Nombre",
+      "emailPrompt": "Correo",
+      "licensePrompt": "N.º licencia",
+      "statusPrompt": "Estado (approved, pending, inactive)",
+      "tailPrompt": "Matrícula (CC-XXX)",
+      "typePrompt": "Tipo",
+      "toggleAuth": "Alternar habilitación",
+      "downloadTemplate": "Descargar plantilla CSV",
+      "previewFailed": "No se pudo previsualizar",
+      "committed": "Importación confirmada"
+    }
   },
   "kiosk": {
     "screenTitle": "Pantalla de check-in",

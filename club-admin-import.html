@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="es-CL">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="nav.import">flight_vis</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main { max-width: 44rem; margin: 1rem auto; padding: 0 1rem 2rem; }
+      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
+      #preview { white-space: pre-wrap; background: #f4f4f4; padding: .75rem; font-size: .85rem; max-height: 24rem; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1 data-i18n="nav.import">Importar CSV</h1>
+      <div id="lang-slot"></div>
+      <div id="admin-nav"></div>
+      <p>
+        <select id="kind">
+          <option value="pilots">Pilots</option>
+          <option value="aircraft">Aircraft</option>
+          <option value="authorizations">Authorizations</option>
+        </select>
+        <a id="template" href="#" download></a>
+      </p>
+      <p><input id="file" type="file" accept=".csv,text/csv" /></p>
+      <pre id="preview"></pre>
+      <p><button type="button" id="commit" data-i18n="common.save">Confirmar</button></p>
+    </main>
+    <script type="module" src="/src/club/adminImport.ts"></script>
+  </body>
+</html>

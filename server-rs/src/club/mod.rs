@@ -8,6 +8,7 @@ mod checkin_landing;
 mod club_scope;
 mod contract_routes;
 mod csrf;
+mod csv_util;
 pub mod database;
 mod db;
 mod db_access_pg;
@@ -17,6 +18,7 @@ mod db_devices_pg;
 mod db_kiosk_pg;
 mod db_locale;
 mod db_map_pg;
+mod db_roster_pg;
 mod db_shares_pg;
 mod dem;
 mod device_tokens_import;
@@ -27,6 +29,7 @@ mod mail_suppress;
 mod map;
 mod map_filter;
 mod qr;
+mod roster_routes;
 mod routes;
 mod share_routes;
 mod signup_routes;
@@ -39,6 +42,8 @@ pub mod webauthn;
 
 #[cfg(test)]
 mod api_tests;
+#[cfg(test)]
+mod club_roster_tests;
 #[cfg(test)]
 mod club_signup_tests;
 #[cfg(test)]

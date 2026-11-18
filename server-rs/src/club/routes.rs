@@ -70,7 +70,7 @@ fn require_approved(viewer: &Viewer) -> Result<(), (StatusCode, Json<serde_json:
     }
 }
 
-async fn require_club_admin_scope(
+pub(crate) async fn require_club_admin_scope(
     db: &ClubDb,
     viewer: &Viewer,
 ) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
@@ -1273,11 +1273,34 @@ async fn admin_add_aircraft(
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
+    let Viewer::Pilot { id: admin_id, .. } = v else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    };
     match db
-        .upsert_aircraft(&club, body.tail.trim(), body.type_code.trim(), body.active)
+        .admin_upsert_aircraft_roster(
+            &club,
+            &admin_id,
+            body.tail.trim(),
+            body.type_code.trim(),
+            body.active,
+        )
         .await
     {
         Ok(id) => Json(json!({ "id": id })).into_response(),
+        Err(crate::club::db_roster_pg::RosterError::InvalidTail) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid tail; use CC-XXX" })),
+        )
+            .into_response(),
+        Err(crate::club::db_roster_pg::RosterError::UnknownType) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "unknown aircraft type" })),
+        )
+            .into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "db error" })),
@@ -2641,4 +2664,5 @@ pub fn router() -> Router<AppState> {
         .merge(crate::club::signup_routes::routes())
         .merge(crate::club::superadmin_routes::routes())
         .merge(crate::club::share_routes::routes())
+        .merge(crate::club::roster_routes::routes())
 }

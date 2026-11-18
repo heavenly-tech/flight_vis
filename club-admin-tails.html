@@ -14,10 +14,11 @@
   </head>
   <body>
     <main>
-      <h1>Tails</h1>
+      <h1 data-i18n="nav.tails">Matrículas</h1>
+      <div id="lang-slot"></div>
       <div id="admin-nav"></div>
       <form id="form" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem">
-        <input name="tail" placeholder="N123AB" required />
+        <input name="tail" placeholder="CC-ABC" required />
         <input name="type" placeholder="C152" required />
         <button type="submit">Upsert tail</button>
       </form>
