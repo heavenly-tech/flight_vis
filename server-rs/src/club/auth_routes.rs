@@ -92,6 +92,13 @@ pub async fn get_magic_consume(
             .into_response();
     };
     let now = now_ms();
+    if db
+        .try_consume_magic_club_verify(&q.token, now)
+        .await
+        .is_ok()
+    {
+        return Json(json!({ "ok": true, "verified": true, "clubVerified": true })).into_response();
+    }
     if db.try_consume_magic_verify(&q.token, now).await.is_ok() {
         return Json(json!({ "ok": true, "verified": true })).into_response();
     }

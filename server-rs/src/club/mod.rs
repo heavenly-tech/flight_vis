@@ -12,6 +12,7 @@ pub mod database;
 mod db;
 mod db_access_pg;
 mod db_auth_pg;
+pub(crate) mod db_club_lifecycle;
 mod db_devices_pg;
 mod db_kiosk_pg;
 mod db_locale;
@@ -28,15 +29,22 @@ mod map_filter;
 mod qr;
 mod routes;
 mod share_routes;
+mod signup_routes;
+pub(crate) mod slug;
 pub(crate) mod sse_limit;
+pub(crate) mod superadmin;
+mod superadmin_routes;
 mod visibility;
 pub mod webauthn;
 
 #[cfg(test)]
 mod api_tests;
 #[cfg(test)]
+mod club_signup_tests;
+#[cfg(test)]
 mod load_test;
 
+pub use auth::parse_session_cookie;
 pub use contract_routes::router as contract_router;
 pub use db::{now_ms, ClubDb};
 pub use routes::{patch_club_flight_by_id, post_club_flight_start, router};

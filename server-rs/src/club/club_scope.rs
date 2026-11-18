@@ -1,5 +1,6 @@
 use crate::club::db::{now_ms, ClubDb, DbError};
 use sqlx::Row;
+use std::collections::HashSet;
 
 pub fn checkin_qr_path(slug: &str, token: &str) -> String {
     format!("/c/{slug}/q/{token}")
@@ -58,6 +59,27 @@ impl ClubDb {
             .ok()
             .flatten()
             .map(|r| r == "superadmin")
+            .unwrap_or(false)
+    }
+
+    /// `pilots.global_role = superadmin` OR email in `FLIGHT_SUPERADMIN_EMAILS`.
+    pub async fn is_platform_superadmin(
+        &self,
+        pilot_id: &str,
+        env_allowlist: &HashSet<String>,
+    ) -> bool {
+        if self.is_superadmin(pilot_id).await {
+            return true;
+        }
+        let email: Option<String> = sqlx::query_scalar("SELECT email FROM pilots WHERE id = $1")
+            .bind(pilot_id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten();
+        email
+            .as_deref()
+            .map(|e| crate::club::superadmin::is_superadmin_email(env_allowlist, e))
             .unwrap_or(false)
     }
 

@@ -398,10 +398,17 @@ impl ClubDb {
         if !active {
             return Ok(false);
         }
+        let aircraft_club: String =
+            sqlx::query_scalar("SELECT club_id FROM aircraft WHERE id = $1")
+                .bind(aircraft_id)
+                .fetch_optional(pool)
+                .await?
+                .unwrap_or_default();
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM checkouts c
              WHERE c.pilot_id = $1
                AND (c.expires_at IS NULL OR c.expires_at > $2)
+               AND (c.club_id IS NULL OR c.club_id = $5)
                AND (
                  (c.aircraft_id = $3) OR
                  (c.aircraft_id IS NULL AND c.type_id = $4)
@@ -411,18 +418,39 @@ impl ClubDb {
         .bind(now)
         .bind(aircraft_id)
         .bind(type_id)
+        .bind(&aircraft_club)
         .fetch_one(pool)
         .await?;
         Ok(count > 0)
     }
 
+    async fn effective_club_for_tails(&self, pilot_id: &str, now: i64) -> Result<String, DbError> {
+        let home: String = sqlx::query_scalar("SELECT club_id FROM pilots WHERE id = $1")
+            .bind(pilot_id)
+            .fetch_one(&self.pool)
+            .await?;
+        let checkin_club: Option<String> = sqlx::query_scalar(
+            "SELECT club_id FROM checkins
+             WHERE outcome = 'ok' AND pilot_id = $1
+               AND expires_at IS NOT NULL AND expires_at > $2
+             ORDER BY expires_at DESC LIMIT 1",
+        )
+        .bind(pilot_id)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(checkin_club.unwrap_or(home))
+    }
+
     pub async fn me_tails(&self, pilot_id: &str, now: i64) -> Result<Vec<TailInfo>, DbError> {
+        let club_id = self.effective_club_for_tails(pilot_id, now).await?;
         let rows = sqlx::query(
             "SELECT a.id, a.tail, t.code
              FROM aircraft a
              JOIN aircraft_types t ON t.id = a.type_id
-             WHERE a.active = true",
+             WHERE a.active = true AND a.club_id = $1",
         )
+        .bind(&club_id)
         .fetch_all(&self.pool)
         .await?;
         let mut out = Vec::new();
@@ -904,8 +932,8 @@ impl ClubDb {
         self.club_map_for_viewer_scoped(viewer).await
     }
 
-    pub async fn public_map(&self) -> Vec<TailLivePosition> {
-        self.public_map_scoped().await
+    pub async fn public_map(&self, club_id: &str) -> Vec<TailLivePosition> {
+        self.public_map_scoped(club_id).await
     }
 
     pub async fn admin_map(&self, admin_id: &str) -> Vec<TailLivePosition> {
@@ -2056,7 +2084,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let map = db.public_map().await;
+        let map = db.public_map(&club).await;
         assert_eq!(map.len(), 1);
         assert!(map[0].pilot_name.is_none());
     }

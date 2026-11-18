@@ -334,14 +334,17 @@ impl ClubDb {
         )
     }
 
-    pub async fn public_map_scoped(&self) -> Vec<TailLivePosition> {
-        let club = self.default_club_id().await.unwrap_or_default();
+    pub async fn public_map_scoped(&self, club_id: &str) -> Vec<TailLivePosition> {
+        let club = club_id.to_string();
         let filter = self.club_map_filter(&club).await;
         let dem = self.dem_index();
         let rows = self.latest_device_fixes().await;
         let filtered: Vec<DeviceFix> = {
             let mut out = Vec::new();
             for r in rows {
+                if r.club_id != club {
+                    continue;
+                }
                 let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
                 if self.pilot_is_approved_member(&r.pilot_id, &club).await {
                     if includes_in_public_map(vis) {

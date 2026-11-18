@@ -138,6 +138,9 @@ pub fn safe_next(input: &str) -> String {
     if value == "/login" || value.starts_with("/login?") {
         return "/".to_string();
     }
+    if value == "/club-login.html" || value.starts_with("/club-login.html?") {
+        return "/".to_string();
+    }
     value.to_string()
 }
 
@@ -229,5 +232,6 @@ mod tests {
         assert_eq!(safe_next("//evil"), "/");
         assert_eq!(safe_next("https://evil.example"), "/");
         assert_eq!(safe_next("/login"), "/");
+        assert_eq!(safe_next("/club-login.html?next=/x"), "/");
     }
 }

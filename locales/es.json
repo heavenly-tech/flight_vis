@@ -1,5 +1,8 @@
 {
-  "_meta": { "locale": "es-CL", "dir": "ltr" },
+  "_meta": {
+    "locale": "es-CL",
+    "dir": "ltr"
+  },
   "common": {
     "appName": "flight_vis",
     "cancel": "Cancelar",
@@ -25,11 +28,13 @@
     "adminMap": "Mapa admin",
     "kioskQr": "QR kiosk",
     "login": "Iniciar sesión",
+    "clubLogin": "Iniciar sesión del club",
     "clubMap": "Mapa del club",
     "globe": "Visor global",
     "register": "Registrarse",
     "pilotProfile": "Perfil piloto",
-    "androidApp": "App Android"
+    "androidApp": "App Android",
+    "createClub": "Crear club"
   },
   "api": {
     "unauthorized": "No autorizado",
@@ -51,14 +56,15 @@
     "forbidden": "Prohibido",
     "notCleared": "Sin habilitación para {tail} / {type}",
     "dbError": "Error de base de datos",
-    "invalidLocale": "Idioma no disponible"
+    "invalidLocale": "Idioma no disponible",
+    "clubSuspended": "Club suspendido"
   },
   "club": {
     "login": {
       "title": "Inicio de sesión del club",
       "email": "Correo",
       "password": "Contraseña",
-      "submit": "Ingresar",
+      "submit": "Iniciá sesión",
       "success": "Sesión iniciada.",
       "failed": "No se pudo iniciar sesión.",
       "links": "Registrarse · Perfil piloto · App Android"
@@ -71,7 +77,10 @@
       "password": "Contraseña",
       "submit": "Registrarse (pendiente de aprobación)",
       "success": "Registro enviado — esperá la aprobación del administrador.",
-      "failed": "No se pudo registrar."
+      "failed": "No se pudo registrar.",
+      "forClub": "Registro — {club}",
+      "pickClubLabel": "Club",
+      "pickClub": "Elige un club."
     },
     "map": {
       "title": "Mapa del club",
@@ -84,6 +93,21 @@
       "title": "Mapa en vivo público",
       "subtitle": "Anónimo — solo vuelos públicos. Nombre del piloto solo si está permitido.",
       "membersLink": "Mapa del club (miembros)"
+    },
+    "signup": {
+      "title": "Crear club",
+      "lead": "Registra tu club aeronáutico. Verifica el correo de contacto para activarlo.",
+      "clubName": "Nombre del club",
+      "slug": "Identificador (slug)",
+      "contactEmail": "Correo de contacto",
+      "icaoOptional": "ICAO del aeródromo (opcional, 4 letras)",
+      "submit": "Registrar club",
+      "success": "Revisa tu correo para verificar el club.",
+      "failed": "No se pudo enviar el registro."
+    },
+    "suspended": {
+      "title": "Club suspendido",
+      "body": "Este club está suspendido. Si eres administrador, contacta a la plataforma."
     }
   },
   "pilot": {
@@ -231,6 +255,11 @@
       "subject": "Solicitud de acceso rechazada",
       "bodyPlain": "Tu solicitud fue rechazada. Motivo: {reason}",
       "bodyHtml": "<p>Tu solicitud fue rechazada.</p><p>Motivo: {reason}</p>"
+    },
+    "verifyClub": {
+      "subject": "Verifica tu club en flight_vis",
+      "bodyPlain": "Hola,\n\nVerifica el club {name} con este enlace (vence en {minutes} minutos):\n{url}\n",
+      "bodyHtml": "<p>Verifica el club <strong>{name}</strong> con <a href=\"{url}\">este enlace</a> (vence en {minutes} minutos).</p>"
     }
   }
 }

@@ -35,6 +35,7 @@ export default defineConfig({
         ...process.env,
         DATABASE_URL: databaseUrl,
         FLIGHT_CLUB_SLUG: "demo",
+        FLIGHT_CLUB_SEED_DEMO: "1",
         PORT: e2eApiPort,
       },
       timeout: 120_000,

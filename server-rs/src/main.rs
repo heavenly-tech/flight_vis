@@ -44,6 +44,7 @@ pub(crate) struct AppState {
     pub(crate) mailer: club::mail::Mailer,
     pub(crate) webauthn: Option<club::webauthn::WebauthnState>,
     pub(crate) sse_limiter: std::sync::Arc<club::sse_limit::SseLimiter>,
+    pub(crate) superadmin_emails: std::collections::HashSet<String>,
 }
 
 fn app_state(
@@ -69,6 +70,7 @@ fn app_state(
             mailer: club::mail::Mailer::from_env(club::mail::MailOutbox::default()),
             webauthn: club::webauthn::WebauthnState::from_env(),
             sse_limiter: std::sync::Arc::new(club::sse_limit::SseLimiter::default()),
+            superadmin_emails: club::superadmin::superadmin_emails_from_env(),
         },
         queue_rx,
     )
@@ -151,11 +153,38 @@ async fn auth_me(State(state): State<AppState>, headers: HeaderMap) -> Json<serd
     }))
 }
 
+async fn club_admin_login_redirect(
+    state: &AppState,
+    headers: &HeaderMap,
+    path: &str,
+    query: Option<&str>,
+) -> Option<axum::response::Response> {
+    if !path.starts_with("/club-admin-") || !path.ends_with(".html") {
+        return None;
+    }
+    let db = state.club.as_ref()?;
+    let session = club::parse_session_cookie(headers);
+    let now = club::now_ms();
+    let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
+    if pilot.as_ref().is_some_and(|p| p.role == "admin") {
+        return None;
+    }
+    let raw_next = match query {
+        Some(q) if !q.is_empty() => format!("{path}?{q}"),
+        _ => path.to_string(),
+    };
+    let next = auth::safe_next(&raw_next);
+    Some(redirect_found(&format!("/club-login.html?next={}", url_encode(&next))).into_response())
+}
+
 async fn fallback(
     State(state): State<AppState>,
     uri: Uri,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, StatusCode> {
+    if let Some(resp) = club_admin_login_redirect(&state, &headers, uri.path(), uri.query()).await {
+        return Ok(resp);
+    }
     static_files::serve(&state.dist_dir, uri.path(), &headers).await
 }
 
