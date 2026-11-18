@@ -1,4 +1,8 @@
 import { mountLangSwitcher, t } from "../i18n/index";
+import { redirectToClubLogin } from "./safeNext";
+
+/** Set when `requireAdmin` sends the browser to club login. Admin pages should `await ensureClubAdminOrRedirect()` from `./adminGate` first (PR #20 matrix/import/audit too). */
+export const CLUB_ADMIN_REDIRECT = "club-admin-redirect";
 
 const NAV_KEYS = [
   ["club-admin-types.html", "nav.types"],
@@ -40,9 +44,20 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export async function requireAdmin(): Promise<{ name: string }> {
-  const me = await api<{ pilot: { name: string; role: string } | null }>("/api/club/me");
+  let me: { pilot: { name: string; role: string } | null };
+  try {
+    me = await api<{ pilot: { name: string; role: string } | null }>("/api/club/me");
+  } catch {
+    redirectToClubLogin();
+    throw new Error(CLUB_ADMIN_REDIRECT);
+  }
   if (!me.pilot || me.pilot.role !== "admin") {
-    throw new Error("admin");
+    redirectToClubLogin();
+    throw new Error(CLUB_ADMIN_REDIRECT);
   }
   return { name: me.pilot.name };
+}
+
+export function isClubAdminRedirect(error: unknown): boolean {
+  return error instanceof Error && error.message === CLUB_ADMIN_REDIRECT;
 }

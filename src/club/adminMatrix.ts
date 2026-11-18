@@ -1,4 +1,11 @@
-import { api, mountAdminLangSwitcher, mountAdminNav, requireAdmin } from "./adminCommon";
+import { ensureClubAdminOrRedirect } from "./adminGate";
+import {
+  api,
+  isClubAdminRedirect,
+  mountAdminLangSwitcher,
+  mountAdminNav,
+  requireAdmin,
+} from "./adminCommon";
 import { t } from "../i18n/index";
 
 const root = document.querySelector<HTMLDivElement>("#matrix")!;
@@ -107,12 +114,15 @@ bulkBar.querySelector("#bulk-unassign")?.addEventListener("click", async () => {
 });
 
 void (async () => {
+  if (!(await ensureClubAdminOrRedirect())) return;
   mountAdminNav();
   mountAdminLangSwitcher();
   try {
     await requireAdmin();
     await load();
-  } catch {
-    root.textContent = t("api.adminOnly");
+  } catch (e) {
+    if (!isClubAdminRedirect(e)) {
+      root.textContent = t("api.adminOnly");
+    }
   }
 })();

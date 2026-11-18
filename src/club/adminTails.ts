@@ -1,4 +1,11 @@
-import { api, mountAdminLangSwitcher, mountAdminNav, requireAdmin } from "./adminCommon";
+import { ensureClubAdminOrRedirect } from "./adminGate";
+import {
+  api,
+  isClubAdminRedirect,
+  mountAdminLangSwitcher,
+  mountAdminNav,
+  requireAdmin,
+} from "./adminCommon";
 import { t } from "../i18n/index";
 
 const list = document.querySelector<HTMLUListElement>("#list")!;
@@ -72,12 +79,15 @@ form.addEventListener("submit", async (e) => {
 });
 
 void (async () => {
+  if (!(await ensureClubAdminOrRedirect())) return;
   mountAdminNav();
   mountAdminLangSwitcher();
   try {
     await requireAdmin();
     await refresh();
-  } catch {
-    list.innerHTML = `<li>${t("api.adminOnly")}</li>`;
+  } catch (e) {
+    if (!isClubAdminRedirect(e)) {
+      list.innerHTML = `<li>${t("api.adminOnly")}</li>`;
+    }
   }
 })();

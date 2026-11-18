@@ -112,6 +112,28 @@
         font-family: "IBM Plex Mono", ui-monospace, monospace;
         font-size: 12px;
       }
+
+      .club-login-row {
+        margin: 18px 0 0;
+        text-align: center;
+      }
+
+      .club-login-secondary {
+        display: inline-block;
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--stroke);
+        background: transparent;
+        color: var(--cyan);
+        font: 600 14px Outfit, sans-serif;
+        text-decoration: none;
+        text-align: center;
+      }
+
+      .club-login-secondary:hover {
+        border-color: rgba(103, 232, 249, 0.45);
+      }
     </style>
   </head>
   <body>
@@ -124,8 +146,24 @@
         <input type="hidden" name="next" id="next" value="/" />
         <button type="submit">Log in</button>
         <p class="err" id="err"></p>
+        <p class="club-login-row">
+          <a id="club-login-btn" class="club-login-secondary" href="/club-login.html">Club login</a>
+        </p>
       </div>
     </form>
+    <script type="module">
+      import { applyI18nDocument, bootI18n, t } from "/src/i18n/boot.ts";
+      await bootI18n({ persistUser: false });
+      applyI18nDocument(document);
+      const clubBtn = document.getElementById("club-login-btn");
+      if (clubBtn) {
+        clubBtn.textContent = t("nav.clubLogin");
+        const next = new URLSearchParams(location.search).get("next");
+        if (next && next.startsWith("/") && !next.startsWith("//")) {
+          clubBtn.setAttribute("href", `/club-login.html?${new URLSearchParams({ next })}`);
+        }
+      }
+    </script>
     <script>
       (function () {
         var q = new URLSearchParams(location.search);

@@ -1,4 +1,5 @@
-import { api, mountAdminNav, requireAdmin } from "./adminCommon";
+import { ensureClubAdminOrRedirect } from "./adminGate";
+import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 import {
   applyLayoutToEl,
   clampKioskQrLayout,
@@ -124,13 +125,14 @@ aspectSel.addEventListener("change", () => {
 paint();
 
 void (async () => {
+  if (!(await ensureClubAdminOrRedirect())) return;
   mountAdminNav();
   try {
     await requireAdmin();
     bindDrag();
     window.addEventListener("resize", () => paint());
     await loadLayout();
-  } catch {
-    saveStatus.textContent = "Se requiere admin.";
+  } catch (e) {
+    if (!isClubAdminRedirect(e)) saveStatus.textContent = "Se requiere admin.";
   }
 })();

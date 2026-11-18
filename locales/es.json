@@ -31,6 +31,7 @@
     "adminMap": "Mapa admin",
     "kioskQr": "QR kiosk",
     "login": "Iniciar sesión",
+    "clubLogin": "Iniciar sesión del club",
     "clubMap": "Mapa del club",
     "globe": "Visor global",
     "register": "Registrarse",
@@ -66,7 +67,7 @@
       "title": "Inicio de sesión del club",
       "email": "Correo",
       "password": "Contraseña",
-      "submit": "Ingresar",
+      "submit": "Iniciá sesión",
       "success": "Sesión iniciada.",
       "failed": "No se pudo iniciar sesión.",
       "links": "Registrarse · Perfil piloto · App Android"

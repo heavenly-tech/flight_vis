@@ -1,4 +1,11 @@
-import { api, mountAdminLangSwitcher, mountAdminNav, requireAdmin } from "./adminCommon";
+import { ensureClubAdminOrRedirect } from "./adminGate";
+import {
+  api,
+  isClubAdminRedirect,
+  mountAdminLangSwitcher,
+  mountAdminNav,
+  requireAdmin,
+} from "./adminCommon";
 import { t } from "../i18n/index";
 
 const kindSel = document.querySelector<HTMLSelectElement>("#kind")!;
@@ -65,13 +72,16 @@ commitBtn.addEventListener("click", async () => {
 });
 
 void (async () => {
+  if (!(await ensureClubAdminOrRedirect())) return;
   mountAdminNav();
   mountAdminLangSwitcher();
   syncTemplate();
   commitBtn.disabled = true;
   try {
     await requireAdmin();
-  } catch {
-    previewBox.textContent = t("api.adminOnly");
+  } catch (e) {
+    if (!isClubAdminRedirect(e)) {
+      previewBox.textContent = t("api.adminOnly");
+    }
   }
 })();
