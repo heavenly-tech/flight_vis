@@ -164,7 +164,6 @@ impl ClubDb {
         let club_id = new_id();
         let admin_id = new_id();
         let member_id = new_id();
-        let account_id = ClubDb::stable_account_id(&email);
         let icao = aerodrome_icao
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -194,15 +193,22 @@ impl ClubDb {
             return Err(ClubSignupError::Db);
         }
         let admin_name = format!("Admin · {name}");
-        let _ = sqlx::query(
-            "INSERT INTO accounts (id, email, created_at)
-             VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
-        )
-        .bind(&account_id)
-        .bind(&email)
-        .bind(now)
-        .execute(&mut *tx)
-        .await;
+        let account_id = if let Some(a) = self.account_by_email(&email).await {
+            a.id
+        } else {
+            let aid = new_id();
+            sqlx::query(
+                "INSERT INTO accounts (id, email, created_at)
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(&aid)
+            .bind(&email)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ClubSignupError::Db)?;
+            aid
+        };
         sqlx::query(
             "INSERT INTO pilots (id, club_id, account_id, name, email, license_no, status, role, password_hash, created_at)
              VALUES ($1, $2, $3, $4, $5, '', 'pending', 'admin', '', $6)",

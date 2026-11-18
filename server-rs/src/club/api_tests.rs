@@ -631,7 +631,7 @@ async fn cross_club_admin_cannot_approve_other_club_pilot() {
         .await
         .unwrap();
     fx.club
-        .ensure_membership_row(&fx.pilot_a, &club_a, "admin", "approved")
+        .ensure_membership_row(&fx.pilot_a, &club_a, "admin", "active")
         .await
         .unwrap();
     let cookie_a = login_cookie(&mut fx.router, "a@test").await;
@@ -954,4 +954,75 @@ async fn postal_bounce_webhook_requires_and_verifies_rsa256() {
         .unwrap();
     assert_eq!(ok.status(), StatusCode::OK);
     std::env::remove_var("POSTAL_WEBHOOK_PUBLIC_KEY_FILE");
+}
+
+#[tokio::test]
+#[serial]
+async fn account_signup_same_response_for_duplicate_email() {
+    let mut fx = setup().await;
+    let body = r#"{"email":"dup-signup@test","password":"password12"}"#;
+    for _ in 0..2 {
+        let res = fx
+            .router
+            .call(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/account/signup")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(parsed.get("ok"), Some(&serde_json::json!(true)));
+        assert!(parsed.get("accountId").is_none());
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn account_approve_membership_cross_club_forbidden() {
+    let mut fx = setup().await;
+    let club_a = fx.club.default_club_id().await.unwrap();
+    let slug = format!("club-b-{}", &crate::club::auth::new_id()[..8]);
+    let club_b = seed_second_club(&fx.club, &slug).await;
+    let pending_b = fx
+        .club
+        .register(&club_b, "Joiner", "joiner-b@test", "", "password12")
+        .await
+        .unwrap();
+    let membership_id: String = sqlx::query_scalar(
+        "SELECT id FROM club_memberships WHERE pilot_id = $1 AND club_id = $2",
+    )
+    .bind(&pending_b)
+    .bind(&club_b)
+    .fetch_one(&fx.club.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
+        .bind(&fx.pilot_a)
+        .execute(&fx.club.pool)
+        .await
+        .unwrap();
+    fx.club
+        .ensure_membership_row(&fx.pilot_a, &club_a, "admin", "active")
+        .await
+        .unwrap();
+    let cookie_a = login_cookie(&mut fx.router, "a@test").await;
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/account/memberships/{membership_id}/approve"))
+                .header(header::COOKIE, cookie_a)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }

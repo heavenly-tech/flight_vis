@@ -1,4 +1,5 @@
 -- PR1b: global accounts, account sessions, membership authority, backfill from pilots.
+-- Account ids are random (gen_random_uuid); idempotent by lower(email), not by id.
 -- Backfill password rule: per lower(email), non-empty password_hash wins; ties broken by latest created_at.
 -- Guest pilots (@guest.invalid) and status=guest stay account_id NULL.
 
@@ -30,13 +31,11 @@ CREATE INDEX IF NOT EXISTS idx_pilots_account_id ON pilots (account_id);
 ALTER TABLE magic_login_tokens
     ADD COLUMN IF NOT EXISTS account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE;
 
--- Personal flights without a club (full flow deferred).
 ALTER TABLE flights ADD COLUMN IF NOT EXISTS owner_account_id TEXT REFERENCES accounts(id);
 
--- Stable account id: first 32 hex chars of sha256(lower(email)).
 INSERT INTO accounts (id, email, password_hash, email_verified_at, global_role, created_at, suspended_at)
 SELECT
-    substring(md5(email_lower), 1, 32),
+    replace(gen_random_uuid()::text, '-', ''),
     email_lower,
     password_hash,
     email_verified_at,
@@ -67,7 +66,7 @@ FROM (
       AND trim(email) <> ''
 ) s
 WHERE rn = 1
-ON CONFLICT (id) DO NOTHING;
+  AND NOT EXISTS (SELECT 1 FROM accounts a WHERE lower(a.email) = s.email_lower);
 
 UPDATE pilots p
 SET account_id = a.id
@@ -75,11 +74,11 @@ FROM accounts a
 WHERE lower(trim(p.email)) = lower(a.email)
   AND p.status <> 'guest'
   AND p.email NOT LIKE 'guest-%@guest.invalid'
-  AND (p.account_id IS NULL OR p.account_id = a.id);
+  AND (p.account_id IS NULL OR p.account_id <> a.id);
 
 INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
 SELECT
-    substring(md5(p.id || ':' || p.club_id), 1, 32),
+    replace(gen_random_uuid()::text, '-', ''),
     p.id,
     p.club_id,
     CASE p.role
@@ -108,4 +107,3 @@ ON CONFLICT (pilot_id, club_id) DO UPDATE SET
     END;
 
 UPDATE club_memberships SET status = 'active' WHERE status = 'approved';
-UPDATE club_memberships SET status = 'suspended' WHERE status = 'suspended';

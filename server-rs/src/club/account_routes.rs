@@ -38,6 +38,7 @@ struct AccountSignupBody {
 
 async fn account_signup(
     State(state): State<AppState>,
+    client_ip: crate::ClientIp,
     Json(body): Json<AccountSignupBody>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
@@ -47,14 +48,40 @@ async fn account_signup(
         )
             .into_response();
     };
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if !state
+        .device_register_throttle
+        .allow_up_to(&client_ip.0, now_secs, 20)
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "rate limited" })),
+        )
+            .into_response();
+    }
     let now = now_ms();
     let email = body.email.trim();
+    if email.is_empty() || !email.contains('@') {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "signup failed" })),
+        )
+            .into_response();
+    }
     match db
-        .create_account(email, body.password.as_deref(), now)
+        .ensure_account_for_email(email, body.password.as_deref(), now)
         .await
     {
-        Ok(id) => {
-            if body.password.is_none() {
+        Ok(_) => {
+            let wants_magic = body
+                .password
+                .as_deref()
+                .is_none_or(|p| p.is_empty());
+            if wants_magic && db.magic_send_allowed(email, &client_ip.0, now).await {
+                let _ = db.log_magic_send(email, &client_ip.0, now).await;
                 if let Ok(token) = db.issue_account_magic_signup(email, now).await {
                     let url = format!(
                         "{}/api/account/auth/magic?token={token}",
@@ -71,25 +98,16 @@ async fn account_signup(
                         .await;
                 }
             }
-            (
-                StatusCode::CREATED,
-                Json(json!({ "ok": true, "accountId": id })),
-            )
-                .into_response()
+            (StatusCode::CREATED, Json(json!({ "ok": true }))).into_response()
         }
-        Err(AccountSignupError::EmailExists) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "email exists" })),
-        )
-            .into_response(),
         Err(AccountSignupError::WeakPassword) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "weak password" })),
         )
             .into_response(),
-        Err(AccountSignupError::Db) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "signup failed" })),
+        Err(AccountSignupError::EmailExists) | Err(AccountSignupError::Db) => (
+            StatusCode::CREATED,
+            Json(json!({ "ok": true })),
         )
             .into_response(),
     }
@@ -119,15 +137,12 @@ async fn account_login(
         .account_login_password(body.email.trim(), &body.password, now, &client_ip.0)
         .await
     {
-        Ok((session_id, account)) => {
+        Ok((session_id, _account)) => {
             let cookie = auth::set_account_session_cookie(&session_id, is_secure(&headers));
             (
                 StatusCode::OK,
                 [(axum::http::header::SET_COOKIE, cookie)],
-                Json(json!({
-                    "ok": true,
-                    "account": { "id": account.id, "email": account.email }
-                })),
+                Json(json!({ "ok": true })),
             )
                 .into_response()
         }

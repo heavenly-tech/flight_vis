@@ -34,6 +34,7 @@ pub struct MembershipRow {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountSignupError {
     WeakPassword,
+    #[allow(dead_code)]
     EmailExists,
     Db,
 }
@@ -49,14 +50,9 @@ pub enum AccountJoinError {
     Db,
 }
 
-fn account_id_for_email(email: &str) -> String {
-    let norm = email.trim().to_ascii_lowercase();
-    format!("{:x}", md5::compute(norm.as_bytes()))
-}
-
 impl ClubDb {
-    pub fn stable_account_id(email: &str) -> String {
-        account_id_for_email(email)
+    pub async fn account_id_for_email(&self, email: &str) -> Option<String> {
+        self.account_by_email(email).await.map(|a| a.id)
     }
 
     pub async fn account_by_email(&self, email: &str) -> Option<AccountRow> {
@@ -83,7 +79,8 @@ impl ClubDb {
         Some(row_to_account(&row))
     }
 
-    pub async fn create_account(
+    /// Create or return existing account by email (random id on create).
+    pub async fn ensure_account_for_email(
         &self,
         email: &str,
         password: Option<&str>,
@@ -92,6 +89,24 @@ impl ClubDb {
         let email = email.trim().to_ascii_lowercase();
         if !email.contains('@') {
             return Err(AccountSignupError::Db);
+        }
+        if let Some(existing) = self.account_by_email(&email).await {
+            if let Some(p) = password.filter(|s| !s.is_empty()) {
+                if p.len() < 8 {
+                    return Err(AccountSignupError::WeakPassword);
+                }
+                if let Ok(hash) = auth::hash_password(p) {
+                    let _ = sqlx::query(
+                        "UPDATE accounts SET password_hash = coalesce(nullif(password_hash, ''), $1)
+                         WHERE id = $2",
+                    )
+                    .bind(&hash)
+                    .bind(&existing.id)
+                    .execute(&self.pool)
+                    .await;
+                }
+            }
+            return Ok(existing.id);
         }
         let password_hash: Option<String> = match password.filter(|p| !p.is_empty()) {
             Some(p) => {
@@ -102,7 +117,7 @@ impl ClubDb {
             }
             None => None,
         };
-        let id = Self::stable_account_id(&email);
+        let id = new_id();
         let ins = sqlx::query(
             "INSERT INTO accounts (id, email, password_hash, created_at)
              VALUES ($1, $2, $3, $4)",
@@ -118,12 +133,25 @@ impl ClubDb {
             Err(e) => {
                 if let Some(db_err) = e.as_database_error() {
                     if db_err.code() == Some(std::borrow::Cow::Borrowed("23505")) {
-                        return Err(AccountSignupError::EmailExists);
+                        return self
+                            .account_id_for_email(&email)
+                            .await
+                            .ok_or(AccountSignupError::Db);
                     }
                 }
                 Err(AccountSignupError::Db)
             }
         }
+    }
+
+    #[allow(dead_code)]
+    pub async fn create_account(
+        &self,
+        email: &str,
+        password: Option<&str>,
+        now: i64,
+    ) -> Result<String, AccountSignupError> {
+        self.ensure_account_for_email(email, password, now).await
     }
 
     pub async fn issue_account_magic_signup(
@@ -135,11 +163,7 @@ impl ClubDb {
         let token_hash = digest_token(&raw);
         let id = new_id();
         let expires = now + ACCOUNT_MAGIC_TTL_MS;
-        let account_id = self
-            .account_by_email(email)
-            .await
-            .map(|a| a.id)
-            .unwrap_or_else(|| Self::stable_account_id(email));
+        let account_id: Option<String> = self.account_by_email(email).await.map(|a| a.id);
         sqlx::query(
             "INSERT INTO magic_login_tokens (id, email, token_hash, created_at, expires_at, purpose, account_id)
              VALUES ($1, $2, $3, $4, $5, 'account_signup', $6)",
@@ -149,7 +173,7 @@ impl ClubDb {
         .bind(&token_hash)
         .bind(now)
         .bind(expires)
-        .bind(&account_id)
+        .bind(account_id.as_deref())
         .execute(&self.pool)
         .await?;
         Ok(raw)
@@ -232,16 +256,15 @@ impl ClubDb {
         }
         let acct_id = if let Some(aid) = account_id {
             aid
+        } else if let Some(row) = self.account_by_email(&email).await {
+            row.id
         } else {
-            Self::stable_account_id(&email)
-        };
-        let exists = self.account_by_id(&acct_id).await.is_some();
-        if !exists {
+            let aid = new_id();
             sqlx::query(
                 "INSERT INTO accounts (id, email, created_at, email_verified_at)
                  VALUES ($1, $2, $3, $4)",
             )
-            .bind(&acct_id)
+            .bind(&aid)
             .bind(email.trim().to_ascii_lowercase())
             .bind(now)
             .bind(if purpose == "account_signup" {
@@ -252,7 +275,9 @@ impl ClubDb {
             .execute(&self.pool)
             .await
             .map_err(|_| MagicConsumeError::Invalid)?;
-        } else if purpose == "account_signup" || purpose == "account_login" {
+            aid
+        };
+        if purpose == "account_signup" || purpose == "account_login" {
             sqlx::query(
                 "UPDATE accounts SET email_verified_at = coalesce(email_verified_at, $1) WHERE id = $2",
             )
@@ -528,24 +553,15 @@ impl ClubDb {
             return Err(RegisterError::WeakPassword);
         }
         let email = email.trim().to_ascii_lowercase();
-        let acct_id = match self.create_account(&email, Some(password), now).await {
-            Ok(id) => id,
-            Err(AccountSignupError::EmailExists) => Self::stable_account_id(&email),
-            Err(AccountSignupError::WeakPassword) => return Err(RegisterError::WeakPassword),
-            Err(AccountSignupError::Db) => {
-                return Err(RegisterError::Db(DbError::protocol("account")));
-            }
-        };
-        if let Ok(hash) = auth::hash_password(password) {
-            let _ = sqlx::query(
-                "UPDATE accounts SET password_hash = coalesce(nullif(password_hash, ''), $1)
-                 WHERE id = $2",
-            )
-            .bind(&hash)
-            .bind(&acct_id)
-            .execute(&self.pool)
-            .await;
-        }
+        let acct_id = self
+            .ensure_account_for_email(&email, Some(password), now)
+            .await
+            .map_err(|e| match e {
+                AccountSignupError::WeakPassword => RegisterError::WeakPassword,
+                AccountSignupError::Db | AccountSignupError::EmailExists => {
+                    RegisterError::Db(DbError::protocol("account"))
+                }
+            })?;
         let existing_pilot: Option<String> = sqlx::query_scalar(
             "SELECT id FROM pilots WHERE club_id = $1 AND lower(email) = lower($2)",
         )
@@ -687,7 +703,12 @@ impl ClubDb {
         let Some(club_id) = club_id else {
             return Ok(serde_json::json!({ "error": "club not found", "dryRun": dry_run }));
         };
-        let account_id = Self::stable_account_id(email);
+        let existing_account = self.account_by_email(email).await;
+        let account_exists = existing_account.is_some();
+        let account_id = existing_account
+            .as_ref()
+            .map(|a| a.id.clone())
+            .unwrap_or_else(new_id);
         let mut plan = serde_json::json!({
             "dryRun": dry_run,
             "email": email,
@@ -695,7 +716,6 @@ impl ClubDb {
             "accountId": account_id,
             "actions": [],
         });
-        let account_exists = self.account_by_id(&account_id).await.is_some();
         if !account_exists {
             plan["actions"]
                 .as_array_mut()
@@ -850,20 +870,12 @@ mod tests {
         let email = "multi@test.local";
         let hash = hash_password("password12").unwrap();
         let now = now_ms();
-        for (club, name) in [(&club_a, "A"), (&club_b, "B")] {
-            let pid = new_id();
-            let aid = ClubDb::stable_account_id(email);
-            sqlx::query(
-                "INSERT INTO accounts (id, email, password_hash, created_at, email_verified_at)
-                 VALUES ($1, $2, $3, $4, $4) ON CONFLICT (id) DO NOTHING",
-            )
-            .bind(&aid)
-            .bind(email)
-            .bind(&hash)
-            .bind(now)
-            .execute(&db.pool)
+        let aid = db
+            .ensure_account_for_email(email, Some("password12"), now)
             .await
             .unwrap();
+        for (club, name) in [(&club_a, "A"), (&club_b, "B")] {
+            let pid = new_id();
             sqlx::query(
                 "INSERT INTO pilots (id, club_id, account_id, name, email, license_no, status, role, password_hash, created_at)
                  VALUES ($1, $2, $3, $4, $5, '', 'approved', 'pilot', $6, $7)",
@@ -898,10 +910,40 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(accounts, 1);
-        let mems = db
-            .list_account_memberships(&ClubDb::stable_account_id(email))
-            .await;
+        let mems = db.list_account_memberships(&aid).await;
         assert_eq!(mems.len(), 2);
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn magic_send_throttle_per_email() {
+        let db = ClubDb::open_test().await.unwrap();
+        let now = now_ms();
+        let email = "throttle-magic@test";
+        let ip = "203.0.113.77";
+        for _ in 0..crate::club::db_auth_pg::MAGIC_SEND_MAX_PER_EMAIL {
+            let _ = db.log_magic_send(email, ip, now).await;
+        }
+        assert!(!db.magic_send_allowed(email, ip, now).await);
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn ensure_account_idempotent_random_id() {
+        let db = ClubDb::open_test().await.unwrap();
+        let now = now_ms();
+        let email = "rand-id@test";
+        let id1 = db
+            .ensure_account_for_email(email, Some("password12"), now)
+            .await
+            .unwrap();
+        let id2 = db
+            .ensure_account_for_email(email, Some("password12"), now)
+            .await
+            .unwrap();
+        assert_eq!(id1, id2);
+        assert_ne!(id1, email);
+        assert_eq!(id1.len(), 32);
     }
 
     #[serial]
