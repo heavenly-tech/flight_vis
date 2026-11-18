@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineConfig, type ProxyOptions } from "vitest/config";
+import { defineConfig, type Plugin, type ProxyOptions } from "vitest/config";
 import { viteStaticCopy } from "vite-plugin-static-copy";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +25,21 @@ const authProxy: Record<string, string | ProxyOptions> = {
   },
 };
 
+function liveSpaFallback(): Plugin {
+  return {
+    name: "live-spa-fallback",
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        const path = req.url?.split("?")[0] ?? "";
+        if (/^\/live\/[A-Za-z0-9._-]+$/i.test(path)) {
+          req.url = "/index.html";
+        }
+        next();
+      });
+    },
+  };
+}
+
 export default defineConfig({
   test: {
     include: ["src/**/*.test.ts"],
@@ -38,6 +53,7 @@ export default defineConfig({
     ),
   },
   plugins: [
+    liveSpaFallback(),
     viteStaticCopy({
       targets: [
         { src: "locales/*", dest: "locales" },
