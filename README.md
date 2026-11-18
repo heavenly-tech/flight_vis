@@ -69,6 +69,18 @@ Tracks are stored in `./data` (`FLIGHT_DATA` in Docker). The compose file expect
 
 The runtime image is `FROM scratch` and contains only the static Rust binary, the built frontend, CA certs, and `ffmpeg`/`ffprobe` with the libraries they need. There is no shell; the container healthcheck is `/app/flight_vis healthcheck`.
 
+## Privacy
+
+Club mode stores pilot names and flight metadata in the club database. How names appear depends on the viewer and each flight’s **show pilot name publicly** flag (`show_pilot_name_public`, set per flight when visibility is public).
+
+| Surface | Own club / own flight | Other pilots (same club) | Other clubs (admin map) |
+| --- | --- | --- | --- |
+| Anonymous / public map | Name only if opted in | Name only if opted in | N/A |
+| Club map (approved pilot) | Full name | Name only if opted in | N/A |
+| Admin map (club admin) | Full name for member flights | Full name for member flights | **Name only if that flight opted in**; otherwise tail/position without name |
+
+On the **admin map**, cross-club tracks are treated like anonymous viewers for pilot names: a hosting club’s admin does not see another club’s pilot name unless that pilot opted in to public name display for that flight. Own-club semantics are unchanged. Server logic: `server-rs/src/club/visibility.rs` (`show_pilot_name_admin_map`).
+
 ## License
 
 [MIT](LICENSE)
