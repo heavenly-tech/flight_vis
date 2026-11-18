@@ -117,8 +117,6 @@ fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 pub fn resolve_database_url() -> Result<String, DbConnectError> {
-    #[cfg(test)]
-    let _env_guard = env_lock();
     if let Ok(url) = env::var("DATABASE_URL") {
         let trimmed = url.trim();
         if !trimmed.is_empty() {
@@ -191,6 +189,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
     fn builds_url_from_pg_env_and_password_file() {
         let _g = env_lock();
         const KEYS: [&str; 8] = [
@@ -228,6 +227,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn database_url_takes_precedence() {
         let _g = env_lock();
         let saved_url = env::var("DATABASE_URL").ok();
