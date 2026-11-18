@@ -1,4 +1,3 @@
-import "./live/liveRoutePrefill";
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import "./style.css";
 import { getAuth, getFlight, loginUrl, logout, saveFlight, shareUrl, type AuthStatus } from "./api";
