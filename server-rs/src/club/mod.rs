@@ -28,12 +28,19 @@ mod map_filter;
 mod qr;
 mod routes;
 mod share_routes;
+mod signup_routes;
+pub(crate) mod slug;
 pub(crate) mod sse_limit;
+pub(crate) mod superadmin;
+pub(crate) mod db_club_lifecycle;
+mod superadmin_routes;
 mod visibility;
 pub mod webauthn;
 
 #[cfg(test)]
 mod api_tests;
+#[cfg(test)]
+mod club_signup_tests;
 #[cfg(test)]
 mod load_test;
 

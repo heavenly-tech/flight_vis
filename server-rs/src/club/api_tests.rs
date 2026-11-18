@@ -17,19 +17,27 @@ use serial_test::serial;
 use std::sync::Arc;
 use tower::Service;
 
-struct Fixture {
+pub(crate) struct Fixture {
     _dir: tempfile::TempDir,
-    router: axum::Router,
-    club: ClubDb,
+    pub(crate) router: axum::Router,
+    pub(crate) club: ClubDb,
     pilot_a: String,
     _pilot_b: String,
     device_token: String,
 }
 
-async fn setup() -> Fixture {
+pub(crate) async fn setup() -> Fixture {
     let data_dir = tempfile::tempdir().expect("tempdir");
     let club = ClubDb::open_test().await.expect("club db");
     let club_id = club.default_club_id().await.unwrap();
+    let now = now_ms();
+    let _ = sqlx::query(
+        "UPDATE clubs SET email_verified_at = COALESCE(email_verified_at, $1), status = 'live' WHERE id = $2",
+    )
+    .bind(now)
+    .bind(&club_id)
+    .execute(&club.pool)
+    .await;
     club.upsert_type(&club_id, "C152").await.unwrap();
     club.upsert_aircraft(&club_id, "N1", "C152", true)
         .await
@@ -70,6 +78,7 @@ async fn setup() -> Fixture {
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+        superadmin_emails: Default::default(),
     };
     Fixture {
         _dir: data_dir,
@@ -576,14 +585,15 @@ async fn kiosk_layout_admin_clamps_and_display_sse_rev() {
 
 async fn seed_second_club(db: &ClubDb, slug: &str) -> String {
     let id = crate::club::auth::new_id();
+    let now = now_ms();
     sqlx::query(
-        "INSERT INTO clubs (id, name, slug, created_at, latitude, longitude, show_public_tracks)
-         VALUES ($1, $2, $3, $4, -33.0, -70.0, TRUE)",
+        "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at, latitude, longitude, show_public_tracks)
+         VALUES ($1, $2, $3, $4, 'live', $4, -33.0, -70.0, TRUE)",
     )
     .bind(&id)
     .bind("Club B")
     .bind(slug)
-    .bind(now_ms())
+    .bind(now)
     .execute(&db.pool)
     .await
     .unwrap();
@@ -675,6 +685,168 @@ async fn cross_club_admin_pending_list_is_scoped() {
         .filter_map(|p| p.get("id").and_then(|v| v.as_str()))
         .collect();
     assert!(!ids.contains(&pending_b.as_str()));
+}
+
+#[tokio::test]
+#[serial]
+async fn cross_club_public_map_isolated_by_slug_query() {
+    let mut fx = setup().await;
+    let slug_a: String =
+        sqlx::query_scalar("SELECT slug FROM clubs ORDER BY created_at ASC LIMIT 1")
+            .fetch_one(&fx.club.pool)
+            .await
+            .unwrap();
+    let slug_b = format!("club-b-{}", &crate::club::auth::new_id()[..8]);
+    let club_b = seed_second_club(&fx.club, &slug_b).await;
+    fx.club.upsert_type(&club_b, "C152").await.unwrap();
+    fx.club
+        .upsert_aircraft(&club_b, "NX-B", "C152", true)
+        .await
+        .unwrap();
+    let pilot_b = fx
+        .club
+        .register(&club_b, "B2", "b2-map@test", "", "password12")
+        .await
+        .unwrap();
+    fx.club
+        .mark_email_verified(&pilot_b, now_ms())
+        .await
+        .unwrap();
+    fx.club.approve_pilot(&pilot_b).await.unwrap();
+    fx.club
+        .add_checkout(&pilot_b, "C152", None, None)
+        .await
+        .unwrap();
+    let (_dev, token_b) = fx.club.create_device(&pilot_b, "b2").await.unwrap();
+    let cookie_b = login_cookie(&mut fx.router, "b2-map@test").await;
+    let qr_b = fx
+        .club
+        .mint_checkin_qr_token(&club_b, now_ms())
+        .await
+        .unwrap();
+    let checkin = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/checkin")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {token_b}"))
+                .header(header::COOKIE, &cookie_b)
+                .body(Body::from(format!(r#"{{"token":"{qr_b}"}}"#)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(checkin.status(), StatusCode::OK);
+    let start = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/flights")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::AUTHORIZATION, format!("Bearer {token_b}"))
+                .header(header::COOKIE, &cookie_b)
+                .body(Body::from(r#"{"tail":"NX-B","visibility":"public"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(start.status(), StatusCode::OK);
+    let start_json: serde_json::Value =
+        serde_json::from_slice(&to_bytes(start.into_body(), usize::MAX).await.unwrap()).unwrap();
+    let flight_b = start_json["id"].as_str().unwrap().to_string();
+    fx.club
+        .patch_flight(
+            &pilot_b,
+            &flight_b,
+            Some(FlightVisibility::Public),
+            Some(false),
+        )
+        .await
+        .unwrap();
+    let q = format!(
+        "id={token_b}&lat=-33.5&lon=-70.7&timestamp={}",
+        now_ms() / 1000
+    );
+    fx.router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/osmand?{q}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let map_a = fx
+        .router
+        .call(
+            Request::builder()
+                .uri(format!("/api/club/map/public?club={slug_a}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body_a = to_bytes(map_a.into_body(), usize::MAX).await.unwrap();
+    let json_a: serde_json::Value = serde_json::from_slice(&body_a).unwrap();
+    let tails_a: Vec<String> = json_a["aircraft"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r.get("tail").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+    assert!(!tails_a.iter().any(|t| t == "NX-B"));
+
+    let map_b = fx
+        .router
+        .call(
+            Request::builder()
+                .uri(format!("/api/club/map/public?club={slug_b}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body_b = to_bytes(map_b.into_body(), usize::MAX).await.unwrap();
+    let json_b: serde_json::Value = serde_json::from_slice(&body_b).unwrap();
+    let tails_b: Vec<String> = json_b["aircraft"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r.get("tail").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+    assert!(tails_b.iter().any(|t| t == "NX-B"));
+}
+
+#[tokio::test]
+#[serial]
+async fn cross_club_me_tails_only_home_club_aircraft() {
+    let fx = setup().await;
+    let club_a = fx.club.default_club_id().await.unwrap();
+    let slug_b = format!("tails-b-{}", &crate::club::auth::new_id()[..8]);
+    let club_b = seed_second_club(&fx.club, &slug_b).await;
+    fx.club.upsert_type(&club_a, "C152").await.unwrap();
+    fx.club.upsert_type(&club_b, "C152").await.unwrap();
+    fx.club
+        .upsert_aircraft(&club_a, "N-A", "C152", true)
+        .await
+        .unwrap();
+    fx.club
+        .upsert_aircraft(&club_b, "N-B", "C152", true)
+        .await
+        .unwrap();
+    fx.club
+        .add_checkout(&fx.pilot_a, "C152", None, None)
+        .await
+        .unwrap();
+    let tails = fx.club.me_tails(&fx.pilot_a, now_ms()).await.unwrap();
+    let t: Vec<&str> = tails.iter().map(|x| x.tail.as_str()).collect();
+    assert!(t.contains(&"N-A"));
+    assert!(!t.contains(&"N-B"));
 }
 
 #[derive(Deserialize)]

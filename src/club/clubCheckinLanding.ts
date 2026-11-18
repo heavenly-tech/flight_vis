@@ -98,6 +98,10 @@ async function loadConfig(): Promise<void> {
     cfg.releaseAvailable === true && typeof cfg.apkUrl === "string" && cfg.apkUrl.length > 0;
   renderDownload(releaseAvailable, cfg.apkUrl ?? "/app/flightvis.apk");
   renderAndroidSteps();
+  const reg = document.querySelector<HTMLAnchorElement>("#link-register");
+  if (reg && paths.slug) {
+    reg.href = `/c/${encodeURIComponent(paths.slug)}/registro`;
+  }
 }
 
 void loadConfig();

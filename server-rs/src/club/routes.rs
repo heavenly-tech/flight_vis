@@ -130,6 +130,10 @@ struct RegisterBody {
     password: String,
     #[serde(default)]
     license_no: String,
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    website: Option<String>,
 }
 
 async fn register(
@@ -137,6 +141,17 @@ async fn register(
     client_ip: ClientIp,
     Json(body): Json<RegisterBody>,
 ) -> impl IntoResponse {
+    if body
+        .website
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty())
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "register failed" })),
+        )
+            .into_response();
+    }
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -158,14 +173,59 @@ async fn register(
         )
             .into_response();
     };
-    let club_id = match db.default_club_id().await {
-        Ok(id) => id,
-        Err(_) => {
+    let club_id = if let Some(slug) = body.slug.as_deref().filter(|s| !s.is_empty()) {
+        let Some(row) = db.club_public_row_by_slug(slug).await else {
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "club missing" })),
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "register failed" })),
             )
                 .into_response();
+        };
+        match ClubDb::register_gate(&row) {
+            crate::club::db_club_lifecycle::ClubRegisterGate::Suspended => {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({ "error": "club suspended" })),
+                )
+                    .into_response();
+            }
+            crate::club::db_club_lifecycle::ClubRegisterGate::Closed => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "register failed" })),
+                )
+                    .into_response();
+            }
+            crate::club::db_club_lifecycle::ClubRegisterGate::Open => row.id,
+        }
+    } else {
+        match db.default_club_id().await {
+            Ok(id) => {
+                if let Some(row) = db.club_public_row(&id).await {
+                    if !ClubDb::is_public_verified(&row) {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({ "error": "register failed" })),
+                        )
+                            .into_response();
+                    }
+                    if row.suspended_at.is_some() {
+                        return (
+                            StatusCode::FORBIDDEN,
+                            Json(json!({ "error": "club suspended" })),
+                        )
+                            .into_response();
+                    }
+                }
+                id
+            }
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "register failed" })),
+                )
+                    .into_response();
+            }
         }
     };
     let now = now_ms();
@@ -205,8 +265,8 @@ async fn register(
                 .into_response()
         }
         Err(RegisterError::EmailExists) => (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "email exists" })),
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "register failed" })),
         )
             .into_response(),
         Err(RegisterError::WeakPassword) => (
@@ -757,12 +817,59 @@ async fn club_map(State(state): State<AppState>, headers: HeaderMap) -> impl Int
     Json(json!({ "aircraft": positions })).into_response()
 }
 
-async fn public_map(State(state): State<AppState>) -> impl IntoResponse {
+#[derive(Deserialize)]
+struct PublicMapQuery {
+    #[serde(default)]
+    club: Option<String>,
+}
+
+async fn resolve_public_map_club(
+    db: &ClubDb,
+    slug: Option<&str>,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let club_id = if let Some(slug) = slug.filter(|s| !s.is_empty()) {
+        let Some(row) = db.club_public_row_by_slug(slug).await else {
+            return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))));
+        };
+        if row.suspended_at.is_some() {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "club suspended" })),
+            ));
+        }
+        if !ClubDb::is_public_verified(&row) {
+            return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))));
+        }
+        row.id
+    } else {
+        db.default_club_id()
+            .await
+            .map_err(|_| (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))))?
+    };
+    if let Some(row) = db.club_public_row(&club_id).await {
+        if row.suspended_at.is_some() {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "club suspended" })),
+            ));
+        }
+    }
+    Ok(club_id)
+}
+
+async fn public_map(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<PublicMapQuery>,
+) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
         return Json(json!({ "aircraft": [] })).into_response();
     };
-    let aircraft = db.public_map().await;
-    Json(json!({ "aircraft": aircraft })).into_response()
+    let club_id = match resolve_public_map_club(db, q.club.as_deref()).await {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+    let aircraft = db.public_map(&club_id).await;
+    Json(json!({ "aircraft": aircraft, "club": q.club })).into_response()
 }
 
 async fn admin_map(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
@@ -2531,5 +2638,7 @@ pub fn router() -> Router<AppState> {
         )
         .merge(crate::club::android_assetlinks::well_known_routes())
         .merge(crate::club::checkin_landing::routes())
+        .merge(crate::club::signup_routes::routes())
+        .merge(crate::club::superadmin_routes::routes())
         .merge(crate::club::share_routes::routes())
 }

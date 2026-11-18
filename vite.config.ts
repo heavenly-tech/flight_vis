@@ -71,6 +71,8 @@ export default defineConfig({
         clubMap: path.resolve(root, "club-map.html"),
         publicMap: path.resolve(root, "public-map.html"),
         clubRegister: path.resolve(root, "club-register.html"),
+        clubSignup: path.resolve(root, "club-signup.html"),
+        clubSuspended: path.resolve(root, "club-suspended.html"),
         clubAdminTypes: path.resolve(root, "club-admin-types.html"),
         clubAdminTails: path.resolve(root, "club-admin-tails.html"),
         clubAdminPilots: path.resolve(root, "club-admin-pilots.html"),

@@ -5,12 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title data-i18n="club.register.title">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
-    <style>main{max-width:24rem;margin:2rem auto;padding:1rem} input,button{width:100%;padding:.6rem;margin:.35rem 0;font:inherit} #lang-slot{margin-bottom:.75rem;font-size:.9rem}</style>
+    <style>main{max-width:24rem;margin:2rem auto;padding:1rem} input,button,select{width:100%;padding:.6rem;margin:.35rem 0;font:inherit} #lang-slot{margin-bottom:.75rem;font-size:.9rem}</style>
   </head>
   <body>
     <main>
       <div id="lang-slot"></div>
-      <h1 data-i18n="club.register.title"></h1>
+      <h1 id="club-title" data-i18n="club.register.title"></h1>
+      <p id="club-pick-wrap" hidden>
+        <label for="club-pick" data-i18n="club.register.pickClubLabel"></label>
+        <select id="club-pick" hidden></select>
+      </p>
       <form id="form">
         <input name="name" required data-i18n-placeholder="club.register.name" />
         <input name="email" type="email" required data-i18n-placeholder="club.register.email" />
@@ -19,23 +23,8 @@
         <button type="submit" data-i18n="club.register.submit"></button>
       </form>
       <p id="msg" class="muted"></p>
+      <p class="muted"><a href="/club-signup.html" data-i18n="nav.createClub"></a> · <a href="/club-login.html" data-i18n="nav.login"></a></p>
     </main>
-    <script type="module">
-      import { startClubPage } from "/src/club/i18nPage.ts";
-      import { t, apiErrorMessage } from "/src/i18n/boot.ts";
-      await startClubPage({ persistUser: false });
-      document.getElementById("form").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const body = Object.fromEntries(new FormData(e.target));
-        const res = await fetch("/api/club/register", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        document.getElementById("msg").textContent = res.ok
-          ? t("club.register.success")
-          : apiErrorMessage((await res.json().catch(() => ({}))).error ?? "register failed");
-      });
-    </script>
+    <script type="module" src="/src/club/clubRegister.ts"></script>
   </body>
 </html>

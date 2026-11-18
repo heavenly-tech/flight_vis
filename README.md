@@ -26,6 +26,8 @@ Set `FLIGHT_VIS_PASSWORD`. If it is unset, existing slugs still render and write
 
 Copy [`.env.example`](.env.example) to `.env`. Do not commit `.env`.
 
+Club registry (Postgres): self-serve signup at `/club-signup.html`, pilot registration per club at `/c/{slug}/registro`, and optional platform operators via `FLIGHT_SUPERADMIN_EMAILS` (OR `pilots.global_role = superadmin`). See `.env.example`.
+
 ## Local
 
 ```bash

@@ -148,6 +148,7 @@ const API_ALIASES: Record<string, string> = {
   "email exists": "api.emailExists",
   "weak password": "api.weakPassword",
   "register failed": "api.registerFailed",
+  "club suspended": "api.clubSuspended",
   "invalid json": "api.invalidJson",
   "device token required": "api.deviceTokenRequired",
   "invalid device token": "api.invalidDeviceToken",

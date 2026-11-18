@@ -28,6 +28,7 @@
     "clubMap": "Club map",
     "globe": "Globe viewer",
     "register": "Register",
+    "createClub": "Create club",
     "pilotProfile": "Pilot profile",
     "androidApp": "Android app"
   },
@@ -51,7 +52,8 @@
     "forbidden": "Forbidden",
     "notCleared": "Not cleared for {tail} / {type}",
     "dbError": "Database error",
-    "invalidLocale": "Locale not available"
+    "invalidLocale": "Locale not available",
+    "clubSuspended": "Club suspended"
   },
   "club": {
     "login": {
@@ -64,7 +66,10 @@
       "links": "Register · Pilot profile · Android app"
     },
     "register": {
-      "title": "Register",
+      "title": "Pilot registration",
+      "forClub": "Register — {club}",
+      "pickClubLabel": "Club",
+      "pickClub": "Choose a club.",
       "name": "Name",
       "email": "Email",
       "license": "Licence no.",
@@ -72,6 +77,21 @@
       "submit": "Register (pending approval)",
       "success": "Registered — wait for admin approval.",
       "failed": "Registration failed."
+    },
+    "signup": {
+      "title": "Create club",
+      "lead": "Register your flying club. Verify the contact email to activate it.",
+      "clubName": "Club name",
+      "slug": "Slug identifier",
+      "contactEmail": "Contact email",
+      "icaoOptional": "Aerodrome ICAO (optional, 4 letters)",
+      "submit": "Register club",
+      "success": "Check your email to verify the club.",
+      "failed": "Could not submit registration."
+    },
+    "suspended": {
+      "title": "Club suspended",
+      "body": "This club is suspended. Club admins should contact the platform operator."
     },
     "map": {
       "title": "Club map",
@@ -216,6 +236,11 @@
       "subject": "Confirm your email for flight_vis",
       "bodyPlain": "Hello {name},\n\nConfirm your email with this link:\n{url}\n",
       "bodyHtml": "<p>Hello {name},</p><p><a href=\"{url}\">Confirm email</a></p>"
+    },
+    "verifyClub": {
+      "subject": "Verify your club on flight_vis",
+      "bodyPlain": "Hi,\n\nVerify club {name} with this link (expires in {minutes} minutes):\n{url}\n",
+      "bodyHtml": "<p>Verify club <strong>{name}</strong> with <a href=\"{url}\">this link</a> (expires in {minutes} minutes).</p>"
     },
     "pilotApproved": {
       "subject": "Your pilot account was approved",

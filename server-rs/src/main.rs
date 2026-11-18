@@ -44,6 +44,7 @@ pub(crate) struct AppState {
     pub(crate) mailer: club::mail::Mailer,
     pub(crate) webauthn: Option<club::webauthn::WebauthnState>,
     pub(crate) sse_limiter: std::sync::Arc<club::sse_limit::SseLimiter>,
+    pub(crate) superadmin_emails: std::collections::HashSet<String>,
 }
 
 fn app_state(
@@ -69,6 +70,7 @@ fn app_state(
             mailer: club::mail::Mailer::from_env(club::mail::MailOutbox::default()),
             webauthn: club::webauthn::WebauthnState::from_env(),
             sse_limiter: std::sync::Arc::new(club::sse_limit::SseLimiter::default()),
+            superadmin_emails: club::superadmin::superadmin_emails_from_env(),
         },
         queue_rx,
     )
