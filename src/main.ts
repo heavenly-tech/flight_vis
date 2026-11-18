@@ -112,13 +112,6 @@ function setStatus(text: string | null): void {
   statusEl.textContent = text;
 }
 
-(function paintLiveRouteChromeEarly(): void {
-  const live = parseLivePath(window.location.pathname);
-  if (!live.sessionId) return;
-  nameEl.textContent = "Live session";
-  setStatus(null);
-})();
-
 function xForTime(timeMs: number, width: number, pad: number): number {
   if (!flight) return pad;
   return pad + ((timeMs - flight.points[0].time) / flight.durationMs) * (width - pad * 2);
