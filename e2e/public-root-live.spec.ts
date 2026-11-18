@@ -20,8 +20,10 @@ test("root with one public live flight opens that flight", async ({ page }) => {
     };
   });
 
-  await page.goto("/");
-  await expect(page).toHaveURL(/club-flight\.html\?id=live-one/, { timeout: 15_000 });
+  await Promise.all([
+    page.waitForURL(/club-flight\.html\?id=live-one/, { timeout: 15_000 }),
+    page.goto("/"),
+  ]);
 });
 
 test("/map skips live-summary redirect", async ({ page }) => {

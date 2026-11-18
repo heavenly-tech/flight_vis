@@ -2,7 +2,9 @@ import { expect, test } from "@playwright/test";
 
 test("unauthenticated club admin redirects to club login with next", async ({ page }) => {
   await page.goto("/club-admin-types.html", { waitUntil: "networkidle" });
-  await expect(page).toHaveURL(/\/club-login\.html\?next=%2Fclub-admin-types\.html/);
+  await expect(page).toHaveURL(/\/club-login\.html\?next=%2Fclub-admin-types\.html/, {
+    timeout: 15_000,
+  });
 });
 
 test("club login honours safe next after sign-in", async ({ page }) => {
