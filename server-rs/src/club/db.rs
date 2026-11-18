@@ -1650,6 +1650,14 @@ impl ClubDb {
                 .fetch_one(&self.pool)
                 .await?;
         if exists > 0 {
+            let t = now_ms();
+            sqlx::query(
+                "UPDATE pilots SET email_verified_at = COALESCE(email_verified_at, $1)
+                 WHERE email IN ('admin@demo.test', 'pilot@demo.test')",
+            )
+            .bind(t)
+            .execute(&self.pool)
+            .await?;
             return Ok(());
         }
         let admin_id = new_id();
@@ -1658,10 +1666,11 @@ impl ClubDb {
         let hash = auth::hash_password("password12").map_err(|_| DbError::protocol("hash"))?;
         let t = now_ms();
         sqlx::query(
-            "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at) VALUES
-             ($1, $4, 'Demo Admin', 'admin@demo.test', 'ADM-1', 'approved', 'admin', $5, $6),
-             ($2, $4, 'Demo Pilot', 'pilot@demo.test', 'P-1', 'approved', 'pilot', $5, $6),
-             ($3, $4, 'Demo Pending', 'pending@demo.test', 'P-2', 'pending', 'pilot', $5, $6)",
+            "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash,
+             email_verified_at, created_at) VALUES
+             ($1, $4, 'Demo Admin', 'admin@demo.test', 'ADM-1', 'approved', 'admin', $5, $6, $6),
+             ($2, $4, 'Demo Pilot', 'pilot@demo.test', 'P-1', 'approved', 'pilot', $5, $6, $6),
+             ($3, $4, 'Demo Pending', 'pending@demo.test', 'P-2', 'pending', 'pilot', $5, NULL, $6)",
         )
         .bind(&admin_id)
         .bind(&pilot_id)
