@@ -14,6 +14,7 @@ import { getLocalFlight, isLocalSlug } from "./live/localFlights";
 import { ACC_DIM_M, createLiveRuntime, parseLivePath } from "./live/runtime";
 import { createE2eFlightViewer } from "./viz/e2eViewerStub";
 import type { FlightViewer, PathMode } from "./viz/viewer";
+import { e2eGlobeHooksEnabled, type FvE2eSurface } from "./e2eGlobeHooks";
 
 const SAMPLE_URL = `${import.meta.env.BASE_URL}samples/vuelo5.gpx`;
 const HANDLE = 10;
@@ -347,7 +348,13 @@ async function boot(): Promise<void> {
   if (!liveRouteEarly.sessionId) {
     setStatus(null);
   }
-  (window as unknown as { __fv: typeof viewer }).__fv = viewer;
+  if (e2eGlobeHooksEnabled()) {
+    window.__fvE2e = {
+      globePainted: false,
+      getPerfCommands: () => viewer.getPerfStats().commands,
+      getAircraftPosition: () => viewer.getAircraftPosition(),
+    } satisfies FvE2eSurface;
+  }
 
   if (new URLSearchParams(window.location.search).has("perf")) {
     const overlay = document.createElement("div");

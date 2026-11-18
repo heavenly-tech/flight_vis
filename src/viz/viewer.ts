@@ -3,6 +3,7 @@ import {
   BoundingSphere,
   Cartesian2,
   Cartesian3,
+  Cartographic,
   ClockRange,
   Color,
   ConstantPositionProperty,
@@ -41,6 +42,7 @@ import { fullRange, pointsInTrim } from "../track/trim";
 import { colorForUnit, normalizeValue, valueForMode } from "./colors";
 import { lerpAngle, wrapAngle, type FollowMode } from "./follow";
 import { QUALITY_LEVELS, resolutionScaleForLevel } from "./resolution";
+import { e2eGlobeHooksEnabled, markGlobePainted } from "../e2eGlobeHooks";
 
 const ESRI_IMAGERY =
   "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
@@ -71,6 +73,7 @@ export type FlightViewer = {
   stepQuality: (fps: number) => void;
   appendLivePoints: (newPoints: TrackPoint[]) => Promise<void>;
   setAccuracyDim: (thresholdM: number) => void;
+  getAircraftPosition: () => { lon: number; lat: number; alt: number } | null;
   destroy: () => void;
 };
 
@@ -107,9 +110,11 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     useBrowserRecommendedResolution: true,
   });
 
-  viewer.scene.postRender.addEventListener(() => {
-    (window as unknown as { __fvGlobePainted?: boolean }).__fvGlobePainted = true;
-  });
+  if (e2eGlobeHooksEnabled()) {
+    viewer.scene.postRender.addEventListener(() => {
+      markGlobePainted();
+    });
+  }
 
   viewer.scene.globe.enableLighting = true;
   viewer.scene.globe.depthTestAgainstTerrain = false;
@@ -798,6 +803,17 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       accuracyThresholdM = thresholdM;
       if (!flight || !trim) return;
       void rebuildTrack(flight, colorMode, trim);
+    },
+    getAircraftPosition: () => {
+      if (!craft?.position) return null;
+      const cart = craft.position.getValue(viewer.clock.currentTime);
+      if (!cart) return null;
+      const carto = Cartographic.fromCartesian(cart);
+      return {
+        lon: CesiumMath.toDegrees(carto.longitude),
+        lat: CesiumMath.toDegrees(carto.latitude),
+        alt: carto.height,
+      };
     },
     destroy: () => {
       removeCameraMoveEnd();

@@ -28,6 +28,7 @@ export function createE2eFlightViewer(): FlightViewer {
     stepQuality: (_fps: number) => {},
     appendLivePoints: async (_newPoints: TrackPoint[]) => {},
     setAccuracyDim: (_thresholdM: number) => {},
+    getAircraftPosition: () => null,
     destroy: () => {},
   };
 }

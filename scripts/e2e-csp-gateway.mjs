@@ -10,8 +10,8 @@ import { fileURLToPath } from "node:url";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(root, "..", "dist");
-const apiOrigin = process.env.FLIGHT_VIS_API_ORIGIN ?? "http://127.0.0.1:8080";
-const port = Number(process.env.E2E_CSP_PORT ?? "9090");
+const apiOrigin = process.env.FLIGHT_VIS_API_ORIGIN ?? "http://127.0.0.1:18080";
+const port = Number(process.env.E2E_CSP_PORT ?? "19090");
 
 const PROD_HTML_CSP =
   "default-src 'self'; " +
@@ -118,7 +118,11 @@ const server = http.createServer((req, res) => {
     });
     if (ext === "html") {
       let html = readFileSync(filePath, "utf8");
-      const hook = '<script src="/e2e-csp-hooks.js"></script>';
+      let hook = '<script src="/e2e-csp-hooks.js"></script>';
+      const pathOnly = urlPath.split("?")[0];
+      if (/^\/live\/[^/]+/.test(pathOnly)) {
+        hook += '<script src="/e2e-live-csp-sse.js"></script>';
+      }
       if (!html.includes("e2e-csp-hooks.js")) {
         html = html.replace("<head>", `<head>${hook}`);
       }
