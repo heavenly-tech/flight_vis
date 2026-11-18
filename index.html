@@ -5,12 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="description" content="3D flight visualization for IGC and GPX tracks." />
     <title>flight_vis</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@380;500;650&display=swap"
-      rel="stylesheet"
-    />
   </head>
   <body>
     <div id="cesiumContainer"></div>
@@ -229,18 +223,6 @@
       </form>
     </dialog>
 
-    <script>
-      (function () {
-        if (!/^\/live\/[A-Za-z0-9._-]+/i.test(location.pathname)) return;
-        var title = document.getElementById("flight-name");
-        if (title) title.textContent = "Live session";
-        var status = document.getElementById("status");
-        if (status) {
-          status.hidden = true;
-          status.textContent = "";
-        }
-      })();
-    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

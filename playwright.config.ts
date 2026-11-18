@@ -10,6 +10,17 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:5173",
   },
+  projects: [
+    {
+      name: "default",
+      testIgnore: /globe-csp\.spec\.ts/,
+    },
+    {
+      name: "globe-csp",
+      testMatch: /globe-csp\.spec\.ts/,
+      use: { baseURL: "http://127.0.0.1:9090" },
+    },
+  ],
   webServer: [
     {
       command:
@@ -21,6 +32,12 @@ export default defineConfig({
         FLIGHT_CLUB_SLUG: "demo",
         PORT: "8080",
       },
+      timeout: 120_000,
+      reuseExistingServer: !process.env.CI,
+    },
+    {
+      command: "node scripts/e2e-csp-gateway.mjs",
+      url: "http://127.0.0.1:9090/",
       timeout: 120_000,
       reuseExistingServer: !process.env.CI,
     },
