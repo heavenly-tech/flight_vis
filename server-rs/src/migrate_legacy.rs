@@ -514,7 +514,7 @@ async fn apply_disk_ownership(
 
 fn merge_counts(base: &mut MigrateCounts, extra: &MigrateCounts) {
     for (k, v) in &extra.rows {
-        *base.rows.entry(k.to_string()).or_insert(0) += v;
+        *base.rows.entry(*k).or_insert(0) += v;
     }
 }
 
