@@ -128,8 +128,19 @@ fn sidecar_path(base: &Path, encoding: &str) -> PathBuf {
     PathBuf::from(format!("{}{}", base.to_string_lossy(), suffix))
 }
 
-/// Production HTML CSP (must match nginx vhost `script-src` including Cesium WASM).
-pub const HTML_CSP: &str = "default-src 'self'; img-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+/// Production HTML CSP (single source of truth; nginx vhost should mirror this).
+pub const HTML_CSP: &str = concat!(
+    "default-src 'self'; ",
+    "script-src 'self' 'wasm-unsafe-eval'; ",
+    "worker-src 'self' blob:; ",
+    "style-src 'self' 'unsafe-inline'; ",
+    "font-src 'self'; ",
+    "img-src 'self' https://services.arcgisonline.com https://elevation3d.arcgis.com; ",
+    "connect-src 'self' https://services.arcgisonline.com https://elevation3d.arcgis.com; ",
+    "frame-ancestors 'none'; ",
+    "base-uri 'none'; ",
+    "form-action 'self'"
+);
 
 pub const HTML_REFERRER_POLICY: &str = "no-referrer";
 
@@ -452,9 +463,12 @@ mod tests {
     }
 
     #[test]
-    fn html_csp_includes_wasm_unsafe_eval_and_font_self() {
+    fn html_csp_matches_production_policy() {
         assert!(HTML_CSP.contains("script-src 'self' 'wasm-unsafe-eval'"));
+        assert!(HTML_CSP.contains("worker-src 'self' blob:"));
         assert!(HTML_CSP.contains("font-src 'self'"));
+        assert!(HTML_CSP.contains("https://services.arcgisonline.com"));
+        assert!(HTML_CSP.contains("https://elevation3d.arcgis.com"));
     }
 
     #[tokio::test]

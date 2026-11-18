@@ -25,7 +25,7 @@ export default defineConfig({
     {
       name: "prod-csp",
       testMatch: /csp-prod\.spec\.ts/,
-      timeout: 240_000,
+      timeout: 120_000,
       use: {
         baseURL: "http://127.0.0.1:8080",
       },
