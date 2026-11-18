@@ -22,6 +22,9 @@
     "pilots": "Pilots",
     "requests": "Requests",
     "checkouts": "Checkouts",
+    "matrix": "Matrix",
+    "import": "CSV import",
+    "audit": "Audit log",
     "adminMap": "Admin map",
     "kioskQr": "Kiosk QR",
     "login": "Log in",
@@ -200,7 +203,25 @@
     "saved": "Saved",
     "resetDone": "Reset",
     "kioskOpenUrl": "Open on the kiosk:",
-    "kioskActivationToken": "Activation token (paste on that page, not in the URL):"
+    "kioskActivationToken": "Activation token (paste on that page, not in the URL):",
+    "roster": {
+      "approve": "Approve",
+      "edit": "Edit",
+      "remove": "Remove",
+      "removeConfirm": "Remove or deactivate this record?",
+      "activate": "Activate",
+      "deactivate": "Deactivate",
+      "namePrompt": "Name",
+      "emailPrompt": "Email",
+      "licensePrompt": "License no.",
+      "statusPrompt": "Status (approved, pending, inactive)",
+      "tailPrompt": "Tail (CC-XXX)",
+      "typePrompt": "Type",
+      "toggleAuth": "Toggle authorization",
+      "downloadTemplate": "Download CSV template",
+      "previewFailed": "Preview failed",
+      "committed": "Import committed"
+    }
   },
   "kiosk": {
     "screenTitle": "Club check-in screen",

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es-CL">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="nav.matrix">flight_vis</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main { max-width: 56rem; margin: 1rem auto; padding: 0 1rem 2rem; }
+      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
+      button, select, input { font: inherit; padding: .35rem .5rem; }
+      #matrix { overflow-x: auto; margin-top: 1rem; }
+      #bulk { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; margin: 1rem 0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1 data-i18n="nav.matrix">Matriz</h1>
+      <div id="lang-slot"></div>
+      <div id="admin-nav"></div>
+      <div id="bulk">
+        <label data-i18n="nav.types">Tipo</label>
+        <select id="bulk-type"></select>
+        <input id="bulk-tail" placeholder="CC-XXX (opcional)" />
+        <button type="button" id="bulk-assign" data-i18n="admin.roster.activate">Asignar</button>
+        <button type="button" id="bulk-unassign" data-i18n="admin.roster.deactivate">Quitar</button>
+      </div>
+      <div id="matrix"></div>
+    </main>
+    <script type="module" src="/src/club/adminMatrix.ts"></script>
+  </body>
+</html>

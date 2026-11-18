@@ -90,7 +90,7 @@ pub(crate) async fn setup() -> Fixture {
     }
 }
 
-async fn login_cookie(router: &mut axum::Router, email: &str) -> String {
+pub(crate) async fn login_cookie(router: &mut axum::Router, email: &str) -> String {
     let res = router
         .call(
             Request::builder()

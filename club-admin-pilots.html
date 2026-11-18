@@ -13,8 +13,19 @@
   </head>
   <body>
     <main>
-      <h1>Pilots</h1>
+      <h1 data-i18n="nav.pilots">Pilotos</h1>
+      <div id="lang-slot"></div>
       <div id="admin-nav"></div>
+      <form id="add-form" style="display:flex;flex-wrap:wrap;gap:.5rem;margin:1rem 0">
+        <input name="name" placeholder="Nombre" required />
+        <input name="email" type="email" placeholder="Correo" required />
+        <input name="license_no" placeholder="Licencia" />
+        <select name="status">
+          <option value="approved">approved</option>
+          <option value="pending">pending</option>
+        </select>
+        <button type="submit" data-i18n="common.save">Guardar</button>
+      </form>
       <h2 style="font-size:1rem">Pending approval</h2>
       <ul id="pending"></ul>
       <h2 style="font-size:1rem">All pilots</h2>

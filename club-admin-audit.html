@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es-CL">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="nav.audit">flight_vis</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main { max-width: 48rem; margin: 1rem auto; padding: 0 1rem 2rem; }
+      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
+      li { font-size: .85rem; margin: .25rem 0; font-family: var(--font-mono, monospace); }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1 data-i18n="nav.audit">Auditoría</h1>
+      <div id="lang-slot"></div>
+      <div id="admin-nav"></div>
+      <p>
+        <select id="filter">
+          <option value="">Todos</option>
+          <option value="pilot">Pilot</option>
+          <option value="aircraft">Aircraft</option>
+          <option value="checkout">Checkout</option>
+        </select>
+      </p>
+      <ul id="list"></ul>
+      <button type="button" id="more" hidden data-i18n="common.loading">Más</button>
+    </main>
+    <script type="module" src="/src/club/adminAudit.ts"></script>
+  </body>
+</html>
