@@ -2,10 +2,10 @@
 //!
 //! ## Postgres “legacy-owned” rows
 //!
-//! **Source pilots** (whose ids are collected into `legacy_ids`), all scoped to the target club:
-//! - Default: `pilots.club_id = <club>` AND `lower(email) <> <target>` AND `email_verified_at IS NULL`
-//!   AND at least one dependent row exists (flight, device, checkout, share, etc.).
-//! - Override: `FLIGHT_LEGACY_MIGRATE_SOURCE_EMAIL` → exactly that pilot in the same club.
+//! **Source pilots** (`legacy_ids`): only pilots named explicitly via CLI
+//! `--source-pilot-id` (repeatable) and/or `--source-email` (repeatable), each resolved in the
+//! target club. `FLIGHT_LEGACY_MIGRATE_SOURCE_EMAIL` adds one `--source-email`. No automatic
+//! selection (no unverified-email heuristic).
 //!
 //! **Rows reassigned** (only where `pilot_id` / `created_by` / etc. ∈ `legacy_ids`):
 //! flights, devices, checkouts, checkins, pilot_sessions, flight_shares.created_by,
@@ -58,6 +58,7 @@ pub enum MigrateError {
     Store(String),
     ClubNotFound(String),
     TargetExistsOnOtherClub,
+    SourceNotFound(String),
 }
 
 impl std::fmt::Display for MigrateError {
@@ -70,6 +71,7 @@ impl std::fmt::Display for MigrateError {
             Self::TargetExistsOnOtherClub => {
                 write!(f, "target email already registered on another club")
             }
+            Self::SourceNotFound(m) => write!(f, "{m}"),
         }
     }
 }
@@ -79,6 +81,8 @@ pub fn parse_cli_args(args: &[String]) -> Result<LegacyMigrateOpts, MigrateError
     let mut club = None;
     let mut apply = false;
     let mut dry_run = false;
+    let mut source_pilot_ids = Vec::new();
+    let mut source_emails = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -98,6 +102,30 @@ pub fn parse_cli_args(args: &[String]) -> Result<LegacyMigrateOpts, MigrateError
                         .clone(),
                 );
             }
+            "--source-pilot-id" => {
+                i += 1;
+                let id = args
+                    .get(i)
+                    .ok_or_else(|| {
+                        MigrateError::Usage("--source-pilot-id requires a value".into())
+                    })?
+                    .trim()
+                    .to_string();
+                if !id.is_empty() {
+                    source_pilot_ids.push(id);
+                }
+            }
+            "--source-email" => {
+                i += 1;
+                let src = args
+                    .get(i)
+                    .ok_or_else(|| MigrateError::Usage("--source-email requires a value".into()))?
+                    .trim()
+                    .to_string();
+                if !src.is_empty() {
+                    source_emails.push(src);
+                }
+            }
             "--apply" => apply = true,
             "--dry-run" => dry_run = true,
             flag => {
@@ -116,11 +144,28 @@ pub fn parse_cli_args(args: &[String]) -> Result<LegacyMigrateOpts, MigrateError
             "use only one of --dry-run or --apply".into(),
         ));
     }
+    if let Some(env_src) = optional_source_email() {
+        let norm = env_src.trim().to_ascii_lowercase();
+        if !norm.is_empty()
+            && !source_emails
+                .iter()
+                .any(|e| e.trim().eq_ignore_ascii_case(&norm))
+        {
+            source_emails.push(env_src);
+        }
+    }
+    if source_pilot_ids.is_empty() && source_emails.is_empty() {
+        return Err(MigrateError::Usage(
+            "at least one of --source-pilot-id or --source-email is required (or set FLIGHT_LEGACY_MIGRATE_SOURCE_EMAIL)".into(),
+        ));
+    }
     let dry_run = if apply { false } else { true };
     Ok(LegacyMigrateOpts {
         email: email.trim().to_string(),
         club_slug: club.trim().to_string(),
         dry_run,
+        source_pilot_ids,
+        source_emails,
     })
 }
 
@@ -129,6 +174,8 @@ pub struct LegacyMigrateOpts {
     pub email: String,
     pub club_slug: String,
     pub dry_run: bool,
+    pub source_pilot_ids: Vec<String>,
+    pub source_emails: Vec<String>,
 }
 
 async fn club_id_for_slug(pool: &PgPool, slug: &str) -> Result<String, MigrateError> {
@@ -147,51 +194,118 @@ fn optional_source_email() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-async fn legacy_owner_ids(
+struct SourcePilotRow {
+    id: String,
+    email: String,
+    club_slug: String,
+}
+
+async fn resolve_legacy_owner_ids(
     pool: &PgPool,
     club_id: &str,
-    target_email: &str,
+    opts: &LegacyMigrateOpts,
 ) -> Result<Vec<String>, MigrateError> {
-    let target = target_email.trim().to_ascii_lowercase();
-    if let Some(src) = optional_source_email() {
-        let id: Option<String> =
-            sqlx::query_scalar("SELECT id FROM pilots WHERE club_id = $1 AND lower(email) = $2")
-                .bind(club_id)
-                .bind(&src)
-                .fetch_optional(pool)
-                .await
-                .map_err(|e| MigrateError::Db(e.to_string()))?;
-        return Ok(id.into_iter().collect());
+    if opts.source_pilot_ids.is_empty() && opts.source_emails.is_empty() {
+        return Err(MigrateError::Usage(
+            "at least one of --source-pilot-id or --source-email is required".into(),
+        ));
+    }
+    let mut ids = Vec::new();
+    for id in &opts.source_pilot_ids {
+        let found: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM pilots WHERE id = $1 AND club_id = $2",
+        )
+        .bind(id)
+        .bind(club_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| MigrateError::Db(e.to_string()))?;
+        if found.is_none() {
+            return Err(MigrateError::SourceNotFound(format!(
+                "source pilot id {id} not found in club"
+            )));
+        }
+        ids.push(id.clone());
+    }
+    for email in &opts.source_emails {
+        let norm = email.trim();
+        let found: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM pilots WHERE club_id = $1 AND lower(trim(email)) = lower(trim($2))",
+        )
+        .bind(club_id)
+        .bind(norm)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| MigrateError::Db(e.to_string()))?;
+        let Some(found) = found else {
+            return Err(MigrateError::SourceNotFound(format!(
+                "source email {norm} not found in club"
+            )));
+        };
+        ids.push(found);
+    }
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+async fn fetch_source_pilot_rows(
+    pool: &PgPool,
+    legacy_ids: &[String],
+) -> Result<Vec<SourcePilotRow>, MigrateError> {
+    if legacy_ids.is_empty() {
+        return Ok(Vec::new());
     }
     let rows = sqlx::query(
-        "SELECT p.id FROM pilots p
-         WHERE p.club_id = $1
-           AND lower(trim(p.email)) <> $2
-           AND p.email_verified_at IS NULL
-           AND (
-             EXISTS (SELECT 1 FROM flights f WHERE f.pilot_id = p.id)
-             OR EXISTS (SELECT 1 FROM devices d WHERE d.pilot_id = p.id)
-             OR EXISTS (SELECT 1 FROM checkouts c WHERE c.pilot_id = p.id)
-             OR EXISTS (SELECT 1 FROM checkins ch WHERE ch.pilot_id = p.id)
-             OR EXISTS (SELECT 1 FROM flight_shares s WHERE s.created_by = p.id)
-             OR EXISTS (SELECT 1 FROM display_sessions ds WHERE ds.created_by_pilot_id = p.id)
-             OR EXISTS (SELECT 1 FROM access_requests ar WHERE ar.pilot_id = p.id OR ar.decided_by_pilot_id = p.id)
-             OR EXISTS (SELECT 1 FROM audit_log al WHERE al.actor_pilot_id = p.id)
-             OR EXISTS (SELECT 1 FROM admin_map_prefs amp WHERE amp.pilot_id = p.id)
-             OR EXISTS (SELECT 1 FROM webauthn_credentials w WHERE w.pilot_id = p.id)
-             OR EXISTS (SELECT 1 FROM guest_sessions g WHERE g.guest_pilot_id = p.id)
-             OR EXISTS (SELECT 1 FROM pilot_sessions ps WHERE ps.pilot_id = p.id)
-           )",
+        "SELECT p.id, COALESCE(p.email, ''), c.slug
+         FROM pilots p
+         JOIN clubs c ON c.id = p.club_id
+         WHERE p.id = ANY($1)
+         ORDER BY p.id",
     )
-    .bind(club_id)
-    .bind(&target)
+    .bind(legacy_ids)
     .fetch_all(pool)
     .await
     .map_err(|e| MigrateError::Db(e.to_string()))?;
     Ok(rows
         .into_iter()
-        .filter_map(|r| r.try_get::<String, _>(0).ok())
+        .filter_map(|r| {
+            Some(SourcePilotRow {
+                id: r.try_get(0).ok()?,
+                email: r.try_get(1).ok()?,
+                club_slug: r.try_get(2).ok()?,
+            })
+        })
         .collect())
+}
+
+fn print_source_pilots(rows: &[SourcePilotRow]) {
+    if rows.is_empty() {
+        eprintln!("  (no source pilots resolved)");
+        return;
+    }
+    for p in rows {
+        eprintln!(
+            "  source pilot: id={} email={} club={}",
+            p.id, p.email, p.club_slug
+        );
+    }
+}
+
+async fn print_migration_plan(
+    pool: &PgPool,
+    legacy_ids: &[String],
+    counts: &MigrateCounts,
+    title: &str,
+) -> Result<(), MigrateError> {
+    eprintln!("{title}");
+    let sources = fetch_source_pilot_rows(pool, legacy_ids).await?;
+    print_source_pilots(&sources);
+    for (table, n) in &counts.rows {
+        eprintln!("  {table}: {n}");
+    }
+    eprintln!("  total: {}", counts.total());
+    Ok(())
 }
 
 async fn count_rows(pool: &PgPool, legacy_ids: &[String]) -> Result<MigrateCounts, MigrateError> {
@@ -551,11 +665,10 @@ async fn apply_row_updates(
 pub async fn gather_counts(
     pool: &PgPool,
     data_dir: &Path,
-    club_slug: &str,
-    target_email: &str,
+    opts: &LegacyMigrateOpts,
 ) -> Result<MigrateCounts, MigrateError> {
-    let club_id = club_id_for_slug(pool, club_slug).await?;
-    let legacy = legacy_owner_ids(pool, &club_id, target_email).await?;
+    let club_id = club_id_for_slug(pool, &opts.club_slug).await?;
+    let legacy = resolve_legacy_owner_ids(pool, &club_id, opts).await?;
     let mut counts = count_rows(pool, &legacy).await?;
     merge_counts(&mut counts, count_disk_library(pool, data_dir).await?);
     Ok(counts)
@@ -572,15 +685,16 @@ pub async fn run_legacy_migrate(
         .await
         .map_err(|e| MigrateError::Db(e.to_string()))?;
     let club_id = club_id_for_slug(&pool, &opts.club_slug).await?;
-    let legacy_ids = legacy_owner_ids(&pool, &club_id, &opts.email).await?;
+    let legacy_ids = resolve_legacy_owner_ids(&pool, &club_id, opts).await?;
     let mut counts = count_rows(&pool, &legacy_ids).await?;
     merge_counts(&mut counts, count_disk_library(&pool, data_dir).await?);
 
-    counts.print_report(if opts.dry_run {
+    let plan_title = if opts.dry_run {
         "migrate-legacy dry-run (no writes)"
     } else {
-        "migrate-legacy apply"
-    });
+        "migrate-legacy apply (pre-commit)"
+    };
+    print_migration_plan(&pool, &legacy_ids, &counts, plan_title).await?;
 
     if opts.dry_run {
         return Ok(counts);
@@ -637,13 +751,17 @@ pub async fn run_legacy_migrate(
 
     apply_disk_ownership(&pool, data_dir, &club_id, &target_id).await?;
 
-    let after_legacy = count_rows(
+    let after_legacy = count_rows(&pool, &legacy_ids).await?;
+    let after_disk = count_disk_library(&pool, data_dir).await?;
+    let mut post_pg = MigrateCounts::default();
+    merge_counts(&mut post_pg, after_legacy);
+    print_migration_plan(
         &pool,
-        &legacy_owner_ids(&pool, &club_id, &opts.email).await?,
+        &legacy_ids,
+        &post_pg,
+        "migrate-legacy post-commit (postgres legacy owners)",
     )
     .await?;
-    let after_disk = count_disk_library(&pool, data_dir).await?;
-    after_legacy.print_report("migrate-legacy post-commit (postgres legacy owners)");
     after_disk.print_report("migrate-legacy post-commit (disk)");
     let pending: i64 = after_disk
         .rows
@@ -669,7 +787,9 @@ pub async fn run_legacy_migrate_cli(args: &[String]) -> i32 {
         Err(e) => {
             eprintln!("migrate-legacy: {e}");
             eprintln!(
-                "usage: flight_vis migrate-legacy --email <addr> --club <slug> [--dry-run|--apply]"
+                "usage: flight_vis migrate-legacy --email <addr> --club <slug> \\
+  (--source-pilot-id <id> | --source-email <addr> | FLIGHT_LEGACY_MIGRATE_SOURCE_EMAIL)+ \\
+  [--dry-run|--apply]"
             );
             return 2;
         }

@@ -18,6 +18,17 @@ use tower::Service;
 
 const FIXTURE_EMAIL: &str = "legacy-migrate-fixture@test.invalid";
 const LEGACY_EMAIL: &str = "legacy-owner-fixture@test.invalid";
+const DECOY_EMAIL: &str = "unverified-decoy-fixture@test.invalid";
+
+fn migrate_opts(club_slug: &str, dry_run: bool, source_email: &str) -> LegacyMigrateOpts {
+    LegacyMigrateOpts {
+        email: FIXTURE_EMAIL.to_string(),
+        club_slug: club_slug.to_string(),
+        dry_run,
+        source_pilot_ids: Vec::new(),
+        source_emails: vec![source_email.to_string()],
+    }
+}
 
 async fn seed_legacy_owner(db: &ClubDb, club_id: &str) -> (String, String, String) {
     let hash = hash_password("password12").unwrap();
@@ -112,11 +123,7 @@ async fn migrate_legacy_dry_run_and_apply_idempotent() {
         .await
         .unwrap();
 
-    let opts = LegacyMigrateOpts {
-        email: FIXTURE_EMAIL.to_string(),
-        club_slug: slug.clone(),
-        dry_run: true,
-    };
+    let opts = migrate_opts(&slug, true, LEGACY_EMAIL);
     let dry = run_legacy_migrate(&opts, data_dir.path())
         .await
         .expect("dry-run");
@@ -183,6 +190,18 @@ async fn migrate_legacy_dry_run_and_apply_idempotent() {
 fn cli_requires_email() {
     let err = parse_cli_args(&["--club".to_string(), "cas".to_string()]).unwrap_err();
     assert!(err.to_string().contains("--email"));
+}
+
+#[test]
+fn cli_requires_explicit_source() {
+    let err = parse_cli_args(&[
+        "--email".to_string(),
+        FIXTURE_EMAIL.to_string(),
+        "--club".to_string(),
+        "cas".to_string(),
+    ])
+    .unwrap_err();
+    assert!(err.to_string().contains("--source"));
 }
 
 async fn seed_second_club_pilot_with_flight(db: &ClubDb, slug: &str) -> (String, String, String) {
@@ -258,11 +277,7 @@ async fn migrate_legacy_does_not_touch_other_club_rows() {
         seed_second_club_pilot_with_flight(&db, &slug_b).await;
 
     let data_dir = tempfile::tempdir().unwrap();
-    let opts = LegacyMigrateOpts {
-        email: FIXTURE_EMAIL.to_string(),
-        club_slug: slug,
-        dry_run: false,
-    };
+    let opts = migrate_opts(&slug, false, LEGACY_EMAIL);
     run_legacy_migrate(&opts, data_dir.path())
         .await
         .expect("apply");
@@ -306,4 +321,90 @@ async fn migrate_legacy_does_not_touch_other_club_rows() {
             .await
             .unwrap();
     assert_eq!(other_club_pilots, 1);
+}
+
+async fn seed_unverified_decoy_with_flight(db: &ClubDb, club_id: &str) -> (String, String) {
+    let hash = hash_password("password12").unwrap();
+    let pilot_id = new_id();
+    let now = crate::club::now_ms();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'Decoy', $3, '', 'approved', 'pilot', $4, $5)",
+    )
+    .bind(&pilot_id)
+    .bind(club_id)
+    .bind(DECOY_EMAIL)
+    .bind(&hash)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    db.upsert_type(club_id, "C172").await.unwrap();
+    db.upsert_aircraft(club_id, "CC-DEC", "C172", true)
+        .await
+        .unwrap();
+    let (dev, _) = db.create_device(&pilot_id, "decoy").await.unwrap();
+    db.issue_open_checkin(&pilot_id, &dev, club_id, now)
+        .await
+        .unwrap();
+    let flight_id = db
+        .start_flight(
+            &pilot_id,
+            &dev,
+            "CC-DEC",
+            FlightVisibility::Private,
+            false,
+            now,
+        )
+        .await
+        .unwrap();
+    (pilot_id, flight_id)
+}
+
+#[serial]
+#[tokio::test]
+async fn migrate_legacy_leaves_unnamed_unverified_pilot_untouched() {
+    let db = match ClubDb::open_test().await {
+        Ok(db) => db,
+        Err(DbConnectError::MissingUrl) => {
+            eprintln!("skipping migrate_legacy_tests: DATABASE_URL unset");
+            return;
+        }
+        Err(e) => panic!("db: {e}"),
+    };
+    let club_id = db.default_club_id().await.unwrap();
+    let slug: String = sqlx::query_scalar("SELECT slug FROM clubs WHERE id = $1")
+        .bind(&club_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+
+    let (_legacy_id, legacy_flight, _) = seed_legacy_owner(&db, &club_id).await;
+    let (decoy_id, decoy_flight) = seed_unverified_decoy_with_flight(&db, &club_id).await;
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let opts = migrate_opts(&slug, false, LEGACY_EMAIL);
+    run_legacy_migrate(&opts, data_dir.path())
+        .await
+        .expect("apply");
+
+    let decoy_owner: String = sqlx::query_scalar("SELECT pilot_id FROM flights WHERE id = $1")
+        .bind(&decoy_flight)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(decoy_owner, decoy_id);
+
+    let target_id: String =
+        sqlx::query_scalar("SELECT id FROM pilots WHERE lower(email) = lower($1)")
+            .bind(FIXTURE_EMAIL)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let legacy_owner: String = sqlx::query_scalar("SELECT pilot_id FROM flights WHERE id = $1")
+        .bind(&legacy_flight)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(legacy_owner, target_id);
 }
