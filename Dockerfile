@@ -28,6 +28,7 @@ COPY --from=chef /usr/local/cargo/bin/cargo-chef /usr/local/cargo/bin/cargo-chef
 COPY --from=chef /recipe.json /recipe.json
 RUN cargo chef cook --release --recipe-path /recipe.json
 COPY server-rs/ ./
+COPY signup.html /app/signup.html
 RUN cargo build --release
 
 # Runtime dependencies staged from Alpine. The final stage is `scratch`, so
