@@ -27,6 +27,13 @@
       const nextAfterLogin = safeNextPath(
         new URLSearchParams(location.search).get("next") ?? "/club-pilot.html",
       );
+      const existing = await fetch("/api/club/me", { credentials: "same-origin" });
+      if (existing.ok) {
+        const me = await existing.json();
+        if (me.pilot) {
+          location.replace(nextAfterLogin);
+        }
+      }
       const form = document.getElementById("form");
       const msg = document.getElementById("msg");
       form.addEventListener("submit", async (e) => {

@@ -1,3 +1,4 @@
+import { ensureClubAdminOrRedirect } from "./adminGate";
 import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 import {
   applyLayoutToEl,
@@ -124,6 +125,7 @@ aspectSel.addEventListener("change", () => {
 paint();
 
 void (async () => {
+  if (!(await ensureClubAdminOrRedirect())) return;
   mountAdminNav();
   try {
     await requireAdmin();
