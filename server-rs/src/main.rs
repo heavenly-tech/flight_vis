@@ -153,6 +153,30 @@ async fn auth_me(State(state): State<AppState>, headers: HeaderMap) -> Json<serd
     }))
 }
 
+async fn auth_legacy_gate(State(state): State<AppState>, headers: HeaderMap) -> Json<serde_json::Value> {
+    let authenticated = session_token(&headers)
+        .map(|token| state.auth.verify(&token, now_secs()))
+        .unwrap_or(false);
+    let mut allowed = authenticated;
+    if !allowed {
+        if let Some(db) = state.club.as_ref() {
+            let session = club::parse_session_cookie(&headers);
+            let now = club::now_ms();
+            let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
+            if let Some(pilot) = pilot {
+                allowed = db
+                    .is_platform_superadmin(&pilot.id, &state.superadmin_emails)
+                    .await;
+            }
+        }
+    }
+    Json(json!({
+        "allowed": allowed,
+        "authenticated": authenticated,
+        "configured": state.auth.configured(),
+    }))
+}
+
 async fn club_admin_login_redirect(
     state: &AppState,
     headers: &HeaderMap,
@@ -166,7 +190,7 @@ async fn club_admin_login_redirect(
     let session = club::parse_session_cookie(headers);
     let now = club::now_ms();
     let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
-    if pilot.as_ref().is_some_and(|p| p.role == "admin") {
+    if pilot.as_ref().is_some_and(|p| p.role == "admin" || p.role == "staff") {
         return None;
     }
     let raw_next = match query {
@@ -174,7 +198,13 @@ async fn club_admin_login_redirect(
         _ => path.to_string(),
     };
     let next = auth::safe_next(&raw_next);
-    Some(redirect_found(&format!("/club-login.html?next={}", url_encode(&next))).into_response())
+    Some(
+        redirect_found(&format!(
+            "/club-login.html?mode=club&next={}",
+            url_encode(&next)
+        ))
+        .into_response(),
+    )
 }
 
 async fn fallback(
@@ -268,6 +298,37 @@ async fn login_html_redirect(Query(query): Query<HashMap<String, String>>) -> im
         Some(next) => redirect_found(&format!("/login?next={}", url_encode(next))).into_response(),
         None => redirect_found("/login").into_response(),
     }
+}
+
+async fn login_legacy_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    let gate = auth_legacy_gate(State(state.clone()), headers.clone()).await.0;
+    let allowed = gate
+        .get("allowed")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if !allowed {
+        let next = query.get("next").map(String::as_str).unwrap_or("/");
+        return redirect_found(&format!("/login?next={}", url_encode(next))).into_response();
+    }
+    let candidate = state.dist_dir.join("login-legacy.html");
+    if let Ok(html) = tokio::fs::read_to_string(&candidate).await {
+        return (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/html; charset=UTF-8")],
+            html,
+        )
+            .into_response();
+    }
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/html; charset=UTF-8")],
+        login_fallback_html(state.auth.configured()),
+    )
+        .into_response()
 }
 
 fn redirect_found(location: &str) -> impl IntoResponse {
@@ -543,7 +604,7 @@ async fn login_post(
         if json {
             return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "locked" }))).into_response();
         }
-        return redirect_found("/login?locked=1").into_response();
+        return redirect_found("/login/legacy?locked=1").into_response();
     }
     let fields = login_fields(&headers, &body);
     if !state.auth.check_password(&fields.password) {
@@ -554,7 +615,7 @@ async fn login_post(
             )
                 .into_response();
         }
-        return redirect_found("/login?e=1").into_response();
+        return redirect_found("/login/legacy?e=1").into_response();
     }
     let secure = is_secure(&headers);
     let cookie = auth::set_cookie_header(&state.auth.mint(now_secs()), secure);
@@ -607,8 +668,10 @@ fn build_router(state: AppState) -> Router {
     let mut app = Router::new()
         .route("/api/health", get(health))
         .route("/api/auth/me", get(auth_me))
+        .route("/api/auth/legacy-gate", get(auth_legacy_gate))
         .route("/login", get(login_page).post(login_post))
         .route("/login.html", get(login_html_redirect))
+        .route("/login/legacy", get(login_legacy_page))
         .route("/logout", get(logout).post(logout));
     if state.club.is_some() {
         app = app.merge(club::router()).merge(club::contract_router());

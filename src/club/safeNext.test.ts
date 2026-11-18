@@ -23,7 +23,7 @@ describe("safeNextPath", () => {
 describe("clubLoginRedirectUrl", () => {
   it("encodes next query", () => {
     expect(clubLoginRedirectUrl("/club-admin-tails.html")).toBe(
-      "/club-login.html?next=%2Fclub-admin-tails.html",
+      "/club-login.html?mode=club&next=%2Fclub-admin-tails.html",
     );
   });
 });

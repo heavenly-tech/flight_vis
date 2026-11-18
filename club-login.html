@@ -10,15 +10,25 @@
   <body>
     <main>
       <div id="lang-slot"></div>
+      <p class="muted"><a href="/login" id="back-chooser" data-i18n="entrar.back"></a></p>
+      <section id="slug-panel" hidden>
+        <h1 data-i18n="club.login.clubTitle">Inicio de sesión del club</h1>
+        <p class="muted" data-i18n="club.login.clubLead"></p>
+        <label data-i18n="club.register.pickClubLabel"></label>
+        <input id="club-slug" name="club" type="text" required autocomplete="organization" data-i18n-placeholder="account.join.slug" />
+        <button type="button" id="slug-continue" data-i18n="club.login.continue"></button>
+      </section>
       <section id="login-panel">
-        <h1 data-i18n="club.login.title">Inicio de sesión</h1>
+        <h1 id="login-heading" data-i18n="club.login.title">Inicio de sesión</h1>
+        <p id="club-slug-label" class="muted" hidden></p>
         <form id="form">
           <input name="email" type="email" required data-i18n-placeholder="club.login.email" />
-          <input name="password" type="password" required data-i18n-placeholder="club.login.password" minlength="8" />
+          <input name="password" type="password" data-i18n-placeholder="club.login.password" minlength="8" />
           <button type="submit" data-i18n="club.login.submit"></button>
+          <button type="button" id="magic-btn" class="muted" data-i18n="club.login.sendMagic"></button>
         </form>
         <p id="msg" class="muted"></p>
-        <p class="muted"><a href="/signup.html" data-i18n="account.signup.link"></a></p>
+        <p id="pilot-signup" class="muted"><a href="/signup.html" data-i18n="account.signup.link"></a></p>
         <details class="muted">
           <summary data-i18n="club.login.legacyApk"></summary>
           <form id="legacy-login">
@@ -29,7 +39,7 @@
         </details>
       </section>
       <section id="pick-panel" hidden>
-        <h1 data-i18n="club.login.pickClub">Elige un club</h1>
+        <h1 data-i18n="club.login.misClubs">Mis clubs</h1>
         <ul id="club-list"></ul>
         <button type="button" id="join-open" data-i18n="account.join.open"></button>
       </section>

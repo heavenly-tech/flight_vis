@@ -1,6 +1,6 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import "./style.css";
-import { getAuth, getFlight, loginUrl, logout, saveFlight, shareUrl, type AuthStatus } from "./api";
+import { getAuth, getFlight, entrarUrl, loginUrl, logout, saveFlight, shareUrl, type AuthStatus } from "./api";
 import { isTrackFile, mountLibrary, type LibraryHandle } from "./library";
 import { formatClock, formatDuration } from "./track/geo";
 import { isGeoidReady } from "./geo/geoid";
@@ -60,7 +60,7 @@ let auth: AuthStatus = { authenticated: false, configured: true };
 let library: LibraryHandle | null = null;
 
 function syncAuthUi(): void {
-  loginLink.href = loginUrl();
+  loginLink.href = entrarUrl();
   loginLink.hidden = auth.authenticated;
   logoutButton.hidden = !auth.authenticated;
   library?.setAuth(auth);

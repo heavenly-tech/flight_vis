@@ -19,6 +19,22 @@
     "dateShort": "dd/MM/yyyy",
     "dateTimeShort": "dd/MM/yyyy HH:mm"
   },
+  "entrar": {
+    "title": "Iniciar sesión",
+    "lead": "Elige si entras como club (administración) o como piloto (tu cuenta).",
+    "club": "Iniciar sesión como club",
+    "pilot": "Iniciar sesión como piloto",
+    "back": "← Volver al selector"
+  },
+  "legacyLogin": {
+    "title": "Biblioteca en disco (legacy)",
+    "lead": "Solo superadministradores de la plataforma hasta migrar el almacenamiento.",
+    "password": "Contraseña",
+    "submit": "Entrar",
+    "denied": "Esta ruta no está enlazada; necesitas superadministrador de la plataforma.",
+    "locked": "Carga bloqueada: falta FLIGHT_VIS_PASSWORD en el servidor.",
+    "wrongPassword": "Contraseña incorrecta."
+  },
   "nav": {
     "types": "Tipos",
     "tails": "Matrículas",
@@ -62,13 +78,23 @@
   "club": {
     "login": {
       "title": "Inicio de sesión del club",
+      "clubTitle": "Inicio de sesión del club",
+      "clubLead": "Indica el club y usa tu cuenta con rol de administrador o staff.",
+      "pilotTitle": "Inicio de sesión de piloto",
       "email": "Correo",
       "password": "Contraseña",
       "submit": "Inicia sesión",
+      "sendMagic": "Enviar enlace mágico",
+      "magicSent": "Si el correo existe, enviamos un enlace (revisa tu bandeja).",
+      "passwordOrMagic": "Introduce contraseña o usa el enlace mágico.",
       "success": "Sesión iniciada.",
       "failed": "No se pudo iniciar sesión.",
+      "staffDenied": "No tienes membresía activa de administrador o staff en ese club.",
+      "noClubs": "Todavía no perteneces a ningún club. Puedes unirte abajo o crear cuenta.",
+      "continue": "Continuar",
       "links": "Registrarse · Perfil piloto · App Android",
       "pickClub": "Elige un club",
+      "misClubs": "Mis clubs",
       "legacyApk": "App Android 1.0 (sesión directa del club)",
       "legacySubmit": "Ingresar (APK legacy)"
     },

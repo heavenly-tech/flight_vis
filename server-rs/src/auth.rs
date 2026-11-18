@@ -141,6 +141,12 @@ pub fn safe_next(input: &str) -> String {
     if value == "/club-login.html" || value.starts_with("/club-login.html?") {
         return "/".to_string();
     }
+    if value == "/login/legacy" || value.starts_with("/login/legacy?") {
+        return "/".to_string();
+    }
+    if value == "/login.html" || value.starts_with("/login.html?") {
+        return "/".to_string();
+    }
     value.to_string()
 }
 

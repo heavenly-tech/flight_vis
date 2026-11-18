@@ -109,7 +109,8 @@ impl ClubDb {
         }
         match self.membership_in_club(pilot_id, club_id).await {
             Some((role, status))
-                if role == "admin" && (status == "active" || status == "approved") =>
+                if (role == "admin" || role == "staff")
+                    && (status == "active" || status == "approved") =>
             {
                 Ok(())
             }

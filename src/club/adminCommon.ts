@@ -48,7 +48,10 @@ export async function requireAdmin(): Promise<{ name: string }> {
     redirectToClubLogin();
     throw new Error(CLUB_ADMIN_REDIRECT);
   }
-  if (!me.pilot || me.pilot.role !== "admin") {
+  if (
+    !me.pilot ||
+    (me.pilot.role !== "admin" && me.pilot.role !== "staff")
+  ) {
     redirectToClubLogin();
     throw new Error(CLUB_ADMIN_REDIRECT);
   }

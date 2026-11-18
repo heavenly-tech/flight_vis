@@ -32,6 +32,15 @@ const authProxy: Record<string, string | ProxyOptions> = {
       }
     },
   },
+  "/login/legacy": {
+    target: api,
+    bypass(req) {
+      if (req.method === "GET" || req.method === "HEAD") {
+        const query = req.url?.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+        return `/login-legacy.html${query}`;
+      }
+    },
+  },
 };
 
 function clubAdminHtmlGateMiddleware(
@@ -54,7 +63,7 @@ function clubAdminHtmlGateMiddleware(
       .then(async (meRes) => {
         if (meRes.ok) {
           const me = (await meRes.json()) as { pilot?: { role?: string } | null };
-          if (me.pilot?.role === "admin") {
+          if (me.pilot?.role === "admin" || me.pilot?.role === "staff") {
             next();
             return;
           }
@@ -62,13 +71,16 @@ function clubAdminHtmlGateMiddleware(
         res.statusCode = 302;
         res.setHeader(
           "Location",
-          `/club-login.html?next=${encodeURIComponent(pathOnly + search)}`,
+          `/club-login.html?mode=club&next=${encodeURIComponent(pathOnly + search)}`,
         );
         res.end();
       })
       .catch(() => {
         res.statusCode = 302;
-        res.setHeader("Location", `/club-login.html?next=${encodeURIComponent(pathOnly + search)}`);
+        res.setHeader(
+          "Location",
+          `/club-login.html?mode=club&next=${encodeURIComponent(pathOnly + search)}`,
+        );
         res.end();
       });
   };
@@ -126,6 +138,7 @@ export default defineConfig({
       input: {
         main: path.resolve(root, "index.html"),
         login: path.resolve(root, "login.html"),
+        loginLegacy: path.resolve(root, "login-legacy.html"),
         app: path.resolve(root, "app.html"),
         clubPilot: path.resolve(root, "club-pilot.html"),
         clubFlight: path.resolve(root, "club-flight.html"),

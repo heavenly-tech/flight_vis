@@ -675,7 +675,10 @@ mod tests {
             (status, location, String::new())
         };
         assert_eq!(status, StatusCode::FOUND);
-        assert_eq!(headers_text.unwrap().to_str().unwrap(), "/login?locked=1");
+        assert_eq!(
+            headers_text.unwrap().to_str().unwrap(),
+            "/login/legacy?locked=1"
+        );
         cleanup(&data_dir).await;
     }
 

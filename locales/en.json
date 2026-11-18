@@ -16,6 +16,22 @@
     "dateShort": "MM/dd/yyyy",
     "dateTimeShort": "MM/dd/yyyy h:mm a"
   },
+  "entrar": {
+    "title": "Sign in",
+    "lead": "Choose club staff sign-in or your personal pilot account.",
+    "club": "Sign in as club",
+    "pilot": "Sign in as pilot",
+    "back": "← Back to chooser"
+  },
+  "legacyLogin": {
+    "title": "Disk library (legacy)",
+    "lead": "Platform superadmins only until storage migration lands.",
+    "password": "Password",
+    "submit": "Sign in",
+    "denied": "Unlinked route; platform superadmin required.",
+    "locked": "Upload locked: FLIGHT_VIS_PASSWORD is not set on the server.",
+    "wrongPassword": "Wrong password."
+  },
   "nav": {
     "types": "Types",
     "tails": "Tails",
@@ -59,13 +75,23 @@
   "club": {
     "login": {
       "title": "Club login",
+      "clubTitle": "Club sign-in",
+      "clubLead": "Enter the club slug and use an admin or staff account.",
+      "pilotTitle": "Pilot sign-in",
       "email": "Email",
       "password": "Password",
       "submit": "Log in",
+      "sendMagic": "Send magic link",
+      "magicSent": "If the email exists, we sent a link (check your inbox).",
+      "passwordOrMagic": "Enter a password or use the magic link.",
       "success": "Signed in.",
       "failed": "Login failed.",
+      "staffDenied": "No active admin or staff membership in that club.",
+      "noClubs": "You are not in any club yet. Join below or create an account.",
+      "continue": "Continue",
       "links": "Register · Pilot profile · Android app",
       "pickClub": "Choose a club",
+      "misClubs": "My clubs",
       "legacyApk": "Android app 1.0 (direct club session)",
       "legacySubmit": "Sign in (legacy APK)"
     },

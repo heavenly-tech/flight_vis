@@ -179,7 +179,6 @@ impl ClubDb {
         Ok(raw)
     }
 
-    #[allow(dead_code)]
     pub async fn issue_account_magic_login(
         &self,
         email: &str,

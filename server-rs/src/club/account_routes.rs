@@ -119,6 +119,47 @@ struct AccountLoginBody {
     password: String,
 }
 
+#[derive(Deserialize)]
+struct AccountMagicBody {
+    email: String,
+    #[serde(default)]
+    locale: Option<String>,
+}
+
+async fn account_magic_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    client_ip: crate::ClientIp,
+    Json(body): Json<AccountMagicBody>,
+) -> impl IntoResponse {
+    let email = body.email.trim();
+    let now = now_ms();
+    let ip = client_ip.0;
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "ok": true })).into_response();
+    };
+    if db.magic_send_allowed(email, &ip, now).await && state.mailer.allow_send(email, &ip) {
+        if let Ok(Some(token)) = db.issue_account_magic_login(email, now).await {
+            let _ = db.log_magic_send(email, &ip, now).await;
+            let url = format!(
+                "{}/api/account/auth/magic?token={token}",
+                state.mailer.public_url.trim_end_matches('/')
+            );
+            let loc = body
+                .locale
+                .as_deref()
+                .map(str::to_string)
+                .or_else(|| auth::parse_display_cookie(&headers))
+                .unwrap_or_else(|| "es".to_string());
+            let _ = state
+                .mailer
+                .send_localized(email, &loc, "magicLink", &[("minutes", "15"), ("url", &url)])
+                .await;
+        }
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
 async fn account_login(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -405,6 +446,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/account/signup-available", get(signup_available))
         .route("/api/account/signup", post(account_signup))
         .route("/api/account/login", post(account_login))
+        .route("/api/account/magic-link", post(account_magic_link))
         .route("/api/account/me", get(account_me))
         .route("/api/account/switch-club", post(switch_club))
         .route("/api/account/join", post(join_club))

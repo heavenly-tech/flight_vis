@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="es-CL">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Legacy disk library password login (superadmin)." />
+    <title data-i18n="legacyLogin.title">flight_vis</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      body {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0;
+        padding: 1rem;
+      }
+      main {
+        width: min(400px, 100%);
+        padding: 1.25rem;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 16px;
+        background: #10151d;
+      }
+      input,
+      button {
+        width: 100%;
+        padding: 0.65rem;
+        margin: 0.35rem 0;
+        font: inherit;
+      }
+      .muted {
+        font-size: 0.9rem;
+      }
+      .err {
+        color: #f87171;
+        min-height: 1.2em;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1 data-i18n="legacyLogin.title"></h1>
+      <p class="muted" data-i18n="legacyLogin.lead"></p>
+      <div id="gate-denied" hidden>
+        <p class="muted" data-i18n="legacyLogin.denied"></p>
+        <p><a href="/login" data-i18n="entrar.back"></a></p>
+      </div>
+      <form id="legacy-form" method="post" action="/login" hidden>
+        <label for="password" data-i18n="legacyLogin.password"></label>
+        <input id="password" name="password" type="password" required autocomplete="current-password" />
+        <input type="hidden" name="next" id="next" value="/" />
+        <button type="submit" data-i18n="legacyLogin.submit"></button>
+        <p class="err" id="err"></p>
+      </form>
+      <p id="locked" class="muted" hidden data-i18n="legacyLogin.locked"></p>
+    </main>
+    <script type="module">
+      import { bootLegacyLogin } from "/src/entrar/legacyLogin.ts";
+      bootLegacyLogin();
+    </script>
+  </body>
+</html>
