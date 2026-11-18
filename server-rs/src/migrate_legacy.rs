@@ -511,9 +511,9 @@ async fn apply_disk_ownership(
     Ok(changed)
 }
 
-fn merge_counts(base: &mut MigrateCounts, extra: MigrateCounts) {
-    for (k, v) in extra.rows {
-        *base.rows.entry(k).or_insert(0) += v;
+fn merge_counts(base: &mut MigrateCounts, extra: &MigrateCounts) {
+    for (k, v) in &extra.rows {
+        *base.rows.entry(k.clone()).or_insert(0) += v;
     }
 }
 
@@ -668,7 +668,7 @@ pub async fn gather_counts(
     let club_id = club_id_for_slug(pool, &opts.club_slug).await?;
     let legacy = resolve_legacy_owner_ids(pool, &club_id, opts).await?;
     let mut counts = count_rows(pool, &legacy).await?;
-    merge_counts(&mut counts, count_disk_library(pool, data_dir).await?);
+    merge_counts(&mut counts, &count_disk_library(pool, data_dir).await?);
     Ok(counts)
 }
 
@@ -685,7 +685,7 @@ pub async fn run_legacy_migrate(
     let club_id = club_id_for_slug(&pool, &opts.club_slug).await?;
     let legacy_ids = resolve_legacy_owner_ids(&pool, &club_id, opts).await?;
     let mut counts = count_rows(&pool, &legacy_ids).await?;
-    merge_counts(&mut counts, count_disk_library(&pool, data_dir).await?);
+    merge_counts(&mut counts, &count_disk_library(&pool, data_dir).await?);
 
     let plan_title = if opts.dry_run {
         "migrate-legacy dry-run (no writes)"
@@ -752,7 +752,7 @@ pub async fn run_legacy_migrate(
     let after_legacy = count_rows(&pool, &legacy_ids).await?;
     let after_disk = count_disk_library(&pool, data_dir).await?;
     let mut post_pg = MigrateCounts::default();
-    merge_counts(&mut post_pg, after_legacy);
+    merge_counts(&mut post_pg, &after_legacy);
     print_migration_plan(
         &pool,
         &legacy_ids,
