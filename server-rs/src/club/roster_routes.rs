@@ -41,7 +41,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/api/admin/import/{kind}/commit", post(admin_import_commit))
         .route(
-            "/api/admin/import/templates/{kind}.csv",
+            "/api/admin/import/templates/{kind}",
             get(admin_import_template),
         )
         .route("/api/admin/audit", get(admin_audit_list))
