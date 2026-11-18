@@ -416,7 +416,7 @@ pub async fn requeue_transcoding(store: &Store, queue: &tokio::sync::mpsc::Sende
 }
 
 use crate::{
-    require_auth,
+    flight_access::{require_flight_write, storage_slug_for},
     store::{is_valid_slug, name_from_file_name, normalize_slug},
     AppState,
 };
@@ -429,6 +429,27 @@ use axum::{
 use futures_util::StreamExt;
 use http_body_util::BodyDataStream;
 use serde_json::json;
+
+#[allow(clippy::result_large_err)]
+async fn storage_for_video(
+    state: &AppState,
+    headers: &HeaderMap,
+    raw_slug: &str,
+) -> Result<String, axum::response::Response> {
+    let public_slug = normalize_slug(raw_slug);
+    if !is_valid_slug(&public_slug) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Invalid slug" })),
+        )
+            .into_response());
+    }
+    require_flight_write(state, headers, &public_slug).await?;
+    let Some(storage) = storage_slug_for(state, &state.store, &public_slug).await else {
+        return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response());
+    };
+    Ok(storage)
+}
 use std::collections::HashMap;
 use tokio::{
     fs::File,
@@ -475,20 +496,10 @@ async fn post_video(
     Query(query): Query<HashMap<String, String>>,
     body: Body,
 ) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
-        return *denied;
-    }
-    let slug = normalize_slug(&raw_slug);
-    if !is_valid_slug(&slug) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Invalid slug" })),
-        )
-            .into_response();
-    }
-    if !state.store.exists(&slug) {
-        return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response();
-    }
+    let slug = match storage_for_video(&state, &headers, &raw_slug).await {
+        Ok(storage) => storage,
+        Err(response) => return response,
+    };
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
@@ -618,7 +629,17 @@ async fn list_videos(
     State(state): State<AppState>,
     RoutePath(raw_slug): RoutePath<String>,
 ) -> axum::response::Response {
-    let slug = normalize_slug(&raw_slug);
+    let public_slug = normalize_slug(&raw_slug);
+    if !is_valid_slug(&public_slug) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "Invalid slug" })),
+        )
+            .into_response();
+    }
+    let Some(slug) = storage_slug_for(&state, &state.store, &public_slug).await else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response();
+    };
     match state.store.video_list(&slug).await {
         Ok(videos) => Json(videos).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, Json(json!({ "error": "Not found" }))).into_response(),
@@ -631,17 +652,6 @@ async fn patch_video(
     RoutePath((raw_slug, id)): RoutePath<(String, String)>,
     body: Bytes,
 ) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
-        return *denied;
-    }
-    let slug = normalize_slug(&raw_slug);
-    if !is_valid_slug(&slug) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Invalid slug" })),
-        )
-            .into_response();
-    }
     if !is_valid_video_id(&id) {
         return (
             StatusCode::BAD_REQUEST,
@@ -649,6 +659,10 @@ async fn patch_video(
         )
             .into_response();
     }
+    let slug = match storage_for_video(&state, &headers, &raw_slug).await {
+        Ok(storage) => storage,
+        Err(response) => return response,
+    };
     let patch: VideoPatch = serde_json::from_slice(&body).unwrap_or_default();
     match state.store.video_patch(&slug, &id, &patch).await {
         Ok(Some(record)) => Json(record).into_response(),
@@ -666,17 +680,6 @@ async fn delete_video(
     headers: HeaderMap,
     RoutePath((raw_slug, id)): RoutePath<(String, String)>,
 ) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
-        return *denied;
-    }
-    let slug = normalize_slug(&raw_slug);
-    if !is_valid_slug(&slug) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "Invalid slug" })),
-        )
-            .into_response();
-    }
     if !is_valid_video_id(&id) {
         return (
             StatusCode::BAD_REQUEST,
@@ -684,6 +687,10 @@ async fn delete_video(
         )
             .into_response();
     }
+    let slug = match storage_for_video(&state, &headers, &raw_slug).await {
+        Ok(storage) => storage,
+        Err(response) => return response,
+    };
     let dir = state.store.flight_dir(&slug);
     match state.store.video_remove(&slug, &id).await {
         Ok(true) => {

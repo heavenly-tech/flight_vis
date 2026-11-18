@@ -1,22 +1,29 @@
 mod auth;
 mod club;
+mod demo_flight;
 mod device_auth;
+mod flight_access;
 mod flights;
 mod i18n;
 mod live;
+mod migrate_legacy;
 mod static_files;
 mod store;
 mod video;
+
+#[cfg(test)]
+mod migrate_legacy_tests;
 
 use auth::Auth;
 use axum::{
     body::Bytes,
     extract::{ConnectInfo, DefaultBodyLimit, FromRequestParts, Query, State},
     http::{header, request::Parts, HeaderMap, StatusCode, Uri},
-    response::{IntoResponse, Json},
+    response::{IntoResponse, Json, Redirect},
     routing::get,
     Router,
 };
+use demo_flight::{redirect_path, DEMO_FLIGHT_SLUG, LEGACY_DEMO_SLUG};
 use device_auth::DeviceAuth;
 use live::LiveEngine;
 use serde_json::json;
@@ -47,7 +54,7 @@ pub(crate) struct AppState {
     pub(crate) superadmin_emails: std::collections::HashSet<String>,
 }
 
-fn app_state(
+pub(crate) fn app_state(
     dist_dir: PathBuf,
     auth: Auth,
     device_auth: DeviceAuth,
@@ -151,6 +158,20 @@ async fn auth_me(State(state): State<AppState>, headers: HeaderMap) -> Json<serd
         "authenticated": authenticated,
         "configured": state.auth.configured(),
     }))
+}
+
+async fn legacy_demo_page_redirect(uri: Uri) -> Redirect {
+    Redirect::permanent(&redirect_path(
+        &format!("/{DEMO_FLIGHT_SLUG}"),
+        uri.query().map(str::trim).filter(|q| !q.is_empty()),
+    ))
+}
+
+async fn legacy_demo_api_redirect(uri: Uri) -> Redirect {
+    Redirect::permanent(&redirect_path(
+        &format!("/api/flights/{DEMO_FLIGHT_SLUG}"),
+        uri.query().map(str::trim).filter(|q| !q.is_empty()),
+    ))
 }
 
 async fn club_admin_login_redirect(
@@ -605,7 +626,7 @@ fn require_auth(
     ))
 }
 
-fn build_router(state: AppState) -> Router {
+pub(crate) fn build_router(state: AppState) -> Router {
     let mut app = Router::new()
         .route("/api/health", get(health))
         .route("/api/auth/me", get(auth_me))
@@ -615,11 +636,21 @@ fn build_router(state: AppState) -> Router {
     if state.club.is_some() {
         app = app.merge(club::router()).merge(club::contract_router());
     }
-    app.merge(flights::router().layer(DefaultBodyLimit::max(64 * 1024 * 1024)))
-        .merge(video::router())
-        .merge(live::router().layer(DefaultBodyLimit::max(256 * 1024)))
-        .fallback(fallback)
-        .with_state(state)
+    let legacy_demo_path = format!("/{LEGACY_DEMO_SLUG}");
+    let legacy_demo_api = format!("/api/flights/{LEGACY_DEMO_SLUG}");
+    app.route(
+        &legacy_demo_path,
+        get(legacy_demo_page_redirect).head(legacy_demo_page_redirect),
+    )
+    .route(
+        &legacy_demo_api,
+        get(legacy_demo_api_redirect).head(legacy_demo_api_redirect),
+    )
+    .merge(flights::router().layer(DefaultBodyLimit::max(64 * 1024 * 1024)))
+    .merge(video::router())
+    .merge(live::router().layer(DefaultBodyLimit::max(256 * 1024)))
+    .fallback(fallback)
+    .with_state(state)
 }
 
 /// Container healthcheck. The runtime image is `FROM scratch`, so there is no
@@ -627,6 +658,7 @@ fn build_router(state: AppState) -> Router {
 /// loopback, honouring the same `PORT` as the server.
 const HEALTHCHECK_ARG: &str = "healthcheck";
 const CHECK_I18N_ARG: &str = "check-i18n";
+const MIGRATE_LEGACY_ARG: &str = "migrate-legacy";
 const HEALTHCHECK_HOST: IpAddr = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
 const HEALTHCHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -742,6 +774,11 @@ fn main() {
     }
     if arg.as_deref() == Some(std::ffi::OsStr::new(CHECK_I18N_ARG)) {
         std::process::exit(if run_check_i18n() { 0 } else { 1 });
+    }
+    if arg.as_deref() == Some(std::ffi::OsStr::new(MIGRATE_LEGACY_ARG)) {
+        let rest: Vec<String> = std::env::args().skip(2).collect();
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        std::process::exit(rt.block_on(migrate_legacy::run_legacy_migrate_cli(&rest)));
     }
     run_server();
 }

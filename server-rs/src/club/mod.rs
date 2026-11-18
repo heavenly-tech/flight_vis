@@ -14,12 +14,14 @@ mod db_access_pg;
 mod db_auth_pg;
 pub(crate) mod db_club_lifecycle;
 mod db_devices_pg;
+mod db_disk_pg;
 mod db_kiosk_pg;
 mod db_locale;
 mod db_map_pg;
 mod db_shares_pg;
 mod dem;
 mod device_tokens_import;
+pub(crate) mod disk_owner;
 mod geo;
 mod kiosk_qr;
 pub mod mail;
@@ -46,7 +48,14 @@ mod club_signup_tests;
 #[cfg(test)]
 mod load_test;
 
-pub use auth::parse_session_cookie;
+#[cfg(test)]
+pub use auth::hash_password;
+pub use auth::{new_id, parse_session_cookie};
 pub use contract_routes::router as contract_router;
+#[cfg(test)]
+pub use database::DbConnectError;
 pub use db::{now_ms, ClubDb};
 pub use routes::{patch_club_flight_by_id, post_club_flight_start, router};
+#[cfg(test)]
+pub use visibility::FlightVisibility;
+pub(crate) use visibility::{PilotStatus, Viewer};

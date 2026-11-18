@@ -34,6 +34,7 @@ pub enum DeviceRegisterError {
 }
 
 #[allow(dead_code)]
+#[derive(Debug)]
 pub enum ShareCreateError {
     Db(DbError),
     NotFound,
@@ -157,8 +158,9 @@ impl ClubDb {
         sqlx::query(
             "TRUNCATE TABLE login_attempts, magic_send_log, guest_sessions, magic_login_tokens, \
              webauthn_credentials, email_suppressions, audit_log, access_requests, checkins, \
-             device_pair_tokens, flight_devices, fixes, flights, devices, checkouts, pilot_sessions, \
-             admin_map_prefs, display_sessions, pilots, aircraft, aircraft_types, clubs RESTART IDENTITY CASCADE",
+             device_pair_tokens, flight_devices, fixes, flight_shares, disk_live_session_owners, \
+             disk_flight_owners, flights, devices, checkouts, pilot_sessions, \
+             admin_map_prefs, display_sessions, club_memberships, pilots, aircraft, aircraft_types, clubs RESTART IDENTITY CASCADE",
         )
         .execute(&self.pool)
         .await?;
