@@ -4,7 +4,7 @@ const databaseUrl =
   process.env.DATABASE_URL ??
   "postgres://postgres:postgres@127.0.0.1:5432/flight_vis_test";
 
-const e2eApiPort = process.env.FLIGHT_VIS_E2E_API_PORT ?? "18080";
+const e2eApiPort = process.env.PORT ?? process.env.FLIGHT_VIS_E2E_API_PORT ?? "8080";
 const e2eCspPort = process.env.E2E_CSP_PORT ?? "19090";
 
 export default defineConfig({

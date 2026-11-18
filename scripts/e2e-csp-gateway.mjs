@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(root, "..", "dist");
-const apiOrigin = process.env.FLIGHT_VIS_API_ORIGIN ?? "http://127.0.0.1:18080";
+const apiOrigin = process.env.FLIGHT_VIS_API_ORIGIN ?? "http://127.0.0.1:8080";
 const port = Number(process.env.E2E_CSP_PORT ?? "19090");
 
 const PROD_HTML_CSP =
