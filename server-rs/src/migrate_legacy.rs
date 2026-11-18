@@ -1,17 +1,28 @@
 //! Idempotent migration from legacy shared-password club identity to a club-auth pilot.
 //!
-//! Legacy owners: pilots in the target club (by slug) with unverified email who still own
-//! migratable rows, excluding the migration target email. Prod may also set
-//! `FLIGHT_LEGACY_MIGRATE_SOURCE_EMAIL` (single legacy bootstrap pilot) for a narrow source.
+//! ## Postgres “legacy-owned” rows
+//!
+//! **Source pilots** (whose ids are collected into `legacy_ids`), all scoped to the target club:
+//! - Default: `pilots.club_id = <club>` AND `lower(email) <> <target>` AND `email_verified_at IS NULL`
+//!   AND at least one dependent row exists (flight, device, checkout, share, etc.).
+//! - Override: `FLIGHT_LEGACY_MIGRATE_SOURCE_EMAIL` → exactly that pilot in the same club.
+//!
+//! **Rows reassigned** (only where `pilot_id` / `created_by` / etc. ∈ `legacy_ids`):
+//! flights, devices, checkouts, checkins, pilot_sessions, flight_shares.created_by,
+//! access_requests, audit_log.actor_pilot_id, admin_map_prefs, display_sessions,
+//! webauthn_credentials, guest_sessions — never rows owned by other pilot ids or clubs.
+//!
+//! **Disk library**: every `{FLIGHT_DATA}/flights/*` storage slug gets a `disk_flight_owners`
+//! row for the target pilot in the target club (single-tenant legacy gate); files are not moved.
 
 use crate::{
     club::{
-        auth::new_id,
         database::{connect_pool, run_migrations},
-        db::now_ms,
+        new_id,
+        now_ms,
     },
     demo_flight::{DEMO_FLIGHT_SLUG, LEGACY_DEMO_SLUG},
-    live::persist::LivePersist,
+    live::LivePersist,
     store::Store,
 };
 use sqlx::{PgPool, Row};
@@ -671,7 +682,7 @@ pub async fn run_legacy_migrate_cli(args: &[String]) -> i32 {
         }
     };
     let data_dir = std::env::var("FLIGHT_DATA")
-        .map(Path::Buf::from)
+        .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("data"));
     match run_legacy_migrate(&opts, &data_dir).await {
         Ok(_) => 0,
