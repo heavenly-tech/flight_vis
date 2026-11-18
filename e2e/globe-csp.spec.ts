@@ -23,7 +23,7 @@ test.describe("production CSP globe", () => {
 
   test("root loads default flight under prod CSP", async ({ page }) => {
     const { consoleErrors, pageErrors } = installCspObservers(page);
-    await page.goto(hooksUrl("/"));
+    await page.goto(hooksUrl("/?all=1"));
     await expect(page.locator("#flight-name")).not.toHaveText("Loading…", { timeout: 90_000 });
     await assertGlobeRenders(page, consoleErrors, pageErrors);
   });

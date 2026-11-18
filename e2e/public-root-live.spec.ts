@@ -1,12 +1,23 @@
 import { expect, test } from "@playwright/test";
 
 test("root with one public live flight opens that flight", async ({ page }) => {
-  await page.route("**/api/public/live-summary*", async (route) => {
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ flights: [{ flightId: "live-one", tail: "N1" }] }),
-    });
+  await page.addInitScript(() => {
+    const orig = globalThis.fetch.bind(globalThis);
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/public/live-summary")) {
+        return new Response(
+          JSON.stringify({ flights: [{ flightId: "live-one", tail: "N1" }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.includes("/api/auth/me")) {
+        return new Response(JSON.stringify({ authenticated: false, configured: true }), {
+          status: 200,
+        });
+      }
+      return orig(input, init);
+    };
   });
 
   await page.goto("/");
@@ -15,12 +26,25 @@ test("root with one public live flight opens that flight", async ({ page }) => {
 
 test("/map skips live-summary redirect", async ({ page }) => {
   let summaryHits = 0;
-  await page.route("**/api/public/live-summary*", async (route) => {
-    summaryHits += 1;
-    await route.fulfill({ status: 200, body: JSON.stringify({ flights: [{ flightId: "x", tail: "N1" }] }) });
+  await page.addInitScript(() => {
+    const orig = globalThis.fetch.bind(globalThis);
+    globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/api/public/live-summary")) {
+        (globalThis as unknown as { __summaryHits: number }).__summaryHits =
+          ((globalThis as unknown as { __summaryHits?: number }).__summaryHits ?? 0) + 1;
+        return new Response(JSON.stringify({ flights: [{ flightId: "x", tail: "N1" }] }), {
+          status: 200,
+        });
+      }
+      return orig(input, init);
+    };
   });
 
   await page.goto("/map");
   await expect(page).toHaveURL(/\/map\/?$/, { timeout: 15_000 });
+  summaryHits = await page.evaluate(
+    () => (globalThis as unknown as { __summaryHits?: number }).__summaryHits ?? 0,
+  );
   expect(summaryHits).toBe(0);
 });
