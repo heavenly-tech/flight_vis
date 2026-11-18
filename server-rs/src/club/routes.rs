@@ -872,6 +872,31 @@ async fn public_map(
     Json(json!({ "aircraft": aircraft, "club": q.club })).into_response()
 }
 
+/// Anonymous count of public live flights (same visibility rules as [`public_map`]).
+async fn public_live_summary(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<PublicMapQuery>,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "flights": [] })).into_response();
+    };
+    let club_id = match resolve_public_map_club(db, q.club.as_deref()).await {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+    let aircraft = db.public_map(&club_id).await;
+    let flights: Vec<_> = aircraft
+        .into_iter()
+        .map(|row| {
+            json!({
+                "flightId": row.flight_id,
+                "tail": row.tail,
+            })
+        })
+        .collect();
+    Json(json!({ "flights": flights, "club": q.club })).into_response()
+}
+
 async fn admin_map(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
     let Some(db) = club_db(&state) else {
@@ -2595,6 +2620,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/flights/{id}/gpx", get(club_flight_gpx))
         .route("/api/club/map", get(club_map))
         .route("/api/club/map/public", get(public_map))
+        .route("/api/public/live-summary", get(public_live_summary))
         .route("/api/admin/map", get(admin_map))
         .route(
             "/api/admin/map/tails",

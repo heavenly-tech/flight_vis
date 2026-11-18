@@ -3,7 +3,12 @@
 use crate::{
     auth::Auth,
     build_router,
-    club::{hash_password, new_id, ClubDb, DbConnectError, FlightVisibility},
+    club::{
+        auth::{hash_password, new_id},
+        database::DbConnectError,
+        visibility::FlightVisibility,
+        ClubDb,
+    },
     demo_flight::{DEMO_FLIGHT_SLUG, LEGACY_DEMO_SLUG},
     migrate_legacy::{parse_cli_args, run_legacy_migrate, LegacyMigrateOpts},
     store::Store,
@@ -41,6 +46,9 @@ async fn seed_legacy_owner(db: &ClubDb, club_id: &str) -> (String, String, Strin
         .unwrap();
     let (dev, _) = db.create_device(&legacy_id, "phone").await.unwrap();
     db.issue_open_checkin(&legacy_id, &dev, club_id, now)
+        .await
+        .unwrap();
+    db.add_checkout(&legacy_id, "C152", None, None)
         .await
         .unwrap();
     let fid = db
@@ -144,7 +152,7 @@ async fn migrate_legacy_dry_run_and_apply_idempotent() {
         .await
         .expect("second apply");
 
-    let mut app = build_router(test_router(data_dir.path(), db.clone(), ""));
+    let app = build_router(test_router(data_dir.path(), db.clone(), ""));
     let req = Request::builder()
         .method("GET")
         .uri(format!("/api/flights/{DEMO_FLIGHT_SLUG}"))
@@ -164,7 +172,7 @@ async fn migrate_legacy_dry_run_and_apply_idempotent() {
         StatusCode::PERMANENT_REDIRECT
     );
 
-    let mut app = build_router(test_router(data_dir.path(), db.clone(), "secret"));
+    let app = build_router(test_router(data_dir.path(), db.clone(), "secret"));
     let login = Request::builder()
         .method("POST")
         .uri("/login")
@@ -173,7 +181,7 @@ async fn migrate_legacy_dry_run_and_apply_idempotent() {
         .unwrap();
     assert_eq!(app.oneshot(login).await.unwrap().status(), StatusCode::OK);
 
-    let mut gate_off = build_router(test_router(data_dir.path(), db, ""));
+    let gate_off = build_router(test_router(data_dir.path(), db.clone(), ""));
     let req = Request::builder()
         .method("GET")
         .uri(format!("/api/flights/{DEMO_FLIGHT_SLUG}"))
@@ -192,7 +200,7 @@ fn cli_requires_email() {
 }
 
 async fn seed_second_club_pilot_with_flight(db: &ClubDb, slug: &str) -> (String, String, String) {
-    let club_id = auth::new_id();
+    let club_id = new_id();
     let now = crate::club::now_ms();
     sqlx::query(
         "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at, latitude, longitude, show_public_tracks)

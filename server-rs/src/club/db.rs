@@ -33,8 +33,8 @@ pub enum DeviceRegisterError {
     Db,
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum ShareCreateError {
     Db(DbError),
     NotFound,

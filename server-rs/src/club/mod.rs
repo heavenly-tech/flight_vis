@@ -1,7 +1,7 @@
 //! Flight-club registry: pilot auth, checkouts, shared live map.
 mod access_request;
 pub mod android_assetlinks;
-mod auth;
+pub(crate) mod auth;
 mod auth_routes;
 pub mod checkin;
 mod checkin_landing;
@@ -9,7 +9,7 @@ mod club_scope;
 mod contract_routes;
 mod csrf;
 pub mod database;
-mod db;
+pub(crate) mod db;
 mod db_access_pg;
 mod db_auth_pg;
 pub(crate) mod db_club_lifecycle;
@@ -35,7 +35,7 @@ pub(crate) mod slug;
 pub(crate) mod sse_limit;
 pub(crate) mod superadmin;
 mod superadmin_routes;
-mod visibility;
+pub(crate) mod visibility;
 pub mod webauthn;
 
 #[cfg(test)]
@@ -45,11 +45,8 @@ mod club_signup_tests;
 #[cfg(test)]
 mod load_test;
 
-pub use auth::{hash_password, new_id};
 pub(crate) use auth::parse_session_cookie;
 pub use contract_routes::router as contract_router;
 pub use db::{now_ms, ClubDb};
 pub use routes::{patch_club_flight_by_id, post_club_flight_start, router};
-pub use visibility::FlightVisibility;
 pub(crate) use visibility::{PilotStatus, Viewer};
-pub use database::DbConnectError;

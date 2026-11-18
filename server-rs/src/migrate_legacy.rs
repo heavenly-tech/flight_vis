@@ -17,8 +17,8 @@
 
 use crate::{
     club::{
+        auth::new_id,
         database::{connect_pool, run_migrations},
-        new_id,
         now_ms,
     },
     demo_flight::{DEMO_FLIGHT_SLUG, LEGACY_DEMO_SLUG},
@@ -54,6 +54,7 @@ impl MigrateCounts {
 pub enum MigrateError {
     Usage(String),
     Db(String),
+    #[allow(dead_code)]
     Store(String),
     ClubNotFound(String),
     TargetExistsOnOtherClub,
@@ -115,7 +116,7 @@ pub fn parse_cli_args(args: &[String]) -> Result<LegacyMigrateOpts, MigrateError
             "use only one of --dry-run or --apply".into(),
         ));
     }
-    let dry_run = if apply { false } else { true };
+    let dry_run = !apply;
     Ok(LegacyMigrateOpts {
         email: email.trim().to_string(),
         club_slug: club.trim().to_string(),
@@ -555,6 +556,7 @@ async fn apply_row_updates(
     Ok(())
 }
 
+#[allow(dead_code)]
 pub async fn gather_counts(
     pool: &PgPool,
     data_dir: &Path,
