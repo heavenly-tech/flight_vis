@@ -597,7 +597,7 @@ fn require_auth(
     ))
 }
 
-pub(crate) fn build_router(state: AppState) -> Router {
+pub(crate) fn build_router(state: AppState) -> Router<AppState> {
     let mut app = Router::new()
         .route("/api/health", get(health))
         .route("/api/auth/me", get(auth_me))
