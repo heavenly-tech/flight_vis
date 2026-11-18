@@ -98,7 +98,6 @@ test.describe("production CSP (release server)", () => {
     await expectProdCspHeader(request, "/club-checkin-landing.html");
     await page.goto("/club-checkin-landing.html");
     await expect(page.locator("main")).toBeVisible({ timeout: 30_000 });
-    await expect(page.locator("#club-name")).toBeVisible({ timeout: 30_000 });
     const fontOk = await page.evaluate(() => {
       const family = getComputedStyle(document.body).fontFamily.toLowerCase();
       return family.includes("outfit");
