@@ -19,8 +19,7 @@ use crate::{
     club::{
         database::{connect_pool, run_migrations},
         disk_owner::{INSERT_DISK_FLIGHT_OWNER, INSERT_DISK_LIVE_SESSION_OWNER},
-        new_id,
-        now_ms,
+        new_id, now_ms,
     },
     demo_flight::{DEMO_FLIGHT_SLUG, LEGACY_DEMO_SLUG},
     live::LivePersist,
@@ -212,14 +211,13 @@ async fn resolve_legacy_owner_ids(
     }
     let mut ids = Vec::new();
     for id in &opts.source_pilot_ids {
-        let found: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM pilots WHERE id = $1 AND club_id = $2",
-        )
-        .bind(id)
-        .bind(club_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| MigrateError::Db(e.to_string()))?;
+        let found: Option<String> =
+            sqlx::query_scalar("SELECT id FROM pilots WHERE id = $1 AND club_id = $2")
+                .bind(id)
+                .bind(club_id)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| MigrateError::Db(e.to_string()))?;
         if found.is_none() {
             return Err(MigrateError::SourceNotFound(format!(
                 "source pilot id {id} not found in club"
@@ -478,14 +476,14 @@ async fn apply_disk_ownership(
     for storage in slugs {
         let public = public_slug_for_storage(&storage);
         let r = sqlx::query(INSERT_DISK_FLIGHT_OWNER)
-        .bind(&public)
-        .bind(&storage)
-        .bind(target_id)
-        .bind(club_id)
-        .bind(now)
-        .execute(pool)
-        .await
-        .map_err(|e| MigrateError::Db(e.to_string()))?;
+            .bind(&public)
+            .bind(&storage)
+            .bind(target_id)
+            .bind(club_id)
+            .bind(now)
+            .execute(pool)
+            .await
+            .map_err(|e| MigrateError::Db(e.to_string()))?;
         changed += r.rows_affected() as i64;
     }
     let live = LivePersist::new(data_dir);
@@ -497,16 +495,16 @@ async fn apply_disk_ownership(
                 .map(|m| m.len())
                 .unwrap_or(0) as i64;
             let r = sqlx::query(INSERT_DISK_LIVE_SESSION_OWNER)
-            .bind(&session_id)
-            .bind(target_id)
-            .bind(club_id)
-            .bind(&record.device)
-            .bind(record.fix_count as i32)
-            .bind(log_bytes)
-            .bind(now)
-            .execute(pool)
-            .await
-            .map_err(|e| MigrateError::Db(e.to_string()))?;
+                .bind(&session_id)
+                .bind(target_id)
+                .bind(club_id)
+                .bind(&record.device)
+                .bind(record.fix_count as i32)
+                .bind(log_bytes)
+                .bind(now)
+                .execute(pool)
+                .await
+                .map_err(|e| MigrateError::Db(e.to_string()))?;
             changed += r.rows_affected() as i64;
         }
     }
