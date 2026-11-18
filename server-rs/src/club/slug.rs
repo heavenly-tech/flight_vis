@@ -8,6 +8,7 @@ const RESERVED: &[&str] = &[
     "cesiumstatic",
     "club",
     "default",
+    "demo",
     "favicon.ico",
     "health",
     "live",
@@ -19,8 +20,11 @@ const RESERVED: &[&str] = &[
     "samples",
     "s",
     "screen",
+    "signup",
     "static",
+    "superadmin",
     "well-known",
+    "www",
 ];
 
 pub fn normalize_slug(raw: &str) -> String {
@@ -53,8 +57,22 @@ mod tests {
 
     #[test]
     fn rejects_reserved() {
-        assert!(validate_slug("api").is_err());
-        assert!(validate_slug("auth").is_err());
+        for slug in [
+            "api",
+            "admin",
+            "login",
+            "signup",
+            "demo",
+            "map",
+            "app",
+            "static",
+            "assets",
+            "c",
+            "superadmin",
+            "www",
+        ] {
+            assert!(validate_slug(slug).is_err(), "expected reserved: {slug}");
+        }
     }
 
     #[test]

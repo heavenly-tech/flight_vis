@@ -76,10 +76,7 @@ async fn account_signup(
         .await
     {
         Ok(_) => {
-            let wants_magic = body
-                .password
-                .as_deref()
-                .is_none_or(|p| p.is_empty());
+            let wants_magic = body.password.as_deref().is_none_or(|p| p.is_empty());
             if wants_magic && db.magic_send_allowed(email, &client_ip.0, now).await {
                 let _ = db.log_magic_send(email, &client_ip.0, now).await;
                 if let Ok(token) = db.issue_account_magic_signup(email, now).await {
@@ -105,11 +102,9 @@ async fn account_signup(
             Json(json!({ "error": "weak password" })),
         )
             .into_response(),
-        Err(AccountSignupError::EmailExists) | Err(AccountSignupError::Db) => (
-            StatusCode::CREATED,
-            Json(json!({ "ok": true })),
-        )
-            .into_response(),
+        Err(AccountSignupError::EmailExists) | Err(AccountSignupError::Db) => {
+            (StatusCode::CREATED, Json(json!({ "ok": true }))).into_response()
+        }
     }
 }
 
@@ -153,7 +148,12 @@ async fn account_magic_link(
                 .unwrap_or_else(|| "es".to_string());
             let _ = state
                 .mailer
-                .send_localized(email, &loc, "magicLink", &[("minutes", "15"), ("url", &url)])
+                .send_localized(
+                    email,
+                    &loc,
+                    "magicLink",
+                    &[("minutes", "15"), ("url", &url)],
+                )
                 .await;
         }
     }
@@ -465,4 +465,3 @@ async fn serve_signup_page() -> impl IntoResponse {
         html,
     )
 }
-

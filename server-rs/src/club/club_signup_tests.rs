@@ -1,7 +1,12 @@
 //! Club self-serve signup, verification, superadmin, and pilot register gates.
 
 use crate::club::db::MagicConsumeError;
-use crate::club::{db::now_ms, db_club_lifecycle::validate_icao, slug::validate_slug, ClubDb};
+use crate::club::{
+    db::now_ms,
+    db_club_lifecycle::{validate_icao, PENDING_CLUB_TTL_MS},
+    slug::validate_slug,
+    ClubDb,
+};
 use serial_test::serial;
 
 #[test]
@@ -12,6 +17,38 @@ fn slug_reserved_and_icao_rules() {
     assert!(validate_icao("SCFA"));
     assert!(!validate_icao("SC1A"));
     assert!(!validate_icao("SCF"));
+}
+
+#[tokio::test]
+#[serial]
+async fn pending_club_ttl_frees_slug() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let slug = format!("ttl-{}", &crate::club::auth::new_id()[..8]);
+    let email = format!("ttl-{slug}@test");
+    let (club_id, _) = db
+        .signup_club("TTL Club", &slug, &email, None, now)
+        .await
+        .unwrap();
+    assert!(db.club_id_for_slug(&slug).await.is_some());
+    let stale_created = now - PENDING_CLUB_TTL_MS - 3_600_000;
+    sqlx::query("UPDATE clubs SET created_at = $1 WHERE id = $2")
+        .bind(stale_created)
+        .bind(&club_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let removed = db.purge_stale_pending_clubs(now).await.unwrap();
+    assert!(removed >= 1);
+    assert!(db.club_id_for_slug(&slug).await.is_none());
+    let (club_id2, _) = db
+        .signup_club("TTL Club 2", &slug, "ttl2@test", None, now)
+        .await
+        .unwrap();
+    assert_ne!(club_id, club_id2);
+    let row = db.club_public_row(&club_id2).await.unwrap();
+    assert_eq!(row.slug, slug);
+    assert_eq!(row.status, "pending");
 }
 
 #[tokio::test]

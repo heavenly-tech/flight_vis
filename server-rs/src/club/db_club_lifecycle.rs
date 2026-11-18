@@ -9,6 +9,8 @@ use sqlx::Row;
 
 pub const CLUB_SIGNUP_PURPOSE: &str = "club_verify";
 const MAGIC_TTL_MS: i64 = 15 * 60 * 1000;
+/// Unverified self-serve clubs older than this are purged so the slug can be reused.
+pub const PENDING_CLUB_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -139,6 +141,34 @@ impl ClubDb {
         Ok(r.rows_affected() > 0)
     }
 
+    pub async fn purge_stale_pending_clubs(&self, now: i64) -> Result<u64, DbError> {
+        let cutoff = now - PENDING_CLUB_TTL_MS;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM pilots
+             WHERE club_id IN (
+                 SELECT id FROM clubs
+                 WHERE status = 'pending'
+                   AND email_verified_at IS NULL
+                   AND created_at < $1
+             )",
+        )
+        .bind(cutoff)
+        .execute(&mut *tx)
+        .await?;
+        let r = sqlx::query(
+            "DELETE FROM clubs
+             WHERE status = 'pending'
+               AND email_verified_at IS NULL
+               AND created_at < $1",
+        )
+        .bind(cutoff)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(r.rows_affected())
+    }
+
     pub async fn signup_club(
         &self,
         name: &str,
@@ -147,6 +177,7 @@ impl ClubDb {
         aerodrome_icao: Option<&str>,
         now: i64,
     ) -> Result<(String, String), ClubSignupError> {
+        let _ = self.purge_stale_pending_clubs(now).await;
         let name = name.trim();
         let slug = normalize_slug(slug);
         let email = contact_email.trim().to_ascii_lowercase();

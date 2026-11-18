@@ -153,7 +153,10 @@ async fn auth_me(State(state): State<AppState>, headers: HeaderMap) -> Json<serd
     }))
 }
 
-async fn auth_legacy_gate(State(state): State<AppState>, headers: HeaderMap) -> Json<serde_json::Value> {
+async fn auth_legacy_gate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Json<serde_json::Value> {
     let authenticated = session_token(&headers)
         .map(|token| state.auth.verify(&token, now_secs()))
         .unwrap_or(false);
@@ -190,7 +193,10 @@ async fn club_admin_login_redirect(
     let session = club::parse_session_cookie(headers);
     let now = club::now_ms();
     let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
-    if pilot.as_ref().is_some_and(|p| p.role == "admin" || p.role == "staff") {
+    if pilot
+        .as_ref()
+        .is_some_and(|p| p.role == "admin" || p.role == "staff")
+    {
         return None;
     }
     let raw_next = match query {
@@ -305,7 +311,9 @@ async fn login_legacy_page(
     headers: HeaderMap,
     Query(query): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let gate = auth_legacy_gate(State(state.clone()), headers.clone()).await.0;
+    let gate = auth_legacy_gate(State(state.clone()), headers.clone())
+        .await
+        .0;
     let allowed = gate
         .get("allowed")
         .and_then(|v| v.as_bool())
@@ -893,6 +901,10 @@ async fn run_server() {
     });
     let club = match club::ClubDb::connect().await {
         Ok(db) => {
+            let now = club::now_ms();
+            if let Err(error) = db.purge_stale_pending_clubs(now).await {
+                eprintln!("warn: pending club purge failed: {error}");
+            }
             if std::env::var("FLIGHT_CLUB_SEED_DEMO").as_deref() == Ok("1") {
                 if let Err(error) = db.seed_demo_if_empty().await {
                     eprintln!("warn: demo seed failed: {error}");

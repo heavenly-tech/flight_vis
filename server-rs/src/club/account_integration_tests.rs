@@ -148,6 +148,46 @@ async fn join_then_approve_membership() {
 
 #[serial]
 #[tokio::test]
+async fn club_creator_signs_in_via_account_after_verify() {
+    let db = open_db().await;
+    let now = now_ms();
+    let slug = format!("creator-{}", &crate::club::auth::new_id()[..8]);
+    let email = format!("owner-{slug}@test");
+    let (club_id, token) = db
+        .signup_club("Creator Club", &slug, &email, None, now)
+        .await
+        .expect("signup");
+    db.try_consume_magic_club_verify(&token, now)
+        .await
+        .expect("verify");
+    let hash = hash_password("password12").unwrap();
+    sqlx::query(
+        "UPDATE accounts SET password_hash = $1 WHERE lower(trim(email)) = lower(trim($2))",
+    )
+    .bind(&hash)
+    .bind(&email)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let (session_id, account) = db
+        .account_login_password(&email, "password12", now, "127.0.0.1")
+        .await
+        .expect("account login after verify");
+    let memberships = db.list_account_memberships(&account.id).await;
+    let admin = memberships
+        .iter()
+        .find(|m| m.club_id == club_id && m.role == "admin" && m.status == "active")
+        .expect("active admin membership on new club, not default_club");
+    let pilot = db
+        .set_active_membership(&session_id, &admin.id, now)
+        .await
+        .expect("switch into verified club");
+    assert_eq!(pilot.club_id, club_id);
+    assert!(db.require_club_admin(&pilot.id, &club_id).await.is_ok());
+}
+
+#[serial]
+#[tokio::test]
 async fn suspended_account_cannot_login() {
     let db = open_db().await;
     let now = now_ms();

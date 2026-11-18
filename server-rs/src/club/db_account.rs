@@ -811,7 +811,6 @@ impl ClubDb {
         plan["applied"] = serde_json::json!(true);
         Ok(plan)
     }
-
 }
 
 fn row_to_account(row: &sqlx::postgres::PgRow) -> AccountRow {

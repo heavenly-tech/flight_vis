@@ -534,14 +534,12 @@ async fn kiosk_layout_admin_clamps_and_display_sse_rev() {
         .execute(&fx.club.pool)
         .await
         .unwrap();
-    sqlx::query(
-        "UPDATE club_memberships SET role = 'admin' WHERE pilot_id = $1 AND club_id = $2",
-    )
-    .bind(&fx.pilot_a)
-    .bind(&club_id)
-    .execute(&fx.club.pool)
-    .await
-    .unwrap();
+    sqlx::query("UPDATE club_memberships SET role = 'admin' WHERE pilot_id = $1 AND club_id = $2")
+        .bind(&fx.pilot_a)
+        .bind(&club_id)
+        .execute(&fx.club.pool)
+        .await
+        .unwrap();
     let cookie = login_cookie(&mut fx.router, "a@test").await;
     let patch = fx
         .router
@@ -994,14 +992,13 @@ async fn account_approve_membership_cross_club_forbidden() {
         .register(&club_b, "Joiner", "joiner-b@test", "", "password12")
         .await
         .unwrap();
-    let membership_id: String = sqlx::query_scalar(
-        "SELECT id FROM club_memberships WHERE pilot_id = $1 AND club_id = $2",
-    )
-    .bind(&pending_b)
-    .bind(&club_b)
-    .fetch_one(&fx.club.pool)
-    .await
-    .unwrap();
+    let membership_id: String =
+        sqlx::query_scalar("SELECT id FROM club_memberships WHERE pilot_id = $1 AND club_id = $2")
+            .bind(&pending_b)
+            .bind(&club_b)
+            .fetch_one(&fx.club.pool)
+            .await
+            .unwrap();
     sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
         .bind(&fx.pilot_a)
         .execute(&fx.club.pool)
