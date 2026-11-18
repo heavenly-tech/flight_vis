@@ -11,7 +11,7 @@ let batchId: string | null = null;
 
 function syncTemplate(): void {
   const kind = kindSel.value;
-  tplLink.href = `/api/admin/import/templates/${kind}.csv`;
+  tplLink.href = `/api/admin/import/templates/${kind}`;
   tplLink.textContent = t("admin.roster.downloadTemplate");
 }
 
