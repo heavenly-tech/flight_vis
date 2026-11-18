@@ -7,6 +7,7 @@ use rand::RngCore;
 use sha2::{Digest, Sha256};
 
 pub const COOKIE: &str = "fv_club_session";
+pub const ACCOUNT_COOKIE: &str = "fv_account_session";
 pub const DISPLAY_COOKIE: &str = "fv_club_display";
 pub const SESSION_TTL_SEC: i64 = 12 * 3600;
 
@@ -89,6 +90,44 @@ pub fn set_display_cookie(token: &str, secure: bool) -> String {
 #[allow(dead_code)]
 pub fn clear_display_cookie(secure: bool) -> String {
     let mut cookie = format!("{DISPLAY_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+pub fn parse_account_session_cookie(headers: &HeaderMap) -> Option<String> {
+    let header = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())?;
+    for part in header.split(';') {
+        let part = part.trim();
+        let mut kv = part.splitn(2, '=');
+        let (Some(name), Some(value)) = (kv.next(), kv.next()) else {
+            continue;
+        };
+        if name == ACCOUNT_COOKIE {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub fn set_account_session_cookie(session_id: &str, secure: bool) -> String {
+    let mut cookie = format!("{ACCOUNT_COOKIE}={session_id}; Path=/; HttpOnly; SameSite=Lax");
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie.push_str(&format!("; Max-Age={SESSION_TTL_SEC}"));
+    cookie
+}
+
+#[allow(dead_code)]
+pub fn clear_account_session_cookie(secure: bool) -> String {
+    let mut cookie = format!("{ACCOUNT_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
     if secure {
         cookie.push_str("; Secure");
     }

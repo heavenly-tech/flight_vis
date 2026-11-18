@@ -164,6 +164,7 @@ impl ClubDb {
         let club_id = new_id();
         let admin_id = new_id();
         let member_id = new_id();
+        let account_id = ClubDb::stable_account_id(&email);
         let icao = aerodrome_icao
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -193,12 +194,22 @@ impl ClubDb {
             return Err(ClubSignupError::Db);
         }
         let admin_name = format!("Admin · {name}");
+        let _ = sqlx::query(
+            "INSERT INTO accounts (id, email, created_at)
+             VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(&account_id)
+        .bind(&email)
+        .bind(now)
+        .execute(&mut *tx)
+        .await;
         sqlx::query(
-            "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
-             VALUES ($1, $2, $3, $4, '', 'approved', 'admin', '', $5)",
+            "INSERT INTO pilots (id, club_id, account_id, name, email, license_no, status, role, password_hash, created_at)
+             VALUES ($1, $2, $3, $4, $5, '', 'pending', 'admin', '', $6)",
         )
         .bind(&admin_id)
         .bind(&club_id)
+        .bind(&account_id)
         .bind(&admin_name)
         .bind(&email)
         .bind(now)
@@ -207,7 +218,7 @@ impl ClubDb {
         .map_err(|_| ClubSignupError::Db)?;
         sqlx::query(
             "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
-             VALUES ($1, $2, $3, 'admin', 'approved', $4)",
+             VALUES ($1, $2, $3, 'admin', 'pending', $4)",
         )
         .bind(&member_id)
         .bind(&admin_id)
@@ -302,7 +313,26 @@ impl ClubDb {
             .await
             .map_err(|_| MagicConsumeError::Invalid)?;
         sqlx::query(
-            "UPDATE pilots SET email_verified_at = $1 WHERE club_id = $2 AND role = 'admin'",
+            "UPDATE pilots SET email_verified_at = $1, status = 'approved'
+             WHERE club_id = $2 AND role = 'admin'",
+        )
+        .bind(now)
+        .bind(&club_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|_| MagicConsumeError::Invalid)?;
+        sqlx::query(
+            "UPDATE club_memberships SET status = 'active'
+             WHERE club_id = $1 AND role = 'admin'",
+        )
+        .bind(&club_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|_| MagicConsumeError::Invalid)?;
+        sqlx::query(
+            "UPDATE accounts AS a SET email_verified_at = coalesce(a.email_verified_at, $1)
+             FROM pilots p
+             WHERE p.club_id = $2 AND p.role = 'admin' AND a.id = p.account_id",
         )
         .bind(now)
         .bind(&club_id)

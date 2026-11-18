@@ -158,7 +158,8 @@ impl ClubDb {
             "TRUNCATE TABLE login_attempts, magic_send_log, guest_sessions, magic_login_tokens, \
              webauthn_credentials, email_suppressions, audit_log, access_requests, checkins, \
              device_pair_tokens, flight_devices, fixes, flights, devices, checkouts, pilot_sessions, \
-             admin_map_prefs, display_sessions, pilots, aircraft, aircraft_types, clubs RESTART IDENTITY CASCADE",
+             account_sessions, club_memberships, admin_map_prefs, display_sessions, pilots, accounts, \
+             aircraft, aircraft_types, clubs RESTART IDENTITY CASCADE",
         )
         .execute(&self.pool)
         .await?;
@@ -236,50 +237,11 @@ impl ClubDb {
         license_no: &str,
         password: &str,
     ) -> Result<String, RegisterError> {
-        if password.len() < 8 {
-            return Err(RegisterError::WeakPassword);
-        }
-        let hash = auth::hash_password(password).map_err(|_| RegisterError::Hash)?;
-        let id = new_id();
         let now = now_ms();
-        let member_id = new_id();
-        let r = sqlx::query(
-            "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
-             VALUES ($1, $2, $3, $4, $5, 'pending', 'pilot', $6, $7)",
-        )
-        .bind(&id)
-        .bind(club_id)
-        .bind(name)
-        .bind(email)
-        .bind(license_no)
-        .bind(&hash)
-        .bind(now)
-        .execute(&self.pool)
-        .await;
-        match r {
-            Ok(_) => {
-                sqlx::query(
-                    "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
-                     VALUES ($1, $2, $3, 'pilot', 'pending', $4)",
-                )
-                .bind(member_id)
-                .bind(&id)
-                .bind(club_id)
-                .bind(now)
-                .execute(&self.pool)
-                .await
-                .map_err(RegisterError::Db)?;
-                Ok(id)
-            }
-            Err(e) => {
-                if let Some(db_err) = e.as_database_error() {
-                    if db_err.code() == Some(std::borrow::Cow::Borrowed("23505")) {
-                        return Err(RegisterError::EmailExists);
-                    }
-                }
-                Err(RegisterError::Db(e))
-            }
-        }
+        let (pilot_id, _) = self
+            .register_into_account(club_id, name, email, license_no, password, now)
+            .await?;
+        Ok(pilot_id)
     }
 
     #[allow(dead_code)]
@@ -335,11 +297,15 @@ impl ClubDb {
         let Some(pilot) = self.pilot_from_session(session_id, now).await else {
             return Viewer::Anonymous;
         };
-        let status = match pilot.status.as_str() {
-            "approved" => PilotStatus::Approved,
+        let (role_s, status_s) = self
+            .membership_in_club(&pilot.id, &pilot.club_id)
+            .await
+            .unwrap_or_else(|| (pilot.role.clone(), pilot.status.clone()));
+        let status = match status_s.as_str() {
+            "active" | "approved" => PilotStatus::Approved,
             _ => PilotStatus::Pending,
         };
-        let role = match pilot.role.as_str() {
+        let role = match role_s.as_str() {
             "admin" => PilotRole::Admin,
             _ => PilotRole::Pilot,
         };
@@ -375,7 +341,7 @@ impl ClubDb {
             .bind(pilot_id)
             .fetch_one(&self.pool)
             .await?;
-        self.ensure_membership_row(pilot_id, &club_id, "pilot", "approved")
+        self.ensure_membership_row(pilot_id, &club_id, "pilot", "active")
             .await?;
         Ok(())
     }

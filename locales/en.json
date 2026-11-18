@@ -64,7 +64,10 @@
       "submit": "Log in",
       "success": "Signed in.",
       "failed": "Login failed.",
-      "links": "Register · Pilot profile · Android app"
+      "links": "Register · Pilot profile · Android app",
+      "pickClub": "Choose a club",
+      "legacyApk": "Android app 1.0 (direct club session)",
+      "legacySubmit": "Sign in (legacy APK)"
     },
     "register": {
       "title": "Pilot registration",
@@ -226,6 +229,26 @@
     "pickSession": "Choose a live session",
     "accuracyLabel": "GPS accuracy",
     "geoidPending": "MSL altitude unavailable — geoid model still loading (showing ellipsoid height)."
+  },
+  "account": {
+    "signup": {
+      "title": "Create your account",
+      "lead": "One personal account; join clubs later.",
+      "email": "Email",
+      "password": "Password (optional)",
+      "submit": "Create account",
+      "success": "Check your email if you skipped a password.",
+      "link": "Create account",
+      "haveAccount": "Already have an account? Sign in"
+    },
+    "join": {
+      "title": "Join a club",
+      "slug": "Club slug",
+      "name": "Your name (optional)",
+      "submit": "Request to join",
+      "open": "Join a club",
+      "pending": "Request sent — wait for approval."
+    }
   },
   "mail": {
     "magicLink": {

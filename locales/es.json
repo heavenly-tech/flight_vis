@@ -67,7 +67,10 @@
       "submit": "Iniciá sesión",
       "success": "Sesión iniciada.",
       "failed": "No se pudo iniciar sesión.",
-      "links": "Registrarse · Perfil piloto · App Android"
+      "links": "Registrarse · Perfil piloto · App Android",
+      "pickClub": "Elegí un club",
+      "legacyApk": "App Android 1.0 (sesión directa del club)",
+      "legacySubmit": "Ingresar (APK legacy)"
     },
     "register": {
       "title": "Registro",
@@ -229,6 +232,26 @@
     "pickSession": "Elegí una sesión en vivo",
     "accuracyLabel": "Precisión GPS",
     "geoidPending": "Altitud MSL no disponible: modelo geoidal en carga (mostrando altura elipsoidal)."
+  },
+  "account": {
+    "signup": {
+      "title": "Creá tu cuenta",
+      "lead": "Una cuenta personal; después unite a clubs.",
+      "email": "Correo",
+      "password": "Contraseña (opcional)",
+      "submit": "Crear cuenta",
+      "success": "Revisá tu correo si no pusiste contraseña.",
+      "link": "Creá tu cuenta",
+      "haveAccount": "¿Ya tenés cuenta? Iniciá sesión"
+    },
+    "join": {
+      "title": "Unite a un club",
+      "slug": "Slug del club",
+      "name": "Tu nombre (opcional)",
+      "submit": "Enviar solicitud",
+      "open": "Unirse a un club",
+      "pending": "Solicitud enviada — esperá aprobación."
+    }
   },
   "mail": {
     "magicLink": {

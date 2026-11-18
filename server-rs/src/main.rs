@@ -625,6 +625,7 @@ fn build_router(state: AppState) -> Router {
 /// loopback, honouring the same `PORT` as the server.
 const HEALTHCHECK_ARG: &str = "healthcheck";
 const CHECK_I18N_ARG: &str = "check-i18n";
+const SEED_ACCOUNT_ARG: &str = "seed-account";
 const HEALTHCHECK_HOST: IpAddr = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
 const HEALTHCHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -741,7 +742,67 @@ fn main() {
     if arg.as_deref() == Some(std::ffi::OsStr::new(CHECK_I18N_ARG)) {
         std::process::exit(if run_check_i18n() { 0 } else { 1 });
     }
+    if arg.as_deref() == Some(std::ffi::OsStr::new(SEED_ACCOUNT_ARG)) {
+        std::process::exit(run_seed_account_cli());
+    }
     run_server();
+}
+
+fn run_seed_account_cli() -> i32 {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let mut email = String::new();
+    let mut club = String::from("cas");
+    let mut role = String::from("admin");
+    let mut dry_run = true;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--email" if i + 1 < args.len() => {
+                email = args[i + 1].clone();
+                i += 2;
+            }
+            "--club" if i + 1 < args.len() => {
+                club = args[i + 1].clone();
+                i += 2;
+            }
+            "--role" if i + 1 < args.len() => {
+                role = args[i + 1].clone();
+                i += 2;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                i += 1;
+            }
+            "--apply" => {
+                dry_run = false;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    if email.is_empty() {
+        eprintln!("usage: flight_vis seed-account --email EMAIL [--club SLUG] [--role admin] [--dry-run|--apply]");
+        return 2;
+    }
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    rt.block_on(async {
+        match club::ClubDb::connect().await {
+            Ok(db) => match db.seed_account_cli(&email, &club, &role, dry_run).await {
+                Ok(v) => {
+                    println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("seed-account error: {e}");
+                    1
+                }
+            },
+            Err(e) => {
+                eprintln!("database: {e}");
+                1
+            }
+        }
+    })
 }
 
 #[tokio::main]

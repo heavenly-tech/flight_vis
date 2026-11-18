@@ -111,6 +111,14 @@ impl ClubDb {
             let _ = self.record_login_attempt(ip, email_norm, now).await;
             return Err(LoginError::Invalid);
         }
+        if let Some((_, mem_status)) = self.membership_in_club(&pilot.id, club_id).await {
+            if !crate::club::membership_status::MembershipStatus::parse(&mem_status)
+                .allows_club_api()
+            {
+                let _ = self.record_login_attempt(ip, email_norm, now).await;
+                return Err(LoginError::Invalid);
+            }
+        }
         let session_id = self
             .create_pilot_session(&pilot.id, now)
             .await

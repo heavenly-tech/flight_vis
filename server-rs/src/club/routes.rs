@@ -42,8 +42,19 @@ pub(crate) fn is_secure(headers: &HeaderMap) -> bool {
 }
 
 pub(crate) async fn viewer(state: &AppState, headers: &HeaderMap) -> Viewer {
-    let session = parse_session_cookie(headers);
     let now = now_ms();
+    if let Some(db) = club_db(state) {
+        if let Some(acct_sess) = auth::parse_account_session_cookie(headers) {
+            if let Some((_, _active)) = db.account_from_session(&acct_sess, now).await {
+                if let Some((pilot_sess, _pilot)) =
+                    db.pilot_session_for_account(&acct_sess, now).await
+                {
+                    return db.viewer_from_session(Some(&pilot_sess), now).await;
+                }
+            }
+        }
+    }
+    let session = parse_session_cookie(headers);
     match state.club.as_ref() {
         Some(db) => db.viewer_from_session(session.as_deref(), now).await,
         None => Viewer::Anonymous,
@@ -2541,6 +2552,7 @@ async fn postal_bounce_webhook(
 pub fn router() -> Router<AppState> {
     Router::new()
         .merge(crate::club::auth_routes::router())
+        .merge(crate::club::account_routes::routes())
         .route("/api/webhooks/postal/bounce", post(postal_bounce_webhook))
         .route("/club/screen", get(club_screen_page))
         .route("/c/{slug}/screen", get(club_slug_screen_page))

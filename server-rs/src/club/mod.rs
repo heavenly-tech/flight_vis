@@ -1,5 +1,6 @@
 //! Flight-club registry: pilot auth, checkouts, shared live map.
 mod access_request;
+mod account_routes;
 pub mod android_assetlinks;
 mod auth;
 mod auth_routes;
@@ -11,6 +12,7 @@ mod csrf;
 pub mod database;
 mod db;
 mod db_access_pg;
+mod db_account;
 mod db_auth_pg;
 pub(crate) mod db_club_lifecycle;
 mod db_devices_pg;
@@ -26,6 +28,7 @@ pub mod mail;
 mod mail_suppress;
 mod map;
 mod map_filter;
+mod membership_status;
 mod qr;
 mod routes;
 mod share_routes;
@@ -37,6 +40,8 @@ mod superadmin_routes;
 mod visibility;
 pub mod webauthn;
 
+#[cfg(test)]
+mod account_integration_tests;
 #[cfg(test)]
 mod api_tests;
 #[cfg(test)]

@@ -5,54 +5,48 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title data-i18n="club.login.title">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
-    <style>main{max-width:24rem;margin:3rem auto;padding:1rem} input,button{width:100%;padding:.6rem;margin:.35rem 0;font:inherit} #lang-slot{margin-bottom:.75rem;font-size:.9rem}</style>
+    <style>main{max-width:28rem;margin:3rem auto;padding:1rem} input,button{width:100%;padding:.6rem;margin:.35rem 0;font:inherit} #lang-slot{margin-bottom:.75rem;font-size:.9rem} ul{list-style:none;padding:0} li button{margin:.25rem 0}</style>
   </head>
   <body>
     <main>
       <div id="lang-slot"></div>
-      <h1 data-i18n="club.login.title">Inicio de sesión del club</h1>
-      <form id="form">
-        <input name="email" type="email" required data-i18n-placeholder="club.login.email" />
-        <input name="password" type="password" required data-i18n-placeholder="club.login.password" minlength="8" />
-        <button type="submit" data-i18n="club.login.submit"></button>
-      </form>
-      <p id="msg" class="muted"></p>
-      <p class="muted"><a href="/club-register.html" data-i18n="nav.register"></a> · <a href="/club-signup.html" data-i18n="nav.createClub"></a> · <a href="/club-pilot.html" data-i18n="nav.pilotProfile"></a> · <a href="/app.html" data-i18n="nav.androidApp"></a></p>
+      <section id="login-panel">
+        <h1 data-i18n="club.login.title">Inicio de sesión</h1>
+        <form id="form">
+          <input name="email" type="email" required data-i18n-placeholder="club.login.email" />
+          <input name="password" type="password" required data-i18n-placeholder="club.login.password" minlength="8" />
+          <button type="submit" data-i18n="club.login.submit"></button>
+        </form>
+        <p id="msg" class="muted"></p>
+        <p class="muted"><a href="/signup.html" data-i18n="account.signup.link"></a></p>
+        <details class="muted">
+          <summary data-i18n="club.login.legacyApk"></summary>
+          <form id="legacy-login">
+            <input name="email" type="email" required data-i18n-placeholder="club.login.email" />
+            <input name="password" type="password" required minlength="8" />
+            <button type="submit" data-i18n="club.login.legacySubmit"></button>
+          </form>
+        </details>
+      </section>
+      <section id="pick-panel" hidden>
+        <h1 data-i18n="club.login.pickClub">Elegí un club</h1>
+        <ul id="club-list"></ul>
+        <button type="button" id="join-open" data-i18n="account.join.open"></button>
+      </section>
+      <section id="join-panel" hidden>
+        <h1 data-i18n="account.join.title"></h1>
+        <form id="join-form">
+          <input name="slug" required data-i18n-placeholder="account.join.slug" />
+          <input name="name" data-i18n-placeholder="account.join.name" />
+          <button type="submit" data-i18n="account.join.submit"></button>
+        </form>
+        <p id="join-msg" class="muted"></p>
+      </section>
+      <p class="muted"><a href="/club-register.html" data-i18n="nav.register"></a> · <a href="/club-signup.html" data-i18n="nav.createClub"></a></p>
     </main>
     <script type="module">
-      import { startClubPage } from "/src/club/i18nPage.ts";
-      import { t, apiErrorMessage } from "/src/i18n/boot.ts";
-      import { safeNextPath } from "/src/club/safeNext.ts";
-      await startClubPage({ persistUser: false });
-      const nextAfterLogin = safeNextPath(
-        new URLSearchParams(location.search).get("next") ?? "/club-pilot.html",
-      );
-      const existing = await fetch("/api/club/me", { credentials: "same-origin" });
-      if (existing.ok) {
-        const me = await existing.json();
-        if (me.pilot) {
-          location.replace(nextAfterLogin);
-        }
-      }
-      const form = document.getElementById("form");
-      const msg = document.getElementById("msg");
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const body = Object.fromEntries(new FormData(form));
-        const res = await fetch("/api/club/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          body: JSON.stringify(body),
-        });
-        if (res.ok) {
-          msg.textContent = t("club.login.success");
-          location.href = nextAfterLogin;
-        } else {
-          const err = (await res.json().catch(() => ({}))).error ?? "unauthorized";
-          msg.textContent = apiErrorMessage(String(err));
-        }
-      });
+      import { bootClubLoginAccount } from "/src/club/clubLoginAccount.ts";
+      bootClubLoginAccount();
     </script>
   </body>
 </html>

@@ -108,7 +108,11 @@ impl ClubDb {
             return Ok(());
         }
         match self.membership_in_club(pilot_id, club_id).await {
-            Some((role, status)) if role == "admin" && status == "approved" => Ok(()),
+            Some((role, status))
+                if role == "admin" && (status == "active" || status == "approved") =>
+            {
+                Ok(())
+            }
             _ => Err(ClubScopeError::Forbidden),
         }
     }

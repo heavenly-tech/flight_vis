@@ -506,8 +506,9 @@ async fn pending_pilot_cannot_load_club_map() {
         .register(&club_id, "P", "p@test", "", "password12")
         .await
         .unwrap();
-    let cookie = login_cookie(&mut fx.router, "p@test").await;
-    let _ = pending;
+    let now = now_ms();
+    let session = fx.club.create_pilot_session(&pending, now).await.unwrap();
+    let cookie = format!("{}={session}", crate::club::auth::COOKIE);
     let res = fx
         .router
         .call(
@@ -533,6 +534,14 @@ async fn kiosk_layout_admin_clamps_and_display_sse_rev() {
         .execute(&fx.club.pool)
         .await
         .unwrap();
+    sqlx::query(
+        "UPDATE club_memberships SET role = 'admin' WHERE pilot_id = $1 AND club_id = $2",
+    )
+    .bind(&fx.pilot_a)
+    .bind(&club_id)
+    .execute(&fx.club.pool)
+    .await
+    .unwrap();
     let cookie = login_cookie(&mut fx.router, "a@test").await;
     let patch = fx
         .router
