@@ -14,7 +14,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use serial_test::serial;
-use tower::ServiceExt;
+use tower::Service;
 
 const FIXTURE_EMAIL: &str = "legacy-migrate-fixture@test.invalid";
 const LEGACY_EMAIL: &str = "legacy-owner-fixture@test.invalid";
@@ -150,17 +150,14 @@ async fn migrate_legacy_dry_run_and_apply_idempotent() {
         .uri(format!("/api/flights/{DEMO_FLIGHT_SLUG}"))
         .body(Body::empty())
         .unwrap();
-    assert_eq!(
-        app.clone().oneshot(req).await.unwrap().status(),
-        StatusCode::OK
-    );
+    assert_eq!(app.call(req).await.unwrap().status(), StatusCode::OK);
     let req = Request::builder()
         .method("GET")
         .uri(format!("/api/flights/{LEGACY_DEMO_SLUG}"))
         .body(Body::empty())
         .unwrap();
     assert_eq!(
-        app.oneshot(req).await.unwrap().status(),
+        app.call(req).await.unwrap().status(),
         StatusCode::PERMANENT_REDIRECT
     );
 
@@ -171,7 +168,7 @@ async fn migrate_legacy_dry_run_and_apply_idempotent() {
         .header("content-type", "application/json")
         .body(Body::from(r#"{"password":"secret"}"#))
         .unwrap();
-    assert_eq!(app.oneshot(login).await.unwrap().status(), StatusCode::OK);
+    assert_eq!(app.call(login).await.unwrap().status(), StatusCode::OK);
 
     let mut gate_off = build_router(test_router(data_dir.path(), db, ""));
     let req = Request::builder()
@@ -179,10 +176,7 @@ async fn migrate_legacy_dry_run_and_apply_idempotent() {
         .uri(format!("/api/flights/{DEMO_FLIGHT_SLUG}"))
         .body(Body::empty())
         .unwrap();
-    assert_eq!(
-        gate_off.oneshot(req).await.unwrap().status(),
-        StatusCode::OK
-    );
+    assert_eq!(gate_off.call(req).await.unwrap().status(), StatusCode::OK);
 }
 
 #[test]
@@ -192,7 +186,7 @@ fn cli_requires_email() {
 }
 
 async fn seed_second_club_pilot_with_flight(db: &ClubDb, slug: &str) -> (String, String, String) {
-    let club_id = auth::new_id();
+    let club_id = new_id();
     let now = crate::club::now_ms();
     sqlx::query(
         "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at, latitude, longitude, show_public_tracks)

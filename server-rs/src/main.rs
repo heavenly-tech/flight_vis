@@ -597,7 +597,7 @@ fn require_auth(
     ))
 }
 
-pub(crate) fn build_router(state: AppState) -> Router<AppState> {
+pub(crate) fn build_router(state: AppState) -> Router {
     let mut app = Router::new()
         .route("/api/health", get(health))
         .route("/api/auth/me", get(auth_me))
@@ -609,21 +609,19 @@ pub(crate) fn build_router(state: AppState) -> Router<AppState> {
     }
     let legacy_demo_path = format!("/{LEGACY_DEMO_SLUG}");
     let legacy_demo_api = format!("/api/flights/{LEGACY_DEMO_SLUG}");
-    app = app
-        .route(
-            &legacy_demo_path,
-            get(legacy_demo_page_redirect).head(legacy_demo_page_redirect),
-        )
-        .route(
-            &legacy_demo_api,
-            get(legacy_demo_api_redirect).head(legacy_demo_api_redirect),
-        )
-        .merge(flights::router().layer(DefaultBodyLimit::max(64 * 1024 * 1024)))
-        .merge(video::router())
-        .merge(live::router().layer(DefaultBodyLimit::max(256 * 1024)))
-        .fallback(fallback)
-        .with_state(state);
-    app
+    app.route(
+        &legacy_demo_path,
+        get(legacy_demo_page_redirect).head(legacy_demo_page_redirect),
+    )
+    .route(
+        &legacy_demo_api,
+        get(legacy_demo_api_redirect).head(legacy_demo_api_redirect),
+    )
+    .merge(flights::router().layer(DefaultBodyLimit::max(64 * 1024 * 1024)))
+    .merge(video::router())
+    .merge(live::router().layer(DefaultBodyLimit::max(256 * 1024)))
+    .fallback(fallback)
+    .with_state(state)
 }
 
 /// Container healthcheck. The runtime image is `FROM scratch`, so there is no
