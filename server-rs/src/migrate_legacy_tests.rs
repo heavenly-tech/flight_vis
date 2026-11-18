@@ -50,6 +50,9 @@ async fn seed_legacy_owner(db: &ClubDb, club_id: &str) -> (String, String, Strin
     db.upsert_aircraft(club_id, "CC-LEG", "C152", true)
         .await
         .unwrap();
+    db.add_checkout(&legacy_id, "C152", Some("CC-LEG"), None)
+        .await
+        .unwrap();
     let (dev, _) = db.create_device(&legacy_id, "phone").await.unwrap();
     db.issue_open_checkin(&legacy_id, &dev, club_id, now)
         .await
@@ -235,6 +238,9 @@ async fn seed_second_club_pilot_with_flight(db: &ClubDb, slug: &str) -> (String,
     db.upsert_aircraft(&club_id, "CC-OTH", "C152", true)
         .await
         .unwrap();
+    db.add_checkout(&pilot_id, "C152", Some("CC-OTH"), None)
+        .await
+        .unwrap();
     let (dev, _) = db.create_device(&pilot_id, "tablet").await.unwrap();
     db.issue_open_checkin(&pilot_id, &dev, &club_id, now)
         .await
@@ -341,6 +347,9 @@ async fn seed_unverified_decoy_with_flight(db: &ClubDb, club_id: &str) -> (Strin
     .unwrap();
     db.upsert_type(club_id, "C172").await.unwrap();
     db.upsert_aircraft(club_id, "CC-DEC", "C172", true)
+        .await
+        .unwrap();
+    db.add_checkout(&pilot_id, "C172", Some("CC-DEC"), None)
         .await
         .unwrap();
     let (dev, _) = db.create_device(&pilot_id, "decoy").await.unwrap();
