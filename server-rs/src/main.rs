@@ -228,7 +228,10 @@ async fn login_page(
     let html = read_login_page(&state.dist_dir, state.auth.configured()).await;
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/html; charset=UTF-8")],
+        [
+            (header::CONTENT_TYPE, "text/html; charset=UTF-8"),
+            (header::CONTENT_SECURITY_POLICY, static_files::HTML_CSP),
+        ],
         html,
     )
         .into_response()

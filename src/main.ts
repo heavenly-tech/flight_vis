@@ -35,6 +35,12 @@ const hud = document.querySelector<HTMLElement>("#hud")!;
 const hudToggle = document.querySelector<HTMLButtonElement>("#btn-hud")!;
 const transport = document.querySelector<HTMLElement>(".transport")!;
 const nameEl = document.querySelector<HTMLParagraphElement>("#flight-name")!;
+const livePathPrefetch = parseLivePath(window.location.pathname);
+if (livePathPrefetch.sessionId) {
+  nameEl.textContent = "Live session";
+  statusEl.hidden = true;
+  statusEl.textContent = "";
+}
 const summaryEl = document.querySelector<HTMLParagraphElement>("#summary")!;
 const tagList = document.querySelector<HTMLDivElement>("#tag-list")!;
 const tagDialog = document.querySelector<HTMLDialogElement>("#tag-dialog")!;

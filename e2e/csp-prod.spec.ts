@@ -64,7 +64,7 @@ test.describe("production CSP (release server)", () => {
   test("HTML responses use prod CSP and have no inline scripts", async ({ request }) => {
     const paths = [
       "/",
-      "/login.html",
+      "/login",
       "/public-map.html",
       "/club-map.html",
       "/club-checkin-landing.html",
@@ -97,7 +97,8 @@ test.describe("production CSP (release server)", () => {
     const violations = trackCspViolations(page);
     await expectProdCspHeader(request, "/club-checkin-landing.html");
     await page.goto("/club-checkin-landing.html");
-    await expect(page.locator("h1")).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("main")).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("#club-name")).toBeVisible({ timeout: 30_000 });
     const fontOk = await page.evaluate(() => {
       const family = getComputedStyle(document.body).fontFamily.toLowerCase();
       return family.includes("outfit");
