@@ -1,4 +1,5 @@
--- PR1b: global accounts, account sessions, membership authority, backfill from pilots.
+-- PR1b (#24): lands as 000014 after #19 (000013). #20 → 000015, #22 → 000016 when retargeted.
+-- Global accounts, account sessions, membership authority, backfill from pilots.
 -- Account ids are random (gen_random_uuid); idempotent by lower(email), not by id.
 -- Backfill password rule: per lower(email), non-empty password_hash wins; ties broken by latest created_at.
 -- Guest pilots (@guest.invalid) and status=guest stay account_id NULL.
