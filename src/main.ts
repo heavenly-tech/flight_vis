@@ -341,7 +341,34 @@ function hitHandle(x: number, width: number): "start" | "end" | null {
 }
 
 async function boot(): Promise<void> {
+  const rootPath = window.location.pathname;
+  const rootSearch = window.location.search;
+  const clubFromQuery = new URLSearchParams(rootSearch).get("club");
   const liveRouteEarly = parseLivePath(window.location.pathname);
+
+  if (
+    !pathSlug() &&
+    !liveRouteEarly.sessionId &&
+    !liveRouteEarly.listOnly &&
+    isSiteRootPath(rootPath) &&
+    !isFullGlobeEntry(rootPath, rootSearch)
+  ) {
+    try {
+      const res = await fetch(publicLiveSummaryUrl(clubFromQuery));
+      if (res.ok) {
+        const summary = (await res.json()) as PublicLiveSummary;
+        const redirect = resolvePublicRootRedirect(summary, clubFromQuery);
+        if (redirect) {
+          location.replace(redirect);
+          return;
+        }
+        history.replaceState(null, "", demoFallbackPath());
+      }
+    } catch {
+      /* fall through to legacy default load */
+    }
+  }
+
   if (liveRouteEarly.sessionId) {
     nameEl.textContent = "Live session";
     setStatus(null);
@@ -962,33 +989,6 @@ async function boot(): Promise<void> {
   syncAuthUi();
 
   const liveRoute = parseLivePath(window.location.pathname);
-  const rootPath = window.location.pathname;
-  const rootSearch = window.location.search;
-  const clubFromQuery = new URLSearchParams(rootSearch).get("club");
-
-  if (
-    !pathSlug() &&
-    !liveRoute.sessionId &&
-    !liveRoute.listOnly &&
-    isSiteRootPath(rootPath) &&
-    !isFullGlobeEntry(rootPath, rootSearch)
-  ) {
-    try {
-      const res = await fetch(publicLiveSummaryUrl(clubFromQuery));
-      if (res.ok) {
-        const summary = (await res.json()) as PublicLiveSummary;
-        const redirect = resolvePublicRootRedirect(summary, clubFromQuery);
-        if (redirect) {
-          location.replace(redirect);
-          return;
-        }
-        history.replaceState(null, "", demoFallbackPath());
-        if (await loadFromSlug(DEMO_FLIGHT_SLUG)) return;
-      }
-    } catch {
-      /* fall through to legacy default load */
-    }
-  }
 
   if (auth.authenticated && !liveRoute.sessionId && !liveRoute.listOnly) {
     library.setOpen(true);

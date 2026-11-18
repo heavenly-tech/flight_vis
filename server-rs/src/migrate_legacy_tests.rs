@@ -3,7 +3,12 @@
 use crate::{
     auth::Auth,
     build_router,
-    club::{auth, database::DbConnectError, db::ClubDb, visibility::FlightVisibility},
+    club::{
+        auth::{hash_password, new_id},
+        database::DbConnectError,
+        visibility::FlightVisibility,
+        ClubDb,
+    },
     demo_flight::{DEMO_FLIGHT_SLUG, LEGACY_DEMO_SLUG},
     migrate_legacy::{parse_cli_args, run_legacy_migrate, LegacyMigrateOpts},
     store::Store,
@@ -20,8 +25,8 @@ const FIXTURE_EMAIL: &str = "legacy-migrate-fixture@test.invalid";
 const LEGACY_EMAIL: &str = "legacy-owner-fixture@test.invalid";
 
 async fn seed_legacy_owner(db: &ClubDb, club_id: &str) -> (String, String, String) {
-    let hash = auth::hash_password("password12").unwrap();
-    let legacy_id = auth::new_id();
+    let hash = hash_password("password12").unwrap();
+    let legacy_id = new_id();
     let now = crate::club::now_ms();
     sqlx::query(
         "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
@@ -57,7 +62,10 @@ async fn seed_legacy_owner(db: &ClubDb, club_id: &str) -> (String, String, Strin
         )
         .await
         .unwrap();
-    let (_row, token) = db.create_flight_share(&legacy_id, &fid).await.unwrap();
+    let (_row, token) = db
+        .create_flight_share(&legacy_id, &fid)
+        .await
+        .expect("create_flight_share");
     (legacy_id, fid, token)
 }
 
@@ -189,4 +197,127 @@ async fn migrate_legacy_dry_run_and_apply_idempotent() {
 fn cli_requires_email() {
     let err = parse_cli_args(&["--club".to_string(), "cas".to_string()]).unwrap_err();
     assert!(err.to_string().contains("--email"));
+}
+
+async fn seed_second_club_pilot_with_flight(db: &ClubDb, slug: &str) -> (String, String, String) {
+    let club_id = new_id();
+    let now = crate::club::now_ms();
+    sqlx::query(
+        "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at, latitude, longitude, show_public_tracks)
+         VALUES ($1, 'Other', $2, $3, 'live', $3, -33.0, -70.0, TRUE)",
+    )
+    .bind(&club_id)
+    .bind(slug)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let hash = hash_password("password12").unwrap();
+    let pilot_id = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'Other', $3, '', 'approved', 'pilot', $4, $5)",
+    )
+    .bind(&pilot_id)
+    .bind(&club_id)
+    .bind("other-club-pilot@test.invalid")
+    .bind(&hash)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    db.upsert_type(&club_id, "C152").await.unwrap();
+    db.upsert_aircraft(&club_id, "CC-OTH", "C152", true)
+        .await
+        .unwrap();
+    let (dev, _) = db.create_device(&pilot_id, "tablet").await.unwrap();
+    db.issue_open_checkin(&pilot_id, &dev, &club_id, now)
+        .await
+        .unwrap();
+    let flight_id = db
+        .start_flight(
+            &pilot_id,
+            &dev,
+            "CC-OTH",
+            FlightVisibility::Private,
+            false,
+            now,
+        )
+        .await
+        .unwrap();
+    (club_id, pilot_id, flight_id)
+}
+
+#[serial]
+#[tokio::test]
+async fn migrate_legacy_does_not_touch_other_club_rows() {
+    let db = match ClubDb::open_test().await {
+        Ok(db) => db,
+        Err(DbConnectError::MissingUrl) => {
+            eprintln!("skipping migrate_legacy_tests: DATABASE_URL unset");
+            return;
+        }
+        Err(e) => panic!("db: {e}"),
+    };
+    let club_id = db.default_club_id().await.unwrap();
+    let slug: String = sqlx::query_scalar("SELECT slug FROM clubs WHERE id = $1")
+        .bind(&club_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+
+    let (_legacy_id, cas_flight_id, _) = seed_legacy_owner(&db, &club_id).await;
+    let slug_b = format!("other-club-{}", &new_id()[..8]);
+    let (club_b, other_pilot, other_flight) =
+        seed_second_club_pilot_with_flight(&db, &slug_b).await;
+
+    let data_dir = tempfile::tempdir().unwrap();
+    let opts = LegacyMigrateOpts {
+        email: FIXTURE_EMAIL.to_string(),
+        club_slug: slug,
+        dry_run: false,
+    };
+    run_legacy_migrate(&opts, data_dir.path())
+        .await
+        .expect("apply");
+
+    let cas_owner: String = sqlx::query_scalar("SELECT pilot_id FROM flights WHERE id = $1")
+        .bind(&cas_flight_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_ne!(cas_owner, other_pilot);
+
+    let other_owner: String = sqlx::query_scalar("SELECT pilot_id FROM flights WHERE id = $1")
+        .bind(&other_flight)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(other_owner, other_pilot);
+
+    let target_id: String =
+        sqlx::query_scalar("SELECT id FROM pilots WHERE lower(email) = lower($1)")
+            .bind(FIXTURE_EMAIL)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(cas_owner, target_id);
+
+    let legacy_still: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pilots WHERE club_id = $1 AND lower(email) = lower($2)",
+    )
+    .bind(&club_id)
+    .bind(LEGACY_EMAIL)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(legacy_still, 1);
+
+    let other_club_pilots: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pilots WHERE club_id = $1")
+            .bind(&club_b)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(other_club_pilots, 1);
 }

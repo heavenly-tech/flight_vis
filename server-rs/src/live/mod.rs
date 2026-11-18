@@ -6,6 +6,7 @@ mod sse;
 mod types;
 
 pub use engine::LiveEngine;
+pub use persist::LivePersist;
 pub use routes::router;
 pub use types::LiveFix;
 
