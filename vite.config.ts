@@ -57,16 +57,43 @@ function clubAdminHtmlGateMiddleware(
       return;
     }
     const search = raw.includes("?") ? raw.slice(raw.indexOf("?")) : "";
-    void fetch(`${apiOrigin}/api/club/me`, {
-      headers: { cookie: req.headers.cookie ?? "" },
-    })
-      .then(async (meRes) => {
-        if (meRes.ok) {
-          const me = (await meRes.json()) as { pilot?: { role?: string } | null };
-          if (me.pilot?.role === "admin" || me.pilot?.role === "staff") {
-            next();
-            return;
-          }
+    const cookie = req.headers.cookie ?? "";
+    const allowStaff = async (): Promise<boolean> => {
+      const accountMe = await fetch(`${apiOrigin}/api/account/me`, {
+        headers: { cookie },
+      });
+      if (accountMe.ok) {
+        const data = (await accountMe.json()) as {
+          activeMembershipId?: string | null;
+          memberships?: Array<{ id: string; status: string; role?: string }>;
+        };
+        const list = data.memberships ?? [];
+        const active = data.activeMembershipId
+          ? list.find((m) => m.id === data.activeMembershipId)
+          : undefined;
+        const staff = (m: { status: string; role?: string }) =>
+          m.status === "active" && (m.role === "admin" || m.role === "staff");
+        if (active && staff(active)) {
+          return true;
+        }
+        if (list.some(staff)) {
+          return true;
+        }
+      }
+      const clubMe = await fetch(`${apiOrigin}/api/club/me`, { headers: { cookie } });
+      if (clubMe.ok) {
+        const me = (await clubMe.json()) as { pilot?: { role?: string } | null };
+        if (me.pilot?.role === "admin" || me.pilot?.role === "staff") {
+          return true;
+        }
+      }
+      return false;
+    };
+    void allowStaff()
+      .then((ok) => {
+        if (ok) {
+          next();
+          return;
         }
         res.statusCode = 302;
         res.setHeader(

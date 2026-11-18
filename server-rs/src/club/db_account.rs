@@ -79,6 +79,96 @@ impl ClubDb {
         Some(row_to_account(&row))
     }
 
+    /// Link pilots created without accounts (e.g. demo seed after migrations) to `accounts` +
+    /// `club_memberships`, copying password hashes for account login in e2e/CI.
+    pub async fn backfill_accounts_from_pilots(&self) -> Result<(), DbError> {
+        let now = now_ms();
+        let rows = sqlx::query(
+            "SELECT id, club_id, email, password_hash, role, status, created_at
+             FROM pilots
+             WHERE account_id IS NULL
+               AND status <> 'guest'
+               AND email NOT LIKE 'guest-%@guest.invalid'
+               AND trim(email) <> ''",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        for row in rows {
+            let pilot_id: String = row.try_get("id")?;
+            let club_id: String = row.try_get("club_id")?;
+            let email: String = row.try_get("email")?;
+            let password_hash: String = row.try_get("password_hash").unwrap_or_default();
+            let role: String = row.try_get("role")?;
+            let status: String = row.try_get("status")?;
+            let pilot_created: i64 = row.try_get("created_at").unwrap_or(now);
+            let email = email.trim().to_ascii_lowercase();
+            let account_id = if let Some(acct) = self.account_by_email(&email).await {
+                acct.id
+            } else {
+                let id = new_id();
+                sqlx::query(
+                    "INSERT INTO accounts (id, email, password_hash, created_at, email_verified_at)
+                     VALUES ($1, $2, $3, $4, $4)",
+                )
+                .bind(&id)
+                .bind(&email)
+                .bind(password_hash.trim())
+                .bind(pilot_created)
+                .execute(&self.pool)
+                .await?;
+                id
+            };
+            if !password_hash.is_empty() {
+                let _ = sqlx::query(
+                    "UPDATE accounts SET password_hash = coalesce(nullif(password_hash, ''), $1)
+                     WHERE id = $2",
+                )
+                .bind(&password_hash)
+                .bind(&account_id)
+                .execute(&self.pool)
+                .await;
+            }
+            sqlx::query("UPDATE pilots SET account_id = $1 WHERE id = $2")
+                .bind(&account_id)
+                .bind(&pilot_id)
+                .execute(&self.pool)
+                .await?;
+            let membership_role = if membership_role_is_admin(&role) {
+                "admin"
+            } else if role == "staff" {
+                "staff"
+            } else {
+                "pilot"
+            };
+            let membership_status = match status.as_str() {
+                "approved" => "active",
+                "suspended" => "suspended",
+                "guest" => "pending",
+                _ => "pending",
+            };
+            let member_id = new_id();
+            sqlx::query(
+                "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT (pilot_id, club_id) DO UPDATE SET
+                   role = EXCLUDED.role,
+                   status = CASE
+                     WHEN club_memberships.status IN ('active', 'suspended') THEN club_memberships.status
+                     ELSE EXCLUDED.status
+                   END",
+            )
+            .bind(&member_id)
+            .bind(&pilot_id)
+            .bind(&club_id)
+            .bind(membership_role)
+            .bind(membership_status)
+            .bind(pilot_created)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
     /// Create or return existing account by email (random id on create).
     pub async fn ensure_account_for_email(
         &self,

@@ -910,6 +910,9 @@ async fn run_server() {
                     eprintln!("warn: demo seed failed: {error}");
                 }
             }
+            if let Err(error) = db.backfill_accounts_from_pilots().await {
+                eprintln!("warn: pilot account backfill failed: {error}");
+            }
             Some(db)
         }
         Err(error) => {
