@@ -1,4 +1,4 @@
-import { api, mountAdminNav, requireAdmin } from "./adminCommon";
+import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 
 const list = document.querySelector<HTMLUListElement>("#list")!;
 const form = document.querySelector<HTMLFormElement>("#form")!;
@@ -58,7 +58,7 @@ void (async () => {
   try {
     await requireAdmin();
     await refresh();
-  } catch {
-    list.innerHTML = "<li>Admin login required.</li>";
+  } catch (e) {
+    if (!isClubAdminRedirect(e)) list.innerHTML = "<li>Admin login required.</li>";
   }
 })();

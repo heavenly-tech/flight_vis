@@ -1,4 +1,4 @@
-import { api, mountAdminNav, requireAdmin } from "./adminCommon";
+import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 
 const pending = document.querySelector<HTMLUListElement>("#pending")!;
 const all = document.querySelector<HTMLUListElement>("#all")!;
@@ -37,7 +37,7 @@ void (async () => {
   try {
     await requireAdmin();
     await refresh();
-  } catch {
-    pending.innerHTML = "<li>Admin login required.</li>";
+  } catch (e) {
+    if (!isClubAdminRedirect(e)) pending.innerHTML = "<li>Admin login required.</li>";
   }
 })();

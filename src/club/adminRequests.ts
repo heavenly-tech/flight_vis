@@ -1,4 +1,4 @@
-import { api, mountAdminNav, requireAdmin } from "./adminCommon";
+import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 
 const list = document.querySelector<HTMLDivElement>("#list")!;
 const badge = document.querySelector<HTMLSpanElement>("#badge")!;
@@ -62,7 +62,7 @@ void (async () => {
   try {
     await requireAdmin();
     await refresh();
-  } catch {
-    list.textContent = "Admin login required.";
+  } catch (e) {
+    if (!isClubAdminRedirect(e)) list.textContent = "Admin login required.";
   }
 })();

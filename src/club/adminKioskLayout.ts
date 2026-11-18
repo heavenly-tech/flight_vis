@@ -1,4 +1,4 @@
-import { api, mountAdminNav, requireAdmin } from "./adminCommon";
+import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 import {
   applyLayoutToEl,
   clampKioskQrLayout,
@@ -130,7 +130,7 @@ void (async () => {
     bindDrag();
     window.addEventListener("resize", () => paint());
     await loadLayout();
-  } catch {
-    saveStatus.textContent = "Se requiere admin.";
+  } catch (e) {
+    if (!isClubAdminRedirect(e)) saveStatus.textContent = "Se requiere admin.";
   }
 })();

@@ -1,4 +1,4 @@
-import { api, mountAdminLangSwitcher, mountAdminNav, requireAdmin } from "./adminCommon";
+import { api, isClubAdminRedirect, mountAdminLangSwitcher, mountAdminNav, requireAdmin } from "./adminCommon";
 import { startClubPage } from "./i18nPage";
 import { bundledLocaleIds, localeLabel, t } from "../i18n/index";
 
@@ -93,7 +93,7 @@ void (async () => {
     await requireAdmin();
     await refresh();
     setInterval(() => void refresh(), 5000);
-  } catch {
-    list.innerHTML = `<li>${t("admin.adminRequired")}</li>`;
+  } catch (e) {
+    if (!isClubAdminRedirect(e)) list.innerHTML = `<li>${t("admin.adminRequired")}</li>`;
   }
 })();

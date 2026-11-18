@@ -22,7 +22,11 @@
     <script type="module">
       import { startClubPage } from "/src/club/i18nPage.ts";
       import { t, apiErrorMessage } from "/src/i18n/boot.ts";
+      import { safeNextPath } from "/src/club/safeNext.ts";
       await startClubPage({ persistUser: false });
+      const nextAfterLogin = safeNextPath(
+        new URLSearchParams(location.search).get("next") ?? "/club-pilot.html",
+      );
       const form = document.getElementById("form");
       const msg = document.getElementById("msg");
       form.addEventListener("submit", async (e) => {
@@ -36,7 +40,7 @@
         });
         if (res.ok) {
           msg.textContent = t("club.login.success");
-          location.href = "/club-pilot.html";
+          location.href = nextAfterLogin;
         } else {
           const err = (await res.json().catch(() => ({}))).error ?? "unauthorized";
           msg.textContent = apiErrorMessage(String(err));
