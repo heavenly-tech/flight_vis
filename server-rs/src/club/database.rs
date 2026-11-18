@@ -108,7 +108,17 @@ pub fn database_url_from_pg_env() -> Result<Option<String>, DbConnectError> {
     Ok(Some(url))
 }
 
+#[cfg(test)]
+static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub fn resolve_database_url() -> Result<String, DbConnectError> {
+    #[cfg(test)]
+    let _env_guard = env_lock();
     if let Ok(url) = env::var("DATABASE_URL") {
         let trimmed = url.trim();
         if !trimmed.is_empty() {
@@ -179,13 +189,6 @@ pub fn legacy_sqlite_path(data_dir: &Path) -> std::path::PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Mutex, MutexGuard};
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn env_lock() -> MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
 
     #[test]
     fn builds_url_from_pg_env_and_password_file() {
