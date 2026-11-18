@@ -2103,6 +2103,7 @@ mod tests {
             .await
             .unwrap();
         db.approve_pilot(&pilot_b).await.unwrap();
+        db.add_checkout(&pilot_b, "C152", None, None).await.unwrap();
         let dev = pilot_device_with_checkin(&db, &pilot_b, &club_b).await;
         let fid = db
             .start_flight(
