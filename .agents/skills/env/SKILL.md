@@ -17,6 +17,9 @@ Copy `.env.example` to `.env`. Do not commit `.env`.
 | `VITE_CESIUM_ION_TOKEN` | Vite | unset | Optional Cesium ion token for the globe. |
 | `FLIGHT_VIS_DEVICE_TOKENS` | API | empty | Live ingest: `token=name` lines or entries separated by newlines. Tokens are never logged. |
 | `FLIGHT_VIS_DEVICE_TOKENS_FILE` | API | unset | Optional path to a token map file (same `token=name` format). Used when set instead of inlining in the env var. |
+| `FLIGHT_ANDROID_APP_PACKAGE` | API | `cl.heavenly.flightvis` | Android package for App Links and the launcher intent on `/app.html` (not QR payloads). Override for staging builds. |
+| `FLIGHT_ANDROID_CERT_SHA256` | API | unset | Comma-separated SHA-256 cert fingerprints (`32` colon-separated bytes or `64` hex chars). Invalid entries log a warning and are dropped. With at least one valid fingerprint, `/.well-known/assetlinks.json` is `200`; with none, `404`. |
+| `FLIGHT_ANDROID_CERT_SHA256_FILE` | API | unset | Optional file with one fingerprint per line. Legacy: `ANDROID_PACKAGE`, `ANDROID_CERT_SHA256`, `ANDROID_CERT_SHA256_FILE`. |
 
 Docker sets `PORT`, `FLIGHT_DATA=/data`, and `FLIGHT_VIS_DIST=/app/dist`. Compose also sets `FLIGHT_VIS_PASSWORD` from the host and the proxy hostnames `VIRTUAL_HOST`, `LETSENCRYPT_HOST`, and `VIRTUAL_PORT` (those three are for the reverse proxy, not read by the binary).
 

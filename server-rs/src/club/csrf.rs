@@ -1,5 +1,18 @@
 use axum::http::{header, HeaderMap, StatusCode};
 
+/// `Content-Type: application/json` with optional parameters (e.g. charset).
+pub fn exact_json_content_type(headers: &HeaderMap) -> Result<(), StatusCode> {
+    let ct = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if crate::auth::media_type_is_json(ct) {
+        Ok(())
+    } else {
+        Err(StatusCode::UNSUPPORTED_MEDIA_TYPE)
+    }
+}
+
 /// Guards cookie-authenticated POST mutations from cross-site form posts.
 pub(crate) fn cookie_post_allowed(headers: &HeaderMap) -> Result<(), StatusCode> {
     if let Some(site) = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {

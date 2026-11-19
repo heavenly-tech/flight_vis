@@ -1,8 +1,11 @@
 //! Browser fallback for `/c/{slug}` and `/c/{slug}/q/{token}` when the Android app is not verified.
 use crate::club::{
-    android_assetlinks::{absolute_https_url, intent_url_for_https, ANDROID_PACKAGE},
+    android_assetlinks::{
+        android_deep_link_configured, android_package_name, club_public_https_url,
+        launcher_intent_url,
+    },
     checkin,
-    club_scope::{checkin_qr_path, ClubScopeError},
+    club_scope::ClubScopeError,
     db::{now_ms, ClubDb},
     routes::club_db,
     slug_redirect,
@@ -166,7 +169,7 @@ async fn checkin_landing_page(
     Path((slug, token)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
-        return checkin_not_found_page(&state, &headers).await;
+        return checkin_not_found_page(&state, &headers, &slug).await;
     };
     if let Some(resp) =
         slug_redirect::redirect_if_historical_slug(db, method.as_str(), uri.path(), uri.query())
@@ -176,7 +179,7 @@ async fn checkin_landing_page(
     }
     match validate_checkin_peek(db, &slug, &token, now_ms()).await {
         Ok(_) => serve_landing_html(&state).await,
-        Err(LandingError::NotFound) => checkin_not_found_page(&state, &headers).await,
+        Err(LandingError::NotFound) => checkin_not_found_page(&state, &headers, &slug).await,
         Err(LandingError::Db) => (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response(),
     }
 }
@@ -256,11 +259,32 @@ async fn club_slug_landing_page(
     serve_landing_html(&state).await
 }
 
-async fn checkin_not_found_page(state: &AppState, headers: &HeaderMap) -> axum::response::Response {
+async fn checkin_not_found_page(
+    state: &AppState,
+    headers: &HeaderMap,
+    slug: &str,
+) -> axum::response::Response {
     let accept = headers
         .get(axum::http::header::ACCEPT_LANGUAGE)
         .and_then(|v| v.to_str().ok());
-    let locale = crate::i18n::require_global().resolve_locale(None, Some("es"), accept);
+    let stored = crate::club::auth::parse_fv_locale_cookie(headers);
+    let club_default = if let Some(db) = club_db(state) {
+        match db.resolve_club_context(slug).await {
+            Ok(ctx) => db
+                .club_default_locale(&ctx.club_id)
+                .await
+                .unwrap_or_else(|_| "es".to_string()),
+            Err(_) => "es".to_string(),
+        }
+    } else {
+        "es".to_string()
+    };
+    let locale = crate::i18n::require_global().resolve_locale(
+        None,
+        Some(club_default.as_str()),
+        accept,
+        stored.as_deref(),
+    );
     let path = state.dist_dir.join("club-checkin-expired.html");
     match tokio::fs::read_to_string(&path).await {
         Ok(html) => (
@@ -293,7 +317,15 @@ async fn build_landing_json(
         .get(axum::http::header::ACCEPT_LANGUAGE)
         .and_then(|v| v.to_str().ok());
     let resolved_locale = crate::i18n::global()
-        .map(|c| c.resolve_locale(None, Some(club_default_locale.as_str()), accept))
+        .map(|c| {
+            let stored = crate::club::auth::parse_fv_locale_cookie(headers);
+            c.resolve_locale(
+                None,
+                Some(club_default_locale.as_str()),
+                accept,
+                stored.as_deref(),
+            )
+        })
         .unwrap_or(club_default_locale.clone());
     let release = read_app_release(&state.dist_dir).await;
     let logo_url = optional_club_logo_url(&state.dist_dir, &ctx.slug);
@@ -336,10 +368,11 @@ async fn checkin_landing_config(
     {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     }
-    let https_path = checkin_qr_path(&slug, &token);
-    let https_url = absolute_https_url(&headers, &https_path);
-    let intent = intent_url_for_https(&https_url, ANDROID_PACKAGE);
-    match build_landing_json(&state, db, &headers, &slug, Some(intent)).await {
+    let release = read_app_release(&state.dist_dir).await;
+    let apk_abs = club_public_https_url(&state, &headers, &release.apk_url);
+    let intent = android_deep_link_configured()
+        .then(|| launcher_intent_url(&android_package_name(), &apk_abs));
+    match build_landing_json(&state, db, &headers, &slug, intent).await {
         Ok(body) => Json(body).into_response(),
         Err(LandingError::NotFound) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()

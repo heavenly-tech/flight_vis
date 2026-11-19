@@ -14,6 +14,7 @@ pub const ACCOUNT_PASSWORD_MAX_CHARS: usize = 128;
 /// bcrypt only uses the first 72 bytes; reject longer UTF-8 passwords for parity.
 pub const ACCOUNT_PASSWORD_MAX_BYTES: usize = 72;
 pub const DISPLAY_COOKIE: &str = "fv_club_display";
+pub const LOCALE_COOKIE: &str = "fv_locale";
 pub const SESSION_TTL_SEC: i64 = 12 * 3600;
 
 /// Argon2 hash of a fixed password; verified on failed login lookups for timing parity.
@@ -61,6 +62,26 @@ pub fn new_share_token() -> String {
 
 pub fn new_id() -> String {
     new_session_id()
+}
+
+pub fn parse_fv_locale_cookie(headers: &HeaderMap) -> Option<String> {
+    let header = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())?;
+    for part in header.split(';') {
+        let part = part.trim();
+        let mut kv = part.splitn(2, '=');
+        let (Some(name), Some(value)) = (kv.next(), kv.next()) else {
+            continue;
+        };
+        if name == LOCALE_COOKIE {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
 }
 
 pub fn parse_display_cookie(headers: &HeaderMap) -> Option<String> {

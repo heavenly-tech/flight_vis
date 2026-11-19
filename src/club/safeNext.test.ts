@@ -26,6 +26,7 @@ describe("safeNextPath", () => {
     expect(safeNextPath("/login")).toBe("/");
     expect(safeNextPath("/login?next=/")).toBe("/");
     expect(safeNextPath("/club-login.html")).toBe("/");
+    expect(safeNextPath("/login-legacy.html")).toBe("/");
   });
 });
 

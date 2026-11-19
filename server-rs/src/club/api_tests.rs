@@ -384,6 +384,52 @@ async fn server_qr_svg_endpoints() {
     .unwrap();
     assert!(screen_svg.contains("<svg"));
     assert!(!screen_svg.contains("qrserver"));
+    assert!(!screen_svg.to_lowercase().contains("intent:"));
+}
+
+#[tokio::test]
+#[serial]
+#[allow(clippy::await_holding_lock)]
+async fn club_screen_qr_encodes_https_app_link_not_intent() {
+    let _guard = crate::club::android_assetlinks::android_test_env_lock();
+    std::env::set_var("FLIGHT_ANDROID_APP_PACKAGE", "cl.heavenly.flightvis");
+    std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", TEST_ANDROID_FP);
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    sqlx::query("UPDATE clubs SET slug = 'demo' WHERE id = $1")
+        .bind(&club_id)
+        .execute(&fx.club.pool)
+        .await
+        .unwrap();
+    let (_sess, display_token) = fx
+        .club
+        .create_display_session(&fx.pilot_a, "kiosk")
+        .await
+        .unwrap();
+    let display_cookie = format!("{}={}", crate::club::auth::DISPLAY_COOKIE, display_token);
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/club/screen/qr.svg")
+                .header(header::HOST, "flight.heavenly.cl")
+                .header(header::COOKIE, display_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let svg = String::from_utf8(
+        to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(!svg.to_lowercase().contains("intent:"));
+    std::env::remove_var("FLIGHT_ANDROID_APP_PACKAGE");
+    std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
 }
 
 #[tokio::test]
@@ -1386,4 +1432,275 @@ async fn patch_me_locale_cross_site_is_forbidden() {
     let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json.get("error").and_then(|v| v.as_str()), Some("csrf"));
+}
+
+async fn make_admin(fx: &mut Fixture, pilot_id: &str, club_id: &str, cookie_email: &str) -> String {
+    sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
+        .bind(pilot_id)
+        .execute(&fx.club.pool)
+        .await
+        .unwrap();
+    fx.club
+        .ensure_membership_row(pilot_id, club_id, "admin", "approved")
+        .await
+        .unwrap();
+    login_cookie(&mut fx.router, cookie_email).await
+}
+
+#[tokio::test]
+#[serial]
+async fn kiosk_checkin_qr_visible_admin_can_set_and_display_reads() {
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let pilot_a = fx.pilot_a.clone();
+    let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
+    let post = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/club/kiosk-checkin-qr-visible")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, admin_cookie.clone())
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(r#"{"visible":false}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(post.status(), StatusCode::OK);
+    let body = to_bytes(post.into_body(), usize::MAX).await.unwrap();
+    let layout: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        layout.get("checkinQrVisible").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+
+    let (_sid, display_token) = fx
+        .club
+        .create_display_session(&fx.pilot_a, "kiosk")
+        .await
+        .unwrap();
+    let display_cookie = format!(
+        "{}={display_token}; Path=/",
+        crate::club::auth::DISPLAY_COOKIE
+    );
+    let disp = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/display/kiosk-layout")
+                .header(header::COOKIE, display_cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(disp.status(), StatusCode::OK);
+    let disp_body = to_bytes(disp.into_body(), usize::MAX).await.unwrap();
+    let disp_layout: serde_json::Value = serde_json::from_slice(&disp_body).unwrap();
+    assert_eq!(
+        disp_layout
+            .get("checkinQrVisible")
+            .and_then(|v| v.as_bool()),
+        Some(false)
+    );
+
+    let screen_qr = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/club/screen/qr.svg")
+                .header(header::COOKIE, display_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(screen_qr.status(), StatusCode::NOT_FOUND);
+
+    let admin_qr = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/admin/checkin-qr.svg")
+                .header(header::COOKIE, admin_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(admin_qr.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+#[serial]
+async fn kiosk_checkin_qr_visible_staff_and_pilot_forbidden() {
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    fx.club
+        .ensure_membership_row(&fx._pilot_b, &club_id, "staff", "approved")
+        .await
+        .unwrap();
+    let staff_cookie = login_cookie(&mut fx.router, "b@test").await;
+    let pilot_cookie = login_cookie(&mut fx.router, "a@test").await;
+    for cookie in [staff_cookie, pilot_cookie] {
+        let res = fx
+            .router
+            .call(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/admin/club/kiosk-checkin-qr-visible")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::COOKIE, cookie)
+                    .header("sec-fetch-site", "same-origin")
+                    .body(Body::from(r#"{"visible":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn kiosk_checkin_qr_visible_anonymous_unauthorized() {
+    let mut fx = setup().await;
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/club/kiosk-checkin-qr-visible")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(r#"{"visible":false}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+#[serial]
+async fn kiosk_checkin_qr_visible_cross_site_post_csrf() {
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let pilot_a = fx.pilot_a.clone();
+    let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/club/kiosk-checkin-qr-visible")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, admin_cookie)
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::from(r#"{"visible":false}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+const TEST_ANDROID_FP: &str =
+    "00:01:02:03:04:05:06:07:08:09:0A:0B:0C:0D:0E:0F:10:11:12:13:14:15:16:17:18:19:1A:1B:1C:1D:1E:1F";
+
+#[tokio::test]
+#[serial]
+async fn admin_checkin_qr_routes_auth_matrix() {
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let pilot_cookie = login_cookie(&mut fx.router, "b@test").await;
+    fx.club
+        .ensure_membership_row(&fx._pilot_b, &club_id, "staff", "approved")
+        .await
+        .unwrap();
+    let staff_cookie = login_cookie(&mut fx.router, "b@test").await;
+    let pilot_a = fx.pilot_a.clone();
+    let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
+
+    let anon_svg = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/admin/checkin-qr.svg")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anon_svg.status(), StatusCode::UNAUTHORIZED);
+
+    for cookie in [staff_cookie.clone(), pilot_cookie] {
+        let res = fx
+            .router
+            .call(
+                Request::builder()
+                    .uri("/api/admin/checkin-qr.svg")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    let admin_svg = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/admin/checkin-qr.svg")
+                .header(header::COOKIE, admin_cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(admin_svg.status(), StatusCode::OK);
+
+    let anon_consumed = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/admin/checkin-qr/consumed?sinceMs=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anon_consumed.status(), StatusCode::UNAUTHORIZED);
+
+    let staff_consumed = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/admin/checkin-qr/consumed?sinceMs=1")
+                .header(header::COOKIE, staff_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(staff_consumed.status(), StatusCode::FORBIDDEN);
+}
+
+#[test]
+#[serial]
+#[allow(clippy::await_holding_lock)]
+fn android_fingerprint_env_validation() {
+    let _guard = crate::club::android_assetlinks::android_test_env_lock();
+    std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
+    std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", "AA:BB:CC, not-valid");
+    let list = crate::club::android_assetlinks::android_cert_sha256_list();
+    assert!(list.is_empty());
+    std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", TEST_ANDROID_FP);
+    let list = crate::club::android_assetlinks::android_cert_sha256_list();
+    assert_eq!(list.len(), 1);
+    std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
 }
