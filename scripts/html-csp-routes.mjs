@@ -51,5 +51,12 @@ export function policyKindForPath(path) {
   if (pathOnly === "/" || /^\/live\/[^/]+/.test(pathOnly)) {
     return SPA_GLOBE;
   }
+  // Extensionless single-segment paths (except /c/..., /s/..., /api/...) fall back to SPA
+  if (!pathOnly.includes(".") && !pathOnly.endsWith("/")) {
+    const segments = pathOnly.split("/").filter(Boolean);
+    if (segments.length === 1 && segments[0] !== "c" && segments[0] !== "s" && segments[0] !== "api") {
+      return SPA_GLOBE;
+    }
+  }
   return undefined;
 }

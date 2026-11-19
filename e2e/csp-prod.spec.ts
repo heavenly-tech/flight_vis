@@ -112,7 +112,7 @@ test.describe("production CSP (release server)", () => {
     await page.goto("/login?mode=password&next=/club-admin-types.html");
     await page.locator("#login-form input[name=email]").fill("admin@demo.test");
     await page.locator("#login-form input[name=password]").fill("password12");
-    await page.locator("#login-form button[type=submit]").click();
+    await page.locator("#submit-password").click();
     await page.waitForURL(/club-admin-types\.html/, { timeout: 30_000 });
     const res = await page.goto("/club-admin-types.html");
     expect(res?.ok()).toBeTruthy();
@@ -189,11 +189,11 @@ test.describe("production CSP (release server)", () => {
 
   test("share flight page loads under globe CSP without violations", async ({ page }) => {
     await stubArcgisTiles(page);
-    const { violations, pageErrors } = installCspObservers(page);
+    const { consoleErrors, pageErrors } = installCspObservers(page);
     await page.goto("/s/e2e-share-token");
     await expect(page.locator("#cesiumContainer")).toBeVisible({ timeout: 60_000 });
     expect(pageErrors.filter((e) => /EvalError/i.test(e)), "EvalError").toEqual([]);
-    expect(relevantViolations(violations), "console CSP violations").toEqual([]);
+    expect(relevantViolations(consoleErrors), "console CSP violations").toEqual([]);
   });
 
   test("club landing page loads fonts/styles under strict CSP", async ({ page, request }) => {

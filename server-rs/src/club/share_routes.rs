@@ -1,6 +1,7 @@
 //! Direct pilot flight share links (`/s/{token}`) — separate from public map tracks.
 use crate::club::{
     db::{ShareCreateError, ShareRevokeError},
+    ClubDb,
     qr,
     routes::{club_db, is_secure, viewer},
     visibility::Viewer,
@@ -377,13 +378,14 @@ mod share_page_header_tests {
         std::fs::write(dist.join("share-flight.html"), "<html></html>").unwrap();
         let locales = crate::i18n::Catalogs::resolve_dir(std::path::Path::new("dist"));
         let _ = crate::i18n::init_global(&locales);
+        let club = crate::club::ClubDb::open_test().await.expect("club db");
         let state = AppState {
             dist_dir: dist,
             auth: Auth::with_password("x"),
             device_auth: DeviceAuth::empty(),
             live: Arc::new(LiveEngine::new(dir.path())),
             store: Store::new(dir.path()),
-            club: None,
+            club: Some(club),
             video_queue: tokio::sync::mpsc::channel(1).0,
             login_throttle: crate::LoginThrottle::default(),
             device_register_throttle: crate::LoginThrottle::default(),
