@@ -68,9 +68,14 @@ function proxyToApi(req, res, body) {
       headers,
     },
     (proxyRes) => {
+      const pathOnly = target.pathname;
+      const csp =
+        pathOnly === "/login" || pathOnly === "/club-login.html"
+          ? HTML_PAGE_CSP
+          : GLOBE_E2E_CSP;
       res.writeHead(proxyRes.statusCode ?? 502, {
         ...proxyRes.headers,
-        "content-security-policy": GLOBE_E2E_CSP,
+        "content-security-policy": csp,
       });
       proxyRes.pipe(res);
     },

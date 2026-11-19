@@ -26,20 +26,17 @@ test.describe("login under prod CSP", () => {
     expect(csp?.trim()).toBe(HTML_PAGE_CSP);
   });
 
-  test("JS legacy club login never puts password in any request URL", async ({
+  test("JS password login never puts password in any request URL", async ({
     page,
   }) => {
     const { consoleErrors } = installCspObservers(page);
     const leak = trackPasswordInRequestUrls(page);
     await page.goto("/login?mode=password", { waitUntil: "domcontentloaded" });
-    await page.locator("#password-form").waitFor({ state: "visible" });
-    await page.locator("details summary").click();
-    await page.fill('#legacy-club-form input[name="email"]', "admin@demo.test");
-    await page.fill('#legacy-club-form input[name="password"]', "password12");
-    await Promise.all([
-      page.waitForURL(/club-pilot\.html/),
-      page.locator('#legacy-club-form button[type=submit]').click(),
-    ]);
+    await page.locator("#password-form input[name=email]").waitFor({ state: "visible" });
+    await page.fill('#password-form input[name="email"]', "admin@demo.test");
+    await page.fill('#password-form input[name="password"]', "password12");
+    await page.locator('#password-form button[type=submit]').click();
+    await page.waitForTimeout(1500);
     assertNoPasswordInUrl(page.url());
     leak.assertClean();
     expect(consoleErrors.filter((e) => /Content Security Policy/i.test(e))).toEqual(
