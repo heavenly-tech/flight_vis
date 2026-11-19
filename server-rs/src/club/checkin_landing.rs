@@ -163,11 +163,11 @@ async fn checkin_landing_page(
     Path((slug, token)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
-        return checkin_not_found_page(&state, &headers).await;
+        return checkin_not_found_page(&state, &headers, &slug).await;
     };
     match validate_checkin_peek(db, &slug, &token, now_ms()).await {
         Ok(_) => serve_landing_html(&state).await,
-        Err(LandingError::NotFound) => checkin_not_found_page(&state, &headers).await,
+        Err(LandingError::NotFound) => checkin_not_found_page(&state, &headers, &slug).await,
         Err(LandingError::Db) => (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response(),
     }
 }
@@ -231,13 +231,32 @@ async fn club_slug_landing_page(
     serve_landing_html(&state).await
 }
 
-async fn checkin_not_found_page(state: &AppState, headers: &HeaderMap) -> axum::response::Response {
+async fn checkin_not_found_page(
+    state: &AppState,
+    headers: &HeaderMap,
+    slug: &str,
+) -> axum::response::Response {
     let accept = headers
         .get(axum::http::header::ACCEPT_LANGUAGE)
         .and_then(|v| v.to_str().ok());
     let stored = crate::club::auth::parse_fv_locale_cookie(headers);
-    let locale =
-        crate::i18n::require_global().resolve_locale(None, Some("es"), accept, stored.as_deref());
+    let club_default = if let Some(db) = club_db(state) {
+        match db.resolve_club_context(slug).await {
+            Ok(ctx) => db
+                .club_default_locale(&ctx.club_id)
+                .await
+                .unwrap_or_else(|_| "es".to_string()),
+            Err(_) => "es".to_string(),
+        }
+    } else {
+        "es".to_string()
+    };
+    let locale = crate::i18n::require_global().resolve_locale(
+        None,
+        Some(club_default.as_str()),
+        accept,
+        stored.as_deref(),
+    );
     let path = state.dist_dir.join("club-checkin-expired.html");
     match tokio::fs::read_to_string(&path).await {
         Ok(html) => (
