@@ -15,12 +15,12 @@ mod db;
 mod db_access_pg;
 mod db_account;
 mod db_auth_pg;
-mod db_memberships_admin;
 pub(crate) mod db_club_lifecycle;
 mod db_devices_pg;
 mod db_kiosk_pg;
 mod db_locale;
 mod db_map_pg;
+mod db_memberships_admin;
 mod db_shares_pg;
 mod dem;
 mod device_tokens_import;
@@ -44,6 +44,8 @@ pub mod webauthn;
 
 #[cfg(test)]
 mod account_integration_tests;
+#[cfg(test)]
+mod admin_membership_http_tests;
 #[cfg(test)]
 mod admin_membership_integration_tests;
 #[cfg(test)]
