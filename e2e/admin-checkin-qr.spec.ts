@@ -17,7 +17,11 @@ test("admin phone check-in QR is hidden until Mostrar", async ({ page }) => {
     return res.ok;
   });
   expect(meInPage).toBeTruthy();
-  await expect(page.locator("#btn-show-qr")).toBeEnabled({ timeout: 60_000 });
+  await page.waitForFunction(
+    () => (window as unknown as { __fvClubCheckinQrBoot?: string }).__fvClubCheckinQrBoot === "ready",
+    { timeout: 60_000 },
+  );
+  await expect(page.locator("#btn-show-qr")).toBeEnabled();
   await expect(page.locator("#qr-panel")).toBeHidden();
   await page.locator("#btn-show-qr").click();
   await expect(page.locator("#qr-panel")).toHaveJSProperty("hidden", false);

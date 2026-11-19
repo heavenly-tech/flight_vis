@@ -11,6 +11,12 @@ const btnShow = document.querySelector<HTMLButtonElement>("#btn-show-qr")!;
 const btnHide = document.querySelector<HTMLButtonElement>("#btn-hide-qr")!;
 const status = document.querySelector<HTMLParagraphElement>("#status")!;
 
+declare global {
+  interface Window {
+    __fvClubCheckinQrBoot?: string;
+  }
+}
+
 const CONSUME_POLL_GRACE_MS = 8_000;
 
 let visible = false;
@@ -70,20 +76,27 @@ async function watchConsumed(): Promise<void> {
   }
 }
 
+window.__fvClubCheckinQrBoot = "script";
+
 btnShow.addEventListener("click", () => setVisible(true));
 btnHide.addEventListener("click", () => setVisible(false));
 btnShow.disabled = true;
 
 void (async () => {
-  void startClubPage({ switcher: "#lang-slot" });
-  if (!(await ensureClubAdminOrRedirect())) return;
-  mountAdminNav();
   try {
+    void startClubPage({ switcher: "#lang-slot" });
+    if (!(await ensureClubAdminOrRedirect())) {
+      window.__fvClubCheckinQrBoot = "denied";
+      return;
+    }
+    mountAdminNav();
     await requireAdmin();
     btnShow.removeAttribute("disabled");
     btnShow.disabled = false;
     document.body.dataset.checkinQrReady = "1";
+    window.__fvClubCheckinQrBoot = "ready";
   } catch (e) {
+    window.__fvClubCheckinQrBoot = isClubAdminRedirect(e) ? "redirect" : "error";
     if (!isClubAdminRedirect(e)) status.textContent = t("admin.adminRequired");
   }
 })();
