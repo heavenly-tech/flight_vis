@@ -571,9 +571,9 @@ impl ClubDb {
             false
         };
         let has_password = existing_hash.as_deref().is_some_and(|h| !h.is_empty());
-        let current_ok = existing_hash.as_deref().is_some_and(|hash| {
-            current_password.is_some_and(|p| auth::verify_password(p, hash))
-        });
+        let current_ok = existing_hash
+            .as_deref()
+            .is_some_and(|hash| current_password.is_some_and(|p| auth::verify_password(p, hash)));
         if has_password {
             if !current_ok {
                 return if current_password.is_some() {

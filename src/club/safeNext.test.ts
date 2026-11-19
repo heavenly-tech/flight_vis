@@ -12,6 +12,7 @@ describe("safeNextPath", () => {
     expect(safeNextPath("https://evil.example")).toBe("/");
     expect(safeNextPath("/path\\evil")).toBe("/");
     expect(safeNextPath("/\\evil")).toBe("/");
+    expect(safeNextPath(String.raw`/\evil.com`)).toBe("/");
     expect(safeNextPath("/%09/evil.com")).toBe("/");
     expect(safeNextPath("/%0a/evil")).toBe("/");
     expect(safeNextPath("/%0d%0a/evil")).toBe("/");

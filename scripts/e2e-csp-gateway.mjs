@@ -118,7 +118,6 @@ const server = http.createServer((req, res) => {
     if (ext === "html") {
       let html = readFileSync(filePath, "utf8");
       let hook = '<script src="/e2e-csp-hooks.js"></script>';
-      const pathOnly = urlPath.split("?")[0];
       if (/^\/live\/[^/]+/.test(pathOnly)) {
         hook += '<script src="/e2e-live-csp-sse.js"></script>';
       }

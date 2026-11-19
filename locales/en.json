@@ -34,6 +34,9 @@
     "locked": "Upload locked: FLIGHT_VIS_PASSWORD is not set on the server.",
     "wrongPassword": "Wrong password."
   },
+  "auth": {
+    "wrongPassword": "Wrong password."
+  },
   "nav": {
     "types": "Types",
     "tails": "Tails",
@@ -46,7 +49,8 @@
     "clubMap": "Club map",
     "globe": "Globe viewer",
     "register": "Register",
-    "createClub": "Register club",
+    "createClub": "Create club",
+    "registerClub": "Register club",
     "pilotProfile": "Pilot profile",
     "androidApp": "Android app"
   },

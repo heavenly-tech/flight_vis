@@ -12,7 +12,7 @@ import { ensureGeoidLoading, isGeoidReady, onGeoidReady } from "../geo/geoid";
 import { getLocalFlight, putLocalFlight } from "./localFlights";
 import { liveFixesFromGpx } from "./gpxLive";
 import { getLocale, t } from "../i18n/index";
-import { msg, setLiveLang, type LiveLang } from "./messages";
+import { detectLang, msg, setLiveLang, type LiveLang } from "./messages";
 import { openLiveStream, type LiveStreamHandle } from "./sseClient";
 import type { LiveFix } from "./types";
 
@@ -114,6 +114,12 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     liveBtn.title = msg("followLive", lang);
     syncGeoidNotice();
   }
+
+  window.addEventListener("fv-locale-change", () => {
+    lang = detectLang();
+    applyLangUi();
+    syncLiveButton();
+  });
 
   function syncGeoidNotice(): void {
     if (!active || isGeoidReady()) return;
@@ -382,10 +388,8 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
   });
 
   langBtn.addEventListener("click", () => {
-    lang = lang === "en" ? "es" : "en";
-    setLiveLang(lang);
-    applyLangUi();
-    syncLiveButton();
+    const next = getLocale() === "en" ? "es" : "en";
+    void setLiveLang(next);
   });
 
   trimForm.addEventListener("submit", (event) => {
@@ -501,9 +505,8 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     },
     lang: () => lang,
     toggleLang: () => {
-      lang = lang === "en" ? "es" : "en";
-      setLiveLang(lang);
-      applyLangUi();
+      const next = getLocale() === "en" ? "es" : "en";
+      void setLiveLang(next);
     },
     onLocale: () => {
       lang = getLocale() as LiveLang;

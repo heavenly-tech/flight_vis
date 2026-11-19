@@ -1,8 +1,10 @@
-import { mountLangSwitcher, t } from "../i18n/index";
+import { t } from "../i18n/index";
 import { redirectToClubLogin } from "./safeNext";
 
 /** Set when `requireAdmin` sends the browser to club login. Admin pages should `await ensureClubAdminOrRedirect()` from `./adminGate` first (PR #20 matrix/import/audit too). */
 export const CLUB_ADMIN_REDIRECT = "club-admin-redirect";
+
+let adminNavLocaleBound = false;
 
 const NAV_KEYS = [
   ["club-admin-types.html", "nav.types"],
@@ -15,7 +17,7 @@ const NAV_KEYS = [
   ["/login?mode=club", "nav.login"],
 ] as const;
 
-export function mountAdminNav(): void {
+function mountAdminNavInner(): void {
   const slot = document.querySelector("#admin-nav");
   if (!slot) return;
   const nav = document.createElement("nav");
@@ -29,9 +31,13 @@ export function mountAdminNav(): void {
   slot.replaceChildren(nav);
 }
 
-export function mountAdminLangSwitcher(): void {
-  const slot = document.querySelector("#lang-slot");
-  if (slot instanceof HTMLElement) mountLangSwitcher(slot, { persistUser: true });
+export function mountAdminNav(): void {
+  if (!adminNavLocaleBound) {
+    adminNavLocaleBound = true;
+    window.addEventListener("fv-locale-change", () => mountAdminNavInner());
+    window.addEventListener("fv-i18n-ready", () => mountAdminNavInner());
+  }
+  mountAdminNavInner();
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {

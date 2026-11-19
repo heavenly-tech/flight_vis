@@ -1,7 +1,7 @@
 import { startClubPage } from "./i18nPage";
 import { t } from "../i18n/index";
 
-await startClubPage({ persistUser: false });
+await startClubPage();
 
 const form = document.getElementById("form") as HTMLFormElement;
 const msg = document.getElementById("msg")!;

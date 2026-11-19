@@ -51,7 +51,11 @@
     "register": "Registrarse",
     "pilotProfile": "Perfil piloto",
     "androidApp": "App Android",
-    "createClub": "Registrar club"
+    "createClub": "Crear club",
+    "registerClub": "Registrar club"
+  },
+  "auth": {
+    "wrongPassword": "Contraseña incorrecta."
   },
   "api": {
     "unauthorized": "No autorizado",
