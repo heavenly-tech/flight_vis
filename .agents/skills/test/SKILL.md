@@ -13,7 +13,7 @@ cargo clippy --manifest-path server-rs/Cargo.toml --all-targets -- -D warnings
 npm ci && npm run build
 ```
 
-`npm test` is the cargo test command. CI (`.github/workflows/ci.yml`) runs those three plus `docker build .` on Ubuntu with ffmpeg installed.
+`npm test` is the cargo test command. CI (`.github/workflows/ci.yml`) always runs `check` (cargo, frontend build, CSP scripts, amd64 `docker build`) and `docker-arm64`. The `e2e` job (Playwright) runs on pushes to `main` and on pull requests that are not drafts or carry the `ready` label.
 
 Video round-trip tests spawn ffmpeg. If `ffmpeg` is missing they print `skipping video integration` and return. Slug, video-id, and body-limit tests do not need ffmpeg.
 

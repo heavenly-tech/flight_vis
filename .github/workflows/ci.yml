@@ -5,6 +5,15 @@ on:
     branches:
       - main
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - labeled
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -31,24 +40,21 @@ jobs:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/flight_vis_test
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Rust
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@516c5a67e611cdaf2ef0bb5d78620e3c7d245fe6
         with:
           components: clippy, rustfmt
 
       - name: Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "22"
           cache: npm
 
       - name: native deps
         run: sudo apt-get update && sudo apt-get install -y ffmpeg libssl-dev pkg-config postgresql-client
-
-      - name: e2e database seed note
-        run: node scripts/e2e-seed.mjs
 
       - name: Postgres flightvis owner migration smoke
         run: |
@@ -93,20 +99,61 @@ jobs:
       - name: globe CSP has single img-src directive
         run: node scripts/check-globe-csp.mjs
 
-      - name: playwright e2e
-        run: npx playwright install --with-deps && npm run test:e2e
-
       - name: docker build amd64
         run: docker build -t flight_vis:ci-amd64 .
 
       - name: docker image i18n catalogs (amd64)
         run: docker run --rm flight_vis:ci-amd64 /app/flight_vis check-i18n
 
+  e2e:
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.draft == false ||
+      contains(github.event.pull_request.labels.*.name, 'ready')
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: flight_vis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/flight_vis_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Rust
+        uses: dtolnay/rust-toolchain@516c5a67e611cdaf2ef0bb5d78620e3c7d245fe6
+
+      - name: Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: native deps
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg libssl-dev pkg-config postgresql-client
+
+      - name: e2e database seed note
+        run: node scripts/e2e-seed.mjs
+
+      - name: playwright e2e
+        run: npx playwright install --with-deps && npm ci && npm run test:e2e
+
   docker-arm64:
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: docker build arm64
         run: docker buildx build --platform linux/arm64 -t flight_vis:ci-arm64 --load .
