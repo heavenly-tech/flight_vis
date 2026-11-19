@@ -69,6 +69,36 @@ test.describe("unified /login", () => {
     expect(inline).toBe(0);
   });
 
+  test("without JS shows Spanish fallbacks and hides magic submit", async ({
+    browser,
+  }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    await page.goto("/login", { waitUntil: "domcontentloaded" });
+    await expect(page.locator("#use-password")).toHaveText(/usar contraseña/i);
+    await expect(page.locator('a[href="/signup.html"]')).toHaveText(/crear cuenta/i);
+    await expect(page.locator('a[href="/club-signup.html"]')).toHaveText(
+      /registrar club/i,
+    );
+    await expect(page.locator("#magic-btn")).toBeHidden();
+    await context.close();
+  });
+
+  test("without JS on mode=password shows labels and submit text", async ({
+    browser,
+  }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    await page.goto("/login?mode=password", { waitUntil: "domcontentloaded" });
+    await expect(page.locator("#password-form")).toBeVisible();
+    await expect(page.locator('label[for="email-magic"]')).toHaveText(/correo/i);
+    await expect(
+      page.locator('#password-form button[type="submit"]'),
+    ).toHaveText(/inicia sesión/i);
+    await expect(page.locator("#back-magic")).toHaveText(/enlace mágico/i);
+    await context.close();
+  });
+
   test("mode=password reveals POST form without password in page URL", async ({
     page,
   }) => {

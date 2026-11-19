@@ -11,8 +11,8 @@ fs.mkdirSync(outDir, { recursive: true });
 const base = process.env.E2E_BASE_URL ?? "http://127.0.0.1:5173";
 const shots = [
   { name: "entrar-chooser-es", path: "/login", locale: "es" },
-  { name: "entrar-club-es", path: "/club-login.html?mode=club&club=demo", locale: "es" },
-  { name: "entrar-pilot-es", path: "/club-login.html?mode=pilot", locale: "es" },
+  { name: "entrar-login-es", path: "/login", locale: "es" },
+  { name: "entrar-password-es", path: "/login?mode=password", locale: "es" },
 ];
 
 const browser = await chromium.launch();

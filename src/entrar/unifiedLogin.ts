@@ -46,6 +46,8 @@ declare global {
 
 window.__fvUnifiedLoginReady = true;
 
+document.getElementById("magic-btn")?.removeAttribute("hidden");
+
 applyModeUi();
 syncNextInputs();
 

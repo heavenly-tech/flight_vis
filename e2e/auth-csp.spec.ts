@@ -1,6 +1,11 @@
 import { expect, test } from "@playwright/test";
 import { installCspObservers } from "./globe-csp-helpers";
 import { installPasswordUrlGuard } from "./auth-csp-helpers";
+import { HTML_PAGE_CSP } from "./csp-constants";
+import {
+  assertNoPasswordInUrl,
+  trackPasswordInRequestUrls,
+} from "./club-login-helpers";
 
 declare global {
   interface Window {
@@ -45,10 +50,45 @@ test.describe("credential pages under prod CSP", () => {
     await context.close();
   });
 
+  test("club-login.html redirects to /login with prod CSP", async ({ page }) => {
+    const res = await page.goto("/club-login.html?next=%2Fclub-pilot.html", {
+      waitUntil: "domcontentloaded",
+    });
+    expect(res?.url()).toMatch(/\/login/);
+    const csp = res?.headers()["content-security-policy"];
+    expect(csp?.trim()).toBe(HTML_PAGE_CSP);
+  });
+
+  test("no-JS legacy club form post never leaks password in URLs", async ({
+    browser,
+  }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    const leak = trackPasswordInRequestUrls(page);
+    const res = await page.request.post("/api/club/login", {
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "sec-fetch-site": "same-origin",
+      },
+      form: {
+        email: "admin@demo.test",
+        password: "password12",
+        next: "/club-pilot.html",
+      },
+      maxRedirects: 0,
+      failOnStatusCode: false,
+    });
+    const loc = res.headers().location ?? "";
+    assertNoPasswordInUrl(loc);
+    leak.assertClean();
+    await context.close();
+  });
+
   test("magic link request never puts password in URL", async ({ page }) => {
     const leaks = installPasswordUrlGuard(page);
     await page.goto("/login", { waitUntil: "domcontentloaded" });
     await page.locator("#email-magic").waitFor({ state: "visible" });
+    await page.locator("#magic-btn").waitFor({ state: "visible" });
     await page.locator("#email-magic").fill("admin@demo.test");
     await page.locator("#magic-btn").click();
     await page.waitForTimeout(300);

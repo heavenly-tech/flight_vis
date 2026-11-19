@@ -173,7 +173,6 @@ export default defineConfig({
         app: path.resolve(root, "app.html"),
         clubPilot: path.resolve(root, "club-pilot.html"),
         clubFlight: path.resolve(root, "club-flight.html"),
-        clubLogin: path.resolve(root, "club-login.html"),
         signup: path.resolve(root, "signup.html"),
         clubMap: path.resolve(root, "club-map.html"),
         publicMap: path.resolve(root, "public-map.html"),
