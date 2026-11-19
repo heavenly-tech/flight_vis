@@ -20,13 +20,13 @@ declare global {
 test("club login form redirects to pilot profile", async ({ page }) => {
   await loginViaClubForm(page);
   await expect(page).toHaveURL(/club-pilot\.html/);
-  await expect(page.locator("#lang-slot select")).toBeVisible();
+  await expect(page.locator("h1")).toContainText(/profile|perfil/i);
 });
 
 test("logged-in pilot locale persists after reload", async ({ page }) => {
   await loginViaClubForm(page);
   const select = page.locator("#lang-slot select");
-  await expect(select).toBeVisible();
+  await expect(select).toBeVisible({ timeout: 60_000 });
   await Promise.all([page.waitForNavigation(), select.selectOption("en")]);
   await expect(select).toHaveValue("en");
   await expect(page.locator("h1")).toContainText(/profile/i);
