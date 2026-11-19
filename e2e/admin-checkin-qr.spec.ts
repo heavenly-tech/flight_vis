@@ -8,8 +8,6 @@ test("admin phone check-in QR is hidden until Mostrar", async ({ page }) => {
     data: { email: "admin@demo.test", password: "password12" },
   });
   expect(login.ok()).toBeTruthy();
-  const meBefore = await page.request.get("/api/club/me");
-  expect(meBefore.ok()).toBeTruthy();
   await page.goto("/club-admin-checkin-qr.html", { waitUntil: "load" });
   await expect(page).not.toHaveURL(/\/club-login\.html/);
   const meInPage = await page.evaluate(async () => {
@@ -17,10 +15,11 @@ test("admin phone check-in QR is hidden until Mostrar", async ({ page }) => {
     return res.ok;
   });
   expect(meInPage).toBeTruthy();
-  await page.waitForFunction(
-    () => (window as unknown as { __fvClubCheckinQrBoot?: string }).__fvClubCheckinQrBoot === "ready",
+  await expect.poll(
+    async () =>
+      page.evaluate(() => (window as unknown as { __fvClubCheckinQrBoot?: string }).__fvClubCheckinQrBoot),
     { timeout: 60_000 },
-  );
+  ).toBe("ready");
   await expect(page.locator("#btn-show-qr")).toBeEnabled();
   await expect(page.locator("#qr-panel")).toBeHidden();
   await page.locator("#btn-show-qr").click();

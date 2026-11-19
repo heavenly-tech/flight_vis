@@ -1,4 +1,3 @@
-import { ensureClubAdminOrRedirect } from "./adminGate";
 import { isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 import { ADMIN_PHONE_QR_TIMEOUT_MS } from "./adminPhoneQr";
 import { CHECKIN_STEP_SEC } from "./checkinStep";
@@ -85,11 +84,8 @@ btnShow.disabled = true;
 void (async () => {
   try {
     void startClubPage({ switcher: "#lang-slot" });
-    if (!(await ensureClubAdminOrRedirect())) {
-      window.__fvClubCheckinQrBoot = "denied";
-      return;
-    }
     mountAdminNav();
+    window.__fvClubCheckinQrBoot = "gate";
     await requireAdmin();
     btnShow.removeAttribute("disabled");
     btnShow.disabled = false;
