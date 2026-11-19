@@ -69,7 +69,7 @@ pub struct PilotRow {
     pub license_no: String,
     pub status: String,
     pub role: String,
-    pub locale: String,
+    pub locale: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -158,14 +158,15 @@ impl ClubDb {
             "TRUNCATE TABLE login_attempts, magic_send_log, guest_sessions, magic_login_tokens, \
              webauthn_credentials, email_suppressions, audit_log, access_requests, checkins, \
              device_pair_tokens, flight_devices, fixes, flights, devices, checkouts, pilot_sessions, \
-             admin_map_prefs, display_sessions, pilots, aircraft, aircraft_types, clubs RESTART IDENTITY CASCADE",
+             account_sessions, club_memberships, admin_map_prefs, display_sessions, pilots, accounts, \
+             aircraft, aircraft_types, clubs RESTART IDENTITY CASCADE",
         )
         .execute(&self.pool)
         .await?;
         Ok(())
     }
 
-    async fn bootstrap(&self) -> Result<(), DbError> {
+    pub(crate) async fn bootstrap(&self) -> Result<(), DbError> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM clubs")
             .fetch_one(&self.pool)
             .await?;
@@ -174,8 +175,9 @@ impl ClubDb {
             let club_id = new_id();
             let slug = std::env::var("FLIGHT_CLUB_SLUG").unwrap_or_else(|_| "default".to_string());
             sqlx::query(
-                "INSERT INTO clubs (id, name, slug, created_at, checkin_window_hours, latitude, longitude)
-                 VALUES ($1, $2, $3, $4, 12, -33.4489, -70.6693)",
+                "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at,
+                 checkin_window_hours, latitude, longitude)
+                 VALUES ($1, $2, $3, $4, 'live', $4, 12, -33.4489, -70.6693)",
             )
             .bind(club_id)
             .bind(std::env::var("FLIGHT_CLUB_NAME").unwrap_or_else(|_| "Flight Club".to_string()))
@@ -195,7 +197,7 @@ impl ClubDb {
                 .fetch_one(&self.pool)
                 .await?;
                 let exists: i64 = sqlx::query_scalar(
-                    "SELECT COUNT(*) FROM pilots WHERE club_id = $1 AND email = $2",
+                    "SELECT COUNT(*) FROM pilots WHERE club_id = $1 AND lower(email) = lower($2)",
                 )
                 .bind(&club_id)
                 .bind(&email)
@@ -204,18 +206,23 @@ impl ClubDb {
                 if exists == 0 {
                     let hash =
                         auth::hash_password(&password).map_err(|_| DbError::protocol("hash"))?;
+                    let boot_now = now_ms();
+                    let pilot_id = new_id();
                     sqlx::query(
-                        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+                        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role,
+                         password_hash, created_at)
                          VALUES ($1, $2, $3, $4, '', 'approved', 'admin', $5, $6)",
                     )
-                    .bind(new_id())
+                    .bind(&pilot_id)
                     .bind(&club_id)
                     .bind("Admin")
                     .bind(&email)
                     .bind(&hash)
-                    .bind(now_ms())
+                    .bind(boot_now)
                     .execute(&self.pool)
                     .await?;
+                    self.ensure_membership_row(&pilot_id, &club_id, "admin", "approved")
+                        .await?;
                 }
             }
         }
@@ -236,50 +243,11 @@ impl ClubDb {
         license_no: &str,
         password: &str,
     ) -> Result<String, RegisterError> {
-        if password.len() < 8 {
-            return Err(RegisterError::WeakPassword);
-        }
-        let hash = auth::hash_password(password).map_err(|_| RegisterError::Hash)?;
-        let id = new_id();
         let now = now_ms();
-        let member_id = new_id();
-        let r = sqlx::query(
-            "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
-             VALUES ($1, $2, $3, $4, $5, 'pending', 'pilot', $6, $7)",
-        )
-        .bind(&id)
-        .bind(club_id)
-        .bind(name)
-        .bind(email)
-        .bind(license_no)
-        .bind(&hash)
-        .bind(now)
-        .execute(&self.pool)
-        .await;
-        match r {
-            Ok(_) => {
-                sqlx::query(
-                    "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
-                     VALUES ($1, $2, $3, 'pilot', 'pending', $4)",
-                )
-                .bind(member_id)
-                .bind(&id)
-                .bind(club_id)
-                .bind(now)
-                .execute(&self.pool)
-                .await
-                .map_err(RegisterError::Db)?;
-                Ok(id)
-            }
-            Err(e) => {
-                if let Some(db_err) = e.as_database_error() {
-                    if db_err.code() == Some(std::borrow::Cow::Borrowed("23505")) {
-                        return Err(RegisterError::EmailExists);
-                    }
-                }
-                Err(RegisterError::Db(e))
-            }
-        }
+        let (pilot_id, _) = self
+            .register_into_account(club_id, name, email, license_no, password, now)
+            .await?;
+        Ok(pilot_id)
     }
 
     #[allow(dead_code)]
@@ -303,15 +271,46 @@ impl ClubDb {
         Ok(())
     }
 
+    pub async fn revoke_pilot_live_sessions(&self, pilot_id: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM pilot_sessions WHERE pilot_id = $1")
+            .bind(pilot_id)
+            .execute(&self.pool)
+            .await?;
+        if let Some(aid) =
+            sqlx::query_scalar::<_, Option<String>>("SELECT account_id FROM pilots WHERE id = $1")
+                .bind(pilot_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten()
+        {
+            sqlx::query(
+                "UPDATE account_sessions SET compat_pilot_session = NULL WHERE account_id = $1",
+            )
+            .bind(&aid)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
     pub async fn pilot_from_session(&self, session_id: &str, now: i64) -> Option<PilotRow> {
         let session_db_id = auth::digest_token(session_id);
+        self.pilot_from_pilot_session_db_id(&session_db_id, now)
+            .await
+    }
+
+    pub async fn pilot_from_pilot_session_db_id(
+        &self,
+        session_db_id: &str,
+        now: i64,
+    ) -> Option<PilotRow> {
         let row = sqlx::query(
             "SELECT p.id, p.club_id, p.name, p.email, p.license_no, p.status, p.role, p.locale
              FROM pilot_sessions s
              JOIN pilots p ON p.id = s.pilot_id
              WHERE s.id = $1 AND s.expires_at > $2",
         )
-        .bind(&session_db_id)
+        .bind(session_db_id)
         .bind(now)
         .fetch_optional(&self.pool)
         .await
@@ -328,6 +327,26 @@ impl ClubDb {
         })
     }
 
+    pub async fn viewer_from_pilot_row(&self, pilot: &PilotRow) -> Viewer {
+        let (role_s, status_s) = self
+            .membership_in_club(&pilot.id, &pilot.club_id)
+            .await
+            .unwrap_or_else(|| (pilot.role.clone(), pilot.status.clone()));
+        let status = match status_s.as_str() {
+            "active" | "approved" => PilotStatus::Approved,
+            _ => PilotStatus::Pending,
+        };
+        let role = match role_s.as_str() {
+            "admin" => PilotRole::Admin,
+            _ => PilotRole::Pilot,
+        };
+        Viewer::Pilot {
+            id: pilot.id.clone(),
+            status,
+            role,
+        }
+    }
+
     pub async fn viewer_from_session(&self, session_id: Option<&str>, now: i64) -> Viewer {
         let Some(session_id) = session_id else {
             return Viewer::Anonymous;
@@ -335,19 +354,7 @@ impl ClubDb {
         let Some(pilot) = self.pilot_from_session(session_id, now).await else {
             return Viewer::Anonymous;
         };
-        let status = match pilot.status.as_str() {
-            "approved" => PilotStatus::Approved,
-            _ => PilotStatus::Pending,
-        };
-        let role = match pilot.role.as_str() {
-            "admin" => PilotRole::Admin,
-            _ => PilotRole::Pilot,
-        };
-        Viewer::Pilot {
-            id: pilot.id,
-            status,
-            role,
-        }
+        self.viewer_from_pilot_row(&pilot).await
     }
 
     pub async fn viewer_with_pilot(
@@ -375,7 +382,7 @@ impl ClubDb {
             .bind(pilot_id)
             .fetch_one(&self.pool)
             .await?;
-        self.ensure_membership_row(pilot_id, &club_id, "pilot", "approved")
+        self.ensure_membership_row(pilot_id, &club_id, "pilot", "active")
             .await?;
         Ok(())
     }
@@ -398,10 +405,17 @@ impl ClubDb {
         if !active {
             return Ok(false);
         }
+        let aircraft_club: String =
+            sqlx::query_scalar("SELECT club_id FROM aircraft WHERE id = $1")
+                .bind(aircraft_id)
+                .fetch_optional(pool)
+                .await?
+                .unwrap_or_default();
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM checkouts c
              WHERE c.pilot_id = $1
                AND (c.expires_at IS NULL OR c.expires_at > $2)
+               AND (c.club_id IS NULL OR c.club_id = $5)
                AND (
                  (c.aircraft_id = $3) OR
                  (c.aircraft_id IS NULL AND c.type_id = $4)
@@ -411,18 +425,39 @@ impl ClubDb {
         .bind(now)
         .bind(aircraft_id)
         .bind(type_id)
+        .bind(&aircraft_club)
         .fetch_one(pool)
         .await?;
         Ok(count > 0)
     }
 
+    async fn effective_club_for_tails(&self, pilot_id: &str, now: i64) -> Result<String, DbError> {
+        let home: String = sqlx::query_scalar("SELECT club_id FROM pilots WHERE id = $1")
+            .bind(pilot_id)
+            .fetch_one(&self.pool)
+            .await?;
+        let checkin_club: Option<String> = sqlx::query_scalar(
+            "SELECT club_id FROM checkins
+             WHERE outcome = 'ok' AND pilot_id = $1
+               AND expires_at IS NOT NULL AND expires_at > $2
+             ORDER BY expires_at DESC LIMIT 1",
+        )
+        .bind(pilot_id)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(checkin_club.unwrap_or(home))
+    }
+
     pub async fn me_tails(&self, pilot_id: &str, now: i64) -> Result<Vec<TailInfo>, DbError> {
+        let club_id = self.effective_club_for_tails(pilot_id, now).await?;
         let rows = sqlx::query(
             "SELECT a.id, a.tail, t.code
              FROM aircraft a
              JOIN aircraft_types t ON t.id = a.type_id
-             WHERE a.active = true",
+             WHERE a.active = true AND a.club_id = $1",
         )
+        .bind(&club_id)
         .fetch_all(&self.pool)
         .await?;
         let mut out = Vec::new();
@@ -683,6 +718,81 @@ impl ClubDb {
             .flatten()
     }
 
+    #[allow(dead_code)]
+    pub async fn club_id_for_device(&self, device_id: &str) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT p.club_id FROM devices d
+             JOIN pilots p ON p.id = d.pilot_id
+             WHERE d.id = $1",
+        )
+        .bind(device_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+    }
+
+    pub async fn club_id_for_flight(&self, flight_id: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT club_id FROM flights WHERE id = $1")
+            .bind(flight_id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub async fn club_id_for_aircraft_tail(&self, club_id: &str, tail: &str) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT club_id FROM aircraft WHERE club_id = $1 AND tail = $2 AND active = true LIMIT 1",
+        )
+        .bind(club_id)
+        .bind(tail.trim())
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// Same club `start_flight_atomic` would use (check-in target club + tail in that club).
+    pub async fn club_id_for_start_flight(
+        &self,
+        pilot_id: &str,
+        device_id: &str,
+        tail: &str,
+        now: i64,
+    ) -> Option<String> {
+        let checkin_club: String = sqlx::query_scalar(
+            "SELECT club_id FROM checkins
+             WHERE outcome = 'ok' AND pilot_id = $1
+               AND expires_at IS NOT NULL AND expires_at > $2
+               AND (device_id IS NULL OR device_id = $3)
+             ORDER BY expires_at DESC LIMIT 1",
+        )
+        .bind(pilot_id)
+        .bind(now)
+        .bind(device_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()??;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM aircraft
+                WHERE tail = $1 AND club_id = $2 AND active = true
+            )",
+        )
+        .bind(tail.trim())
+        .bind(&checkin_club)
+        .fetch_one(&self.pool)
+        .await
+        .ok()?;
+        if exists {
+            Some(checkin_club)
+        } else {
+            None
+        }
+    }
+
     pub async fn open_flight_for_device(&self, device_id: &str) -> Option<String> {
         sqlx::query_scalar(
             "SELECT f.id FROM flights f
@@ -904,8 +1014,8 @@ impl ClubDb {
         self.club_map_for_viewer_scoped(viewer).await
     }
 
-    pub async fn public_map(&self) -> Vec<TailLivePosition> {
-        self.public_map_scoped().await
+    pub async fn public_map(&self, club_id: &str) -> Vec<TailLivePosition> {
+        self.public_map_scoped(club_id).await
     }
 
     pub async fn admin_map(&self, admin_id: &str) -> Vec<TailLivePosition> {
@@ -1601,6 +1711,15 @@ impl ClubDb {
                 .fetch_one(&self.pool)
                 .await?;
         if exists > 0 {
+            let t = now_ms();
+            sqlx::query(
+                "UPDATE pilots SET email_verified_at = COALESCE(email_verified_at, $1)
+                 WHERE email IN ('admin@demo.test', 'pilot@demo.test')",
+            )
+            .bind(t)
+            .execute(&self.pool)
+            .await?;
+            self.ensure_e2e_join_club(t).await?;
             return Ok(());
         }
         let admin_id = new_id();
@@ -1609,10 +1728,11 @@ impl ClubDb {
         let hash = auth::hash_password("password12").map_err(|_| DbError::protocol("hash"))?;
         let t = now_ms();
         sqlx::query(
-            "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at) VALUES
-             ($1, $4, 'Demo Admin', 'admin@demo.test', 'ADM-1', 'approved', 'admin', $5, $6),
-             ($2, $4, 'Demo Pilot', 'pilot@demo.test', 'P-1', 'approved', 'pilot', $5, $6),
-             ($3, $4, 'Demo Pending', 'pending@demo.test', 'P-2', 'pending', 'pilot', $5, $6)",
+            "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash,
+             email_verified_at, created_at) VALUES
+             ($1, $4, 'Demo Admin', 'admin@demo.test', 'ADM-1', 'approved', 'admin', $5, $6, $6),
+             ($2, $4, 'Demo Pilot', 'pilot@demo.test', 'P-1', 'approved', 'pilot', $5, $6, $6),
+             ($3, $4, 'Demo Pending', 'pending@demo.test', 'P-2', 'pending', 'pilot', $5, NULL, $6)",
         )
         .bind(&admin_id)
         .bind(&pilot_id)
@@ -1682,6 +1802,31 @@ impl ClubDb {
             .await?;
         self.append_fix(&club_f, &dev_admin, &fix(250, -33.37))
             .await?;
+        self.ensure_e2e_join_club(t).await?;
+        Ok(())
+    }
+
+    /// Extra live club for Playwright account-join (admin@demo is not a member).
+    async fn ensure_e2e_join_club(&self, now: i64) -> Result<(), DbError> {
+        let slug = "e2e-join";
+        let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM clubs WHERE slug = $1")
+            .bind(slug)
+            .fetch_one(&self.pool)
+            .await?;
+        if exists > 0 {
+            return Ok(());
+        }
+        let id = new_id();
+        sqlx::query(
+            "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at,
+             checkin_window_hours, latitude, longitude, show_public_tracks)
+             VALUES ($1, 'E2E Join Club', $2, $3, 'live', $3, 12, -33.4489, -70.6693, TRUE)",
+        )
+        .bind(&id)
+        .bind(slug)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 }
@@ -1705,6 +1850,7 @@ pub enum RegisterError {
 pub enum LoginError {
     Invalid,
     Throttled,
+    ClubUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2056,7 +2202,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let map = db.public_map().await;
+        let map = db.public_map(&club).await;
         assert_eq!(map.len(), 1);
         assert!(map[0].pilot_name.is_none());
     }

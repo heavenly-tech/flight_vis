@@ -17,19 +17,27 @@ use serial_test::serial;
 use std::sync::Arc;
 use tower::Service;
 
-struct Fixture {
+pub(crate) struct Fixture {
     _dir: tempfile::TempDir,
-    router: axum::Router,
-    club: ClubDb,
+    pub(crate) router: axum::Router,
+    pub(crate) club: ClubDb,
     pilot_a: String,
     _pilot_b: String,
     device_token: String,
 }
 
-async fn setup() -> Fixture {
+pub(crate) async fn setup() -> Fixture {
     let data_dir = tempfile::tempdir().expect("tempdir");
     let club = ClubDb::open_test().await.expect("club db");
     let club_id = club.default_club_id().await.unwrap();
+    let now = now_ms();
+    let _ = sqlx::query(
+        "UPDATE clubs SET email_verified_at = COALESCE(email_verified_at, $1), status = 'live' WHERE id = $2",
+    )
+    .bind(now)
+    .bind(&club_id)
+    .execute(&club.pool)
+    .await;
     club.upsert_type(&club_id, "C152").await.unwrap();
     club.upsert_aircraft(&club_id, "N1", "C152", true)
         .await
@@ -67,9 +75,12 @@ async fn setup() -> Fixture {
         login_throttle: crate::LoginThrottle::default(),
         device_register_throttle: crate::LoginThrottle::default(),
         share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
+        account_password_account_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+        superadmin_emails: Default::default(),
     };
     Fixture {
         _dir: data_dir,
@@ -497,8 +508,9 @@ async fn pending_pilot_cannot_load_club_map() {
         .register(&club_id, "P", "p@test", "", "password12")
         .await
         .unwrap();
-    let cookie = login_cookie(&mut fx.router, "p@test").await;
-    let _ = pending;
+    let now = now_ms();
+    let session = fx.club.create_pilot_session(&pending, now).await.unwrap();
+    let cookie = format!("{}={session}", crate::club::auth::COOKIE);
     let res = fx
         .router
         .call(
@@ -522,6 +534,10 @@ async fn kiosk_layout_admin_clamps_and_display_sse_rev() {
     sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
         .bind(&fx.pilot_a)
         .execute(&fx.club.pool)
+        .await
+        .unwrap();
+    fx.club
+        .ensure_membership_row(&fx.pilot_a, &club_id, "admin", "approved")
         .await
         .unwrap();
     let cookie = login_cookie(&mut fx.router, "a@test").await;
@@ -576,14 +592,15 @@ async fn kiosk_layout_admin_clamps_and_display_sse_rev() {
 
 async fn seed_second_club(db: &ClubDb, slug: &str) -> String {
     let id = crate::club::auth::new_id();
+    let now = now_ms();
     sqlx::query(
-        "INSERT INTO clubs (id, name, slug, created_at, latitude, longitude, show_public_tracks)
-         VALUES ($1, $2, $3, $4, -33.0, -70.0, TRUE)",
+        "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at, latitude, longitude, show_public_tracks)
+         VALUES ($1, $2, $3, $4, 'live', $4, -33.0, -70.0, TRUE)",
     )
     .bind(&id)
     .bind("Club B")
     .bind(slug)
-    .bind(now_ms())
+    .bind(now)
     .execute(&db.pool)
     .await
     .unwrap();
@@ -612,7 +629,7 @@ async fn cross_club_admin_cannot_approve_other_club_pilot() {
         .await
         .unwrap();
     fx.club
-        .ensure_membership_row(&fx.pilot_a, &club_a, "admin", "approved")
+        .ensure_membership_row(&fx.pilot_a, &club_a, "admin", "active")
         .await
         .unwrap();
     let cookie_a = login_cookie(&mut fx.router, "a@test").await;
@@ -675,6 +692,141 @@ async fn cross_club_admin_pending_list_is_scoped() {
         .filter_map(|p| p.get("id").and_then(|v| v.as_str()))
         .collect();
     assert!(!ids.contains(&pending_b.as_str()));
+}
+
+#[tokio::test]
+#[serial]
+async fn cross_club_public_map_isolated_by_slug_query() {
+    let mut fx = setup().await;
+    let slug_a: String =
+        sqlx::query_scalar("SELECT slug FROM clubs ORDER BY created_at ASC LIMIT 1")
+            .fetch_one(&fx.club.pool)
+            .await
+            .unwrap();
+    let slug_b = format!("club-b-{}", &crate::club::auth::new_id()[..8]);
+    let club_b = seed_second_club(&fx.club, &slug_b).await;
+    fx.club.upsert_type(&club_b, "C152").await.unwrap();
+    fx.club
+        .upsert_aircraft(&club_b, "NX-B", "C152", true)
+        .await
+        .unwrap();
+    let pilot_b = fx
+        .club
+        .register(&club_b, "B2", "b2-map@test", "", "password12")
+        .await
+        .unwrap();
+    fx.club
+        .mark_email_verified(&pilot_b, now_ms())
+        .await
+        .unwrap();
+    fx.club.approve_pilot(&pilot_b).await.unwrap();
+    fx.club
+        .add_checkout(&pilot_b, "C152", None, None)
+        .await
+        .unwrap();
+    let now = now_ms();
+    let dev_b = fx.club.create_device(&pilot_b, "b2").await.unwrap().0;
+    fx.club
+        .issue_open_checkin(&pilot_b, &dev_b, &club_b, now)
+        .await
+        .unwrap();
+    let flight_b = fx
+        .club
+        .start_flight(
+            &pilot_b,
+            &dev_b,
+            "NX-B",
+            FlightVisibility::Public,
+            false,
+            now,
+        )
+        .await
+        .unwrap();
+    use crate::live::LiveFix;
+    fx.club
+        .append_fix(
+            &flight_b,
+            &dev_b,
+            &LiveFix {
+                t: now,
+                lat: -33.5,
+                lon: -70.7,
+                alt: Some(1000.0),
+                alt_ref: None,
+                speed: None,
+                course: None,
+                accuracy: Some(5.0),
+            },
+        )
+        .await
+        .unwrap();
+
+    let map_a = fx
+        .router
+        .call(
+            Request::builder()
+                .uri(format!("/api/club/map/public?club={slug_a}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body_a = to_bytes(map_a.into_body(), usize::MAX).await.unwrap();
+    let json_a: serde_json::Value = serde_json::from_slice(&body_a).unwrap();
+    let tails_a: Vec<String> = json_a["aircraft"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r.get("tail").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+    assert!(!tails_a.iter().any(|t| t == "NX-B"));
+
+    let map_b = fx
+        .router
+        .call(
+            Request::builder()
+                .uri(format!("/api/club/map/public?club={slug_b}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body_b = to_bytes(map_b.into_body(), usize::MAX).await.unwrap();
+    let json_b: serde_json::Value = serde_json::from_slice(&body_b).unwrap();
+    let tails_b: Vec<String> = json_b["aircraft"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r.get("tail").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+    assert!(tails_b.iter().any(|t| t == "NX-B"));
+}
+
+#[tokio::test]
+#[serial]
+async fn cross_club_me_tails_only_home_club_aircraft() {
+    let fx = setup().await;
+    let club_a = fx.club.default_club_id().await.unwrap();
+    let slug_b = format!("tails-b-{}", &crate::club::auth::new_id()[..8]);
+    let club_b = seed_second_club(&fx.club, &slug_b).await;
+    fx.club.upsert_type(&club_a, "C152").await.unwrap();
+    fx.club.upsert_type(&club_b, "C152").await.unwrap();
+    fx.club
+        .upsert_aircraft(&club_a, "N-A", "C152", true)
+        .await
+        .unwrap();
+    fx.club
+        .upsert_aircraft(&club_b, "N-B", "C152", true)
+        .await
+        .unwrap();
+    fx.club
+        .add_checkout(&fx.pilot_a, "C152", None, None)
+        .await
+        .unwrap();
+    let tails = fx.club.me_tails(&fx.pilot_a, now_ms()).await.unwrap();
+    let t: Vec<&str> = tails.iter().map(|x| x.tail.as_str()).collect();
+    assert!(t.contains(&"N-A"));
+    assert!(!t.contains(&"N-B"));
 }
 
 #[derive(Deserialize)]
@@ -800,4 +952,438 @@ async fn postal_bounce_webhook_requires_and_verifies_rsa256() {
         .unwrap();
     assert_eq!(ok.status(), StatusCode::OK);
     std::env::remove_var("POSTAL_WEBHOOK_PUBLIC_KEY_FILE");
+}
+
+#[tokio::test]
+#[serial]
+async fn account_signup_same_response_for_duplicate_email() {
+    let mut fx = setup().await;
+    let body = r#"{"email":"dup-signup@test","password":"password12"}"#;
+    for _ in 0..2 {
+        let res = fx
+            .router
+            .call(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/account/signup")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&to_bytes(res.into_body(), usize::MAX).await.unwrap()).unwrap();
+        assert_eq!(parsed.get("ok"), Some(&serde_json::json!(true)));
+        assert!(parsed.get("accountId").is_none());
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn account_approve_membership_cross_club_forbidden() {
+    let mut fx = setup().await;
+    let club_a = fx.club.default_club_id().await.unwrap();
+    let slug = format!("club-b-{}", &crate::club::auth::new_id()[..8]);
+    let club_b = seed_second_club(&fx.club, &slug).await;
+    let pending_b = fx
+        .club
+        .register(&club_b, "Joiner", "joiner-b@test", "", "password12")
+        .await
+        .unwrap();
+    let membership_id: String =
+        sqlx::query_scalar("SELECT id FROM club_memberships WHERE pilot_id = $1 AND club_id = $2")
+            .bind(&pending_b)
+            .bind(&club_b)
+            .fetch_one(&fx.club.pool)
+            .await
+            .unwrap();
+    sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
+        .bind(&fx.pilot_a)
+        .execute(&fx.club.pool)
+        .await
+        .unwrap();
+    fx.club
+        .ensure_membership_row(&fx.pilot_a, &club_a, "admin", "active")
+        .await
+        .unwrap();
+    let cookie_a = login_cookie(&mut fx.router, "a@test").await;
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/account/memberships/{membership_id}/approve"))
+                .header(header::COOKIE, cookie_a)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+#[serial]
+async fn flight_sse_closes_after_membership_suspended() {
+    use http_body_util::BodyExt;
+    use std::time::Duration;
+
+    let mut fx = setup().await;
+    let cookie_a = login_cookie(&mut fx.router, "a@test").await;
+    let flight_id = start_flight(
+        &mut fx.router,
+        &fx.club,
+        &cookie_a,
+        &fx.device_token,
+        "club",
+    )
+    .await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let mid: String =
+        sqlx::query_scalar("SELECT id FROM club_memberships WHERE pilot_id = $1 AND club_id = $2")
+            .bind(&fx.pilot_a)
+            .bind(&club_id)
+            .fetch_one(&fx.club.pool)
+            .await
+            .unwrap();
+    let club_db = fx.club.clone();
+    let mid_spawn = mid.clone();
+    let suspend = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let _ = club_db.suspend_membership(&mid_spawn).await;
+    });
+    let stream_resp = fx
+        .router
+        .call(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/flights/{flight_id}/stream"))
+                .header(header::COOKIE, &cookie_a)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stream_resp.status(), StatusCode::OK);
+    let collected = tokio::time::timeout(Duration::from_secs(25), async {
+        stream_resp.into_body().collect().await
+    })
+    .await
+    .expect("sse should end within 25s after suspend")
+    .expect("body collect")
+    .to_bytes();
+    let _ = suspend.await;
+    assert!(!collected.is_empty());
+}
+
+#[tokio::test]
+#[serial]
+async fn flight_sse_closes_after_membership_removed() {
+    use http_body_util::BodyExt;
+    use std::time::Duration;
+
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let admin_b = fx
+        .club
+        .register(&club_id, "Admin2", "admin2@test", "", "password12")
+        .await
+        .unwrap();
+    let now = now_ms();
+    fx.club.mark_email_verified(&admin_b, now).await.unwrap();
+    fx.club.approve_pilot(&admin_b).await.unwrap();
+    fx.club
+        .ensure_membership_row(&admin_b, &club_id, "admin", "active")
+        .await
+        .unwrap();
+    let cookie_a = login_cookie(&mut fx.router, "a@test").await;
+    let flight_id = start_flight(
+        &mut fx.router,
+        &fx.club,
+        &cookie_a,
+        &fx.device_token,
+        "club",
+    )
+    .await;
+    let mid_a: String =
+        sqlx::query_scalar("SELECT id FROM club_memberships WHERE pilot_id = $1 AND club_id = $2")
+            .bind(&fx.pilot_a)
+            .bind(&club_id)
+            .fetch_one(&fx.club.pool)
+            .await
+            .unwrap();
+    let club_db = fx.club.clone();
+    let mid_spawn = mid_a.clone();
+    let remove = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let _ = club_db.remove_admin_membership(&club_id, &mid_spawn).await;
+    });
+    let stream_resp = fx
+        .router
+        .call(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/flights/{flight_id}/stream"))
+                .header(header::COOKIE, &cookie_a)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stream_resp.status(), StatusCode::OK);
+    let collected = tokio::time::timeout(Duration::from_secs(25), async {
+        stream_resp.into_body().collect().await
+    })
+    .await
+    .expect("sse should end within 25s after removal")
+    .expect("body collect")
+    .to_bytes();
+    let _ = remove.await;
+    assert!(!collected.is_empty());
+}
+
+#[tokio::test]
+#[serial]
+async fn club_login_html_redirects_to_unified_login() {
+    let mut fx = setup().await;
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/club-login.html?next=%2Fclub-pilot.html&e=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FOUND);
+    let location = res
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(location.starts_with("/login?"));
+    assert!(location.contains("next=%2Fclub-pilot.html"));
+    assert!(location.contains("e=1"));
+    assert!(!location.to_lowercase().contains("password"));
+}
+
+fn ensure_test_i18n() {
+    let locales = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../locales");
+    let _ = crate::i18n::init_global(&locales);
+}
+
+#[tokio::test]
+#[serial]
+async fn patch_me_locale_requires_session() {
+    ensure_test_i18n();
+    let mut fx = setup().await;
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/club/me/locale")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"locale":"en"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+#[serial]
+async fn patch_me_locale_rejects_invalid() {
+    ensure_test_i18n();
+    let mut fx = setup().await;
+    let cookie = login_cookie(&mut fx.router, "a@test").await;
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/club/me/locale")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &cookie)
+                .body(Body::from(r#"{"locale":"fr"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[serial]
+async fn patch_me_locale_persists_for_pilot() {
+    ensure_test_i18n();
+    let mut fx = setup().await;
+    let cookie = login_cookie(&mut fx.router, "a@test").await;
+    let ok = fx
+        .router
+        .call(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/club/me/locale")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &cookie)
+                .body(Body::from(r#"{"locale":"en"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+    let ctx = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/club/i18n/context")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ctx.status(), StatusCode::OK);
+    let body = to_bytes(ctx.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json.get("userLocale").and_then(|v| v.as_str()), Some("en"));
+}
+
+#[tokio::test]
+#[serial]
+async fn club_login_form_post_redirects_without_password_in_location() {
+    let mut fx = setup().await;
+    let body = "email=a%40test&password=password12&next=%2Fclub-pilot.html";
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let location = res
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(location, "/club-pilot.html");
+    assert!(!location.to_lowercase().contains("password"));
+    assert!(res.headers().get(header::SET_COOKIE).is_some());
+}
+
+#[tokio::test]
+#[serial]
+async fn club_login_form_post_rejects_open_redirect_next() {
+    let mut fx = setup().await;
+    let body = "email=a%40test&password=password12&next=%2F%5Cevil.com";
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let location = res
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(location, "/");
+}
+
+#[tokio::test]
+#[serial]
+async fn club_login_form_post_cross_site_is_forbidden() {
+    let mut fx = setup().await;
+    let body = "email=a%40test&password=password12&next=%2Fclub-pilot.html";
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+#[serial]
+async fn club_login_form_post_bad_password_preserves_safe_next() {
+    let mut fx = setup().await;
+    let body = "email=a%40test&password=wrong&next=%2Fclub-admin-types.html";
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let location = res
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(location.starts_with("/login?"));
+    assert!(location.contains("e=1"));
+    assert!(location.contains("mode=password"));
+    assert!(location.contains("next=%2Fclub-admin-types.html"));
+    assert!(location.contains("mode=password"));
+    assert!(!location.to_lowercase().contains("password="));
+}
+
+#[tokio::test]
+#[serial]
+async fn patch_me_locale_cross_site_is_forbidden() {
+    let mut fx = setup().await;
+    let cookie = login_cookie(&mut fx.router, "a@test").await;
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/club/me/locale")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &cookie)
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::from(r#"{"locale":"en"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json.get("error").and_then(|v| v.as_str()), Some("csrf"));
 }

@@ -11,6 +11,7 @@ import { dedupeFixes } from "./sseClient";
 import { ensureGeoidLoading, isGeoidReady, onGeoidReady } from "../geo/geoid";
 import { getLocalFlight, putLocalFlight } from "./localFlights";
 import { liveFixesFromGpx } from "./gpxLive";
+import { getLocale, t } from "../i18n/index";
 import { detectLang, msg, setLiveLang, type LiveLang } from "./messages";
 import { openLiveStream, type LiveStreamHandle } from "./sseClient";
 import type { LiveFix } from "./types";
@@ -64,10 +65,11 @@ export type LiveRuntime = {
   stop: () => void;
   lang: () => LiveLang;
   toggleLang: () => void;
+  onLocale: () => void;
 };
 
 export function createLiveRuntime(host: LiveHost): LiveRuntime {
-  let lang = detectLang();
+  let lang = getLocale() as LiveLang;
   let active = false;
   let sessionId: string | null = null;
   let stream: LiveStreamHandle | null = null;
@@ -107,6 +109,12 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     liveBtn.title = msg("followLive", lang);
     syncGeoidNotice();
   }
+
+  window.addEventListener("fv-locale-change", () => {
+    lang = detectLang();
+    applyLangUi();
+    syncLiveButton();
+  });
 
   function syncGeoidNotice(): void {
     if (!active || isGeoidReady()) return;
@@ -162,7 +170,7 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     if (allFixes.length < 2 || !sessionId) return;
     const prevLen = host.getFlight()?.points.length ?? 0;
     const next = await fixesToFlight(allFixes, {
-      name: `Live ${sessionId.slice(0, 8)}`,
+      name: t("globe.liveSession"),
       fileName: `${sessionId}.gpx`,
     });
     host.setFlight(next);
@@ -375,10 +383,8 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
   });
 
   langBtn.addEventListener("click", () => {
-    lang = lang === "en" ? "es" : "en";
-    setLiveLang(lang);
-    applyLangUi();
-    syncLiveButton();
+    const next = getLocale() === "en" ? "es" : "en";
+    void setLiveLang(next);
   });
 
   trimForm.addEventListener("submit", (event) => {
@@ -437,7 +443,7 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     seenFixTimes.clear();
     recordingId = `local:${id}`;
     host.setStatus(null);
-    host.setFlightName(`Live ${id.slice(0, 8)}`);
+    host.setFlightName(t("globe.liveSession"));
     const auth = host.getAuth();
     if (!auth.authenticated) {
       host.setStatus(msg("loginRequired", lang));
@@ -494,8 +500,11 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     },
     lang: () => lang,
     toggleLang: () => {
-      lang = lang === "en" ? "es" : "en";
-      setLiveLang(lang);
+      const next = getLocale() === "en" ? "es" : "en";
+      void setLiveLang(next);
+    },
+    onLocale: () => {
+      lang = getLocale() as LiveLang;
       applyLangUi();
     },
   };

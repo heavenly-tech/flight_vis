@@ -7,7 +7,7 @@ import http from "node:http";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { PROD_HTML_CSP } from "./csp-prod-string.mjs";
+import { globeE2eCsp, readHtmlPageCsp } from "./read-html-csp.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(root, "..", "dist");
@@ -16,6 +16,12 @@ const apiOrigin = process.env.FLIGHT_VIS_API_ORIGIN ?? "http://127.0.0.1:8080";
 const port = Number(process.env.E2E_CSP_PORT ?? "19090");
 
 const E2E_ONLY = new Set(["e2e-csp-hooks.js", "e2e-live-csp-sse.js"]);
+const HTML_PAGE_CSP = readHtmlPageCsp();
+const GLOBE_E2E_CSP = globeE2eCsp();
+
+function cspForPath(pathOnly) {
+  return GLOBE_E2E_CSP;
+}
 
 function mime(ext) {
   switch (ext) {
@@ -64,7 +70,7 @@ function proxyToApi(req, res, body) {
     (proxyRes) => {
       res.writeHead(proxyRes.statusCode ?? 502, {
         ...proxyRes.headers,
-        "content-security-policy": PROD_HTML_CSP,
+        "content-security-policy": HTML_PAGE_CSP,
       });
       proxyRes.pipe(res);
     },
@@ -78,7 +84,10 @@ function proxyToApi(req, res, body) {
 }
 
 function shouldProxy(urlPath) {
+  const pathOnly = urlPath.split("?")[0];
   return (
+    pathOnly === "/signup" ||
+    pathOnly === "/club-login.html" ||
     urlPath.startsWith("/api") ||
     urlPath.startsWith("/login") ||
     urlPath.startsWith("/logout") ||
@@ -105,7 +114,7 @@ const server = http.createServer((req, res) => {
       if (existsSync(e2ePath)) {
         res.writeHead(200, {
           "content-type": "text/javascript; charset=utf-8",
-          "content-security-policy": PROD_HTML_CSP,
+          "content-security-policy": GLOBE_E2E_CSP,
           "cache-control": "no-cache",
         });
         createReadStream(e2ePath).pipe(res);
@@ -118,15 +127,15 @@ const server = http.createServer((req, res) => {
       filePath = path.join(distDir, "index.html");
     }
     const ext = path.extname(filePath).slice(1);
+    const pathOnly = urlPath.split("?")[0];
     res.writeHead(200, {
       "content-type": mime(ext),
-      "content-security-policy": PROD_HTML_CSP,
+      "content-security-policy": cspForPath(pathOnly),
       "cache-control": "no-cache",
     });
     if (ext === "html") {
       let html = readFileSync(filePath, "utf8");
       let hook = '<script src="/e2e-csp-hooks.js"></script>';
-      const pathOnly = urlPath.split("?")[0];
       if (/^\/live\/[^/]+/.test(pathOnly)) {
         hook += '<script src="/e2e-live-csp-sse.js"></script>';
       }

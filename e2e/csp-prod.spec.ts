@@ -151,7 +151,9 @@ test.describe("production CSP (release server)", () => {
     }, { fixes });
 
     await page.goto("/live/sess-csp");
-    await expect(page.locator("#flight-name")).toHaveText("Live session", { timeout: 60_000 });
+    await expect(page.locator("#flight-name")).toHaveText(/Live session|Sesión en vivo/, {
+      timeout: 60_000,
+    });
     expect(pageErrors, "uncaught page errors").toEqual([]);
     expect(relevantViolations(violations), "console CSP violations").toEqual([]);
     expect(relevantViolations(await domViolations(page)), "securitypolicyviolation events").toEqual([]);

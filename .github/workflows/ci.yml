@@ -2,7 +2,13 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   check:
@@ -67,6 +73,9 @@ jobs:
       - name: frontend
         run: npm ci && npm run build
 
+      - name: dist has no inline scripts
+        run: node scripts/check-dist-inline.mjs
+
       - name: bundle has no external QR hosts
         run: |
           if rg -q 'qrserver\\.com' dist/; then
@@ -87,6 +96,12 @@ jobs:
       - name: frontend lint
         run: npm run lint
 
+      - name: no Argentine voseo in Spanish UI
+        run: node scripts/voseo-check.mjs
+
+      - name: globe CSP has single img-src directive
+        run: node scripts/check-globe-csp.mjs
+
       - name: playwright e2e
         run: npx playwright install --with-deps && npm run test:e2e
 
@@ -97,13 +112,10 @@ jobs:
         run: docker run --rm flight_vis:ci-amd64 /app/flight_vis check-i18n
 
   docker-arm64:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: docker build arm64
         run: docker buildx build --platform linux/arm64 -t flight_vis:ci-arm64 --load .

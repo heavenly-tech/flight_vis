@@ -1,7 +1,9 @@
 import { test, expect } from "@playwright/test";
 
-test("club login page loads", async ({ page }) => {
-  await page.goto("/club-login.html", { waitUntil: "networkidle" });
-  await expect(page.locator("h1")).toContainText(/sesión|login|pilot|club/i);
-  await expect(page.locator('input[type="email"], input[name="email"]')).toBeVisible();
+test("club-login.html redirects to unified login", async ({ page }) => {
+  const res = await page.goto("/club-login.html?mode=pilot&next=%2Fclub-pilot.html", {
+    waitUntil: "domcontentloaded",
+  });
+  expect(res?.url()).toMatch(/\/login/);
+  expect(new URL(page.url()).searchParams.get("next")).toBe("/club-pilot.html");
 });

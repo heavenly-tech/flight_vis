@@ -1,20 +1,36 @@
+/// Slugs that collide with Axum routes (`main.rs`, club routers) or dist top-level paths.
 const RESERVED: &[&str] = &[
+    // main.rs + shared routers
     "admin",
     "api",
+    "app",
+    "assets",
     "auth",
     "c",
+    "cesiumstatic",
     "club",
+    "default",
+    "favicon.ico",
+    "health",
+    "live",
     "login",
     "logout",
     "map",
     "public",
     "register",
+    "s",
     "screen",
-    "static",
-    "assets",
+    "signup",
+    "superadmin",
     "well-known",
-    "health",
-    "default",
+    "www",
+    // static fallback (`dist/` top-level)
+    "demo",
+    "geoid",
+    "index",
+    "locales",
+    "samples",
+    "static",
 ];
 
 pub fn normalize_slug(raw: &str) -> String {
@@ -47,8 +63,44 @@ mod tests {
 
     #[test]
     fn rejects_reserved() {
-        assert!(validate_slug("api").is_err());
-        assert!(validate_slug("auth").is_err());
+        for slug in RESERVED {
+            assert!(validate_slug(slug).is_err(), "expected reserved: {slug}");
+        }
+    }
+
+    #[test]
+    fn rejects_platform_top_level_paths() {
+        for slug in [
+            "api",
+            "admin",
+            "login",
+            "map",
+            "app",
+            "static",
+            "assets",
+            "signup",
+            "club",
+            "logout",
+            "live",
+            "register",
+            "public",
+            "auth",
+            "health",
+            "samples",
+            "geoid",
+            "locales",
+            "index",
+            "cesiumstatic",
+            "superadmin",
+            "demo",
+            "www",
+        ] {
+            assert!(validate_slug(slug).is_err(), "expected reserved: {slug}");
+        }
+        // single-segment path prefixes (also in RESERVED; invalid length if < 2 chars)
+        for slug in ["c", "s"] {
+            assert!(validate_slug(slug).is_err(), "expected blocked: {slug}");
+        }
     }
 
     #[test]

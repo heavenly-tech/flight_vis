@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin, type ProxyOptions } from "vitest/config";
 import { viteStaticCopy } from "vite-plugin-static-copy";
@@ -9,21 +10,36 @@ const cesiumBaseUrl = "cesiumStatic";
 const apiPort = process.env.PORT ?? "8080";
 const api = `http://127.0.0.1:${apiPort}`;
 
+function normalizeUrlPath(urlPath: string): string | null {
+  const trimmed = urlPath.trim();
+  if (!trimmed.startsWith("/")) return null;
+  const parts: string[] = [];
+  for (const part of trimmed.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") return null;
+    parts.push(part);
+  }
+  if (!parts.length) return null;
+  return `/${parts.join("/")}`;
+}
+
 const authProxy: Record<string, string | ProxyOptions> = {
   "/.well-known": api,
   "/c/": api,
   "/s/": api,
   "/api": api,
-  "/logout": api,
-  "/login": {
+  "/signup": {
     target: api,
     bypass(req) {
       if (req.method === "GET" || req.method === "HEAD") {
-        const query = req.url?.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
-        return `/login.html${query}`;
+        return "/signup.html";
       }
     },
   },
+  "/logout": api,
+  "/login": api,
+  "/login/legacy": api,
+  "/club-login.html": api,
 };
 
 function liveSpaFallback(): Plugin {
@@ -31,13 +47,101 @@ function liveSpaFallback(): Plugin {
     name: "live-spa-fallback",
     configureServer(server) {
       server.middlewares.use((req, _res, next) => {
-        const path = req.url?.split("?")[0] ?? "";
-        if (/^\/live\/[A-Za-z0-9._-]+$/i.test(path)) {
+        const pathOnly = req.url?.split("?")[0] ?? "";
+        if (/^\/live\/[A-Za-z0-9._-]+$/i.test(pathOnly)) {
           req.url = "/index.html";
         }
         next();
       });
     },
+  };
+}
+
+function clubAdminHtmlGateMiddleware(
+  apiOrigin: string,
+):
+  | ((req: IncomingMessage, res: ServerResponse, next: () => void) => void)
+  | undefined {
+  return (req, res, next) => {
+    const method = req.method ?? "GET";
+    const raw = req.url ?? "";
+    const pathOnly = normalizeUrlPath(raw.split("?")[0] ?? "");
+    if (
+      (method !== "GET" && method !== "HEAD") ||
+      !pathOnly ||
+      !/^\/club-admin-[^/]+\.html$/.test(pathOnly)
+    ) {
+      next();
+      return;
+    }
+    const search = raw.includes("?") ? raw.slice(raw.indexOf("?")) : "";
+    const cookie = req.headers.cookie ?? "";
+    const allowStaff = async (): Promise<boolean> => {
+      const accountMe = await fetch(`${apiOrigin}/api/account/me`, {
+        headers: { cookie },
+      });
+      if (accountMe.ok) {
+        const data = (await accountMe.json()) as {
+          activeMembershipId?: string | null;
+          memberships?: Array<{ id: string; status: string; role?: string }>;
+        };
+        const list = data.memberships ?? [];
+        const active = data.activeMembershipId
+          ? list.find((m) => m.id === data.activeMembershipId)
+          : undefined;
+        const staff = (m: { status: string; role?: string }) =>
+          m.status === "active" && (m.role === "admin" || m.role === "staff");
+        if (active && staff(active)) {
+          return true;
+        }
+        if (list.some(staff)) {
+          return true;
+        }
+      }
+      const clubMe = await fetch(`${apiOrigin}/api/club/me`, { headers: { cookie } });
+      if (clubMe.ok) {
+        const me = (await clubMe.json()) as { pilot?: { role?: string } | null };
+        if (me.pilot?.role === "admin" || me.pilot?.role === "staff") {
+          return true;
+        }
+      }
+      return false;
+    };
+    void allowStaff()
+      .then((ok) => {
+        if (ok) {
+          next();
+          return;
+        }
+        res.statusCode = 302;
+        res.setHeader(
+          "Location",
+          `/login?next=${encodeURIComponent(pathOnly + search)}`,
+        );
+        res.end();
+      })
+      .catch(() => {
+        res.statusCode = 302;
+        res.setHeader(
+          "Location",
+          `/login?next=${encodeURIComponent(pathOnly + search)}`,
+        );
+        res.end();
+      });
+  };
+}
+
+function clubAdminHtmlGatePlugin(apiOrigin: string): Plugin {
+  const attach = (server: {
+    middlewares: { use: (fn: ReturnType<typeof clubAdminHtmlGateMiddleware>) => void };
+  }) => {
+    const gate = clubAdminHtmlGateMiddleware(apiOrigin);
+    if (gate) server.middlewares.use(gate);
+  };
+  return {
+    name: "club-admin-html-gate",
+    configureServer: attach,
+    configurePreviewServer: attach,
   };
 }
 
@@ -55,6 +159,7 @@ export default defineConfig({
   },
   plugins: [
     liveSpaFallback(),
+    clubAdminHtmlGatePlugin(process.env.FLIGHT_VIS_API_ORIGIN ?? api),
     viteStaticCopy({
       targets: [
         { src: "locales/*", dest: "locales" },
@@ -62,6 +167,7 @@ export default defineConfig({
         { src: `${cesiumSource}/Workers`, dest: cesiumBaseUrl },
         { src: `${cesiumSource}/Assets`, dest: cesiumBaseUrl },
         { src: `${cesiumSource}/Widgets`, dest: cesiumBaseUrl },
+        { src: "assets/brand", dest: "assets/brand" },
       ],
     }),
   ],
@@ -81,13 +187,17 @@ export default defineConfig({
       input: {
         main: path.resolve(root, "index.html"),
         login: path.resolve(root, "login.html"),
+        loginLegacy: path.resolve(root, "login-legacy.html"),
+        accountClubs: path.resolve(root, "account-clubs.html"),
         app: path.resolve(root, "app.html"),
         clubPilot: path.resolve(root, "club-pilot.html"),
         clubFlight: path.resolve(root, "club-flight.html"),
-        clubLogin: path.resolve(root, "club-login.html"),
+        signup: path.resolve(root, "signup.html"),
         clubMap: path.resolve(root, "club-map.html"),
         publicMap: path.resolve(root, "public-map.html"),
         clubRegister: path.resolve(root, "club-register.html"),
+        clubSignup: path.resolve(root, "club-signup.html"),
+        clubSuspended: path.resolve(root, "club-suspended.html"),
         clubAdminTypes: path.resolve(root, "club-admin-types.html"),
         clubAdminTails: path.resolve(root, "club-admin-tails.html"),
         clubAdminPilots: path.resolve(root, "club-admin-pilots.html"),

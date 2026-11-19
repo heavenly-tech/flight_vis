@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { flattenCatalog, bundledLocaleIds, CANONICAL_LOCALE } from "./catalog";
-import { initI18n, t, resolveLocale, apiErrorMessage } from "./index";
+import { initI18n, t, resolveLocale, apiErrorMessage, setLocale, getLocale } from "./index";
 
 describe("i18n catalogs", () => {
   it("bundled locales share canonical keys", () => {
@@ -16,10 +16,41 @@ describe("i18n catalogs", () => {
     expect(t("club.login.title")).toContain("sesión");
   });
 
-  it("resolves user over club", () => {
+  it("resolves stored locale over pilot default", () => {
     expect(
-      resolveLocale({ userLocale: "en", clubDefaultLocale: "es", stored: "es" }),
+      resolveLocale({ userLocale: "es", clubDefaultLocale: "es", stored: "en" }),
     ).toBe("en");
+  });
+
+  it("resolves user over club when nothing stored", () => {
+    expect(resolveLocale({ userLocale: "en", clubDefaultLocale: "es" })).toBe("en");
+  });
+
+  it("defaults to Spanish without stored locale, account, or browser", () => {
+    expect(resolveLocale({})).toBe("es");
+    expect(resolveLocale({ acceptLanguage: "en-US,en;q=0.9" })).toBe("es");
+  });
+
+  it("PATCHes pilot locale when session exists", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+    initI18n({ userLocale: "es" });
+    await setLocale("en");
+    expect(getLocale()).toBe("en");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/club/me/locale",
+      expect.objectContaining({ method: "PATCH", body: JSON.stringify({ locale: "en" }) }),
+    );
+    vi.unstubAllGlobals();
+  });
+
+  it("does not PATCH when anonymous", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    initI18n({ userLocale: null });
+    await setLocale("en");
+    expect(fetchMock).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 
   it("maps api error slugs", () => {

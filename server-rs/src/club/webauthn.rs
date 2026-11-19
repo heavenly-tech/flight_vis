@@ -40,6 +40,7 @@ pub enum WebauthnRouteError {
     InvalidPayload,
     NotFound,
     Verification,
+    ClubUnavailable,
 }
 
 impl WebauthnState {
@@ -243,15 +244,43 @@ impl WebauthnState {
                 .try_get(9)
                 .map_err(|_| WebauthnRouteError::Verification)?,
             locale: row
-                .try_get(10)
+                .try_get::<Option<String>, _>(10)
                 .map_err(|_| WebauthnRouteError::Verification)?,
         };
-        let now = now_ms();
-        let session_id = db
-            .create_pilot_session(&pilot.id, now)
-            .await
-            .map_err(|_| WebauthnRouteError::Verification)?;
+        let session_id = Self::complete_passkey_login(db, &pilot).await?;
         Ok((session_id, pilot))
+    }
+
+    /// Shared tail of passkey verify: operational club check + pilot session (no email_verified mutation).
+    pub async fn complete_passkey_login(
+        db: &ClubDb,
+        pilot: &PilotRow,
+    ) -> Result<String, WebauthnRouteError> {
+        if db.club_operational(&pilot.club_id).await.is_err() {
+            return Err(WebauthnRouteError::ClubUnavailable);
+        }
+        if let Some(aid) =
+            sqlx::query_scalar::<_, Option<String>>("SELECT account_id FROM pilots WHERE id = $1")
+                .bind(&pilot.id)
+                .fetch_optional(&db.pool)
+                .await
+                .ok()
+                .flatten()
+                .flatten()
+        {
+            let suspended: bool =
+                sqlx::query_scalar("SELECT suspended_at IS NOT NULL FROM accounts WHERE id = $1")
+                    .bind(&aid)
+                    .fetch_one(&db.pool)
+                    .await
+                    .unwrap_or(false);
+            if suspended {
+                return Err(WebauthnRouteError::Verification);
+            }
+        }
+        db.create_pilot_session(&pilot.id, now_ms())
+            .await
+            .map_err(|_| WebauthnRouteError::Verification)
     }
 }
 

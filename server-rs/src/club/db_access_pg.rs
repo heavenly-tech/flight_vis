@@ -446,12 +446,13 @@ impl ClubDb {
         checkout: Option<ApprovePilotCheckout>,
     ) -> Result<(), DbError> {
         let mut tx = self.pool.begin().await?;
-        let row = sqlx::query("SELECT club_id, status FROM pilots WHERE id = $1")
+        let row = sqlx::query("SELECT club_id, status, role FROM pilots WHERE id = $1")
             .bind(pilot_id)
             .fetch_one(&mut *tx)
             .await?;
         let club_id: String = row.get(0);
         let status: String = row.get(1);
+        let role: String = row.get(2);
         if status != "pending" {
             tx.commit().await?;
             return Ok(());
@@ -476,6 +477,20 @@ impl ClubDb {
             .bind(pilot_id)
             .execute(&mut *tx)
             .await?;
+        sqlx::query(
+            "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
+             VALUES ($1, $2, $3, $4, 'active', $5)
+             ON CONFLICT (pilot_id, club_id) DO UPDATE SET
+               role = excluded.role,
+               status = excluded.status",
+        )
+        .bind(new_id())
+        .bind(pilot_id)
+        .bind(&club_id)
+        .bind(&role)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query(
             "INSERT INTO audit_log (id, club_id, actor_pilot_id, action, entity_type, entity_id, detail, created_at)
              VALUES ($1, $2, $3, 'approve', 'pilot', $4, NULL, $5)",

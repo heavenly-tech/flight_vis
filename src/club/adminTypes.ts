@@ -1,4 +1,6 @@
-import { api, mountAdminNav, requireAdmin } from "./adminCommon";
+import { ensureClubAdminOrRedirect } from "./adminGate";
+import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
+import { startClubPage } from "./i18nPage";
 
 const list = document.querySelector<HTMLUListElement>("#list")!;
 const code = document.querySelector<HTMLInputElement>("#code")!;
@@ -27,13 +29,17 @@ form.addEventListener("submit", async (e) => {
 });
 
 void (async () => {
+  void startClubPage({ switcher: "#lang-slot" });
+  if (!(await ensureClubAdminOrRedirect())) return;
   mountAdminNav();
   try {
     const who = document.querySelector<HTMLParagraphElement>("#who")!;
     const admin = await requireAdmin();
     who.textContent = `Admin: ${admin.name}`;
     await refresh();
-  } catch {
-    list.innerHTML = "<li>Sign in as admin at club login.</li>";
+  } catch (e) {
+    if (!isClubAdminRedirect(e)) {
+      list.innerHTML = "<li>Sign in as admin at club login.</li>";
+    }
   }
 })();

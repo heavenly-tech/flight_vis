@@ -172,6 +172,61 @@ impl Mailer {
         Some(cat.mail(&loc, stem, vars))
     }
 
+    pub fn strip_crlf(s: &str) -> String {
+        s.chars().filter(|c| *c != '\r' && *c != '\n').collect()
+    }
+
+    pub fn html_escape_text(raw: &str) -> String {
+        raw.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&#39;")
+    }
+
+    /// `verifyClub` uses HTML-escaped `{name}` in HTML and CRLF-stripped copy in plain/subject.
+    pub async fn send_verify_club(
+        &self,
+        to: &str,
+        locale: &str,
+        name: &str,
+        url: &str,
+        minutes: &str,
+    ) {
+        let name_plain = Self::strip_crlf(name);
+        let name_html = Self::html_escape_text(&name_plain);
+        let url = Self::strip_crlf(url);
+        let minutes = Self::strip_crlf(minutes);
+        let Some(cat) = crate::i18n::global() else {
+            return;
+        };
+        let loc = if cat.is_known(locale) {
+            locale.to_string()
+        } else {
+            cat.canonical.clone()
+        };
+        let plain_vars = [
+            ("minutes", minutes.as_str()),
+            ("url", url.as_str()),
+            ("name", name_plain.as_str()),
+        ];
+        let html_vars = [
+            ("minutes", minutes.as_str()),
+            ("url", url.as_str()),
+            ("name", name_html.as_str()),
+        ];
+        let subject = Self::strip_crlf(&cat.t(&loc, "mail.verifyClub.subject", &[]));
+        let plain = cat.t(&loc, "mail.verifyClub.bodyPlain", &plain_vars);
+        let html = cat.t(&loc, "mail.verifyClub.bodyHtml", &html_vars);
+        if self.smtp_host.is_none() {
+            self.capture(to, &subject, &plain);
+            return;
+        }
+        if let Err(e) = self.smtp_send(to, &subject, &plain, &html).await {
+            eprintln!("mail: smtp send failed for {to}: {e}");
+        }
+    }
+
     /// Capture when SMTP is unset; send plain+html when `SMTP_HOST` is configured.
     pub async fn send_localized(&self, to: &str, locale: &str, stem: &str, vars: &[(&str, &str)]) {
         let Some((subject, plain, html)) = self.localized_parts(locale, stem, vars) else {
@@ -339,6 +394,24 @@ FdfgleEWxIJ9soS53wIDAQAB
             assert!(mailer.allow_send("a@test", "1.2.3.4"));
         }
         assert!(!mailer.allow_send("a@test", "1.2.3.4"));
+    }
+
+    #[test]
+    fn verify_club_mail_html_escapes_name() {
+        let dir = crate::i18n::Catalogs::resolve_dir(std::path::Path::new("dist"));
+        let cat = crate::i18n::init_global(&dir).expect("i18n");
+        let name_html = Mailer::html_escape_text("Evil <img>");
+        let html = cat.t(
+            "en",
+            "mail.verifyClub.bodyHtml",
+            &[
+                ("minutes", "15"),
+                ("url", "https://example.invalid/x"),
+                ("name", name_html.as_str()),
+            ],
+        );
+        assert!(!html.contains("<img>"));
+        assert!(html.contains("&lt;img&gt;"));
     }
 
     #[test]

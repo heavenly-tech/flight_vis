@@ -11,7 +11,7 @@ const outDir = process.env.SCREENSHOT_DIR ?? "/opt/cursor/artifacts/i18n-screens
 const base = process.env.PW_BASE ?? "http://127.0.0.1:5173";
 
 const pages = [
-  { name: "club-login-es", url: "/club-login.html", locale: "es" },
+  { name: "club-login-es", url: "/login", locale: "es" },
   { name: "club-register-es", url: "/club-register.html", locale: "es" },
   { name: "club-pilot-es", url: "/club-pilot.html", locale: "es" },
   { name: "club-map-es", url: "/club-map.html", locale: "es" },
@@ -25,7 +25,7 @@ const pages = [
   { name: "club-screen-es", url: "/club-screen.html", locale: "es" },
   { name: "club-checkin-expired-es", url: "/club-checkin-expired.html", locale: "es" },
   { name: "app-es", url: "/app.html", locale: "es" },
-  { name: "club-login-en", url: "/club-login.html", locale: "en" },
+  { name: "club-login-en", url: "/login", locale: "en" },
 ];
 
 fs.mkdirSync(outDir, { recursive: true });

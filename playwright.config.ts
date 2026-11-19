@@ -11,6 +11,7 @@ const apiEnv = {
   ...process.env,
   DATABASE_URL: databaseUrl,
   FLIGHT_CLUB_SLUG: "demo",
+  FLIGHT_CLUB_SEED_DEMO: "1",
   PORT: e2eApiPort,
 };
 
@@ -20,7 +21,7 @@ export default defineConfig({
   projects: [
     {
       name: "dev-ui",
-      testIgnore: [/csp-prod\.spec\.ts/, /globe-csp\.spec\.ts/],
+      testIgnore: [/csp-prod\.spec\.ts/, /globe-csp\.spec\.ts/, /auth-csp\.spec\.ts/],
       use: {
         baseURL: "http://127.0.0.1:5173",
       },
@@ -35,7 +36,7 @@ export default defineConfig({
     },
     {
       name: "globe-csp",
-      testMatch: /globe-csp\.spec\.ts/,
+      testMatch: /(globe-csp|auth-csp)\.spec\.ts/,
       fullyParallel: false,
       workers: 1,
       timeout: 120_000,

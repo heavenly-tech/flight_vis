@@ -1,4 +1,5 @@
-import { api, mountAdminLangSwitcher, mountAdminNav, requireAdmin } from "./adminCommon";
+import { ensureClubAdminOrRedirect } from "./adminGate";
+import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 import { startClubPage } from "./i18nPage";
 import { bundledLocaleIds, localeLabel, t } from "../i18n/index";
 
@@ -84,16 +85,16 @@ clubLocaleSave?.addEventListener("click", async () => {
 });
 
 void (async () => {
-  await startClubPage({ switcher: "#lang-slot" });
+  if (!(await ensureClubAdminOrRedirect())) return;
+  void startClubPage({ switcher: "#lang-slot" });
   mountAdminNav();
-  mountAdminLangSwitcher();
   try {
     const me = await api<{ clubDefaultLocale?: string }>("/api/club/me");
     mountClubLocalePicker(me.clubDefaultLocale ?? "es");
     await requireAdmin();
     await refresh();
     setInterval(() => void refresh(), 5000);
-  } catch {
-    list.innerHTML = `<li>${t("admin.adminRequired")}</li>`;
+  } catch (e) {
+    if (!isClubAdminRedirect(e)) list.innerHTML = `<li>${t("admin.adminRequired")}</li>`;
   }
 })();

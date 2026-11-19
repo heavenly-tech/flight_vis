@@ -1,5 +1,6 @@
 import type { LiveSessionSummary } from "./live/types";
 import type { FlightTag } from "./track/types";
+import { safeNextPath } from "./club/safeNext";
 
 export type FlightRecord = {
   slug: string;
@@ -40,8 +41,15 @@ export function shareUrl(slug: string): string {
   return `${window.location.origin}/${slug}`;
 }
 
+/** Legacy disk library / flight save session (`POST /login`, `FLIGHT_VIS_PASSWORD`). */
 export function loginUrl(next = window.location.pathname || "/"): string {
-  const dest = next.startsWith("/") && !next.startsWith("//") ? next : "/";
+  const dest = safeNextPath(next);
+  return `/login?mode=password&next=${encodeURIComponent(dest)}`;
+}
+
+/** Public chooser (club vs pilot paths). */
+export function entrarUrl(next = window.location.pathname || "/"): string {
+  const dest = safeNextPath(next);
   return `/login?next=${encodeURIComponent(dest)}`;
 }
 

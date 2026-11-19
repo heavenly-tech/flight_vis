@@ -51,6 +51,8 @@ test("live route clears globe preparing status after track loads", async ({ page
   }, { fixes });
 
   await page.goto("/live/sess-boot");
-  await expect(page.locator("#flight-name")).toHaveText("Live session", { timeout: 60_000 });
+  await expect(page.locator("#flight-name")).toHaveText(/Live session|Sesión en vivo/, {
+    timeout: 60_000,
+  });
   await expect(page.locator("#status")).toBeHidden({ timeout: 15_000 });
 });

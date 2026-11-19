@@ -6,7 +6,7 @@ use crate::club::{
     db::{now_ms, ClubDb},
     routes::club_db,
 };
-use crate::static_files::{HTML_CSP, HTML_REFERRER_POLICY};
+use crate::static_files::HTML_CSP;
 use crate::AppState;
 use axum::{
     extract::{Path, State},
@@ -85,6 +85,11 @@ async fn validate_checkin_peek(
         ClubScopeError::NotFound => LandingError::NotFound,
         ClubScopeError::Forbidden => LandingError::NotFound,
     })?;
+    if let Some(row) = db.club_public_row(&ctx.club_id).await {
+        if row.suspended_at.is_some() {
+            return Err(LandingError::NotFound);
+        }
+    }
     let (secret, _) = db
         .club_checkin_settings(&ctx.club_id)
         .await
@@ -140,18 +145,21 @@ fn localize_data_i18n(html: &str, locale: &str) -> String {
     out
 }
 
+/// QR check-in responses (F-1): do not leak token paths via Referer.
+const QR_LANDING_REFERRER_POLICY: &str = "no-referrer";
+
 fn qr_landing_page_headers() -> [(header::HeaderName, &'static str); 3] {
     [
         (header::CACHE_CONTROL, "no-store"),
         (header::CONTENT_SECURITY_POLICY, HTML_CSP),
-        (header::REFERRER_POLICY, HTML_REFERRER_POLICY),
+        (header::REFERRER_POLICY, QR_LANDING_REFERRER_POLICY),
     ]
 }
 
 fn qr_landing_api_headers() -> [(header::HeaderName, &'static str); 2] {
     [
         (header::CACHE_CONTROL, "no-store"),
-        (header::REFERRER_POLICY, HTML_REFERRER_POLICY),
+        (header::REFERRER_POLICY, QR_LANDING_REFERRER_POLICY),
     ]
 }
 
@@ -178,6 +186,47 @@ async fn checkin_landing_page(
     }
 }
 
+async fn club_slug_register_page(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    let Some(row) = db.club_public_row_by_slug(&slug).await else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    if row.suspended_at.is_some() {
+        return serve_suspended_html(&state).await;
+    }
+    if !ClubDb::is_public_verified(&row) {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    let path = state.dist_dir.join("club-register.html");
+    match tokio::fs::read_to_string(&path).await {
+        Ok(html) => (
+            StatusCode::OK,
+            [(header::CACHE_CONTROL, "no-store")],
+            Html(html),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "missing page").into_response(),
+    }
+}
+
+async fn serve_suspended_html(state: &AppState) -> axum::response::Response {
+    let path = state.dist_dir.join("club-suspended.html");
+    match tokio::fs::read_to_string(&path).await {
+        Ok(html) => (
+            StatusCode::FORBIDDEN,
+            [(header::CACHE_CONTROL, "no-store")],
+            Html(html),
+        )
+            .into_response(),
+        Err(_) => (StatusCode::FORBIDDEN, "club suspended").into_response(),
+    }
+}
+
 async fn club_slug_landing_page(
     State(state): State<AppState>,
     Path(slug): Path<String>,
@@ -187,6 +236,11 @@ async fn club_slug_landing_page(
     };
     if db.resolve_club_context(&slug).await.is_err() {
         return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    if let Some(row) = db.club_public_row_by_slug(&slug).await {
+        if row.suspended_at.is_some() {
+            return serve_suspended_html(&state).await;
+        }
     }
     serve_landing_html(&state).await
 }
@@ -240,7 +294,7 @@ async fn build_landing_json(
         "resolvedLocale": resolved_locale,
         "releaseAvailable": release.release_available,
         "apkUrl": release.apk_url,
-        "publicMapPath": "/public-map.html",
+        "publicMapPath": format!("/public-map.html?club={slug}"),
         "appPath": "/app.html",
     });
     if let Some(intent) = intent_url {
@@ -295,6 +349,7 @@ async fn club_slug_landing_config(
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/c/{slug}/q/{token}", get(checkin_landing_page))
+        .route("/c/{slug}/registro", get(club_slug_register_page))
         .route("/c/{slug}", get(club_slug_landing_page))
         .route(
             "/api/c/{slug}/q/{token}/landing",
@@ -376,9 +431,12 @@ mod tests {
             login_throttle: crate::LoginThrottle::default(),
             device_register_throttle: crate::LoginThrottle::default(),
             share_lookup_throttle: crate::LoginThrottle::default(),
+            account_password_throttle: crate::LoginThrottle::default(),
+            account_password_account_throttle: crate::LoginThrottle::default(),
             mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
             webauthn: None,
             sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+            superadmin_emails: Default::default(),
         };
         let router = build_router(state);
         (dir, router, db)
@@ -418,7 +476,7 @@ mod tests {
                 res.headers()
                     .get(header::REFERRER_POLICY)
                     .and_then(|v| v.to_str().ok()),
-                Some(HTML_REFERRER_POLICY)
+                Some("no-referrer")
             );
         }
     }
@@ -449,7 +507,7 @@ mod tests {
                 res.headers()
                     .get(header::REFERRER_POLICY)
                     .and_then(|v| v.to_str().ok()),
-                Some(HTML_REFERRER_POLICY)
+                Some("no-referrer")
             );
         }
     }
@@ -513,7 +571,7 @@ mod tests {
         let token = db.mint_checkin_qr_token(&club_id, now_ms()).await.unwrap();
         let body = get_landing_api(&router, &format!("/api/c/demo/q/{token}/landing")).await;
         assert_eq!(body["releaseAvailable"], false);
-        assert_eq!(body["publicMapPath"], "/public-map.html");
+        assert_eq!(body["publicMapPath"], "/public-map.html?club=demo");
         assert_eq!(body["clubName"], "Demo & Club <script>");
     }
 

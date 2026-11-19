@@ -34,6 +34,21 @@ pub fn token_digest(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
 }
 
+/// Club id embedded in a `v1.{club}.{step}.{sig}` token (no HMAC verify).
+pub fn parse_checkin_token_club_id(token: &str) -> Option<String> {
+    let token = token.trim();
+    let mut parts = token.splitn(4, '.');
+    let ver = parts.next()?;
+    let club_id = parts.next()?;
+    let step_s = parts.next()?;
+    let _sig = parts.next()?;
+    if ver != "v1" || club_id.is_empty() || parts.next().is_some() {
+        return None;
+    }
+    step_s.parse::<i64>().ok()?;
+    Some(club_id.to_string())
+}
+
 pub fn verify_checkin_token(
     secret: &str,
     token: &str,

@@ -1,6 +1,10 @@
 import { expect, test } from "@playwright/test";
 
 test("kiosk layout math stays inside preview box", async ({ page }) => {
+  const login = await page.request.post("/api/club/login", {
+    data: { email: "admin@demo.test", password: "password12" },
+  });
+  expect(login.ok()).toBeTruthy();
   await page.goto("/club-admin-kiosk-layout.html", { waitUntil: "networkidle" });
   const frame = page.locator("#preview-frame");
   await expect(frame).toBeVisible();

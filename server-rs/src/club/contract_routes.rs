@@ -71,6 +71,11 @@ async fn api_magic_complete(
             )
                 .into_response()
         }
+        Err(MagicConsumeError::ClubUnavailable) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "club unavailable" })),
+        )
+            .into_response(),
         Err(MagicConsumeError::Expired) => {
             (StatusCode::GONE, Json(json!({ "error": "expired" }))).into_response()
         }
@@ -111,7 +116,7 @@ async fn api_club_by_slug(
     let session = parse_session_cookie(&headers);
     let now = now_ms();
     let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
-    let user_locale = pilot.as_ref().map(|p| p.locale.clone());
+    let user_locale = pilot.as_ref().and_then(|p| p.locale.clone());
     Json(json!({
         "club": { "id": id, "name": name, "slug": slug, "defaultLocale": default_locale },
         "userLocale": user_locale,

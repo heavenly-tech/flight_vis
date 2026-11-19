@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="es-CL">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="club.signup.title">flight_vis</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main{max-width:26rem;margin:2rem auto;padding:1rem}
+      input,button{width:100%;padding:.6rem;margin:.35rem 0;font:inherit}
+      #lang-slot{margin-bottom:.75rem;font-size:.9rem}
+      .hp{position:absolute;left:-9999px;opacity:0;height:0;width:0;overflow:hidden}
+    </style>
+  </head>
+  <body>
+    <main>
+      <div id="lang-slot"></div>
+      <h1 data-i18n="club.signup.title"></h1>
+      <p class="muted" data-i18n="club.signup.lead"></p>
+      <form id="form" method="post" action="/api/clubs/signup">
+        <input name="name" required data-i18n-placeholder="club.signup.clubName" autocomplete="organization" />
+        <input name="slug" required pattern="[a-z0-9-]{2,48}" data-i18n-placeholder="club.signup.slug" autocomplete="off" />
+        <input name="email" type="email" required data-i18n-placeholder="club.signup.contactEmail" autocomplete="email" />
+        <input name="aerodrome_icao" maxlength="4" pattern="[A-Za-z]{4}" data-i18n-placeholder="club.signup.icaoOptional" autocomplete="off" />
+        <input class="hp" name="website" tabindex="-1" autocomplete="off" aria-hidden="true" />
+        <button type="submit" data-i18n="club.signup.submit"></button>
+      </form>
+      <p id="msg" class="muted"></p>
+      <p class="muted"><a href="/club-register.html" data-i18n="nav.register"></a> · <a href="/login" data-i18n="nav.login"></a></p>
+    </main>
+    <script type="module" src="/src/club/clubSignupPage.ts"></script>
+  </body>
+</html>

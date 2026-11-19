@@ -41,9 +41,12 @@ pub(crate) struct AppState {
     pub(crate) login_throttle: LoginThrottle,
     pub(crate) device_register_throttle: LoginThrottle,
     pub(crate) share_lookup_throttle: LoginThrottle,
+    pub(crate) account_password_throttle: LoginThrottle,
+    pub(crate) account_password_account_throttle: LoginThrottle,
     pub(crate) mailer: club::mail::Mailer,
     pub(crate) webauthn: Option<club::webauthn::WebauthnState>,
     pub(crate) sse_limiter: std::sync::Arc<club::sse_limit::SseLimiter>,
+    pub(crate) superadmin_emails: std::collections::HashSet<String>,
 }
 
 fn app_state(
@@ -66,9 +69,12 @@ fn app_state(
             login_throttle: LoginThrottle::default(),
             device_register_throttle: LoginThrottle::default(),
             share_lookup_throttle: LoginThrottle::default(),
+            account_password_throttle: LoginThrottle::default(),
+            account_password_account_throttle: LoginThrottle::default(),
             mailer: club::mail::Mailer::from_env(club::mail::MailOutbox::default()),
             webauthn: club::webauthn::WebauthnState::from_env(),
             sse_limiter: std::sync::Arc::new(club::sse_limit::SseLimiter::default()),
+            superadmin_emails: club::superadmin::superadmin_emails_from_env(),
         },
         queue_rx,
     )
@@ -151,11 +157,70 @@ async fn auth_me(State(state): State<AppState>, headers: HeaderMap) -> Json<serd
     }))
 }
 
+async fn auth_legacy_gate(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Json<serde_json::Value> {
+    let authenticated = session_token(&headers)
+        .map(|token| state.auth.verify(&token, now_secs()))
+        .unwrap_or(false);
+    let mut allowed = authenticated;
+    if !allowed {
+        if let Some(db) = state.club.as_ref() {
+            let session = club::parse_session_cookie(&headers);
+            let now = club::now_ms();
+            let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
+            if let Some(pilot) = pilot {
+                allowed = db
+                    .is_platform_superadmin(&pilot.id, &state.superadmin_emails)
+                    .await;
+            }
+        }
+    }
+    Json(json!({
+        "allowed": allowed,
+        "authenticated": authenticated,
+        "configured": state.auth.configured(),
+    }))
+}
+
+async fn club_admin_login_redirect(
+    state: &AppState,
+    headers: &HeaderMap,
+    path: &str,
+    query: Option<&str>,
+) -> Option<axum::response::Response> {
+    let normalized =
+        static_files::normalize_url_path(path).unwrap_or_else(|| path.trim().to_string());
+    if !normalized.starts_with("/club-admin-") || !normalized.ends_with(".html") {
+        return None;
+    }
+    let db = state.club.as_ref()?;
+    let session = club::parse_session_cookie(headers);
+    let now = club::now_ms();
+    let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
+    if pilot
+        .as_ref()
+        .is_some_and(|p| p.role == "admin" || p.role == "staff")
+    {
+        return None;
+    }
+    let raw_next = match query {
+        Some(q) if !q.is_empty() => format!("{normalized}?{q}"),
+        _ => normalized.clone(),
+    };
+    let next = auth::safe_next(&raw_next);
+    Some(redirect_found(&format!("/login?next={}", url_encode(&next))).into_response())
+}
+
 async fn fallback(
     State(state): State<AppState>,
     uri: Uri,
     headers: HeaderMap,
 ) -> Result<axum::response::Response, StatusCode> {
+    if let Some(resp) = club_admin_login_redirect(&state, &headers, uri.path(), uri.query()).await {
+        return Ok(resp);
+    }
     static_files::serve(&state.dist_dir, uri.path(), &headers).await
 }
 
@@ -213,6 +278,77 @@ async fn read_login_page(dist_dir: &std::path::Path, configured: bool) -> String
     login_fallback_html(configured)
 }
 
+fn login_redirect_query(query: &HashMap<String, String>, force_password_mode: bool) -> String {
+    let mut pairs: Vec<(&str, String)> = Vec::new();
+    if let Some(next) = query.get("next") {
+        let safe = auth::safe_next(next);
+        if safe != "/" {
+            pairs.push(("next", safe));
+        }
+    }
+    if query.get("e") == Some(&"1".to_string()) {
+        pairs.push(("e", "1".to_string()));
+    }
+    if force_password_mode || query.get("mode").map(String::as_str) == Some("password") {
+        pairs.push(("mode", "password".to_string()));
+    }
+    if pairs.is_empty() {
+        "/login".to_string()
+    } else {
+        let qs = pairs
+            .iter()
+            .map(|(k, v)| format!("{k}={}", url_encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+        format!("/login?{qs}")
+    }
+}
+
+async fn club_login_html_redirect(
+    Query(query): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    redirect_found(&login_redirect_query(&query, false))
+}
+
+async fn login_legacy_redirect(Query(query): Query<HashMap<String, String>>) -> impl IntoResponse {
+    redirect_found(&login_redirect_query(&query, true))
+}
+
+fn apply_login_mode_html(html: &str, query: &HashMap<String, String>) -> String {
+    if query.get("mode") != Some(&"password".to_string()) {
+        return html.to_string();
+    }
+    html.replace(
+        r#"id="login-form" method="post" action="/api/account/magic-link""#,
+        r#"id="login-form" method="post" action="/api/account/login""#,
+    )
+    .replace(r#"id="password-reveal" hidden"#, r#"id="password-reveal""#)
+    .replace(
+        r#"id="submit-magic" class="primary-btn" data-i18n="entrar.sendLink""#,
+        r#"id="submit-magic" class="primary-btn" data-i18n="entrar.sendLink" hidden"#,
+    )
+    .replace(
+        r#"id="submit-password" class="primary-btn" hidden data-i18n="club.login.submit""#,
+        r#"id="submit-password" class="primary-btn" data-i18n="club.login.submit""#,
+    )
+    .replace(
+        r#"id="use-password" class="muted-link""#,
+        r#"id="use-password" class="muted-link" hidden"#,
+    )
+    .replace(
+        r#"id="back-magic" class="muted-link" href="/login" hidden"#,
+        r#"id="back-magic" class="muted-link" href="/login""#,
+    )
+    .replace(
+        r#"id="legacy-details" class="muted" hidden"#,
+        r#"id="legacy-details" class="muted""#,
+    )
+    .replace(
+        r#"name="password" type="password" autocomplete="current-password""#,
+        r#"name="password" type="password" autocomplete="current-password" required"#,
+    )
+}
+
 async fn login_page(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -225,12 +361,14 @@ async fn login_page(
         let next = query.get("next").map(String::as_str).unwrap_or("/");
         return redirect_found(&auth::safe_next(next)).into_response();
     }
-    let html = read_login_page(&state.dist_dir, state.auth.configured()).await;
+    let raw = read_login_page(&state.dist_dir, state.auth.configured()).await;
+    let html = apply_login_mode_html(&raw, &query);
     (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "text/html; charset=UTF-8"),
             (header::CONTENT_SECURITY_POLICY, static_files::HTML_CSP),
+            (header::REFERRER_POLICY, static_files::HTML_REFERRER_POLICY),
         ],
         html,
     )
@@ -280,7 +418,7 @@ fn login_fields(headers: &HeaderMap, body: &[u8]) -> LoginFields {
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
-    if content_type.contains("application/json") {
+    if auth::media_type_is_json(content_type) {
         let parsed: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
         return LoginFields {
             password: parsed
@@ -305,6 +443,8 @@ fn login_fields(headers: &HeaderMap, body: &[u8]) -> LoginFields {
 /// (the one appended by our own proxy).
 pub(crate) const LOGIN_MAX_ATTEMPTS: usize = 8;
 pub(crate) const SHARE_LOOKUP_MAX_ATTEMPTS: usize = 60;
+pub(crate) const ACCOUNT_PASSWORD_MAX_ATTEMPTS: usize = 10;
+pub(crate) const ACCOUNT_PASSWORD_PER_ACCOUNT_MAX_ATTEMPTS: usize = 5;
 const LOGIN_WINDOW_SECS: u64 = 60;
 
 #[derive(Clone, Default)]
@@ -509,6 +649,9 @@ async fn login_post(
     client_ip: ClientIp,
     body: Bytes,
 ) -> impl IntoResponse {
+    if let Err(status) = club::csrf::cookie_post_allowed(&headers) {
+        return status.into_response();
+    }
     let json = wants_json(&headers);
     if !state.login_throttle.allow(&client_ip.0, now_secs()) {
         return too_many_logins(json);
@@ -517,7 +660,7 @@ async fn login_post(
         if json {
             return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "locked" }))).into_response();
         }
-        return redirect_found("/login?locked=1").into_response();
+        return redirect_found("/login?mode=password&locked=1").into_response();
     }
     let fields = login_fields(&headers, &body);
     if !state.auth.check_password(&fields.password) {
@@ -528,7 +671,12 @@ async fn login_post(
             )
                 .into_response();
         }
-        return redirect_found("/login?e=1").into_response();
+        let mut q = HashMap::new();
+        q.insert("e".to_string(), "1".to_string());
+        if fields.next != "/" {
+            q.insert("next".to_string(), fields.next.clone());
+        }
+        return redirect_found(&login_redirect_query(&q, true)).into_response();
     }
     let secure = is_secure(&headers);
     let cookie = auth::set_cookie_header(&state.auth.mint(now_secs()), secure);
@@ -581,8 +729,11 @@ fn build_router(state: AppState) -> Router {
     let mut app = Router::new()
         .route("/api/health", get(health))
         .route("/api/auth/me", get(auth_me))
+        .route("/api/auth/legacy-gate", get(auth_legacy_gate))
         .route("/login", get(login_page).post(login_post))
         .route("/login.html", get(login_html_redirect))
+        .route("/login/legacy", get(login_legacy_redirect))
+        .route("/club-login.html", get(club_login_html_redirect))
         .route("/logout", get(logout).post(logout));
     if state.club.is_some() {
         app = app.merge(club::router()).merge(club::contract_router());
@@ -599,6 +750,7 @@ fn build_router(state: AppState) -> Router {
 /// loopback, honouring the same `PORT` as the server.
 const HEALTHCHECK_ARG: &str = "healthcheck";
 const CHECK_I18N_ARG: &str = "check-i18n";
+const SEED_ACCOUNT_ARG: &str = "seed-account";
 const HEALTHCHECK_HOST: IpAddr = IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
 const HEALTHCHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -715,7 +867,67 @@ fn main() {
     if arg.as_deref() == Some(std::ffi::OsStr::new(CHECK_I18N_ARG)) {
         std::process::exit(if run_check_i18n() { 0 } else { 1 });
     }
+    if arg.as_deref() == Some(std::ffi::OsStr::new(SEED_ACCOUNT_ARG)) {
+        std::process::exit(run_seed_account_cli());
+    }
     run_server();
+}
+
+fn run_seed_account_cli() -> i32 {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let mut email = String::new();
+    let mut club = String::from("cas");
+    let mut role = String::from("admin");
+    let mut dry_run = true;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--email" if i + 1 < args.len() => {
+                email = args[i + 1].clone();
+                i += 2;
+            }
+            "--club" if i + 1 < args.len() => {
+                club = args[i + 1].clone();
+                i += 2;
+            }
+            "--role" if i + 1 < args.len() => {
+                role = args[i + 1].clone();
+                i += 2;
+            }
+            "--dry-run" => {
+                dry_run = true;
+                i += 1;
+            }
+            "--apply" => {
+                dry_run = false;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    if email.is_empty() {
+        eprintln!("usage: flight_vis seed-account --email EMAIL [--club SLUG] [--role admin] [--dry-run|--apply]");
+        return 2;
+    }
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    rt.block_on(async {
+        match club::ClubDb::connect().await {
+            Ok(db) => match db.seed_account_cli(&email, &club, &role, dry_run).await {
+                Ok(v) => {
+                    println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("seed-account error: {e}");
+                    1
+                }
+            },
+            Err(e) => {
+                eprintln!("database: {e}");
+                1
+            }
+        }
+    })
 }
 
 #[tokio::main]
@@ -743,10 +955,17 @@ async fn run_server() {
     });
     let club = match club::ClubDb::connect().await {
         Ok(db) => {
+            let now = club::now_ms();
+            if let Err(error) = db.purge_stale_pending_clubs(now).await {
+                eprintln!("warn: pending club purge failed: {error}");
+            }
             if std::env::var("FLIGHT_CLUB_SEED_DEMO").as_deref() == Ok("1") {
                 if let Err(error) = db.seed_demo_if_empty().await {
                     eprintln!("warn: demo seed failed: {error}");
                 }
+            }
+            if let Err(error) = db.backfill_accounts_from_pilots().await {
+                eprintln!("warn: pilot account backfill failed: {error}");
             }
             Some(db)
         }

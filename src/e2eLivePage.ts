@@ -1,13 +1,10 @@
-import { connectLiveStream } from "./sseClient";
+import { connectLiveStream } from "./live/sseClient";
 
 const params = new URLSearchParams(location.search);
 const sessionId = params.get("id") ?? "demo-session";
 const statusEl = document.getElementById("live-status");
 const countEl = document.getElementById("live-count");
-if (!statusEl || !countEl) {
-  throw new Error("live-status elements missing");
-}
-
+if (!statusEl || !countEl) throw new Error("live-status elements missing");
 let fixCount = 0;
 statusEl.textContent = "reconnecting";
 connectLiveStream(sessionId, {

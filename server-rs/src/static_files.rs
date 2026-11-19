@@ -29,6 +29,28 @@ fn mime_for(ext: &str) -> &'static str {
     }
 }
 
+/// Collapse `//`, `/./`, and trailing slashes in a URL path (no filesystem join).
+pub fn normalize_url_path(url_path: &str) -> Option<String> {
+    let trimmed = url_path.trim();
+    if trimmed.is_empty() || !trimmed.starts_with('/') {
+        return None;
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for part in trimmed.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            return None;
+        }
+        parts.push(part);
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(format!("/{}", parts.join("/")))
+}
+
 /// Mirror of the Node guard: strip leading slashes, drop `.` segments, and
 /// refuse to serve anything escaping the directory (any `..` segment).
 fn safe_join(dist_dir: &Path, url_path: &str) -> Option<PathBuf> {
@@ -128,21 +150,10 @@ fn sidecar_path(base: &Path, encoding: &str) -> PathBuf {
     PathBuf::from(format!("{}{}", base.to_string_lossy(), suffix))
 }
 
-/// Production HTML CSP (single source of truth; nginx vhost should mirror this).
-pub const HTML_CSP: &str = concat!(
-    "default-src 'self'; ",
-    "script-src 'self' 'wasm-unsafe-eval'; ",
-    "worker-src 'self' blob:; ",
-    "style-src 'self' 'unsafe-inline'; ",
-    "font-src 'self'; ",
-    "img-src 'self' https://services.arcgisonline.com https://elevation3d.arcgis.com; ",
-    "connect-src 'self' https://services.arcgisonline.com https://elevation3d.arcgis.com; ",
-    "frame-ancestors 'none'; ",
-    "base-uri 'none'; ",
-    "form-action 'self'"
-);
+/// Keep in sync with `server-rs/csp/html-page.csp` (e2e CSP gateway reads the same file).
+pub const HTML_CSP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/csp/html-page.csp"));
 
-pub const HTML_REFERRER_POLICY: &str = "no-referrer";
+pub const HTML_REFERRER_POLICY: &str = "strict-origin-when-cross-origin";
 
 fn cache_for(relative: &str) -> &'static str {
     if is_geoid_asset(relative) {
@@ -218,7 +229,9 @@ async fn file_response(opts: FileResponseOpts<'_>) -> Result<axum::response::Res
         .header(header::CACHE_CONTROL, opts.cache)
         .header(header::ETAG, opts.etag);
     if opts.content_type.starts_with("text/html") {
-        builder = builder.header(header::CONTENT_SECURITY_POLICY, HTML_CSP);
+        builder = builder
+            .header(header::CONTENT_SECURITY_POLICY, HTML_CSP)
+            .header(header::REFERRER_POLICY, HTML_REFERRER_POLICY);
     }
     if let Some(len) = content_length {
         builder = builder.header(header::CONTENT_LENGTH, len.to_string());
@@ -334,6 +347,22 @@ mod tests {
         ));
         std::fs::create_dir_all(dir.join("geoid")).unwrap();
         dir
+    }
+
+    #[test]
+    fn normalize_url_path_collapses_admin_gate_variants() {
+        assert_eq!(
+            normalize_url_path("//club-admin-types.html"),
+            Some("/club-admin-types.html".to_string())
+        );
+        assert_eq!(
+            normalize_url_path("/./club-admin-types.html"),
+            Some("/club-admin-types.html".to_string())
+        );
+        assert_eq!(
+            normalize_url_path("/club-admin-types.html/"),
+            Some("/club-admin-types.html".to_string())
+        );
     }
 
     #[test]

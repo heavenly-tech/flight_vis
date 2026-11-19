@@ -83,10 +83,15 @@ newDeviceBtn.addEventListener("click", async () => {
 
 logoutBtn?.addEventListener("click", async () => {
   await api("/api/club/logout", { method: "POST" });
-  location.href = "/club-login.html";
+  location.href = "/login?mode=pilot";
 });
 
 void (async () => {
-  await startClubPage();
+  void startClubPage();
   await boot();
+  const onLocale = () => {
+    void boot();
+  };
+  window.addEventListener("fv-locale-change", onLocale);
+  window.addEventListener("fv-i18n-ready", onLocale);
 })();

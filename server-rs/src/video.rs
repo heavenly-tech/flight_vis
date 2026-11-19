@@ -981,9 +981,12 @@ mod tests {
             login_throttle: crate::LoginThrottle::default(),
             device_register_throttle: crate::LoginThrottle::default(),
             share_lookup_throttle: crate::LoginThrottle::default(),
+            account_password_throttle: crate::LoginThrottle::default(),
+            account_password_account_throttle: crate::LoginThrottle::default(),
             mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
             webauthn: None,
             sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+            superadmin_emails: Default::default(),
         };
         (build_router(state), data_dir)
     }

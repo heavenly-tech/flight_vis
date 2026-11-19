@@ -13,7 +13,7 @@ async function login(page, email) {
 }
 
 const shots = [
-  { name: "club-login", path: "/club-login.html", auth: null },
+  { name: "club-login", path: "/login", auth: null },
   { name: "club-admin-types", path: "/club-admin-types.html", auth: "admin@demo.test" },
   { name: "club-admin-tails", path: "/club-admin-tails.html", auth: "admin@demo.test" },
   { name: "club-admin-pilots", path: "/club-admin-pilots.html", auth: "admin@demo.test" },

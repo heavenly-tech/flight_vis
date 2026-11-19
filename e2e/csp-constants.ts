@@ -1,3 +1,10 @@
-/** Must match `server-rs/src/static_files.rs` `HTML_CSP` (nginx vhost should mirror this). */
-export const PROD_HTML_CSP =
-  "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' https://services.arcgisonline.com https://elevation3d.arcgis.com; connect-src 'self' https://services.arcgisonline.com https://elevation3d.arcgis.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+import { globeE2eCsp, readHtmlPageCsp } from "../scripts/read-html-csp.mjs";
+
+/** Matches `static_files::HTML_CSP` / `server-rs/csp/html-page.csp`. */
+export const HTML_PAGE_CSP = readHtmlPageCsp();
+
+/** Production CSP on release server HTML (same as HTML_PAGE_CSP). */
+export const PROD_HTML_CSP = HTML_PAGE_CSP;
+
+/** Globe CSP e2e gateway (same policy string). */
+export const GLOBE_E2E_CSP = globeE2eCsp();
