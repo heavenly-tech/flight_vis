@@ -3,7 +3,7 @@ import { installCspObservers } from "./globe-csp-helpers";
 import { installPasswordUrlGuard } from "./auth-csp-helpers";
 import { HTML_PAGE_CSP } from "./csp-constants";
 import {
-  assertNoPasswordInUrl,
+  assertNoPasswordInUrl as assertLocationHasNoPassword,
   trackPasswordInRequestUrls,
 } from "./club-login-helpers";
 
@@ -79,7 +79,7 @@ test.describe("credential pages under prod CSP", () => {
       failOnStatusCode: false,
     });
     const loc = res.headers().location ?? "";
-    assertNoPasswordInUrl(loc);
+    assertLocationHasNoPassword(loc);
     leak.assertClean();
     await context.close();
   });
