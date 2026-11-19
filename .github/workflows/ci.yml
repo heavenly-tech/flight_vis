@@ -90,6 +90,9 @@ jobs:
       - name: no Argentine voseo in Spanish UI
         run: node scripts/voseo-check.mjs
 
+      - name: globe CSP has single img-src directive
+        run: node scripts/check-globe-csp.mjs
+
       - name: playwright e2e
         run: npx playwright install --with-deps && npm run test:e2e
 

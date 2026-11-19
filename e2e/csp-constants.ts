@@ -1,12 +1,7 @@
-/** Production nginx CSP on flight.heavenly.cl (must match the vhost). */
-export const PROD_HTML_CSP =
-  "default-src 'self'; " +
-  "script-src 'self' 'wasm-unsafe-eval'; " +
-  "worker-src 'self' blob:; " +
-  "style-src 'self' 'unsafe-inline'; " +
-  "img-src 'self' https://services.arcgisonline.com; " +
-  "connect-src 'self' https://services.arcgisonline.com https://elevation3d.arcgis.com; " +
-  "font-src 'self'; " +
-  "frame-ancestors 'none'; " +
-  "base-uri 'none'; " +
-  "form-action 'self'";
+import { globeE2eCsp, readHtmlPageCsp } from "../scripts/read-html-csp.mjs";
+
+/** Matches `static_files::HTML_CSP` / `csp/html-page.csp`. */
+export const HTML_PAGE_CSP = readHtmlPageCsp();
+
+/** Production globe CSP (e2e gateway); must match `scripts/e2e-csp-gateway.mjs`. */
+export const PROD_HTML_CSP = globeE2eCsp();

@@ -371,7 +371,7 @@ fn login_fields(headers: &HeaderMap, body: &[u8]) -> LoginFields {
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
-    if content_type.contains("application/json") {
+    if auth::media_type_is_json(content_type) {
         let parsed: serde_json::Value = serde_json::from_slice(body).unwrap_or_default();
         return LoginFields {
             password: parsed

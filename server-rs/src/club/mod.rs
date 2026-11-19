@@ -59,6 +59,8 @@ mod club_security_tests;
 #[cfg(test)]
 mod club_signup_tests;
 #[cfg(test)]
+mod cross_site_csrf_tests;
+#[cfg(test)]
 mod load_test;
 
 pub use auth::parse_session_cookie;

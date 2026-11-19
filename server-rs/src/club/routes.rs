@@ -337,7 +337,7 @@ fn club_login_fields(headers: &HeaderMap, body: &[u8]) -> ClubLoginFields {
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if content_type.contains("application/json") {
+    if crate::auth::media_type_is_json(content_type) {
         let body: LoginBody = serde_json::from_slice(body).unwrap_or_default();
         return ClubLoginFields {
             email: body.email,
@@ -378,6 +378,12 @@ async fn club_login(
     body: Bytes,
 ) -> impl IntoResponse {
     let json = club_wants_json(&headers);
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        if json {
+            return (status, Json(json!({ "error": "csrf" }))).into_response();
+        }
+        return status.into_response();
+    }
     let fields = club_login_fields(&headers, &body);
     let Some(db) = club_db(&state) else {
         if json {

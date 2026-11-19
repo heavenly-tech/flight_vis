@@ -204,8 +204,23 @@ pub fn is_secure_request(forwarded_proto: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+/// Exact media type match (case-insensitive); parameters such as `charset` are ignored.
+pub fn media_type_is_json(value: &str) -> bool {
+    value
+        .split(';')
+        .next()
+        .map(str::trim)
+        .is_some_and(|m| m.eq_ignore_ascii_case("application/json"))
+}
+
+pub fn accept_wants_json(accept: &str) -> bool {
+    accept
+        .split(',')
+        .any(|part| media_type_is_json(part.trim()))
+}
+
 pub fn wants_json(accept: &str, content_type: &str) -> bool {
-    accept.contains("application/json") || content_type.contains("application/json")
+    accept_wants_json(accept) || media_type_is_json(content_type)
 }
 
 #[cfg(test)]
@@ -252,6 +267,16 @@ mod tests {
         assert!(!other.verify(&token, now + 10));
         assert!(!auth.verify("v1.abc.def", now));
         assert!(!auth.verify("bogus", now));
+    }
+
+    #[test]
+    fn json_media_type_exact_match_ignores_params() {
+        assert!(super::media_type_is_json("application/json; charset=utf-8"));
+        assert!(!super::media_type_is_json("application/json+xml"));
+        assert!(!super::media_type_is_json("text/application/json"));
+        assert!(super::accept_wants_json(
+            "text/html, application/json;q=0.9"
+        ));
     }
 
     #[test]

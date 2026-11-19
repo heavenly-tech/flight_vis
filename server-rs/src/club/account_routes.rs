@@ -152,7 +152,7 @@ fn account_login_fields(headers: &HeaderMap, body: &[u8]) -> AccountLoginFields 
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if content_type.contains("application/json") {
+    if crate::auth::media_type_is_json(content_type) {
         let body: AccountLoginBody = serde_json::from_slice(body).unwrap_or_default();
         return AccountLoginFields {
             email: body.email,
@@ -530,7 +530,7 @@ async fn post_account_magic(
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let (token, purpose) = if content_type.contains("application/json") {
+    let (token, purpose) = if crate::auth::media_type_is_json(content_type) {
         let parsed: AccountMagicConsumeJson =
             serde_json::from_slice(&body).unwrap_or(AccountMagicConsumeJson {
                 token: String::new(),

@@ -7,23 +7,19 @@ import http from "node:http";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { globeE2eCsp, readHtmlPageCsp } from "./read-html-csp.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(root, "..", "dist");
 const apiOrigin = process.env.FLIGHT_VIS_API_ORIGIN ?? "http://127.0.0.1:8080";
 const port = Number(process.env.E2E_CSP_PORT ?? "19090");
 
-const PROD_HTML_CSP =
-  "default-src 'self'; " +
-  "script-src 'self' 'wasm-unsafe-eval'; " +
-  "worker-src 'self' blob:; " +
-  "style-src 'self' 'unsafe-inline'; " +
-  "img-src 'self' https://services.arcgisonline.com; " +
-  "connect-src 'self' https://services.arcgisonline.com https://elevation3d.arcgis.com; " +
-  "font-src 'self'; " +
-  "frame-ancestors 'none'; " +
-  "base-uri 'none'; " +
-  "form-action 'self'";
+const HTML_PAGE_CSP = readHtmlPageCsp();
+const GLOBE_E2E_CSP = globeE2eCsp();
+
+function cspForPath(pathOnly) {
+  return pathOnly === "/club-login.html" ? HTML_PAGE_CSP : GLOBE_E2E_CSP;
+}
 
 function mime(ext) {
   switch (ext) {
@@ -72,7 +68,7 @@ function proxyToApi(req, res, body) {
     (proxyRes) => {
       res.writeHead(proxyRes.statusCode ?? 502, {
         ...proxyRes.headers,
-        "content-security-policy": PROD_HTML_CSP,
+        "content-security-policy": GLOBE_E2E_CSP,
       });
       proxyRes.pipe(res);
     },
@@ -113,9 +109,10 @@ const server = http.createServer((req, res) => {
       filePath = path.join(distDir, "index.html");
     }
     const ext = path.extname(filePath).slice(1);
+    const pathOnly = urlPath.split("?")[0];
     res.writeHead(200, {
       "content-type": mime(ext),
-      "content-security-policy": PROD_HTML_CSP,
+      "content-security-policy": cspForPath(pathOnly),
       "cache-control": "no-cache",
     });
     if (ext === "html") {

@@ -137,7 +137,8 @@ fn sidecar_path(base: &Path, encoding: &str) -> PathBuf {
     PathBuf::from(format!("{}{}", base.to_string_lossy(), suffix))
 }
 
-pub const HTML_CSP: &str = "default-src 'self'; img-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+/// Keep in sync with `server-rs/csp/html-page.csp` (e2e CSP gateway reads the same file).
+pub const HTML_CSP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/csp/html-page.csp"));
 
 pub const HTML_REFERRER_POLICY: &str = "strict-origin-when-cross-origin";
 
