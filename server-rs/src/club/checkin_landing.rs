@@ -5,7 +5,7 @@ use crate::club::{
         launcher_intent_url,
     },
     checkin,
-    club_scope::{checkin_qr_path, ClubScopeError},
+    club_scope::ClubScopeError,
     db::{now_ms, ClubDb},
     routes::club_db,
 };

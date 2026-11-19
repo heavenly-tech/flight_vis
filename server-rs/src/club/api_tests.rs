@@ -1624,7 +1624,8 @@ async fn admin_checkin_qr_routes_auth_matrix() {
         .unwrap();
     let staff_cookie = login_cookie(&mut fx.router, "b@test").await;
     let pilot_cookie = login_cookie(&mut fx.router, "a@test").await;
-    let admin_cookie = make_admin(&mut fx, &fx.pilot_a, &club_id, "a@test").await;
+    let pilot_a = fx.pilot_a.clone();
+    let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
 
     let anon_svg = fx
         .router

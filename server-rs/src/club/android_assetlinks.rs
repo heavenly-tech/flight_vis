@@ -394,7 +394,7 @@ mod tests {
     fn checkin_qr_payload_uses_public_url_not_host() {
         let _guard = super::android_test_env_lock();
         std::env::set_var("FLIGHT_CLUB_PUBLIC_URL", "https://flight.heavenly.cl");
-        let headers = HeaderMap::new();
+        let mut headers = HeaderMap::new();
         headers.insert(header::HOST, "evil.example.com".parse().unwrap());
         let dir = tempfile::tempdir().unwrap();
         let state = crate::AppState {
