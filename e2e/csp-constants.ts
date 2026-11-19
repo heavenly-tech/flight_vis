@@ -1,10 +1,22 @@
-import { globeE2eCsp, readHtmlPageCsp } from "../scripts/read-html-csp.mjs";
+import {
+  cspForPath,
+  policyKindForPath,
+  readHtmlGlobeCsp,
+  readHtmlStrictCsp,
+  HTML_CSP_ROUTE_TABLE,
+} from "../scripts/read-html-csp.mjs";
 
-/** Matches `static_files::HTML_CSP` / `server-rs/csp/html-page.csp`. */
-export const HTML_PAGE_CSP = readHtmlPageCsp();
+/** Strict HTML CSP (`server-rs/csp/html-strict.csp`). */
+export const HTML_STRICT_CSP = readHtmlStrictCsp();
 
-/** Production CSP on release server HTML (same as HTML_PAGE_CSP). */
-export const PROD_HTML_CSP = HTML_PAGE_CSP;
+/** Globe / map HTML CSP (`server-rs/csp/html-globe.csp`). */
+export const HTML_GLOBE_CSP = readHtmlGlobeCsp();
 
-/** Globe CSP e2e gateway (same policy string). */
-export const GLOBE_E2E_CSP = globeE2eCsp();
+/** @deprecated use HTML_STRICT_CSP or `cspForPath` */
+export const HTML_PAGE_CSP = HTML_STRICT_CSP;
+
+export function expectedCspForPath(path: string): string {
+  return cspForPath(path);
+}
+
+export { HTML_CSP_ROUTE_TABLE, policyKindForPath };

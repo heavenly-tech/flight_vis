@@ -1,8 +1,27 @@
 import { expect, test } from "@playwright/test";
-import { PROD_HTML_CSP } from "./csp-constants";
+import {
+  expectedCspForPath,
+  HTML_GLOBE_CSP,
+  HTML_STRICT_CSP,
+  HTML_CSP_ROUTE_TABLE,
+  policyKindForPath,
+} from "./csp-constants";
 
 const CSP_VIOLATION =
   /Refused to execute|Refused to load|Content Security Policy|securitypolicyviolation|violates the following Content Security Policy/i;
+
+function assertStrictCsp(csp: string, path: string) {
+  expect(csp, `${path} strict CSP`).toBe(HTML_STRICT_CSP);
+  expect(csp).not.toContain("wasm-unsafe-eval");
+  expect(csp).not.toMatch(/https?:\/\//);
+  expect(csp).not.toContain("blob:");
+}
+
+function assertGlobeCsp(csp: string, path: string) {
+  expect(csp, `${path} globe CSP`).toBe(HTML_GLOBE_CSP);
+  expect(csp).toContain("wasm-unsafe-eval");
+  expect(csp).toContain("https://services.arcgisonline.com");
+}
 
 function trackCspViolations(page: import("@playwright/test").Page): {
   violations: string[];
@@ -43,26 +62,55 @@ function relevantViolations(events: string[]): string[] {
   );
 }
 
-async function expectProdCspHeader(request: import("@playwright/test").APIRequestContext, path: string): Promise<void> {
+async function expectCspHeader(
+  request: import("@playwright/test").APIRequestContext,
+  path: string,
+): Promise<void> {
   const res = await request.get(path);
   expect(res.ok(), `GET ${path}`).toBeTruthy();
-  const csp = res.headers()["content-security-policy"];
-  expect(csp, `${path} CSP header`).toBe(PROD_HTML_CSP);
+  const csp = res.headers()["content-security-policy"] ?? "";
+  const expected = expectedCspForPath(path);
+  expect(csp, `${path} CSP header`).toBe(expected);
 }
 
 test.describe.configure({ timeout: 120_000 });
 
 test.describe("production CSP (release server)", () => {
-  test("HTML responses use prod CSP and have no inline scripts", async ({ request }) => {
-    const paths = [
-      "/",
+  test("every HTML CSP route resolves to strict or globe policy", () => {
+    for (const path of Object.keys(HTML_CSP_ROUTE_TABLE)) {
+      expect(policyKindForPath(path), path).toBeDefined();
+      expectedCspForPath(path);
+    }
+    expect(policyKindForPath("/vuelo-5")).toBe("globe");
+  });
+
+  test("strict CSP on login, account, and admin HTML", async ({ request }) => {
+    const strictPaths = [
       "/login",
-      "/public-map.html",
-      "/club-map.html",
+      "/account-clubs.html",
+      "/club-admin-types.html",
       "/club-checkin-landing.html",
     ];
+    for (const path of strictPaths) {
+      const res = await request.get(path);
+      expect(res.ok(), path).toBeTruthy();
+      assertStrictCsp(res.headers()["content-security-policy"] ?? "", path);
+    }
+  });
+
+  test("globe CSP on viewer and map HTML", async ({ request }) => {
+    const globePaths = ["/", "/vuelo-5", "/club-map.html", "/public-map.html"];
+    for (const path of globePaths) {
+      const res = await request.get(path);
+      expect(res.ok(), path).toBeTruthy();
+      assertGlobeCsp(res.headers()["content-security-policy"] ?? "", path);
+    }
+  });
+
+  test("HTML responses have no inline scripts", async ({ request }) => {
+    const paths = ["/", "/login", "/public-map.html", "/club-map.html", "/club-checkin-landing.html"];
     for (const path of paths) {
-      await expectProdCspHeader(request, path);
+      await expectCspHeader(request, path);
       const html = await (await request.get(path)).text();
       expect(html, `${path} inline script`).not.toMatch(/<script(?![^>]*\ssrc=)/);
       expect(html, `${path} inline handler`).not.toMatch(/\son\w+\s*=/i);
@@ -86,9 +134,9 @@ test.describe("production CSP (release server)", () => {
     expect(relevantViolations(await domViolations(page)), "securitypolicyviolation events").toEqual([]);
   });
 
-  test("club landing page loads fonts/styles under prod CSP", async ({ page, request }) => {
+  test("club landing page loads fonts/styles under strict CSP", async ({ page, request }) => {
     const { violations, pageErrors } = trackCspViolations(page);
-    await expectProdCspHeader(request, "/club-checkin-landing.html");
+    await expectCspHeader(request, "/club-checkin-landing.html");
     await page.goto("/club-checkin-landing.html");
     await expect(page.locator("main")).toBeVisible({ timeout: 30_000 });
     const fontOk = await page.evaluate(() => {

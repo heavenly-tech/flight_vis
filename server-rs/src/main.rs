@@ -4,6 +4,7 @@ mod device_auth;
 mod flights;
 mod i18n;
 mod live;
+mod html_csp;
 mod static_files;
 mod store;
 mod video;
@@ -367,7 +368,12 @@ async fn login_page(
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "text/html; charset=UTF-8"),
-            (header::CONTENT_SECURITY_POLICY, static_files::HTML_CSP),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                html_csp::csp_string(
+                    html_csp::policy_for_route("/login").expect("/login in HTML_CSP_ROUTE_TABLE"),
+                ),
+            ),
             (header::REFERRER_POLICY, static_files::HTML_REFERRER_POLICY),
         ],
         html,

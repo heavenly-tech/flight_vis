@@ -11,6 +11,8 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 
+use crate::html_csp::{csp_for_dist_relative, csp_for_spa_fallback};
+
 fn mime_for(ext: &str) -> &'static str {
     match ext {
         "css" => "text/css; charset=utf-8",
@@ -150,9 +152,6 @@ fn sidecar_path(base: &Path, encoding: &str) -> PathBuf {
     PathBuf::from(format!("{}{}", base.to_string_lossy(), suffix))
 }
 
-/// Keep in sync with `server-rs/csp/html-page.csp` (e2e CSP gateway reads the same file).
-pub const HTML_CSP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/csp/html-page.csp"));
-
 pub const HTML_REFERRER_POLICY: &str = "strict-origin-when-cross-origin";
 
 fn cache_for(relative: &str) -> &'static str {
@@ -198,6 +197,7 @@ struct FileResponseOpts<'a> {
     vary_encoding: bool,
     not_modified: bool,
     sized_body: Option<Vec<u8>>,
+    html_csp: Option<&'static str>,
 }
 
 async fn file_response(opts: FileResponseOpts<'_>) -> Result<axum::response::Response, StatusCode> {
@@ -228,9 +228,9 @@ async fn file_response(opts: FileResponseOpts<'_>) -> Result<axum::response::Res
         .header(header::CONTENT_TYPE, opts.content_type)
         .header(header::CACHE_CONTROL, opts.cache)
         .header(header::ETAG, opts.etag);
-    if opts.content_type.starts_with("text/html") {
+    if let Some(csp) = opts.html_csp {
         builder = builder
-            .header(header::CONTENT_SECURITY_POLICY, HTML_CSP)
+            .header(header::CONTENT_SECURITY_POLICY, csp)
             .header(header::REFERRER_POLICY, HTML_REFERRER_POLICY);
     }
     if let Some(len) = content_length {
@@ -292,6 +292,11 @@ pub async fn serve(
             } else {
                 None
             };
+            let html_csp = if ext_of(relative).eq_ignore_ascii_case("html") {
+                Some(csp_for_dist_relative(relative).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+            } else {
+                None
+            };
             return file_response(FileResponseOpts {
                 path: &serve_path,
                 content_type: mime_for(&ext_of(relative).to_lowercase()),
@@ -301,6 +306,7 @@ pub async fn serve(
                 vary_encoding: vary,
                 not_modified,
                 sized_body,
+                html_csp,
             })
             .await;
         }
@@ -325,6 +331,7 @@ pub async fn serve(
             vary_encoding: false,
             not_modified: if_none_match == Some(etag.as_str()),
             sized_body: None,
+            html_csp: Some(csp_for_spa_fallback()),
         })
         .await;
     }
@@ -334,6 +341,7 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::html_csp::{HTML_GLOBE_CSP, HTML_STRICT_CSP};
     use axum::http::HeaderValue;
 
     fn temp_dist() -> PathBuf {
@@ -491,13 +499,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn html_csp_matches_production_policy() {
-        assert!(HTML_CSP.contains("script-src 'self' 'wasm-unsafe-eval'"));
-        assert!(HTML_CSP.contains("worker-src 'self' blob:"));
-        assert!(HTML_CSP.contains("font-src 'self'"));
-        assert!(HTML_CSP.contains("https://services.arcgisonline.com"));
-        assert!(HTML_CSP.contains("https://elevation3d.arcgis.com"));
+    #[tokio::test]
+    async fn serve_login_html_uses_strict_csp() {
+        let dir = temp_dist();
+        std::fs::write(dir.join("login.html"), "<!doctype html>").unwrap();
+        let res = serve(&dir, "/login.html", &HeaderMap::new())
+            .await
+            .expect("login.html");
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .and_then(|v| v.to_str().ok()),
+            Some(HTML_STRICT_CSP)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn spa_fallback_uses_globe_csp() {
+        let dir = temp_dist();
+        std::fs::write(dir.join("index.html"), "<!doctype html>").unwrap();
+        let res = serve(&dir, "/vuelo-5", &HeaderMap::new())
+            .await
+            .expect("spa");
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .and_then(|v| v.to_str().ok()),
+            Some(HTML_GLOBE_CSP)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

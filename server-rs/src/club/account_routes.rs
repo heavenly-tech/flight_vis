@@ -571,7 +571,10 @@ async fn get_account_magic(
     let token_e = account_magic_html_escape(token);
     let purpose_e = account_magic_html_escape(&purpose);
     (
-        [(header::CONTENT_SECURITY_POLICY, crate::static_files::HTML_CSP)],
+        [(
+            header::CONTENT_SECURITY_POLICY,
+            crate::html_csp::HTML_STRICT_CSP,
+        )],
         Html(format!(
             r#"<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Confirm</title></head>
 <body><h1>Continue sign-in</h1>
@@ -904,7 +907,7 @@ async fn serve_signup_page(State(state): State<AppState>) -> impl IntoResponse {
                 (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
                 (
                     axum::http::header::CONTENT_SECURITY_POLICY,
-                    crate::static_files::HTML_CSP,
+                    crate::html_csp::HTML_STRICT_CSP,
                 ),
                 (
                     axum::http::header::REFERRER_POLICY,

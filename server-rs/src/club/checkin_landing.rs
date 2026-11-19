@@ -6,7 +6,7 @@ use crate::club::{
     db::{now_ms, ClubDb},
     routes::club_db,
 };
-use crate::static_files::HTML_CSP;
+use crate::html_csp::HTML_STRICT_CSP;
 use crate::AppState;
 use axum::{
     extract::{Path, State},
@@ -151,7 +151,7 @@ const QR_LANDING_REFERRER_POLICY: &str = "no-referrer";
 fn qr_landing_page_headers() -> [(header::HeaderName, &'static str); 3] {
     [
         (header::CACHE_CONTROL, "no-store"),
-        (header::CONTENT_SECURITY_POLICY, HTML_CSP),
+        (header::CONTENT_SECURITY_POLICY, HTML_STRICT_CSP),
         (header::REFERRER_POLICY, QR_LANDING_REFERRER_POLICY),
     ]
 }
@@ -470,7 +470,7 @@ mod tests {
                 res.headers()
                     .get(header::CONTENT_SECURITY_POLICY)
                     .and_then(|v| v.to_str().ok()),
-                Some(HTML_CSP)
+                Some(HTML_STRICT_CSP)
             );
             assert_eq!(
                 res.headers()

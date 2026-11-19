@@ -7,7 +7,7 @@ import http from "node:http";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { globeE2eCsp, readHtmlPageCsp } from "./read-html-csp.mjs";
+import { cspForPath } from "./read-html-csp.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(root, "..", "dist");
@@ -16,12 +16,6 @@ const apiOrigin = process.env.FLIGHT_VIS_API_ORIGIN ?? "http://127.0.0.1:8080";
 const port = Number(process.env.E2E_CSP_PORT ?? "19090");
 
 const E2E_ONLY = new Set(["e2e-csp-hooks.js", "e2e-live-csp-sse.js"]);
-const HTML_PAGE_CSP = readHtmlPageCsp();
-const GLOBE_E2E_CSP = globeE2eCsp();
-
-function cspForPath(pathOnly) {
-  return GLOBE_E2E_CSP;
-}
 
 function mime(ext) {
   switch (ext) {
@@ -68,9 +62,15 @@ function proxyToApi(req, res, body) {
       headers,
     },
     (proxyRes) => {
+      let csp;
+      try {
+        csp = cspForPath(target.pathname);
+      } catch {
+        csp = cspForPath("/login");
+      }
       res.writeHead(proxyRes.statusCode ?? 502, {
         ...proxyRes.headers,
-        "content-security-policy": HTML_PAGE_CSP,
+        "content-security-policy": csp,
       });
       proxyRes.pipe(res);
     },
@@ -112,9 +112,10 @@ const server = http.createServer((req, res) => {
     if (E2E_ONLY.has(baseName)) {
       const e2ePath = path.join(e2eGatewayDir, baseName);
       if (existsSync(e2ePath)) {
+        const pathOnly = urlPath.split("?")[0];
         res.writeHead(200, {
           "content-type": "text/javascript; charset=utf-8",
-          "content-security-policy": GLOBE_E2E_CSP,
+          "content-security-policy": cspForPath(pathOnly),
           "cache-control": "no-cache",
         });
         createReadStream(e2ePath).pipe(res);
@@ -128,9 +129,10 @@ const server = http.createServer((req, res) => {
     }
     const ext = path.extname(filePath).slice(1);
     const pathOnly = urlPath.split("?")[0];
+    const csp = cspForPath(pathOnly);
     res.writeHead(200, {
       "content-type": mime(ext),
-      "content-security-policy": cspForPath(pathOnly),
+      "content-security-policy": csp,
       "cache-control": "no-cache",
     });
     if (ext === "html") {
