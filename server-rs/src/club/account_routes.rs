@@ -234,32 +234,38 @@ async fn send_account_magic_link(
     locale: Option<&str>,
     ip: &str,
 ) {
-    let now = now_ms();
+    let _ = auth::verify_password(email, auth::DUMMY_PASSWORD_HASH);
     let Some(db) = club_db(state) else {
         return;
     };
-    if db.magic_send_allowed(email, ip, now).await && state.mailer.allow_send(email, ip) {
-        if let Ok(Some(token)) = db.issue_account_magic_login(email, now).await {
-            let _ = db.log_magic_send(email, ip, now).await;
-            let url = format!(
-                "{}/api/account/auth/magic?token={token}",
-                state.mailer.public_url.trim_end_matches('/')
-            );
-            let loc = locale
-                .map(str::to_string)
-                .or_else(|| auth::parse_display_cookie(headers))
-                .unwrap_or_else(|| "es".to_string());
-            let _ = state
-                .mailer
-                .send_localized(
-                    email,
-                    &loc,
-                    "magicLink",
-                    &[("minutes", "15"), ("url", &url)],
-                )
-                .await;
+    let email = email.trim().to_string();
+    let ip = ip.to_string();
+    let mailer = state.mailer.clone();
+    let public_url = state.mailer.public_url.trim_end_matches('/').to_string();
+    let loc = locale
+        .map(str::to_string)
+        .or_else(|| auth::parse_display_cookie(headers))
+        .unwrap_or_else(|| "es".to_string());
+    let db = db.clone();
+    tokio::spawn(async move {
+        let now = now_ms();
+        if !db.magic_send_allowed(&email, &ip, now).await || !mailer.allow_send(&email, &ip) {
+            return;
         }
-    }
+        let Ok(Some(token)) = db.issue_account_magic_login(&email, now).await else {
+            return;
+        };
+        let _ = db.log_magic_send(&email, &ip, now).await;
+        let url = format!("{public_url}/api/account/auth/magic?token={token}");
+        let _ = mailer
+            .send_localized(
+                &email,
+                &loc,
+                "magicLink",
+                &[("minutes", "15"), ("url", &url)],
+            )
+            .await;
+    });
 }
 
 async fn account_magic_link(

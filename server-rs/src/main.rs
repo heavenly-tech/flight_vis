@@ -341,12 +341,43 @@ fn apply_login_mode_html(html: &str, query: &HashMap<String, String>) -> String 
     )
     .replace(
         r#"id="legacy-details" class="muted" hidden"#,
-        r#"id="legacy-details" class="muted""#,
+        r#"id="legacy-details" class="muted" open"#,
     )
     .replace(
         r#"name="password" type="password" autocomplete="current-password""#,
         r#"name="password" type="password" autocomplete="current-password" required"#,
     )
+}
+
+fn apply_login_ssr_locale(html: &str, locale: &str) -> String {
+    let cat = crate::i18n::require_global();
+    let bcp47 = match locale {
+        "en" => "en-US",
+        _ => "es-CL",
+    };
+    let title = cat.t(locale, "entrar.title", &[]);
+    let send_link = cat.t(locale, "entrar.sendLink", &[]);
+    let lang_attr = format!(r#"lang="{bcp47}""#);
+    let mut out = html.replace(r#"lang="es-CL""#, &lang_attr);
+    for (key, fallback, localized) in [
+        ("entrar.title", "Iniciar sesión", title.as_str()),
+        ("entrar.sendLink", "Enviar enlace", send_link.as_str()),
+    ] {
+        let needle = format!(r#"data-i18n="{key}""#);
+        if let Some(idx) = out.find(&needle) {
+            if let Some(close) = out[idx..].find('>') {
+                let start = idx + close + 1;
+                if let Some(end) = out[start..].find('<') {
+                    let text = &out[start..start + end];
+                    if text.trim() == fallback || matches!(key, "entrar.title" | "entrar.sendLink")
+                    {
+                        out.replace_range(start..start + end, localized);
+                    }
+                }
+            }
+        }
+    }
+    out
 }
 
 async fn login_page(
@@ -363,7 +394,14 @@ async fn login_page(
     }
     let raw = read_login_page(&state.dist_dir, state.auth.configured()).await;
     let html = apply_login_mode_html(&raw, &query);
-    (
+    let accept = headers
+        .get(header::ACCEPT_LANGUAGE)
+        .and_then(|v| v.to_str().ok());
+    let stored = crate::club::parse_fv_locale_cookie(&headers);
+    let locale =
+        crate::i18n::require_global().resolve_locale(None, None, accept, stored.as_deref());
+    let html = apply_login_ssr_locale(&html, &locale);
+    let mut res = (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "text/html; charset=UTF-8"),
@@ -372,7 +410,11 @@ async fn login_page(
         ],
         html,
     )
-        .into_response()
+        .into_response();
+    if let Ok(value) = header::HeaderValue::from_str(&locale) {
+        res.headers_mut().insert(header::CONTENT_LANGUAGE, value);
+    }
+    res
 }
 
 async fn login_html_redirect(Query(query): Query<HashMap<String, String>>) -> impl IntoResponse {

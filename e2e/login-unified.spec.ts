@@ -10,6 +10,11 @@ import {
 } from "./login-layout-helpers";
 
 test.describe("unified /login", () => {
+  test.use({
+    locale: "es-CL",
+    extraHTTPHeaders: { "Accept-Language": "es-CL,es;q=0.9" },
+  });
+
   test("club-login.html redirects to /login with next preserved", async ({
     request,
   }) => {
@@ -44,7 +49,7 @@ test.describe("unified /login", () => {
     expect(loc).toContain("mode=password");
   });
 
-  test("defaults UI to Spanish when Accept-Language is English", async ({
+  test("defaults UI to English when Accept-Language is English", async ({
     browser,
   }) => {
     const context = await browser.newContext({
@@ -54,10 +59,13 @@ test.describe("unified /login", () => {
     });
     const page = await context.newPage();
     await page.goto("/login", { waitUntil: "domcontentloaded" });
+    await expect(page.locator("h1")).toContainText(/sign in/i, {
+      timeout: 15_000,
+    });
     const lang = await page.evaluate(() => document.documentElement.lang);
-    expect(lang).toMatch(/^es/i);
-    await expect(page.locator("h1")).toContainText(/iniciar sesión/i);
-    await expect(page.locator("#submit-magic")).toContainText(/enlace/i);
+    expect(lang).toMatch(/^en/i);
+    await expect(page.locator("h1")).toContainText(/sign in/i);
+    await expect(page.locator("#submit-magic")).toContainText(/sign-in link/i);
     await context.close();
   });
 
@@ -107,19 +115,48 @@ test.describe("unified /login", () => {
     await context.close();
   });
 
-  test("without JS on mode=password reveals password in the same form", async ({
+  test("without JS on mode=password POSTs form and redirects", async ({
     browser,
   }) => {
     const context = await browser.newContext({ javaScriptEnabled: false });
     const page = await context.newPage();
-    await page.goto("/login?mode=password", { waitUntil: "domcontentloaded" });
+    await page.goto("/login?mode=password&next=%2Fclub-pilot.html", {
+      waitUntil: "domcontentloaded",
+    });
     await expect(page.locator('input[name="email"][type="email"]')).toHaveCount(1);
     await expectPasswordRevealed(page);
     await expect(page.locator("#login-form")).toHaveAttribute(
       "action",
       "/api/account/login",
     );
-    await expect(page.locator("#submit-password")).toHaveText(/inicia sesión/i);
+    await page.locator("#email").fill("nobody@test");
+    await page.locator("#password").fill("password1234");
+    await Promise.all([
+      page.waitForURL((url) => url.searchParams.get("e") === "1", {
+        timeout: 30_000,
+      }),
+      page.locator("#submit-password").click(),
+    ]);
+    await context.close();
+  });
+
+  test("without JS legacy APK formaction POSTs club login", async ({
+    browser,
+  }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
+    await page.goto("/login?mode=password", { waitUntil: "domcontentloaded" });
+    await page.locator("#email").fill("nobody@test");
+    await page.locator("#password").fill("password1234");
+    const legacy = page.locator("#legacy-submit");
+    await expect(legacy).toHaveAttribute("formaction", "/api/club/login");
+    await Promise.all([
+      page.waitForURL((url) => url.searchParams.get("e") === "1", {
+        timeout: 30_000,
+      }),
+      legacy.click(),
+    ]);
+    expect(page.url()).toContain("e=1");
     await context.close();
   });
 

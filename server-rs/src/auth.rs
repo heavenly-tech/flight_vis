@@ -169,6 +169,9 @@ pub fn safe_next(input: &str) -> String {
     if value == "/club-login.html" || value.starts_with("/club-login.html?") {
         return "/".to_string();
     }
+    if value == "/login-legacy.html" || value.starts_with("/login-legacy.html?") {
+        return "/".to_string();
+    }
     if value == "/login/legacy" || value.starts_with("/login/legacy?") {
         return "/".to_string();
     }
@@ -206,11 +209,23 @@ pub fn is_secure_request(forwarded_proto: Option<&str>) -> bool {
 
 /// Exact media type match (case-insensitive); parameters such as `charset` are ignored.
 pub fn media_type_is_json(value: &str) -> bool {
+    media_type_exact(value, "application/json")
+}
+
+pub fn media_type_is_form_urlencoded(value: &str) -> bool {
+    media_type_exact(value, "application/x-www-form-urlencoded")
+}
+
+pub fn media_type_is_text_plain(value: &str) -> bool {
+    media_type_exact(value, "text/plain")
+}
+
+fn media_type_exact(value: &str, expected: &str) -> bool {
     value
         .split(';')
         .next()
         .map(str::trim)
-        .is_some_and(|m| m.eq_ignore_ascii_case("application/json"))
+        .is_some_and(|m| m.eq_ignore_ascii_case(expected))
 }
 
 pub fn accept_wants_json(accept: &str) -> bool {
@@ -293,6 +308,7 @@ mod tests {
         assert_eq!(safe_next("https://evil.example"), "/");
         assert_eq!(safe_next("/login"), "/");
         assert_eq!(safe_next("/club-login.html?next=/x"), "/");
+        assert_eq!(safe_next("/login-legacy.html?next=/x"), "/");
         assert_eq!(safe_next("/%09/evil.com"), "/");
         assert_eq!(safe_next("/%0a/evil"), "/");
         assert_eq!(safe_next("/%0d%0a/evil"), "/");

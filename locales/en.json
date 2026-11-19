@@ -386,6 +386,7 @@
       "haveAccount": "Already have an account? Sign in"
     },
     "password": {
+      "title": "Account password",
       "current": "Current password",
       "currentOptionalMagic": "Current password (optional if you signed in with a magic link recently)",
       "new": "New password",

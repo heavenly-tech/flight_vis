@@ -4,6 +4,7 @@ mod account_routes;
 mod admin_membership_routes;
 pub mod android_assetlinks;
 mod auth;
+pub use auth::parse_fv_locale_cookie;
 mod auth_routes;
 pub mod checkin;
 mod checkin_landing;

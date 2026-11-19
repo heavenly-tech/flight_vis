@@ -389,6 +389,7 @@
       "haveAccount": "¿Ya tienes cuenta? Inicia sesión"
     },
     "password": {
+      "title": "Contraseña de cuenta",
       "current": "Contraseña actual",
       "currentOptionalMagic": "Contraseña actual (opcional si ingresaste con enlace mágico hace poco)",
       "new": "Nueva contraseña",
