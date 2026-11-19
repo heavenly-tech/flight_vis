@@ -32,10 +32,7 @@ async fn first_magic_verify_wipes_precreated_password_and_sessions() {
         .await
         .unwrap()
         .unwrap();
-    let _ = db
-        .consume_account_magic(&raw, now)
-        .await
-        .unwrap();
+    let _ = db.consume_account_magic(&raw, now).await.unwrap();
     let hash_after: Option<String> =
         sqlx::query_scalar("SELECT password_hash FROM accounts WHERE id = $1")
             .bind(&id)
@@ -224,13 +221,12 @@ async fn pilot_session_for_account_reuses_one_row_per_account_session() {
     let (s1, _) = db.pilot_session_for_account(&acct_sess, now).await.unwrap();
     let (s2, _) = db.pilot_session_for_account(&acct_sess, now).await.unwrap();
     assert_ne!(s1, s2);
-    let stored: String = sqlx::query_scalar(
-        "SELECT compat_pilot_session FROM account_sessions WHERE id = $1",
-    )
-    .bind(crate::club::auth::digest_token(&acct_sess))
-    .fetch_one(&db.pool)
-    .await
-    .unwrap();
+    let stored: String =
+        sqlx::query_scalar("SELECT compat_pilot_session FROM account_sessions WHERE id = $1")
+            .bind(crate::club::auth::digest_token(&acct_sess))
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
     assert_eq!(stored.len(), 64);
     let count_after: i64 =
         sqlx::query_scalar("SELECT COUNT(*)::bigint FROM pilot_sessions WHERE pilot_id = $1")
@@ -781,7 +777,9 @@ async fn account_login_magic_http_roundtrip_sets_session_cookie() {
                 .uri("/api/account/auth/magic")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::HOST, "127.0.0.1:8080")
-                .body(axum::body::Body::from(format!("token={raw}&purpose=ignored")))
+                .body(axum::body::Body::from(format!(
+                    "token={raw}&purpose=ignored"
+                )))
                 .unwrap(),
         )
         .await
@@ -901,7 +899,7 @@ async fn migration_016_pending_lookalike_password_not_on_account() {
     .execute(&db.pool)
     .await
     .unwrap();
-  let chosen: Option<String> = sqlx::query_scalar(
+    let chosen: Option<String> = sqlx::query_scalar(
         r#"
         SELECT first_value(
             CASE WHEN status = 'approved' AND email_verified_at IS NOT NULL THEN password_hash ELSE NULL END
@@ -1006,11 +1004,12 @@ async fn pilot_magic_login_rejects_suspended_account() {
     .execute(&db.pool)
     .await
     .unwrap();
-    let raw = db.issue_magic_login(&club_id, email, now).await.unwrap().unwrap();
-    assert!(db
-        .consume_magic_login(&raw, &club_id, now)
+    let raw = db
+        .issue_magic_login(&club_id, email, now)
         .await
-        .is_err());
+        .unwrap()
+        .unwrap();
+    assert!(db.consume_magic_login(&raw, &club_id, now).await.is_err());
 }
 
 #[tokio::test]
@@ -1172,15 +1171,17 @@ async fn compat_pilot_session_stored_hashed_not_raw() {
     .execute(&db.pool)
     .await
     .unwrap();
-    let sess = db.create_account_session(&acct, Some(&mid), now).await.unwrap();
+    let sess = db
+        .create_account_session(&acct, Some(&mid), now)
+        .await
+        .unwrap();
     let _ = db.pilot_session_for_account(&sess, now).await.unwrap();
-    let stored: String = sqlx::query_scalar(
-        "SELECT compat_pilot_session FROM account_sessions WHERE id = $1",
-    )
-    .bind(crate::club::auth::digest_token(&sess))
-    .fetch_one(&db.pool)
-    .await
-    .unwrap();
+    let stored: String =
+        sqlx::query_scalar("SELECT compat_pilot_session FROM account_sessions WHERE id = $1")
+            .bind(crate::club::auth::digest_token(&sess))
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
     assert_ne!(stored, sess);
     assert_eq!(stored.len(), 64);
 }

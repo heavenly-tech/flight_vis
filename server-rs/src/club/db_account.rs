@@ -310,14 +310,12 @@ impl ClubDb {
 
     pub async fn peek_magic_token_purpose(&self, raw_token: &str) -> Option<String> {
         let token_hash = digest_token(raw_token.trim());
-        sqlx::query_scalar(
-            "SELECT purpose FROM magic_login_tokens WHERE token_hash = $1",
-        )
-        .bind(&token_hash)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten()
+        sqlx::query_scalar("SELECT purpose FROM magic_login_tokens WHERE token_hash = $1")
+            .bind(&token_hash)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()
     }
 
     pub async fn consume_account_magic(

@@ -291,15 +291,13 @@ async fn cross_site_admin_membership_promote_post_forbidden() {
         .ensure_membership_row(&staff_pid, &club, "staff", "active")
         .await
         .unwrap();
-    sqlx::query(
-        "UPDATE club_memberships SET id = $1 WHERE pilot_id = $2 AND club_id = $3",
-    )
-    .bind(&staff_mid)
-    .bind(&staff_pid)
-    .bind(&club)
-    .execute(&fx.db.pool)
-    .await
-    .unwrap();
+    sqlx::query("UPDATE club_memberships SET id = $1 WHERE pilot_id = $2 AND club_id = $3")
+        .bind(&staff_mid)
+        .bind(&staff_pid)
+        .bind(&club)
+        .execute(&fx.db.pool)
+        .await
+        .unwrap();
     let res = fx
         .router
         .call(

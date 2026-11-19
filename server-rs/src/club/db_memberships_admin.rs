@@ -227,12 +227,14 @@ impl ClubDb {
                 .map_err(|_| MembershipAdminError::Db)?;
             match status.as_str() {
                 "approved" => {
-                    sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1 AND account_id = $2")
-                        .bind(&pid)
-                        .bind(&account_id)
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(|_| MembershipAdminError::Db)?;
+                    sqlx::query(
+                        "UPDATE pilots SET role = 'admin' WHERE id = $1 AND account_id = $2",
+                    )
+                    .bind(&pid)
+                    .bind(&account_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|_| MembershipAdminError::Db)?;
                 }
                 "pending" => {
                     sqlx::query(
