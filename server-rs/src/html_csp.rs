@@ -9,6 +9,9 @@ pub const HTML_STRICT_CSP: &str =
 pub const HTML_GLOBE_CSP: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/csp/html-globe.csp"));
 
+/// Token- or secret-bearing HTML (magic links, share URLs, QR). Do not leak path/query via Referer.
+pub const SENSITIVE_REFERRER_POLICY: &str = "no-referrer";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HtmlCspKind {
     Strict,
@@ -16,15 +19,17 @@ pub enum HtmlCspKind {
 }
 
 /// Every HTML response path that sets CSP. Paths are normalized (`/login`, `/foo.html`).
+///
+/// Dynamic handlers (e.g. `/s/{token}`, `/c/{slug}/registro`) use the same policy as their
+/// dist template row (`share-flight.html`, `club-register.html`, …).
+///
+/// Unknown `dist/*.html` files without a table row return HTTP 500 from static file serving (fail closed).
 pub const HTML_CSP_ROUTE_TABLE: &[(&str, HtmlCspKind)] = &[
-    // Globe: viewer, maps, kiosk screen, e2e fixture, SPA index
+    // Globe: Cesium viewer (main SPA, shared flight view)
     ("/index.html", HtmlCspKind::Globe),
     ("/__spa_index__", HtmlCspKind::Globe),
-    ("/club-map.html", HtmlCspKind::Globe),
-    ("/public-map.html", HtmlCspKind::Globe),
-    ("/club-screen.html", HtmlCspKind::Globe),
-    ("/e2e-live.html", HtmlCspKind::Globe),
-    // Strict: auth, account, admin, club registration, QR / check-in
+    ("/share-flight.html", HtmlCspKind::Globe),
+    // Strict: auth, account, admin, lists, club registration, QR / check-in, e2e fixtures
     ("/login", HtmlCspKind::Strict),
     ("/login.html", HtmlCspKind::Strict),
     ("/login-legacy.html", HtmlCspKind::Strict),
@@ -32,6 +37,7 @@ pub const HTML_CSP_ROUTE_TABLE: &[(&str, HtmlCspKind)] = &[
     ("/signup.html", HtmlCspKind::Strict),
     ("/account-clubs.html", HtmlCspKind::Strict),
     ("/api/account/auth/magic", HtmlCspKind::Strict),
+    ("/api/club/auth/magic", HtmlCspKind::Strict),
     ("/app.html", HtmlCspKind::Strict),
     ("/club-pilot.html", HtmlCspKind::Strict),
     ("/club-flight.html", HtmlCspKind::Strict),
@@ -45,9 +51,12 @@ pub const HTML_CSP_ROUTE_TABLE: &[(&str, HtmlCspKind)] = &[
     ("/club-admin-map.html", HtmlCspKind::Strict),
     ("/club-admin-kiosk-layout.html", HtmlCspKind::Strict),
     ("/club-admin-requests.html", HtmlCspKind::Strict),
+    ("/club-map.html", HtmlCspKind::Strict),
+    ("/public-map.html", HtmlCspKind::Strict),
+    ("/club-screen.html", HtmlCspKind::Strict),
+    ("/e2e-live.html", HtmlCspKind::Strict),
     ("/club-checkin-landing.html", HtmlCspKind::Strict),
     ("/club-checkin-expired.html", HtmlCspKind::Strict),
-    ("/share-flight.html", HtmlCspKind::Strict),
 ];
 
 /// Built `dist` HTML entrypoint filenames (must each have a `/name.html` row above).
@@ -184,13 +193,28 @@ mod tests {
 
     #[test]
     fn globe_pages_use_globe_policy() {
+        for path in ["/index.html", "/share-flight.html", "/__spa_index__"] {
+            assert_eq!(policy_for_route(path), Some(HtmlCspKind::Globe));
+        }
+    }
+
+    #[test]
+    fn list_map_pages_use_strict_policy() {
         for path in [
-            "/index.html",
             "/club-map.html",
             "/public-map.html",
             "/club-screen.html",
+            "/e2e-live.html",
         ] {
-            assert_eq!(policy_for_route(path), Some(HtmlCspKind::Globe));
+            assert_eq!(policy_for_route(path), Some(HtmlCspKind::Strict));
+        }
+    }
+
+    #[test]
+    fn vite_lists_every_dist_html_file() {
+        let vite = std::fs::read_to_string("../vite.config.ts").expect("vite.config.ts");
+        for file in DIST_HTML_FILES {
+            assert!(vite.contains(file), "{file} missing from vite build inputs");
         }
     }
 }

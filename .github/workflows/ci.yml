@@ -108,6 +108,9 @@ jobs:
       - name: globe CSP has single img-src directive
         run: node scripts/check-globe-csp.mjs
 
+      - name: CSP table HTML exists in dist
+        run: node scripts/check-csp-html-dist.mjs
+
       - name: docker build amd64
         run: docker build -t flight_vis:ci-amd64 .
 

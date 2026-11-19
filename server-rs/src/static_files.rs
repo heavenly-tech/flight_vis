@@ -1,6 +1,8 @@
 //! Static file serving with byte-parity semantics to the Node implementation:
 //! path-traversal guard, MIME map, SPA fallback to index.html, and
 //! cache-control rules (immutable hashed assets, no-cache HTML entries).
+//!
+//! Built `dist/*.html` without a row in [`crate::html_csp::HTML_CSP_ROUTE_TABLE`] fail closed with HTTP 500 (not served unlabeled).
 use axum::{
     body::Body,
     http::{header, HeaderMap, StatusCode},

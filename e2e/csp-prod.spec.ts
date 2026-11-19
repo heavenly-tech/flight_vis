@@ -6,6 +6,7 @@ import {
   HTML_CSP_ROUTE_TABLE,
   policyKindForPath,
 } from "./csp-constants";
+import { stubArcgisTiles, installCspObservers } from "./globe-csp-helpers";
 
 const CSP_VIOLATION =
   /Refused to execute|Refused to load|Content Security Policy|securitypolicyviolation|violates the following Content Security Policy/i;
@@ -73,6 +74,10 @@ async function expectCspHeader(
   expect(csp, `${path} CSP header`).toBe(expected);
 }
 
+function expectNoReferrer(headers: Record<string, string>, label: string) {
+  expect(headers["referrer-policy"] ?? headers["Referrer-Policy"], label).toBe("no-referrer");
+}
+
 test.describe.configure({ timeout: 120_000 });
 
 test.describe("production CSP (release server)", () => {
@@ -82,14 +87,19 @@ test.describe("production CSP (release server)", () => {
       expectedCspForPath(path);
     }
     expect(policyKindForPath("/vuelo-5")).toBe("globe");
+    expect(policyKindForPath("/assets/foo.js")).toBeUndefined();
   });
 
-  test("strict CSP on login, account, and admin HTML", async ({ request }) => {
+  test("strict CSP on login, signup, account, and admin HTML", async ({ request }) => {
     const strictPaths = [
       "/login",
+      "/signup",
       "/account-clubs.html",
       "/club-admin-types.html",
+      "/club-admin-requests.html",
       "/club-checkin-landing.html",
+      "/club-map.html",
+      "/public-map.html",
     ];
     for (const path of strictPaths) {
       const res = await request.get(path);
@@ -98,12 +108,55 @@ test.describe("production CSP (release server)", () => {
     }
   });
 
-  test("globe CSP on viewer and map HTML", async ({ request }) => {
-    const globePaths = ["/", "/vuelo-5", "/club-map.html", "/public-map.html"];
+  test("admin HTML strict CSP with staff session", async ({ page }) => {
+    await page.goto("/login?mode=password&next=/club-admin-types.html");
+    await page.locator("#login-form input[name=email]").fill("admin@demo.test");
+    await page.locator("#login-form input[name=password]").fill("password12");
+    await page.locator("#login-form button[type=submit]").click();
+    await page.waitForURL(/club-admin-types\.html/, { timeout: 30_000 });
+    const res = await page.goto("/club-admin-types.html");
+    expect(res?.ok()).toBeTruthy();
+    assertStrictCsp(res?.headers()["content-security-policy"] ?? "", "/club-admin-types.html");
+  });
+
+  test("globe CSP on viewer HTML and share template", async ({ request }) => {
+    const globePaths = ["/", "/vuelo-5", "/share-flight.html"];
     for (const path of globePaths) {
       const res = await request.get(path);
       expect(res.ok(), path).toBeTruthy();
       assertGlobeCsp(res.headers()["content-security-policy"] ?? "", path);
+    }
+  });
+
+  test("dynamic club and share HTML headers", async ({ request }) => {
+    const demoToken = "00000000-0000-0000-0000-000000000001";
+    const rows: { path: string; csp: "strict" | "globe"; noReferrer?: boolean }[] = [
+      { path: "/c/demo", csp: "strict", noReferrer: true },
+      { path: "/c/demo/registro", csp: "strict", noReferrer: true },
+      { path: `/c/demo/q/${demoToken}`, csp: "strict", noReferrer: true },
+      { path: "/s/share-e2e-token", csp: "globe", noReferrer: true },
+      { path: "/club/screen", csp: "strict", noReferrer: true },
+      { path: "/c/demo/screen", csp: "strict", noReferrer: true },
+    ];
+    for (const row of rows) {
+      const res = await request.get(row.path);
+      expect(res.status() !== 500, row.path).toBeTruthy();
+      const csp = res.headers()["content-security-policy"] ?? "";
+      if (row.csp === "strict") assertStrictCsp(csp, row.path);
+      else assertGlobeCsp(csp, row.path);
+      if (row.noReferrer) expectNoReferrer(res.headers(), row.path);
+    }
+  });
+
+  test("magic confirm HTML uses strict CSP and no-referrer", async ({ request }) => {
+    for (const path of [
+      "/api/account/auth/magic?token=e2e-test-token",
+      "/api/club/auth/magic?token=e2e-test-token",
+    ]) {
+      const res = await request.get(path, { headers: { Accept: "text/html" } });
+      expect(res.ok(), path).toBeTruthy();
+      assertStrictCsp(res.headers()["content-security-policy"] ?? "", path);
+      expectNoReferrer(res.headers(), path);
     }
   });
 
@@ -132,6 +185,15 @@ test.describe("production CSP (release server)", () => {
     expect(pageErrors, "uncaught page errors").toEqual([]);
     expect(relevantViolations(violations), "console CSP violations").toEqual([]);
     expect(relevantViolations(await domViolations(page)), "securitypolicyviolation events").toEqual([]);
+  });
+
+  test("share flight page loads under globe CSP without violations", async ({ page }) => {
+    await stubArcgisTiles(page);
+    const { violations, pageErrors } = installCspObservers(page);
+    await page.goto("/s/e2e-share-token");
+    await expect(page.locator("#cesiumContainer")).toBeVisible({ timeout: 60_000 });
+    expect(pageErrors.filter((e) => /EvalError/i.test(e)), "EvalError").toEqual([]);
+    expect(relevantViolations(violations), "console CSP violations").toEqual([]);
   });
 
   test("club landing page loads fonts/styles under strict CSP", async ({ page, request }) => {

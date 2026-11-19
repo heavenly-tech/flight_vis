@@ -7,10 +7,7 @@
 export const HTML_CSP_ROUTE_TABLE = Object.freeze({
   "/index.html": "globe",
   "/__spa_index__": "globe",
-  "/club-map.html": "globe",
-  "/public-map.html": "globe",
-  "/club-screen.html": "globe",
-  "/e2e-live.html": "globe",
+  "/share-flight.html": "globe",
   "/login": "strict",
   "/login.html": "strict",
   "/login-legacy.html": "strict",
@@ -18,6 +15,7 @@ export const HTML_CSP_ROUTE_TABLE = Object.freeze({
   "/signup.html": "strict",
   "/account-clubs.html": "strict",
   "/api/account/auth/magic": "strict",
+  "/api/club/auth/magic": "strict",
   "/app.html": "strict",
   "/club-pilot.html": "strict",
   "/club-flight.html": "strict",
@@ -31,10 +29,15 @@ export const HTML_CSP_ROUTE_TABLE = Object.freeze({
   "/club-admin-map.html": "strict",
   "/club-admin-kiosk-layout.html": "strict",
   "/club-admin-requests.html": "strict",
+  "/club-map.html": "strict",
+  "/public-map.html": "strict",
+  "/club-screen.html": "strict",
+  "/e2e-live.html": "strict",
   "/club-checkin-landing.html": "strict",
   "/club-checkin-expired.html": "strict",
-  "/share-flight.html": "strict",
 });
+
+const SPA_GLOBE = HTML_CSP_ROUTE_TABLE["/__spa_index__"];
 
 /**
  * @param {string} path
@@ -45,8 +48,8 @@ export function policyKindForPath(path) {
   if (pathOnly in HTML_CSP_ROUTE_TABLE) {
     return HTML_CSP_ROUTE_TABLE[pathOnly];
   }
-  if (pathOnly === "/" || /^\/live\/[^/]+/.test(pathOnly) || !pathOnly.includes(".")) {
-    return HTML_CSP_ROUTE_TABLE["/__spa_index__"];
+  if (pathOnly === "/" || /^\/live\/[^/]+/.test(pathOnly)) {
+    return SPA_GLOBE;
   }
   return undefined;
 }

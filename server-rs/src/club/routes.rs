@@ -2433,7 +2433,17 @@ fn html_csp_header(dist_html: &str) -> (header::HeaderName, &'static str) {
 async fn club_screen_page(State(state): State<AppState>) -> impl IntoResponse {
     let path = state.dist_dir.join("club-screen.html");
     match tokio::fs::read_to_string(&path).await {
-        Ok(html) => ([(html_csp_header("club-screen.html"))], Html(html)).into_response(),
+        Ok(html) => (
+            [
+                html_csp_header("club-screen.html"),
+                (
+                    header::REFERRER_POLICY,
+                    crate::html_csp::SENSITIVE_REFERRER_POLICY,
+                ),
+            ],
+            Html(html),
+        )
+            .into_response(),
         Err(_) => (
             StatusCode::NOT_FOUND,
             "Club screen page not built (npm run build)",
@@ -2454,7 +2464,17 @@ async fn club_slug_screen_page(
     }
     let path = state.dist_dir.join("club-screen.html");
     match tokio::fs::read_to_string(&path).await {
-        Ok(html) => ([(html_csp_header("club-screen.html"))], Html(html)).into_response(),
+        Ok(html) => (
+            [
+                html_csp_header("club-screen.html"),
+                (
+                    header::REFERRER_POLICY,
+                    crate::html_csp::SENSITIVE_REFERRER_POLICY,
+                ),
+            ],
+            Html(html),
+        )
+            .into_response(),
         Err(_) => (
             StatusCode::NOT_FOUND,
             "Club screen page not built (npm run build)",

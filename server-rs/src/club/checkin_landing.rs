@@ -6,7 +6,7 @@ use crate::club::{
     db::{now_ms, ClubDb},
     routes::club_db,
 };
-use crate::html_csp::HTML_STRICT_CSP;
+use crate::html_csp::{HTML_STRICT_CSP, SENSITIVE_REFERRER_POLICY};
 use crate::AppState;
 use axum::{
     extract::{Path, State},
@@ -145,21 +145,18 @@ fn localize_data_i18n(html: &str, locale: &str) -> String {
     out
 }
 
-/// QR check-in responses (F-1): do not leak token paths via Referer.
-const QR_LANDING_REFERRER_POLICY: &str = "no-referrer";
-
 fn qr_landing_page_headers() -> [(header::HeaderName, &'static str); 3] {
     [
         (header::CACHE_CONTROL, "no-store"),
         (header::CONTENT_SECURITY_POLICY, HTML_STRICT_CSP),
-        (header::REFERRER_POLICY, QR_LANDING_REFERRER_POLICY),
+        (header::REFERRER_POLICY, SENSITIVE_REFERRER_POLICY),
     ]
 }
 
 fn qr_landing_api_headers() -> [(header::HeaderName, &'static str); 2] {
     [
         (header::CACHE_CONTROL, "no-store"),
-        (header::REFERRER_POLICY, QR_LANDING_REFERRER_POLICY),
+        (header::REFERRER_POLICY, SENSITIVE_REFERRER_POLICY),
     ]
 }
 
@@ -204,12 +201,7 @@ async fn club_slug_register_page(
     }
     let path = state.dist_dir.join("club-register.html");
     match tokio::fs::read_to_string(&path).await {
-        Ok(html) => (
-            StatusCode::OK,
-            [(header::CACHE_CONTROL, "no-store")],
-            Html(html),
-        )
-            .into_response(),
+        Ok(html) => (StatusCode::OK, qr_landing_page_headers(), Html(html)).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "missing page").into_response(),
     }
 }
@@ -217,12 +209,7 @@ async fn club_slug_register_page(
 async fn serve_suspended_html(state: &AppState) -> axum::response::Response {
     let path = state.dist_dir.join("club-suspended.html");
     match tokio::fs::read_to_string(&path).await {
-        Ok(html) => (
-            StatusCode::FORBIDDEN,
-            [(header::CACHE_CONTROL, "no-store")],
-            Html(html),
-        )
-            .into_response(),
+        Ok(html) => (StatusCode::FORBIDDEN, qr_landing_page_headers(), Html(html)).into_response(),
         Err(_) => (StatusCode::FORBIDDEN, "club suspended").into_response(),
     }
 }
@@ -600,5 +587,76 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    fn assert_qr_page_headers<B>(res: &axum::response::Response<B>) {
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .and_then(|v| v.to_str().ok()),
+            Some(HTML_STRICT_CSP)
+        );
+        assert_eq!(
+            res.headers()
+                .get(header::REFERRER_POLICY)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-referrer")
+        );
+        assert_eq!(
+            res.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-store")
+        );
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn registro_and_suspended_pages_send_strict_qr_headers() {
+        let (_dir, router, db) = fixture(false, false).await;
+        std::fs::write(
+            _dir.path().join("dist/club-register.html"),
+            "<html><body>reg</body></html>",
+        )
+        .unwrap();
+        std::fs::write(
+            _dir.path().join("dist/club-suspended.html"),
+            "<html><body>susp</body></html>",
+        )
+        .unwrap();
+        sqlx::query("UPDATE clubs SET status = 'live', email_verified_at = $1 WHERE slug = 'demo'")
+            .bind(now_ms())
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let reg = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/c/demo/registro")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reg.status(), StatusCode::OK);
+        assert_qr_page_headers(&reg);
+
+        let club_id: String = sqlx::query_scalar("SELECT id FROM clubs WHERE slug = 'demo'")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        db.set_club_suspended(&club_id, now_ms()).await.unwrap();
+        let susp = router
+            .oneshot(
+                Request::builder()
+                    .uri("/c/demo/registro")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(susp.status(), StatusCode::FORBIDDEN);
+        assert_qr_page_headers(&susp);
     }
 }

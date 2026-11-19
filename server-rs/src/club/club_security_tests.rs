@@ -153,6 +153,20 @@ async fn magic_post_club_verify_browser_flow() {
         .await
         .unwrap();
     assert_eq!(get_res.status(), StatusCode::OK);
+    assert_eq!(
+        get_res
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok()),
+        Some(crate::html_csp::HTML_STRICT_CSP)
+    );
+    assert_eq!(
+        get_res
+            .headers()
+            .get(header::REFERRER_POLICY)
+            .and_then(|v| v.to_str().ok()),
+        Some(crate::html_csp::SENSITIVE_REFERRER_POLICY)
+    );
     let post_res = router
         .call(
             Request::builder()

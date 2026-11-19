@@ -7,7 +7,7 @@ import http from "node:http";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { cspForPath } from "./read-html-csp.mjs";
+import { cspForPath, policyKindForPath } from "./read-html-csp.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(root, "..", "dist");
@@ -62,13 +62,7 @@ function proxyToApi(req, res, body) {
       headers,
     },
     (proxyRes) => {
-      const outHeaders = { ...proxyRes.headers };
-      try {
-        outHeaders["content-security-policy"] = cspForPath(target.pathname);
-      } catch {
-        // API JSON and unmapped proxy paths keep upstream headers only.
-      }
-      res.writeHead(proxyRes.statusCode ?? 502, outHeaders);
+      res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
       proxyRes.pipe(res);
     },
   );
@@ -119,17 +113,23 @@ const server = http.createServer((req, res) => {
     }
 
     let filePath = safeJoin(urlPath);
-    if (!filePath || !existsSync(filePath) || !statSync(filePath).isFile()) {
+    const pathOnly = urlPath.split("?")[0];
+    const spaFallback =
+      !filePath || !existsSync(filePath) || !statSync(filePath).isFile();
+    if (spaFallback) {
       filePath = path.join(distDir, "index.html");
     }
     const ext = path.extname(filePath).slice(1);
-    const pathOnly = urlPath.split("?")[0];
     const headers = {
       "content-type": mime(ext),
       "cache-control": "no-cache",
     };
     if (ext === "html") {
-      headers["content-security-policy"] = cspForPath(pathOnly);
+      let policyPath = pathOnly;
+      if (spaFallback && policyKindForPath(pathOnly) === undefined) {
+        policyPath = "/__spa_index__";
+      }
+      headers["content-security-policy"] = cspForPath(policyPath);
     }
     res.writeHead(200, headers);
     if (ext === "html") {

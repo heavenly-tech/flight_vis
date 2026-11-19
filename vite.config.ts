@@ -204,6 +204,7 @@ export default defineConfig({
         clubAdminCheckouts: path.resolve(root, "club-admin-checkouts.html"),
         clubAdminMap: path.resolve(root, "club-admin-map.html"),
         clubAdminKioskLayout: path.resolve(root, "club-admin-kiosk-layout.html"),
+        clubAdminRequests: path.resolve(root, "club-admin-requests.html"),
         clubScreen: path.resolve(root, "club-screen.html"),
         clubCheckinLanding: path.resolve(root, "club-checkin-landing.html"),
         clubCheckinExpired: path.resolve(root, "club-checkin-expired.html"),
