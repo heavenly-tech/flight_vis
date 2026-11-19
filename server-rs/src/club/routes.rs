@@ -677,7 +677,11 @@ pub async fn post_club_flight_start(
                 .into_response();
         }
     };
-    if let Some(club_id) = db.club_id_for_aircraft_tail(parsed.tail.trim()).await {
+    let now = now_ms();
+    if let Some(club_id) = db
+        .club_id_for_start_flight(&pilot_id, &device_id, parsed.tail.trim(), now)
+        .await
+    {
         if db.club_operational(&club_id).await.is_err() {
             return (
                 StatusCode::FORBIDDEN,
@@ -700,7 +704,7 @@ pub async fn post_club_flight_start(
             parsed.tail.trim(),
             visibility,
             show_name,
-            now_ms(),
+            now,
         )
         .await
     {
