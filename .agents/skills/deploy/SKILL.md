@@ -32,4 +32,25 @@ There is no shell in the runtime image, so `docker exec -it <container> sh` fail
 
 Compose attaches the container to external `proxy_network` and `db_shared`, resolves `postal-smtp` via `extra_hosts: host-gateway`, and mounts `./data` on `/data`. The mount must be writable by uid `65534` (`chown -R 65534:65534 ./data` on the host). Postgres is the shared heavenly cluster (`DATABASE_URL`); this compose file does not start a local Postgres service.
 
+## Android App Links (production)
+
+The API does **not** assume a default Android package. To enable verified App Links, **Abrir en la app** on `/app.html`, and the optional intent button on the check-in landing page, set both variables on the host (`.env` or compose `environment`) before `docker compose up`:
+
+```bash
+FLIGHT_ANDROID_APP_PACKAGE=cl.heavenly.flightvis
+FLIGHT_ANDROID_CERT_SHA256=<release signing cert SHA-256 fingerprint>
+```
+
+Obtain the fingerprint from the **flightvis-client** release keystore (same cert that signs Play/APK builds), for example:
+
+```bash
+keytool -list -v -keystore /path/to/release.keystore -alias <alias>
+```
+
+Copy the `SHA256:` line (colons optional; comma-separate if you rotate keys). Alternatively mount fingerprints via `FLIGHT_ANDROID_CERT_SHA256_FILE`.
+
+When **both** package and fingerprint are set, the container serves `GET /.well-known/assetlinks.json` and `GET /api/app/install-link` includes `intentUrl`. Club check-in QR symbols always encode a plain HTTPS URL (`https://<host>/c/{slug}/q/{token}`) so camera apps can scan them; opening the native app relies on verified App Links plus the client manifest, not `intent://` in the QR.
+
+When either variable is unset, `/.well-known/assetlinks.json` is **404**, **Abrir en la app** stays hidden, and check-in still works over the web flow.
+
 Do not deploy from a review task unless that task explicitly says to.
