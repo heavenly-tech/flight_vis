@@ -11,12 +11,14 @@ async fn open_db() -> ClubDb {
 }
 
 async fn mark_account_verified(db: &ClubDb, account_id: &str, now: i64) {
-    sqlx::query("UPDATE accounts SET email_verified_at = coalesce(email_verified_at, $1) WHERE id = $2")
-        .bind(now)
-        .bind(account_id)
-        .execute(&db.pool)
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE accounts SET email_verified_at = coalesce(email_verified_at, $1) WHERE id = $2",
+    )
+    .bind(now)
+    .bind(account_id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
 }
 
 #[serial]

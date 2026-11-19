@@ -136,9 +136,7 @@ impl ClubDb {
                 .await?;
                 id
             };
-            if status == "approved"
-                && pilot_verified.is_some()
-                && !password_hash.trim().is_empty()
+            if status == "approved" && pilot_verified.is_some() && !password_hash.trim().is_empty()
             {
                 let _ = sqlx::query(
                     "UPDATE accounts SET password_hash = coalesce(nullif(trim(password_hash), ''), $1)
@@ -376,14 +374,13 @@ impl ClubDb {
             .map_err(|_| MagicConsumeError::Invalid)?;
             aid
         };
-        let was_unverified: bool = sqlx::query_scalar(
-            "SELECT email_verified_at IS NULL FROM accounts WHERE id = $1",
-        )
-        .bind(&acct_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|_| MagicConsumeError::Invalid)?
-        .unwrap_or(false);
+        let was_unverified: bool =
+            sqlx::query_scalar("SELECT email_verified_at IS NULL FROM accounts WHERE id = $1")
+                .bind(&acct_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|_| MagicConsumeError::Invalid)?
+                .unwrap_or(false);
         if purpose == "account_signup" || purpose == "account_login" {
             sqlx::query(
                 "UPDATE accounts SET email_verified_at = coalesce(email_verified_at, $1) WHERE id = $2",
@@ -762,13 +759,12 @@ impl ClubDb {
         let session_db_id = auth::digest_token(account_session_id);
         let (_, active_mem) = self.account_from_session(account_session_id, now).await?;
         let mem_id = active_mem?;
-        let row = sqlx::query(
-            "SELECT m.pilot_id, m.status FROM club_memberships m WHERE m.id = $1",
-        )
-        .bind(&mem_id)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()??;
+        let row =
+            sqlx::query("SELECT m.pilot_id, m.status FROM club_memberships m WHERE m.id = $1")
+                .bind(&mem_id)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()??;
         let pilot_id: String = row.try_get(0).ok()?;
         let mem_status: String = row.try_get(1).ok()?;
         if !MembershipStatus::parse(&mem_status).allows_club_api() {
@@ -791,13 +787,11 @@ impl ClubDb {
             }
         }
         let session = self.create_pilot_session(&pilot_id, now).await.ok()?;
-        let _ = sqlx::query(
-            "UPDATE account_sessions SET compat_pilot_session = $1 WHERE id = $2",
-        )
-        .bind(&session)
-        .bind(&session_db_id)
-        .execute(&self.pool)
-        .await;
+        let _ = sqlx::query("UPDATE account_sessions SET compat_pilot_session = $1 WHERE id = $2")
+            .bind(&session)
+            .bind(&session_db_id)
+            .execute(&self.pool)
+            .await;
         let pilot = self.pilot_from_session(&session, now).await?;
         Some((session, pilot))
     }
@@ -824,10 +818,12 @@ impl ClubDb {
         if cur_status != "pending" {
             return Err(DbError::protocol("membership not pending"));
         }
-        sqlx::query("UPDATE club_memberships SET status = 'active' WHERE id = $1 AND status = 'pending'")
-            .bind(membership_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE club_memberships SET status = 'active' WHERE id = $1 AND status = 'pending'",
+        )
+        .bind(membership_id)
+        .execute(&self.pool)
+        .await?;
         sqlx::query("UPDATE pilots SET status = 'approved', role = role WHERE id = $1")
             .bind(&pilot_id)
             .execute(&self.pool)

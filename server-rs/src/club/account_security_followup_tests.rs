@@ -27,7 +27,11 @@ async fn first_magic_verify_wipes_precreated_password_and_sessions() {
     .await
     .unwrap();
     let sess = db.create_account_session(&id, None, now).await.unwrap();
-    let raw = db.issue_account_magic_login(email, now).await.unwrap().unwrap();
+    let raw = db
+        .issue_account_magic_login(email, now)
+        .await
+        .unwrap()
+        .unwrap();
     let _ = db
         .consume_account_magic(&raw, "account_login", now)
         .await
@@ -75,14 +79,12 @@ async fn superadmin_account_global_role_requires_verified_approved_pilot() {
     .unwrap();
     let allow = HashSet::new();
     assert!(!db.is_platform_superadmin(&pilot_pending, &allow).await);
-    sqlx::query(
-        "UPDATE pilots SET status = 'approved', email_verified_at = $1 WHERE id = $2",
-    )
-    .bind(now)
-    .bind(&pilot_pending)
-    .execute(&db.pool)
-    .await
-    .unwrap();
+    sqlx::query("UPDATE pilots SET status = 'approved', email_verified_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(&pilot_pending)
+        .execute(&db.pool)
+        .await
+        .unwrap();
     assert!(db.is_platform_superadmin(&pilot_pending, &allow).await);
 }
 
@@ -213,20 +215,14 @@ async fn pilot_session_for_account_reuses_one_row_per_account_session() {
         .create_account_session(&acct, Some(&mid), now)
         .await
         .unwrap();
-  let count_before: i64 =
+    let count_before: i64 =
         sqlx::query_scalar("SELECT COUNT(*)::bigint FROM pilot_sessions WHERE pilot_id = $1")
             .bind(&pilot_id)
             .fetch_one(&db.pool)
             .await
             .unwrap();
-    let (s1, _) = db
-        .pilot_session_for_account(&acct_sess, now)
-        .await
-        .unwrap();
-    let (s2, _) = db
-        .pilot_session_for_account(&acct_sess, now)
-        .await
-        .unwrap();
+    let (s1, _) = db.pilot_session_for_account(&acct_sess, now).await.unwrap();
+    let (s2, _) = db.pilot_session_for_account(&acct_sess, now).await.unwrap();
     assert_eq!(s1, s2);
     let count_after: i64 =
         sqlx::query_scalar("SELECT COUNT(*)::bigint FROM pilot_sessions WHERE pilot_id = $1")
@@ -279,13 +275,12 @@ async fn admin_invite_ignores_pending_lookalike_pilot() {
             .await
             .unwrap();
     assert_ne!(promoted, attacker_pilot);
-    let attacker_gone: bool = sqlx::query_scalar(
-        "SELECT NOT EXISTS(SELECT 1 FROM pilots WHERE id = $1)",
-    )
-    .bind(&attacker_pilot)
-    .fetch_one(&db.pool)
-    .await
-    .unwrap();
+    let attacker_gone: bool =
+        sqlx::query_scalar("SELECT NOT EXISTS(SELECT 1 FROM pilots WHERE id = $1)")
+            .bind(&attacker_pilot)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
     assert!(attacker_gone);
 }
 
@@ -337,14 +332,13 @@ async fn account_magic_get_does_not_consume_token() {
         .unwrap();
     assert_eq!(get_res.status(), StatusCode::OK);
     let _ = to_bytes(get_res.into_body(), usize::MAX).await;
-    let used: Option<i64> = sqlx::query_scalar(
-        "SELECT used_at FROM magic_login_tokens WHERE token_hash = $1",
-    )
-    .bind(crate::club::auth::digest_token(&raw))
-    .fetch_optional(&db.pool)
-    .await
-    .unwrap()
-    .flatten();
+    let used: Option<i64> =
+        sqlx::query_scalar("SELECT used_at FROM magic_login_tokens WHERE token_hash = $1")
+            .bind(crate::club::auth::digest_token(&raw))
+            .fetch_optional(&db.pool)
+            .await
+            .unwrap()
+            .flatten();
     assert!(used.is_none());
 }
 
@@ -488,14 +482,10 @@ async fn last_admin_guard_counts_after_018_normalize() {
 #[tokio::test]
 #[serial]
 async fn csrf_forbidden_cross_origin_on_cookie_posts() {
-    use crate::{
-        auth::Auth,
-    };
+    use crate::auth::Auth;
     use crate::club::auth::set_account_session_cookie;
     use crate::{build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState};
-    use axum::{
-        http::{header, Request, StatusCode},
-    };
+    use axum::http::{header, Request, StatusCode};
     use std::{collections::HashSet, sync::Arc};
     use tower::Service;
     let data_dir = tempfile::tempdir().unwrap();
@@ -629,7 +619,13 @@ async fn suspended_membership_stops_account_compat_session() {
         .create_account_session(&acct, Some(&mid), now)
         .await
         .unwrap();
-    assert!(db.pilot_session_for_account(&acct_sess, now).await.is_some());
+    assert!(db
+        .pilot_session_for_account(&acct_sess, now)
+        .await
+        .is_some());
     db.suspend_membership(&mid).await.unwrap();
-    assert!(db.pilot_session_for_account(&acct_sess, now).await.is_none());
+    assert!(db
+        .pilot_session_for_account(&acct_sess, now)
+        .await
+        .is_none());
 }

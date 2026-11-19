@@ -169,10 +169,7 @@ fn account_login_fields(headers: &HeaderMap, body: &[u8]) -> AccountLoginFields 
 }
 
 fn account_login_redirect(loc: &str) -> impl IntoResponse {
-    (
-        StatusCode::SEE_OTHER,
-        [(header::LOCATION, loc.to_string())],
-    )
+    (StatusCode::SEE_OTHER, [(header::LOCATION, loc.to_string())])
 }
 
 #[derive(Deserialize)]
@@ -534,10 +531,11 @@ async fn post_account_magic(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     let (token, purpose) = if content_type.contains("application/json") {
-        let parsed: AccountMagicConsumeJson = serde_json::from_slice(&body).unwrap_or(AccountMagicConsumeJson {
-            token: String::new(),
-            purpose: None,
-        });
+        let parsed: AccountMagicConsumeJson =
+            serde_json::from_slice(&body).unwrap_or(AccountMagicConsumeJson {
+                token: String::new(),
+                purpose: None,
+            });
         (parsed.token, parsed.purpose)
     } else {
         let parsed: AccountMagicConsumeForm =
@@ -695,10 +693,7 @@ async fn serve_signup_page(State(state): State<AppState>) -> impl IntoResponse {
         Ok(html) => (
             StatusCode::OK,
             [
-                (
-                    axum::http::header::CONTENT_TYPE,
-                    "text/html; charset=utf-8",
-                ),
+                (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
                 (
                     axum::http::header::CONTENT_SECURITY_POLICY,
                     crate::static_files::HTML_CSP,

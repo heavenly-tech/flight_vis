@@ -11,7 +11,7 @@ async fn signup_on_existing_magic_only_does_not_set_password() {
     let db = ClubDb::open_test().await.unwrap();
     let now = now_ms();
     let email = "magic-only@test";
-  let id = db.ensure_account_for_email(email, None, now).await.unwrap();
+    let id = db.ensure_account_for_email(email, None, now).await.unwrap();
     let hash_before: Option<String> =
         sqlx::query_scalar("SELECT password_hash FROM accounts WHERE id = $1")
             .bind(&id)
@@ -101,11 +101,12 @@ async fn admin_invite_clears_hijacker_password_on_unverified_account() {
         .ensure_account_for_email(email, Some("hijackpw12"), now)
         .await
         .unwrap();
-    let acct_id: String = sqlx::query_scalar("SELECT id FROM accounts WHERE lower(email) = lower($1)")
-        .bind(email)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
+    let acct_id: String =
+        sqlx::query_scalar("SELECT id FROM accounts WHERE lower(email) = lower($1)")
+            .bind(email)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
     let inviter = new_id();
     sqlx::query(
         "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)

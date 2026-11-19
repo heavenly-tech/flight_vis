@@ -124,11 +124,11 @@ impl ClubDb {
         let row = sqlx::query(
             "SELECT email, email_verified_at, status, account_id FROM pilots WHERE id = $1",
         )
-            .bind(pilot_id)
-            .fetch_optional(&self.pool)
-            .await
-            .ok()
-            .flatten();
+        .bind(pilot_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten();
         let Some(row) = row else {
             return false;
         };
@@ -211,8 +211,7 @@ impl ClubDb {
         self.club_operational(club_id).await?;
         match self.membership_in_club(pilot_id, club_id).await {
             Some((role, status))
-                if role == "admin"
-                    && (status == "active" || status == "approved") =>
+                if role == "admin" && (status == "active" || status == "approved") =>
             {
                 Ok(())
             }

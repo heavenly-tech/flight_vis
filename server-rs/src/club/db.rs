@@ -276,13 +276,12 @@ impl ClubDb {
             .bind(pilot_id)
             .execute(&self.pool)
             .await?;
-        if let Some(aid) = sqlx::query_scalar::<_, Option<String>>(
-            "SELECT account_id FROM pilots WHERE id = $1",
-        )
-        .bind(pilot_id)
-        .fetch_optional(&self.pool)
-        .await?
-        .flatten()
+        if let Some(aid) =
+            sqlx::query_scalar::<_, Option<String>>("SELECT account_id FROM pilots WHERE id = $1")
+                .bind(pilot_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten()
         {
             sqlx::query(
                 "UPDATE account_sessions SET compat_pilot_session = NULL WHERE account_id = $1",

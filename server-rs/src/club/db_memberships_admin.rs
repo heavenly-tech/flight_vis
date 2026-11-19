@@ -229,14 +229,12 @@ impl ClubDb {
             {
                 return Err(MembershipAdminError::Db);
             }
-            sqlx::query(
-                "UPDATE pilots SET role = 'admin' WHERE id = $1 AND account_id = $2",
-            )
-            .bind(&pid)
-            .bind(&account_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| MembershipAdminError::Db)?;
+            sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1 AND account_id = $2")
+                .bind(&pid)
+                .bind(&account_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| MembershipAdminError::Db)?;
             pid
         } else {
             sqlx::query(
@@ -466,13 +464,11 @@ impl ClubDb {
             .execute(&mut *tx)
             .await
             .map_err(|_| MembershipAdminError::Db)?;
-        sqlx::query(
-            "UPDATE pilots SET status = 'suspended' WHERE id = $1 AND status = 'approved'",
-        )
-        .bind(&pilot_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| MembershipAdminError::Db)?;
+        sqlx::query("UPDATE pilots SET status = 'suspended' WHERE id = $1 AND status = 'approved'")
+            .bind(&pilot_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| MembershipAdminError::Db)?;
         if membership_role_is_admin(&current_role) {
             sqlx::query("UPDATE pilots SET role = 'pilot' WHERE id = $1")
                 .bind(&pilot_id)

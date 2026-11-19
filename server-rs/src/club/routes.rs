@@ -1288,10 +1288,8 @@ async fn club_flight_stream(
                         if let Some((_, mem_status)) =
                             db.membership_in_club(&pilot.id, &pilot.club_id).await
                         {
-                            if !crate::club::membership_status::MembershipStatus::parse(
-                                &mem_status,
-                            )
-                            .allows_club_api()
+                            if !crate::club::membership_status::MembershipStatus::parse(&mem_status)
+                                .allows_club_api()
                             {
                                 return None;
                             }
