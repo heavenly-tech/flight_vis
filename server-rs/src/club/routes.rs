@@ -2683,7 +2683,7 @@ async fn checkin_qr_svg_for_club(
         .await
         .unwrap_or_else(|| "default".to_string());
     let path = crate::club::club_scope::checkin_qr_path(&slug, &token);
-    let payload = crate::club::android_assetlinks::deep_link_qr_payload(headers, &path);
+    let payload = crate::club::android_assetlinks::checkin_qr_https_payload(headers, &path);
     let svg = match crate::club::qr::svg_for_payload(&payload, 280) {
         Ok(s) => s,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),

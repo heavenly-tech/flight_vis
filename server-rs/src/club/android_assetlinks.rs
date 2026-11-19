@@ -9,10 +9,19 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard};
 
-pub const DEFAULT_ANDROID_PACKAGE: &str = "cl.heavenly.flightvis";
+static ANDROID_TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
-/// `FLIGHT_ANDROID_APP_PACKAGE` (no default for App Links verification).
+/// Serializes tests that mutate Android deep-link environment variables.
+#[cfg(test)]
+pub(crate) fn android_test_env_lock() -> MutexGuard<'static, ()> {
+    ANDROID_TEST_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// `FLIGHT_ANDROID_APP_PACKAGE` (unset unless configured; no server default package name).
 pub fn android_package_name() -> Option<String> {
     package_from_env("FLIGHT_ANDROID_APP_PACKAGE").or_else(|| package_from_env("ANDROID_PACKAGE"))
 }
@@ -238,15 +247,9 @@ pub fn intent_url_for_https(https_url: &str, package: &str, browser_fallback_url
     )
 }
 
-/// QR / deep link: intent when App Links are configured, else bare HTTPS.
-pub fn deep_link_qr_payload(headers: &HeaderMap, https_path: &str) -> String {
-    let https = absolute_https_url(headers, https_path);
-    if let Some(pkg) = android_package_name() {
-        if android_deep_link_configured() {
-            return intent_url_for_https(&https, &pkg, &https);
-        }
-    }
-    https
+/// Payload encoded in club check-in QR symbols: always a plain HTTPS App Link URL (never `intent://`).
+pub fn checkin_qr_https_payload(headers: &HeaderMap, https_path: &str) -> String {
+    absolute_https_url(headers, https_path)
 }
 
 #[cfg(test)]
@@ -254,16 +257,15 @@ mod tests {
     use super::*;
     use axum::body::{to_bytes, Body};
     use axum::http::Request;
-    use std::sync::{Mutex, MutexGuard};
     use tower::ServiceExt;
 
     #[test]
     fn assetlinks_shape_with_fingerprint() {
-        let j = assetlinks_json(DEFAULT_ANDROID_PACKAGE, &["AA:BB:CC".into()]);
+        let j = assetlinks_json("cl.heavenly.flightvis", &["AA:BB:CC".into()]);
         let arr = j.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         let target = &arr[0]["target"];
-        assert_eq!(target["package_name"], DEFAULT_ANDROID_PACKAGE);
+        assert_eq!(target["package_name"], "cl.heavenly.flightvis");
         let fps = target["sha256_cert_fingerprints"].as_array().unwrap();
         assert_eq!(fps[0], "AA:BB:CC");
     }
@@ -281,8 +283,22 @@ mod tests {
     }
 
     #[test]
+    fn checkin_qr_payload_is_https_not_intent_even_when_app_links_configured() {
+        let _guard = super::android_test_env_lock();
+        std::env::set_var("FLIGHT_ANDROID_APP_PACKAGE", "cl.heavenly.flightvis");
+        std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", "AA:BB:CC");
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "flight.heavenly.cl".parse().unwrap());
+        let payload = checkin_qr_https_payload(&headers, "/c/demo/q/v1.demo.1.sig");
+        assert!(payload.starts_with("https://flight.heavenly.cl/c/demo/q/"));
+        assert!(!payload.contains("intent:"));
+        std::env::remove_var("FLIGHT_ANDROID_APP_PACKAGE");
+        std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
+    }
+
+    #[test]
     fn reads_flight_android_cert_from_env() {
-        let _guard = env_lock();
+        let _guard = super::android_test_env_lock();
         std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
         std::env::remove_var("ANDROID_CERT_SHA256");
         std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", "aa:bb:cc, dd:ee:ff");
@@ -291,14 +307,9 @@ mod tests {
         std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
     }
 
-  fn env_lock() -> MutexGuard<'static, ()> {
-        static LOCK: Mutex<()> = Mutex::new(());
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
     #[tokio::test]
     async fn assetlinks_http_404_when_unconfigured() {
-        let _guard = env_lock();
+        let _guard = super::android_test_env_lock();
         std::env::remove_var("FLIGHT_ANDROID_APP_PACKAGE");
         std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
         std::env::remove_var("ANDROID_CERT_SHA256");
@@ -317,7 +328,7 @@ mod tests {
 
     #[tokio::test]
     async fn assetlinks_http_json_when_configured() {
-        let _guard = env_lock();
+        let _guard = super::android_test_env_lock();
         std::env::set_var("FLIGHT_ANDROID_APP_PACKAGE", "cl.heavenly.flightvis");
         std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", "AA:BB:CC");
         let app = well_known_routes();

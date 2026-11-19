@@ -382,6 +382,51 @@ async fn server_qr_svg_endpoints() {
     .unwrap();
     assert!(screen_svg.contains("<svg"));
     assert!(!screen_svg.contains("qrserver"));
+    assert!(!screen_svg.to_lowercase().contains("intent:"));
+}
+
+#[tokio::test]
+#[serial]
+async fn club_screen_qr_encodes_https_app_link_not_intent() {
+    let _guard = crate::club::android_assetlinks::android_test_env_lock();
+    std::env::set_var("FLIGHT_ANDROID_APP_PACKAGE", "cl.heavenly.flightvis");
+    std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", "AA:BB:CC");
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    sqlx::query("UPDATE clubs SET slug = 'demo' WHERE id = $1")
+        .bind(&club_id)
+        .execute(&fx.club.pool)
+        .await
+        .unwrap();
+    let (_sess, display_token) = fx
+        .club
+        .create_display_session(&fx.pilot_a, "kiosk")
+        .await
+        .unwrap();
+    let display_cookie = format!("{}={}", crate::club::auth::DISPLAY_COOKIE, display_token);
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/club/screen/qr.svg")
+                .header(header::HOST, "flight.heavenly.cl")
+                .header(header::COOKIE, display_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let svg = String::from_utf8(
+        to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(!svg.to_lowercase().contains("intent:"));
+    std::env::remove_var("FLIGHT_ANDROID_APP_PACKAGE");
+    std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
 }
 
 #[tokio::test]
