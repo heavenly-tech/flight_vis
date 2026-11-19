@@ -17,6 +17,7 @@ pub enum MagicConsumeError {
     Invalid,
     Expired,
     Used,
+    ClubUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +29,24 @@ pub enum GuestClaimError {
 }
 
 impl ClubDb {
+    async fn ensure_login_club_operational(&self, club_id: &str) -> Result<(), LoginError> {
+        if self.club_operational(club_id).await.is_err() {
+            return Err(LoginError::ClubUnavailable);
+        }
+        Ok(())
+    }
+
+    async fn touch_email_verified_on_login(&self, pilot_id: &str, now: i64) -> Result<(), DbError> {
+        sqlx::query(
+            "UPDATE pilots SET email_verified_at = COALESCE(email_verified_at, $1) WHERE id = $2",
+        )
+        .bind(now)
+        .bind(pilot_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn create_pilot_session(&self, pilot_id: &str, now: i64) -> Result<String, DbError> {
         let session_id = new_session_id();
         let session_db_id = digest_token(&session_id);
@@ -102,13 +121,6 @@ impl ClubDb {
         };
 
         let pilot = row_to_pilot(&row).map_err(|_| LoginError::Invalid)?;
-        let status: String = row.try_get(5).map_err(|_| LoginError::Invalid)?;
-        let verified: Option<i64> = row.try_get(9).ok();
-        if status != "approved" || verified.is_none() {
-            let _ = verify_hash(DUMMY_PASSWORD_HASH);
-            let _ = self.record_login_attempt(ip, email_norm, now).await;
-            return Err(LoginError::Invalid);
-        }
         let hash: String = row.try_get(8).map_err(|_| LoginError::Invalid)?;
         if hash.is_empty() {
             let _ = verify_hash(DUMMY_PASSWORD_HASH);
@@ -119,6 +131,7 @@ impl ClubDb {
             let _ = self.record_login_attempt(ip, email_norm, now).await;
             return Err(LoginError::Invalid);
         }
+        self.ensure_login_club_operational(&pilot.club_id).await?;
         let session_id = self
             .create_pilot_session(&pilot.id, now)
             .await
@@ -331,6 +344,10 @@ impl ClubDb {
             return Err(MagicConsumeError::Invalid);
         };
         let pilot = row_to_pilot(&pilot_row).map_err(|_| MagicConsumeError::Invalid)?;
+        if self.club_operational(&pilot.club_id).await.is_err() {
+            return Err(MagicConsumeError::ClubUnavailable);
+        }
+        let _ = self.touch_email_verified_on_login(&pilot.id, now).await;
         let session_id = self
             .create_pilot_session(&pilot.id, now)
             .await
@@ -556,6 +573,13 @@ mod tests {
         let (sess, pilot) = db.consume_magic_login(&raw, &club, now).await.unwrap();
         assert_eq!(pilot.email, "magic@test");
         assert!(!sess.is_empty());
+        let verified: Option<i64> =
+            sqlx::query_scalar("SELECT email_verified_at FROM pilots WHERE id = $1")
+                .bind(&pilot.id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert!(verified.is_some());
         assert!(matches!(
             db.consume_magic_login(&raw, &club, now).await,
             Err(MagicConsumeError::Used)
@@ -600,6 +624,60 @@ mod tests {
             .unwrap();
         assert_eq!(claimed.email, "claimed@test");
         assert_eq!(claimed.status, "pending");
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn pending_pilot_correct_password_can_login() {
+        let db = ClubDb::open_test().await.unwrap();
+        let club = db.default_club_id().await.unwrap();
+        let hash = hash_password("password12").unwrap();
+        let pid = new_id();
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+             VALUES ($1, $2, 'Pending', 'pending-login@test', '', 'pending', 'pilot', $3, $4)",
+        )
+        .bind(&pid)
+        .bind(&club)
+        .bind(&hash)
+        .bind(now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let (session, row) = db
+            .login_password(&club, "pending-login@test", "password12", now, "127.0.0.1")
+            .await
+            .unwrap();
+        assert!(!session.is_empty());
+        assert_eq!(row.status, "pending");
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn legacy_approved_null_email_verified_can_login() {
+        let db = ClubDb::open_test().await.unwrap();
+        let club = db.default_club_id().await.unwrap();
+        let hash = hash_password("password12").unwrap();
+        let pid = new_id();
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+             VALUES ($1, $2, 'Legacy', 'legacy-cas@test', 'L1', 'approved', 'pilot', $3, $4)",
+        )
+        .bind(&pid)
+        .bind(&club)
+        .bind(&hash)
+        .bind(now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        let (session, row) = db
+            .login_password(&club, "legacy-cas@test", "password12", now, "127.0.0.1")
+            .await
+            .unwrap();
+        assert!(!session.is_empty());
+        assert_eq!(row.email, "legacy-cas@test");
     }
 
     #[serial]

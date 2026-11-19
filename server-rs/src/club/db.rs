@@ -370,15 +370,10 @@ impl ClubDb {
 
     #[allow(dead_code)]
     pub async fn approve_pilot(&self, pilot_id: &str) -> Result<(), DbError> {
-        let now = now_ms();
-        sqlx::query(
-            "UPDATE pilots SET status = 'approved',
-             email_verified_at = COALESCE(email_verified_at, $2) WHERE id = $1",
-        )
-        .bind(pilot_id)
-        .bind(now)
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("UPDATE pilots SET status = 'approved' WHERE id = $1")
+            .bind(pilot_id)
+            .execute(&self.pool)
+            .await?;
         let club_id: String = sqlx::query_scalar("SELECT club_id FROM pilots WHERE id = $1")
             .bind(pilot_id)
             .fetch_one(&self.pool)
@@ -719,6 +714,7 @@ impl ClubDb {
             .flatten()
     }
 
+    #[allow(dead_code)]
     pub async fn club_id_for_device(&self, device_id: &str) -> Option<String> {
         sqlx::query_scalar(
             "SELECT p.club_id FROM devices d
@@ -726,6 +722,26 @@ impl ClubDb {
              WHERE d.id = $1",
         )
         .bind(device_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+    }
+
+    pub async fn club_id_for_flight(&self, flight_id: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT club_id FROM flights WHERE id = $1")
+            .bind(flight_id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    pub async fn club_id_for_aircraft_tail(&self, tail: &str) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT club_id FROM aircraft WHERE tail = $1 AND active = true ORDER BY id LIMIT 1",
+        )
+        .bind(tail.trim())
         .fetch_optional(&self.pool)
         .await
         .ok()
@@ -1763,6 +1779,7 @@ pub enum RegisterError {
 pub enum LoginError {
     Invalid,
     Throttled,
+    ClubUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
