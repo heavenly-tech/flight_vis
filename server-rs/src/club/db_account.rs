@@ -1533,18 +1533,19 @@ mod tests {
     #[tokio::test]
     async fn seed_account_cli_idempotent() {
         let db = ClubDb::open_test().await.unwrap();
+        let club_slug = std::env::var("FLIGHT_CLUB_SLUG").unwrap_or_else(|_| "default".to_string());
         let dry = db
-            .seed_account_cli("pablo@test", "default", "admin", true)
+            .seed_account_cli("pablo@test", &club_slug, "admin", true)
             .await
             .unwrap();
         assert_eq!(dry["dryRun"], true);
         let apply = db
-            .seed_account_cli("pablo@test", "default", "admin", false)
+            .seed_account_cli("pablo@test", &club_slug, "admin", false)
             .await
             .unwrap();
         assert_eq!(apply["applied"], true);
         let again = db
-            .seed_account_cli("pablo@test", "default", "admin", false)
+            .seed_account_cli("pablo@test", &club_slug, "admin", false)
             .await
             .unwrap();
         assert!(again.get("applied").is_some());
