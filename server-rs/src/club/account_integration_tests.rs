@@ -248,16 +248,27 @@ async fn aircraft_tail_lookup_scoped_by_club() {
         .unwrap();
     db.try_consume_magic_club_verify(&tok, now).await.unwrap();
     let tail = "DUP-123";
+    let type_a = crate::club::auth::new_id();
+    let type_b = crate::club::auth::new_id();
+    for (tid, cid) in [(&type_a, &club_a), (&type_b, &club_b)] {
+        sqlx::query("INSERT INTO aircraft_types (id, club_id, code) VALUES ($1, $2, 'GLID')")
+            .bind(tid)
+            .bind(cid)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
     sqlx::query(
-        "INSERT INTO aircraft (id, club_id, tail, type_code, active, created_at)
-         VALUES ($1, $2, $3, 'GLID', true, $4), ($5, $6, $3, 'GLID', true, $4)",
+        "INSERT INTO aircraft (id, club_id, tail, type_id, active)
+         VALUES ($1, $2, $3, $4, true), ($5, $6, $3, $7, true)",
     )
     .bind(crate::club::auth::new_id())
     .bind(&club_a)
     .bind(tail)
-    .bind(now)
+    .bind(&type_a)
     .bind(crate::club::auth::new_id())
     .bind(&club_b)
+    .bind(&type_b)
     .execute(&db.pool)
     .await
     .unwrap();
