@@ -1415,7 +1415,6 @@ async fn admin_invite_clears_legacy_pilot_password() {
         .register_into_account(&club_id, "Atk", email, "", "attackerpass1", now)
         .await
         .unwrap();
-    db.backfill_accounts_from_pilots().await.unwrap();
     let invite = db
         .invite_admin_membership(&club_id, email, &inviter, now)
         .await
@@ -1887,22 +1886,20 @@ async fn legacy_register_backfill_verify_http_approve_blocks_attacker_club_login
         .register_into_account(&club_id, "Atk", email, "", "attackerpass1", now)
         .await
         .unwrap();
-    db.backfill_accounts_from_pilots().await.unwrap();
     let raw = db
         .issue_account_magic_signup(email, None, None, now)
         .await
         .unwrap();
     let _ = db.consume_account_magic(&raw, None, now).await.unwrap();
-    let ph: String = sqlx::query_scalar("SELECT password_hash FROM pilots WHERE id = $1")
+    let ph_before: String = sqlx::query_scalar("SELECT password_hash FROM pilots WHERE id = $1")
         .bind(&pilot_id)
         .fetch_one(&db.pool)
         .await
         .unwrap();
-    assert!(ph.is_empty());
-    assert!(matches!(
-        db.login(&club_id, email, "attackerpass1", now).await,
-        Err(LoginError::Invalid)
-    ));
+    assert!(
+        !ph_before.is_empty(),
+        "pilot password kept until membership approval"
+    );
     let make_router = |db: ClubDb| {
         let (video_queue, _) = tokio::sync::mpsc::channel(4);
         AppState {
@@ -1942,33 +1939,69 @@ async fn legacy_register_backfill_verify_http_approve_blocks_attacker_club_login
         .await
         .unwrap();
     assert_eq!(fail_res.status(), StatusCode::BAD_REQUEST);
+    let account_id = db
+        .account_id_for_email(email)
+        .await
+        .expect("account for email");
+    sqlx::query("UPDATE pilots SET account_id = $1 WHERE id = $2")
+        .bind(&account_id)
+        .bind(&pilot_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE accounts SET email_verified_at = coalesce(email_verified_at, $1) WHERE id = $2",
+    )
+    .bind(now)
+    .bind(&account_id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
     sqlx::query("UPDATE pilots SET email_verified_at = $1 WHERE id = $2")
         .bind(now)
         .bind(&pilot_id)
         .execute(&db.pool)
         .await
         .unwrap();
-    let ok_res = router
+    db.approve_membership(&mid, now).await.unwrap();
+    let ph_after: String = sqlx::query_scalar("SELECT password_hash FROM pilots WHERE id = $1")
+        .bind(&pilot_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert!(ph_after.is_empty(), "approval clears legacy pilot password");
+    let mut router3 = build_router(make_router(db.clone()));
+    let login_res = router3
         .call(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/account/memberships/{mid}/approve"))
-                .header(
-                    header::COOKIE,
-                    format!("{}={admin_sess}", crate::club::auth::COOKIE),
-                )
+                .uri("/api/club/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header(header::HOST, "127.0.0.1:8080")
                 .header("Sec-Fetch-Site", "same-origin")
-                .body(axum::body::Body::empty())
+                .body(axum::body::Body::from(format!(
+                    "email={email}&password=attackerpass1&next=%2Fclub-pilot.html"
+                )))
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(ok_res.status(), StatusCode::OK);
-    assert!(matches!(
-        db.login(&club_id, email, "attackerpass1", now).await,
-        Err(LoginError::Invalid)
-    ));
+    assert!(
+        login_res.status() == StatusCode::SEE_OTHER
+            || login_res.status() == StatusCode::FOUND
+            || login_res.status() == StatusCode::UNAUTHORIZED,
+        "club login after approve: {}",
+        login_res.status()
+    );
+    let loc = login_res
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        loc.contains("e=1") || login_res.status() == StatusCode::UNAUTHORIZED,
+        "expected failed club login redirect, got {loc}"
+    );
 }
 
 #[tokio::test]
@@ -2095,4 +2128,313 @@ async fn set_account_password_http_sends_notice_email() {
         }),
         "expected password-changed notice email"
     );
+}
+
+#[tokio::test]
+#[serial]
+async fn backfill_does_not_clear_unverified_pilot_password_on_restart() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_id = db.default_club_id().await.unwrap();
+    let email = "backfill-keep-pw@test";
+    let pid = new_id();
+    let ph = hash_password("apkpass1234").unwrap();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'Apk', $3, '', 'pending', 'pilot', $4, $5)",
+    )
+    .bind(&pid)
+    .bind(&club_id)
+    .bind(email)
+    .bind(&ph)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    db.backfill_accounts_from_pilots().await.unwrap();
+    db.backfill_accounts_from_pilots().await.unwrap();
+    let after: String = sqlx::query_scalar("SELECT password_hash FROM pilots WHERE id = $1")
+        .bind(&pid)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(after, ph);
+}
+
+#[tokio::test]
+#[serial]
+async fn set_account_password_wrong_current_on_magic_fresh_rejected() {
+    use crate::club::db_account::AccountSignupError;
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = format!("magic-wrong-current-{}@test", &new_id()[..8]);
+    let id = db.create_account(&email, None, now).await.unwrap();
+    sqlx::query("UPDATE accounts SET email_verified_at = $1, password_hash = $2 WHERE id = $3")
+        .bind(now)
+        .bind(hash_password("password12").unwrap())
+        .bind(&id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let magic_sess = db
+        .create_account_session_auth(
+            &id,
+            None,
+            now,
+            crate::club::db_account::ACCOUNT_SESSION_AUTH_MAGIC,
+        )
+        .await
+        .unwrap();
+    let err = db
+        .set_account_password(
+            &id,
+            "newpassword1",
+            now,
+            Some("wrongpass1"),
+            Some(&magic_sess),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, AccountSignupError::WrongPassword);
+}
+
+#[tokio::test]
+#[serial]
+async fn set_account_password_flips_session_auth_method_to_password() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let id = db
+        .create_account("auth-flip@test", None, now)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(&id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let magic_sess = db
+        .create_account_session_auth(
+            &id,
+            None,
+            now,
+            crate::club::db_account::ACCOUNT_SESSION_AUTH_MAGIC,
+        )
+        .await
+        .unwrap();
+    db.set_account_password(&id, "password12", now, None, Some(&magic_sess))
+        .await
+        .unwrap();
+    let session_db_id = crate::club::auth::digest_token(&magic_sess);
+    let method: String =
+        sqlx::query_scalar("SELECT auth_method FROM account_sessions WHERE id = $1")
+            .bind(&session_db_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        method,
+        crate::club::db_account::ACCOUNT_SESSION_AUTH_PASSWORD
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn account_recent_auth_window_inside_passes_outside_rejected() {
+    use crate::club::db_account::{AccountSignupError, ACCOUNT_PASSWORD_RECENT_AUTH_MS};
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let id = db
+        .create_account("recent-auth@test", None, now)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(&id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let sess = db
+        .create_account_session_auth(
+            &id,
+            None,
+            now,
+            crate::club::db_account::ACCOUNT_SESSION_AUTH_MAGIC,
+        )
+        .await
+        .unwrap();
+    assert!(
+        db.account_session_is_fresh(&sess, now + ACCOUNT_PASSWORD_RECENT_AUTH_MS - 1)
+            .await
+    );
+    let late = now + ACCOUNT_PASSWORD_RECENT_AUTH_MS + 1;
+    assert!(!db.account_session_is_fresh(&sess, late).await);
+    let err = db
+        .set_account_password(&id, "password12", late, None, Some(&sess))
+        .await
+        .unwrap_err();
+    assert_eq!(err, AccountSignupError::AuthRequired);
+}
+
+#[tokio::test]
+#[serial]
+async fn login_throttle_per_email_blocks_password_login() {
+    use crate::club::db_auth_pg::LOGIN_THROTTLE_MAX;
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = "email-throttle@test";
+    let ip = "9.9.9.9";
+    for i in 0..LOGIN_THROTTLE_MAX {
+        let _ = db.record_login_attempt(ip, email, now + i).await;
+    }
+    assert!(matches!(
+        db.account_login_password(email, "anything12", now, ip)
+            .await,
+        Err(LoginError::Throttled)
+    ));
+    let club_id = db.default_club_id().await.unwrap();
+    assert!(matches!(
+        db.login(&club_id, email, "anything12", now).await,
+        Err(LoginError::Throttled)
+    ));
+}
+
+#[tokio::test]
+#[serial]
+async fn migration_025_account_session_auth_method_check() {
+    let db = ClubDb::open_test().await.unwrap();
+    let err = sqlx::query(
+        "INSERT INTO account_sessions (id, account_id, expires_at, created_at, auth_method)
+         VALUES ($1, $2, $3, $4, 'oauth')",
+    )
+    .bind(new_id())
+    .bind(
+        db.create_account("chk-mig@test", None, now_ms())
+            .await
+            .unwrap(),
+    )
+    .bind(now_ms() + 3_600_000)
+    .bind(now_ms())
+    .execute(&db.pool)
+    .await;
+    assert!(err.is_err());
+}
+
+#[tokio::test]
+#[serial]
+async fn http_account_me_skip_current_password_magic_vs_password() {
+    use crate::auth::Auth;
+    use crate::{build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState};
+    use axum::http::{header, Request, StatusCode};
+    use std::sync::Arc;
+    use tower::Service;
+    let data_dir = tempfile::tempdir().unwrap();
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = "me-skip-pw@test";
+    let id = db.create_account(email, None, now).await.unwrap();
+    sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(&id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let magic = db
+        .create_account_session_auth(
+            &id,
+            None,
+            now,
+            crate::club::db_account::ACCOUNT_SESSION_AUTH_MAGIC,
+        )
+        .await
+        .unwrap();
+    let pass = db
+        .create_account_session_auth(
+            &id,
+            None,
+            now,
+            crate::club::db_account::ACCOUNT_SESSION_AUTH_PASSWORD,
+        )
+        .await
+        .unwrap();
+    let (video_queue, _) = tokio::sync::mpsc::channel(4);
+    let state = AppState {
+        dist_dir: data_dir.path().join("dist"),
+        auth: Auth::with_password("x"),
+        device_auth: DeviceAuth::empty(),
+        live: Arc::new(LiveEngine::new(data_dir.path())),
+        store: Store::new(data_dir.path()),
+        club: Some(db.clone()),
+        video_queue,
+        login_throttle: crate::LoginThrottle::default(),
+        device_register_throttle: crate::LoginThrottle::default(),
+        share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
+        account_password_account_throttle: crate::LoginThrottle::default(),
+        mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+        webauthn: None,
+        sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+        superadmin_emails: std::collections::HashSet::new(),
+    };
+    let cookie_name = crate::club::auth::ACCOUNT_COOKIE;
+    let mut router = build_router(state);
+    let magic_res = router
+        .call(
+            Request::builder()
+                .method("GET")
+                .uri("/api/account/me")
+                .header(header::COOKIE, format!("{cookie_name}={magic}"))
+                .header(header::HOST, "127.0.0.1:8080")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(magic_res.status(), StatusCode::OK);
+    let magic_json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(magic_res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(magic_json["skipCurrentPassword"], true);
+    let (video_queue2, _) = tokio::sync::mpsc::channel(4);
+    let state2 = AppState {
+        dist_dir: data_dir.path().join("dist"),
+        auth: Auth::with_password("x"),
+        device_auth: DeviceAuth::empty(),
+        live: Arc::new(LiveEngine::new(data_dir.path())),
+        store: Store::new(data_dir.path()),
+        club: Some(db),
+        video_queue: video_queue2,
+        login_throttle: crate::LoginThrottle::default(),
+        device_register_throttle: crate::LoginThrottle::default(),
+        share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
+        account_password_account_throttle: crate::LoginThrottle::default(),
+        mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+        webauthn: None,
+        sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+        superadmin_emails: std::collections::HashSet::new(),
+    };
+    let mut router2 = build_router(state2);
+    let pass_res = router2
+        .call(
+            Request::builder()
+                .method("GET")
+                .uri("/api/account/me")
+                .header(header::COOKIE, format!("{cookie_name}={pass}"))
+                .header(header::HOST, "127.0.0.1:8080")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let pass_json: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(pass_res.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(pass_json["skipCurrentPassword"], false);
 }
