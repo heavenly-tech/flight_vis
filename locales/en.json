@@ -82,7 +82,10 @@
     "notCleared": "Not cleared for {tail} / {type}",
     "dbError": "Database error",
     "invalidLocale": "Locale not available",
-    "clubSuspended": "Club suspended"
+    "clubSuspended": "Club suspended",
+    "invalidSlug": "Invalid slug",
+    "slugTaken": "That slug is already in use",
+    "unchanged": "Slug unchanged"
   },
   "club": {
     "login": {
@@ -250,6 +253,10 @@
     "clubDefaultLanguage": "Club default language",
     "clubDefaultLanguageHelp": "Club screen, /c/{slug} landing and QR fallback page.",
     "clubDefaultLanguageSaved": "Club language saved.",
+    "clubSlug": "Club URL slug",
+    "clubSlugHelp": "Used in /c/{slug} links, the club screen and printed QR codes. Old slugs redirect automatically.",
+    "clubSlugSave": "Save slug",
+    "clubSlugSaved": "Club slug updated.",
     "kioskQrTitle": "Kiosk screen QR",
     "kioskQrHint": "Drag to move; bottom corner to resize (square). Preview matches aspect ratio.",
     "aspectRatio": "Aspect ratio",

@@ -218,7 +218,20 @@ async fn fallback(
     State(state): State<AppState>,
     uri: Uri,
     headers: HeaderMap,
+    method: axum::http::Method,
 ) -> Result<axum::response::Response, StatusCode> {
+    if let Some(db) = state.club.as_ref() {
+        if let Some(resp) = club::slug_redirect::maybe_club_slug_redirect(
+            db,
+            method.as_str(),
+            uri.path(),
+            uri.query(),
+        )
+        .await
+        {
+            return Ok(resp);
+        }
+    }
     if let Some(resp) = club_admin_login_redirect(&state, &headers, uri.path(), uri.query()).await {
         return Ok(resp);
     }

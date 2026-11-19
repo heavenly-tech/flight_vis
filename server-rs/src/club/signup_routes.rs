@@ -4,7 +4,7 @@ use crate::club::{
     db::now_ms,
     db_club_lifecycle::{validate_icao, ClubSignupError},
     routes::club_db,
-    slug::normalize_slug,
+    slug::{normalize_slug, validate_club_slug_candidate},
 };
 use crate::{AppState, ClientIp};
 use axum::{
@@ -52,6 +52,16 @@ async fn post_club_signup(
     let Some(db) = club_db(&state) else {
         return Json(json!({ "ok": true })).into_response();
     };
+    let flight_slugs: Vec<String> = state
+        .store
+        .list_flights()
+        .await
+        .into_iter()
+        .map(|f| f.slug)
+        .collect();
+    if validate_club_slug_candidate(&body.slug, &flight_slugs).is_err() {
+        return Json(json!({ "ok": true })).into_response();
+    }
     let now = now_ms();
     let email = body.email.trim();
     let ip = client_ip.0;
@@ -84,9 +94,9 @@ async fn post_club_signup(
                 .await;
             Json(json!({ "ok": true })).into_response()
         }
-        Err(ClubSignupError::InvalidSlug) | Err(ClubSignupError::InvalidEmail) => {
-            Json(json!({ "ok": true })).into_response()
-        }
+        Err(ClubSignupError::InvalidSlug)
+        | Err(ClubSignupError::SlugTaken)
+        | Err(ClubSignupError::InvalidEmail) => Json(json!({ "ok": true })).into_response(),
         Err(ClubSignupError::InvalidIcao) => Json(json!({ "ok": true })).into_response(),
         Err(ClubSignupError::Db) => Json(json!({ "ok": true })).into_response(),
     }

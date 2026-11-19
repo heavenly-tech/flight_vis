@@ -85,7 +85,10 @@
     "notCleared": "Sin habilitación para {tail} / {type}",
     "dbError": "Error de base de datos",
     "invalidLocale": "Idioma no disponible",
-    "clubSuspended": "Club suspendido"
+    "clubSuspended": "Club suspendido",
+    "invalidSlug": "Slug inválido",
+    "slugTaken": "Ese identificador ya está en uso",
+    "unchanged": "El slug no cambió"
   },
   "club": {
     "login": {
@@ -253,6 +256,10 @@
     "clubDefaultLanguage": "Idioma predeterminado del club",
     "clubDefaultLanguageHelp": "Pantalla del club, página /c/{{slug}} y fallback QR.",
     "clubDefaultLanguageSaved": "Idioma del club guardado.",
+    "clubSlug": "Slug URL del club",
+    "clubSlugHelp": "Se usa en enlaces /c/{slug}, la pantalla del club y los QR impresos. Los slugs antiguos redirigen solos.",
+    "clubSlugSave": "Guardar slug",
+    "clubSlugSaved": "Actualizamos el slug del club.",
     "kioskQrTitle": "QR en pantalla kiosk",
     "kioskQrHint": "Arrastra para mover; esquina inferior para redimensionar (cuadrado). Vista previa según relación de aspecto.",
     "aspectRatio": "Relación de aspecto",

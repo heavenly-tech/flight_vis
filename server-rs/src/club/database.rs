@@ -249,6 +249,15 @@ mod tests {
     }
 
     /// CI runs this with `DATABASE_URL=postgres://flightvis:…/flight_vis_owner_test` after creating the NOSUPERUSER role.
+    #[test]
+    fn sqlx_applies_pending_migrations_in_version_order() {
+        let migrator = sqlx::migrate!("./migrations");
+        assert!(
+            migrator.version_exists(24),
+            "club slug history must stay at 000024 while 022/023 are parked"
+        );
+    }
+
     #[tokio::test]
     #[serial_test::serial]
     async fn flightvis_owner_migrations() {

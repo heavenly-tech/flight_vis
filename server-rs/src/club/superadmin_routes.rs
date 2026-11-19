@@ -4,9 +4,11 @@ use crate::club::{
     auth::{parse_account_session_cookie, parse_session_cookie},
     db::now_ms,
     routes::{club_db, viewer},
+    slug_admin,
 };
 use crate::AppState;
 use axum::{
+    body::Bytes,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Json},
@@ -199,9 +201,40 @@ async fn unsuspend_account(
     }
 }
 
+async fn post_superadmin_club_slug(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(club_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(status) = slug_admin::require_exact_json_content_type(&headers) {
+        return (status, Json(json!({ "error": "json required" }))).into_response();
+    }
+    if let Err(e) = require_superadmin(&state, &headers).await {
+        return e.into_response();
+    }
+    if parse_session_cookie(&headers).is_some() {
+        if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+            return (status, Json(json!({ "error": "csrf" }))).into_response();
+        }
+    }
+    let Ok(parsed) = slug_admin::parse_slug_body(&body) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid slug" })),
+        )
+            .into_response();
+    };
+    slug_admin::rename_club_slug_for_id(&state, &club_id, &parsed, None).await
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/superadmin/clubs", get(list_clubs))
+        .route(
+            "/api/superadmin/clubs/{id}/slug",
+            post(post_superadmin_club_slug),
+        )
         .route("/api/superadmin/clubs/{id}/suspend", post(suspend_club))
         .route("/api/superadmin/clubs/{id}/unsuspend", post(unsuspend_club))
         .route(

@@ -43,12 +43,16 @@ impl ClubDb {
     }
 
     pub async fn resolve_club_context(&self, slug: &str) -> Result<ClubContext, ClubScopeError> {
-        let Some(club_id) = self.club_id_for_slug(slug).await else {
+        let Some(club_id) = self.club_id_for_slug_any(slug).await else {
             return Err(ClubScopeError::NotFound);
         };
+        let current = self
+            .club_slug(&club_id)
+            .await
+            .unwrap_or_else(|| slug.to_string());
         Ok(ClubContext {
             club_id,
-            slug: slug.to_string(),
+            slug: current,
         })
     }
 
