@@ -327,13 +327,7 @@ impl ClubDb {
         })
     }
 
-    pub async fn viewer_from_session(&self, session_id: Option<&str>, now: i64) -> Viewer {
-        let Some(session_id) = session_id else {
-            return Viewer::Anonymous;
-        };
-        let Some(pilot) = self.pilot_from_session(session_id, now).await else {
-            return Viewer::Anonymous;
-        };
+    pub async fn viewer_from_pilot_row(&self, pilot: &PilotRow) -> Viewer {
         let (role_s, status_s) = self
             .membership_in_club(&pilot.id, &pilot.club_id)
             .await
@@ -347,10 +341,20 @@ impl ClubDb {
             _ => PilotRole::Pilot,
         };
         Viewer::Pilot {
-            id: pilot.id,
+            id: pilot.id.clone(),
             status,
             role,
         }
+    }
+
+    pub async fn viewer_from_session(&self, session_id: Option<&str>, now: i64) -> Viewer {
+        let Some(session_id) = session_id else {
+            return Viewer::Anonymous;
+        };
+        let Some(pilot) = self.pilot_from_session(session_id, now).await else {
+            return Viewer::Anonymous;
+        };
+        self.viewer_from_pilot_row(&pilot).await
     }
 
     pub async fn viewer_with_pilot(

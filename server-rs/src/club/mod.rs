@@ -9,7 +9,7 @@ pub mod checkin;
 mod checkin_landing;
 mod club_scope;
 mod contract_routes;
-mod csrf;
+pub mod csrf;
 pub mod database;
 mod db;
 mod db_access_pg;

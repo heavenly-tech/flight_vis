@@ -600,6 +600,9 @@ async fn login_post(
     client_ip: ClientIp,
     body: Bytes,
 ) -> impl IntoResponse {
+    if let Err(status) = club::csrf::cookie_post_allowed(&headers) {
+        return status.into_response();
+    }
     let json = wants_json(&headers);
     if !state.login_throttle.allow(&client_ip.0, now_secs()) {
         return too_many_logins(json);

@@ -45,11 +45,11 @@ pub(crate) async fn viewer(state: &AppState, headers: &HeaderMap) -> Viewer {
     let now = now_ms();
     if let Some(db) = club_db(state) {
         if let Some(acct_sess) = auth::parse_account_session_cookie(headers) {
-            if let Some((_, _active)) = db.account_from_session(&acct_sess, now).await {
-                if let Some((pilot_sess, _pilot)) =
-                    db.pilot_session_for_account(&acct_sess, now).await
-                {
-                    return db.viewer_from_session(Some(&pilot_sess), now).await;
+            if let Some((_, Some(mem_id))) = db.account_from_session(&acct_sess, now).await {
+                if let Some(pilot) = db.pilot_for_active_membership(&mem_id).await {
+                    if db.club_operational(&pilot.club_id).await.is_ok() {
+                        return db.viewer_from_pilot_row(&pilot).await;
+                    }
                 }
             }
         }
@@ -1287,8 +1287,15 @@ async fn club_flight_stream(
                     if db.account_from_session(acct, now).await.is_none() {
                         return None;
                     }
-                    if let Some((ps, pilot)) = db.pilot_session_for_account(acct, now).await {
-                        if db.pilot_from_session(&ps, now).await.is_none() {
+                    let active_mem = db
+                        .account_from_session(acct, now)
+                        .await
+                        .and_then(|(_, m)| m);
+                    if let Some(mem_id) = active_mem {
+                        let Some(pilot) = db.pilot_for_active_membership(&mem_id).await else {
+                            return None;
+                        };
+                        if db.club_operational(&pilot.club_id).await.is_err() {
                             return None;
                         }
                         if let Some((_, mem_status)) =

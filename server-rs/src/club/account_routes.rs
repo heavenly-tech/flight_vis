@@ -77,14 +77,31 @@ async fn account_signup(
         )
             .into_response();
     }
-    match db
-        .ensure_account_for_email(email, body.password.as_deref(), now)
-        .await
+    if body
+        .password
+        .as_deref()
+        .is_some_and(|p| !p.is_empty() && p.len() < 8)
     {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "weak password" })),
+        )
+            .into_response();
+    }
+    let signup_nonce = auth::new_session_id();
+    match db.ensure_account_for_email(email, None, now).await {
         Ok(_) => {
             if db.magic_send_allowed(email, &client_ip.0, now).await {
                 let _ = db.log_magic_send(email, &client_ip.0, now).await;
-                let token = db.issue_account_magic_signup(email, now).await.ok();
+                let token = db
+                    .issue_account_magic_signup(
+                        email,
+                        body.password.as_deref(),
+                        Some(&signup_nonce),
+                        now,
+                    )
+                    .await
+                    .ok();
                 if let Some(token) = token {
                     let url = format!(
                         "{}/api/account/auth/magic?token={token}",
@@ -101,7 +118,13 @@ async fn account_signup(
                         .await;
                 }
             }
-            (StatusCode::CREATED, Json(json!({ "ok": true }))).into_response()
+            let nonce_cookie = auth::set_signup_nonce_cookie(&signup_nonce, is_secure(&headers));
+            (
+                StatusCode::CREATED,
+                [(header::SET_COOKIE, nonce_cookie)],
+                Json(json!({ "ok": true })),
+            )
+                .into_response()
         }
         Err(AccountSignupError::WeakPassword) => (
             StatusCode::BAD_REQUEST,
@@ -595,7 +618,11 @@ async fn account_magic_consume(
             Err(_) => (StatusCode::BAD_REQUEST, "invalid token").into_response(),
         }
     } else {
-        match db.consume_account_magic(&token, now).await {
+        let signup_nonce = auth::parse_signup_nonce_cookie(&headers);
+        match db
+            .consume_account_magic(&token, signup_nonce.as_deref(), now)
+            .await
+        {
             Ok(account) => {
                 let session_id = db
                     .create_account_session(&account.id, None, now)
@@ -616,6 +643,59 @@ async fn account_magic_consume(
             }
             Err(_) => (StatusCode::BAD_REQUEST, "invalid token").into_response(),
         }
+    }
+}
+
+#[derive(Deserialize)]
+struct AccountSetPasswordBody {
+    password: String,
+}
+
+async fn account_set_password(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<AccountSetPasswordBody>,
+) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let Some(sess) = auth::parse_account_session_cookie(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    };
+    let now = now_ms();
+    let Some((acct, _)) = db.account_from_session(&sess, now).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    };
+    match db
+        .set_account_password(&acct.id, body.password.trim(), now)
+        .await
+    {
+        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Err(AccountSignupError::WeakPassword) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "weak password" })),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "set password failed" })),
+        )
+            .into_response(),
     }
 }
 
@@ -676,6 +756,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/account/signup-available", get(signup_available))
         .route("/api/account/signup", post(account_signup))
         .route("/api/account/login", post(account_login))
+        .route("/api/account/password", post(account_set_password))
         .route("/api/account/magic-link", post(account_magic_link))
         .route("/api/account/me", get(account_me))
         .route("/api/account/switch-club", post(switch_club))

@@ -1,7 +1,7 @@
 use axum::http::{header, HeaderMap, StatusCode};
 
 /// Guards cookie-authenticated POST mutations from cross-site form posts.
-pub fn cookie_post_allowed(headers: &HeaderMap) -> Result<(), StatusCode> {
+pub(crate) fn cookie_post_allowed(headers: &HeaderMap) -> Result<(), StatusCode> {
     if let Some(site) = headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()) {
         return match site {
             "same-origin" | "same-site" => Ok(()),

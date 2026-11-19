@@ -140,7 +140,8 @@ impl ClubDb {
             {
                 let _ = sqlx::query(
                     "UPDATE accounts SET password_hash = coalesce(nullif(trim(password_hash), ''), $1)
-                     WHERE id = $2 AND email_verified_at IS NOT NULL",
+                     WHERE id = $2 AND email_verified_at IS NOT NULL
+                       AND coalesce(trim(password_hash), '') = ''",
                 )
                 .bind(password_hash.trim())
                 .bind(&account_id)
@@ -199,31 +200,21 @@ impl ClubDb {
         if !email.contains('@') {
             return Err(AccountSignupError::Db);
         }
-        if let Some(existing) = self.account_by_email(&email).await {
-            if let Some(p) = password.filter(|s| !s.is_empty()) {
-                if p.len() < 8 {
-                    return Err(AccountSignupError::WeakPassword);
-                }
+        if let Some(p) = password.filter(|s| !s.is_empty()) {
+            if p.len() < 8 {
+                return Err(AccountSignupError::WeakPassword);
             }
+        }
+        if let Some(existing) = self.account_by_email(&email).await {
             return Ok(existing.id);
         }
-        let password_hash: Option<String> = match password.filter(|p| !p.is_empty()) {
-            Some(p) => {
-                if p.len() < 8 {
-                    return Err(AccountSignupError::WeakPassword);
-                }
-                Some(auth::hash_password(p).map_err(|_| AccountSignupError::Db)?)
-            }
-            None => None,
-        };
         let id = new_id();
         let ins = sqlx::query(
             "INSERT INTO accounts (id, email, password_hash, created_at)
-             VALUES ($1, $2, $3, $4)",
+             VALUES ($1, $2, NULL, $3)",
         )
         .bind(&id)
         .bind(&email)
-        .bind(password_hash.as_deref())
         .bind(now)
         .execute(&self.pool)
         .await;
@@ -247,32 +238,50 @@ impl ClubDb {
     pub async fn create_account(
         &self,
         email: &str,
-        password: Option<&str>,
+        _password: Option<&str>,
         now: i64,
     ) -> Result<String, AccountSignupError> {
-        self.ensure_account_for_email(email, password, now).await
+        self.ensure_account_for_email(email, None, now).await
     }
 
     pub async fn issue_account_magic_signup(
         &self,
         email: &str,
+        password: Option<&str>,
+        signup_nonce: Option<&str>,
         now: i64,
     ) -> Result<String, DbError> {
+        let pending_password_hash: Option<String> = match password.filter(|p| !p.is_empty()) {
+            Some(p) => Some(auth::hash_password(p).map_err(|_| DbError::protocol("hash"))?),
+            None => None,
+        };
+        let signup_nonce_hash = signup_nonce.filter(|s| !s.is_empty()).map(digest_token);
+        let email_lc = email.trim().to_ascii_lowercase();
+        sqlx::query(
+            "UPDATE magic_login_tokens SET used_at = $1
+             WHERE lower(email) = $2 AND purpose = 'account_signup' AND used_at IS NULL",
+        )
+        .bind(now)
+        .bind(&email_lc)
+        .execute(&self.pool)
+        .await?;
         let raw = auth::new_share_token();
         let token_hash = digest_token(&raw);
         let id = new_id();
         let expires = now + ACCOUNT_MAGIC_TTL_MS;
         let account_id: Option<String> = self.account_by_email(email).await.map(|a| a.id);
         sqlx::query(
-            "INSERT INTO magic_login_tokens (id, email, token_hash, created_at, expires_at, purpose, account_id)
-             VALUES ($1, $2, $3, $4, $5, 'account_signup', $6)",
+            "INSERT INTO magic_login_tokens (id, email, token_hash, created_at, expires_at, purpose, account_id, pending_password_hash, signup_nonce_hash)
+             VALUES ($1, $2, $3, $4, $5, 'account_signup', $6, $7, $8)",
         )
         .bind(&id)
-        .bind(email.trim().to_ascii_lowercase())
+        .bind(&email_lc)
         .bind(&token_hash)
         .bind(now)
         .bind(expires)
         .bind(account_id.as_deref())
+        .bind(pending_password_hash.as_deref())
+        .bind(signup_nonce_hash.as_deref())
         .execute(&self.pool)
         .await?;
         Ok(raw)
@@ -318,15 +327,28 @@ impl ClubDb {
             .flatten()
     }
 
+    fn signup_nonce_matches(token_nonce: Option<&str>, cookie_nonce: Option<&str>) -> bool {
+        match (token_nonce, cookie_nonce.filter(|s| !s.is_empty())) {
+            (Some(tn), Some(cn)) => {
+                let a = tn.as_bytes();
+                let b = digest_token(cn);
+                a.len() == b.len() && subtle::ConstantTimeEq::ct_eq(a, b.as_bytes()).into()
+            }
+            _ => false,
+        }
+    }
+
     pub async fn consume_account_magic(
         &self,
         raw_token: &str,
+        signup_nonce: Option<&str>,
         now: i64,
     ) -> Result<AccountRow, crate::club::db_auth_pg::MagicConsumeError> {
         use crate::club::db_auth_pg::MagicConsumeError;
         let token_hash = digest_token(raw_token.trim());
         let row = sqlx::query(
-            "SELECT id, email, expires_at, used_at, purpose, account_id FROM magic_login_tokens WHERE token_hash = $1",
+            "SELECT id, email, expires_at, used_at, purpose, account_id, pending_password_hash, signup_nonce_hash
+             FROM magic_login_tokens WHERE token_hash = $1",
         )
         .bind(&token_hash)
         .fetch_optional(&self.pool)
@@ -341,6 +363,8 @@ impl ClubDb {
         let used_at: Option<i64> = row.try_get(3).map_err(|_| MagicConsumeError::Invalid)?;
         let purpose: String = row.try_get(4).unwrap_or_default();
         let account_id: Option<String> = row.try_get(5).ok();
+        let pending_password_hash: Option<String> = row.try_get(6).ok().flatten();
+        let token_signup_nonce_hash: Option<String> = row.try_get(7).ok().flatten();
         if purpose != "account_signup" && purpose != "account_login" {
             return Err(MagicConsumeError::Invalid);
         }
@@ -392,6 +416,18 @@ impl ClubDb {
                 .map_err(|_| MagicConsumeError::Invalid)?
                 .unwrap_or(false);
         if purpose == "account_signup" || purpose == "account_login" {
+            if was_unverified {
+                sqlx::query("UPDATE accounts SET password_hash = NULL WHERE id = $1")
+                    .bind(&acct_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|_| MagicConsumeError::Invalid)?;
+                sqlx::query("DELETE FROM account_sessions WHERE account_id = $1")
+                    .bind(&acct_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|_| MagicConsumeError::Invalid)?;
+            }
             sqlx::query(
                 "UPDATE accounts SET email_verified_at = coalesce(email_verified_at, $1) WHERE id = $2",
             )
@@ -400,20 +436,25 @@ impl ClubDb {
             .execute(&self.pool)
             .await
             .map_err(|_| MagicConsumeError::Invalid)?;
-            if was_unverified && purpose == "account_login" {
-                sqlx::query(
-                    "UPDATE accounts SET password_hash = NULL WHERE id = $1 AND email_verified_at = $2",
-                )
-                .bind(&acct_id)
-                .bind(now)
-                .execute(&self.pool)
-                .await
-                .map_err(|_| MagicConsumeError::Invalid)?;
-                sqlx::query("DELETE FROM account_sessions WHERE account_id = $1")
-                    .bind(&acct_id)
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|_| MagicConsumeError::Invalid)?;
+            if was_unverified {
+                let apply_pending = pending_password_hash
+                    .as_deref()
+                    .filter(|h| !h.is_empty())
+                    .filter(|_| {
+                        purpose == "account_signup"
+                            && Self::signup_nonce_matches(
+                                token_signup_nonce_hash.as_deref(),
+                                signup_nonce,
+                            )
+                    });
+                if let Some(hash) = apply_pending {
+                    sqlx::query("UPDATE accounts SET password_hash = $1 WHERE id = $2")
+                        .bind(hash)
+                        .bind(&acct_id)
+                        .execute(&self.pool)
+                        .await
+                        .map_err(|_| MagicConsumeError::Invalid)?;
+                }
             }
         }
         let acct = self
@@ -446,6 +487,69 @@ impl ClubDb {
         .execute(&self.pool)
         .await?;
         Ok(session_id)
+    }
+
+    pub async fn set_account_password(
+        &self,
+        account_id: &str,
+        password: &str,
+        now: i64,
+    ) -> Result<(), AccountSignupError> {
+        if password.len() < 8 {
+            return Err(AccountSignupError::WeakPassword);
+        }
+        let verified: Option<i64> =
+            sqlx::query_scalar("SELECT email_verified_at FROM accounts WHERE id = $1")
+                .bind(account_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|_| AccountSignupError::Db)?
+                .flatten();
+        if verified.is_none() {
+            return Err(AccountSignupError::Db);
+        }
+        let hash = auth::hash_password(password).map_err(|_| AccountSignupError::Db)?;
+        sqlx::query("UPDATE accounts SET password_hash = $1 WHERE id = $2")
+            .bind(hash)
+            .bind(account_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|_| AccountSignupError::Db)?;
+        let _ = now;
+        Ok(())
+    }
+
+    pub async fn pilot_for_active_membership(&self, membership_id: &str) -> Option<PilotRow> {
+        let row = sqlx::query(
+            "SELECT m.pilot_id, m.status, m.club_id FROM club_memberships m WHERE m.id = $1",
+        )
+        .bind(membership_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()??;
+        let pilot_id: String = row.try_get(0).ok()?;
+        let mem_status: String = row.try_get(1).ok()?;
+        if !MembershipStatus::parse(&mem_status).allows_club_api() {
+            return None;
+        }
+        let row = sqlx::query(
+            "SELECT id, club_id, name, email, license_no, status, role, locale
+             FROM pilots WHERE id = $1",
+        )
+        .bind(&pilot_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()??;
+        Some(PilotRow {
+            id: row.try_get(0).ok()?,
+            club_id: row.try_get(1).ok()?,
+            name: row.try_get(2).ok()?,
+            email: row.try_get(3).ok()?,
+            license_no: row.try_get(4).ok()?,
+            status: row.try_get(5).ok()?,
+            role: row.try_get(6).ok()?,
+            locale: row.try_get(7).ok().flatten(),
+        })
     }
 
     pub async fn account_login_password(
@@ -762,7 +866,8 @@ impl ClubDb {
         Ok((pilot_id, member_id))
     }
 
-    /// Compat: also mint `pilot_sessions` for the active pilot when switching clubs.
+    /// Compat: mint or reuse `pilot_sessions` for the active pilot (switch-club / legacy callers).
+    #[allow(dead_code)] // exercised by integration tests; not used on hot viewer path (N-6).
     pub async fn pilot_session_for_account(
         &self,
         account_session_id: &str,
@@ -794,10 +899,7 @@ impl ClubDb {
         {
             if let Some(pilot) = self.pilot_from_pilot_session_db_id(&reuse_hash, now).await {
                 if pilot.id == pilot_id {
-                    let _ = sqlx::query("DELETE FROM pilot_sessions WHERE id = $1")
-                        .bind(&reuse_hash)
-                        .execute(&self.pool)
-                        .await;
+                    return Some((String::new(), pilot));
                 }
             }
         }
@@ -840,6 +942,15 @@ impl ClubDb {
         .bind(membership_id)
         .execute(&self.pool)
         .await?;
+        let verified: Option<i64> =
+            sqlx::query_scalar("SELECT email_verified_at FROM pilots WHERE id = $1")
+                .bind(&pilot_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
+        if verified.is_none() {
+            return Err(DbError::protocol("email not verified"));
+        }
         sqlx::query("UPDATE pilots SET status = 'approved', role = role WHERE id = $1")
             .bind(&pilot_id)
             .execute(&self.pool)
@@ -1169,14 +1280,14 @@ mod tests {
         let email = "multi@test.local";
         let hash = hash_password("password12").unwrap();
         let now = now_ms();
-        let aid = db
-            .ensure_account_for_email(email, Some("password12"), now)
-            .await
-            .unwrap();
+        let aid = db.ensure_account_for_email(email, None, now).await.unwrap();
         sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")
             .bind(now)
             .bind(&aid)
             .execute(&db.pool)
+            .await
+            .unwrap();
+        db.set_account_password(&aid, "password12", now)
             .await
             .unwrap();
         for (club, name) in [(&club_a, "A"), (&club_b, "B")] {

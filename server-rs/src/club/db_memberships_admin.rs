@@ -228,28 +228,66 @@ impl ClubDb {
             match status.as_str() {
                 "approved" => {
                     sqlx::query(
-                        "UPDATE pilots SET role = 'admin' WHERE id = $1 AND account_id = $2",
+                        "UPDATE pilots SET role = 'admin', password_hash = '' WHERE id = $1 AND account_id = $2",
                     )
                     .bind(&pid)
                     .bind(&account_id)
                     .execute(&mut *tx)
                     .await
                     .map_err(|_| MembershipAdminError::Db)?;
+                    sqlx::query("DELETE FROM pilot_sessions WHERE pilot_id = $1")
+                        .bind(&pid)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|_| MembershipAdminError::Db)?;
                 }
                 "pending" => {
                     sqlx::query(
-                        "UPDATE pilots SET status = 'approved', role = 'admin' WHERE id = $1 AND account_id = $2",
+                        "UPDATE pilots SET status = 'approved', role = 'admin', password_hash = '' WHERE id = $1 AND account_id = $2",
                     )
                     .bind(&pid)
                     .bind(&account_id)
                     .execute(&mut *tx)
                     .await
                     .map_err(|_| MembershipAdminError::Db)?;
+                    sqlx::query("DELETE FROM pilot_sessions WHERE pilot_id = $1")
+                        .bind(&pid)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|_| MembershipAdminError::Db)?;
                 }
                 _ => return Err(MembershipAdminError::Db),
             }
             pid
         } else {
+            sqlx::query(
+                "DELETE FROM pilot_sessions WHERE pilot_id IN (
+                    SELECT id FROM pilots
+                    WHERE club_id = $1 AND lower(email) = lower($2)
+                      AND (account_id IS NULL OR account_id <> $3)
+                      AND status = 'pending'
+                )",
+            )
+            .bind(&club_id)
+            .bind(&email)
+            .bind(&account_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| MembershipAdminError::Db)?;
+            sqlx::query(
+                "DELETE FROM magic_login_tokens WHERE pilot_id IN (
+                    SELECT id FROM pilots
+                    WHERE club_id = $1 AND lower(email) = lower($2)
+                      AND (account_id IS NULL OR account_id <> $3)
+                      AND status = 'pending'
+                )",
+            )
+            .bind(&club_id)
+            .bind(&email)
+            .bind(&account_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| MembershipAdminError::Db)?;
             sqlx::query(
                 "DELETE FROM club_memberships WHERE pilot_id IN (
                     SELECT id FROM pilots

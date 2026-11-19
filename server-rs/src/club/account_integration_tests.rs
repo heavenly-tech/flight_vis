@@ -87,11 +87,11 @@ async fn account_switch_active_club() {
     let email = "switch@test";
     let hash = hash_password("password12").unwrap();
     let now = now_ms();
-    let acct = db
-        .create_account(email, Some("password12"), now)
+    let acct = db.create_account(email, None, now).await.unwrap();
+    mark_account_verified(&db, &acct, now).await;
+    db.set_account_password(&acct, "password12", now)
         .await
         .unwrap();
-    mark_account_verified(&db, &acct, now).await;
     let pid = crate::club::auth::new_id();
     let mid = crate::club::auth::new_id();
     sqlx::query(
@@ -141,20 +141,27 @@ async fn join_then_approve_membership() {
         .execute(&db.pool)
         .await
         .unwrap();
-    let acct = db
-        .create_account("joiner@test", Some("password12"), now)
-        .await
-        .unwrap();
+    let acct = db.create_account("joiner@test", None, now).await.unwrap();
     sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")
         .bind(now)
         .bind(&acct)
         .execute(&db.pool)
         .await
         .unwrap();
+    db.set_account_password(&acct, "password12", now)
+        .await
+        .unwrap();
     let mid = db
         .join_club_with_account(&acct, &club, "Joiner", "", now)
         .await
         .unwrap();
+    let pilot_id: String =
+        sqlx::query_scalar("SELECT pilot_id FROM club_memberships WHERE id = $1")
+            .bind(&mid)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    db.mark_email_verified(&pilot_id, now).await.unwrap();
     db.approve_membership(&mid, now).await.unwrap();
     let status: String = sqlx::query_scalar("SELECT status FROM club_memberships WHERE id = $1")
         .bind(&mid)
@@ -209,11 +216,11 @@ async fn club_creator_signs_in_via_account_after_verify() {
 async fn suspended_account_cannot_login() {
     let db = open_db().await;
     let now = now_ms();
-    let acct = db
-        .create_account("sus@test", Some("password12"), now)
+    let acct = db.create_account("sus@test", None, now).await.unwrap();
+    mark_account_verified(&db, &acct, now).await;
+    db.set_account_password(&acct, "password12", now)
         .await
         .unwrap();
-    mark_account_verified(&db, &acct, now).await;
     db.set_account_suspended(&acct, now).await.unwrap();
     assert!(db
         .account_login_password("sus@test", "password12", now, "127.0.0.1")
@@ -232,16 +239,9 @@ async fn account_switch_rejects_suspended_club() {
         .await
         .unwrap();
     db.try_consume_magic_club_verify(&token, now).await.unwrap();
-    let acct = db
-        .create_account("sus-sw@test", Some("password12"), now)
-        .await
-        .unwrap();
+    let acct = db.create_account("sus-sw@test", None, now).await.unwrap();
     mark_account_verified(&db, &acct, now).await;
-    let hash = hash_password("password12").unwrap();
-    sqlx::query("UPDATE accounts SET password_hash = $1 WHERE id = $2")
-        .bind(&hash)
-        .bind(&acct)
-        .execute(&db.pool)
+    db.set_account_password(&acct, "password12", now)
         .await
         .unwrap();
     let mid: String = sqlx::query_scalar(

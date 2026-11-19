@@ -32,7 +32,7 @@ async fn first_magic_verify_wipes_precreated_password_and_sessions() {
         .await
         .unwrap()
         .unwrap();
-    let _ = db.consume_account_magic(&raw, now).await.unwrap();
+    let _ = db.consume_account_magic(&raw, None, now).await.unwrap();
     let hash_after: Option<String> =
         sqlx::query_scalar("SELECT password_hash FROM accounts WHERE id = $1")
             .bind(&id)
@@ -218,9 +218,8 @@ async fn pilot_session_for_account_reuses_one_row_per_account_session() {
             .fetch_one(&db.pool)
             .await
             .unwrap();
-    let (s1, _) = db.pilot_session_for_account(&acct_sess, now).await.unwrap();
-    let (s2, _) = db.pilot_session_for_account(&acct_sess, now).await.unwrap();
-    assert_ne!(s1, s2);
+    let _ = db.pilot_session_for_account(&acct_sess, now).await.unwrap();
+    let _ = db.pilot_session_for_account(&acct_sess, now).await.unwrap();
     let stored: String =
         sqlx::query_scalar("SELECT compat_pilot_session FROM account_sessions WHERE id = $1")
             .bind(crate::club::auth::digest_token(&acct_sess))
@@ -304,7 +303,11 @@ async fn account_magic_get_does_not_consume_token() {
     let db = ClubDb::open_test().await.unwrap();
     let now = now_ms();
     let email = "scan-safe@test";
-    let raw = db.issue_account_magic_signup(email, now).await.unwrap();
+    let nonce = crate::club::auth::new_session_id();
+    let raw = db
+        .issue_account_magic_signup(email, None, Some(&nonce), now)
+        .await
+        .unwrap();
     let (video_queue, _) = tokio::sync::mpsc::channel(4);
     let state = AppState {
         dist_dir: data_dir.path().join("dist"),
@@ -695,17 +698,138 @@ async fn webauthn_login_finish_rejects_invalid_nonce_via_http() {
 
 #[tokio::test]
 #[serial]
-async fn account_signup_magic_verify_keeps_password() {
+async fn account_signup_nonce_same_browser_applies_pending_password() {
     let db = ClubDb::open_test().await.unwrap();
     let now = now_ms();
-    let email = "signup-keep-pw@test";
+    let email = "nonce-keep@test";
     let pw = "password1234";
-    let _ = db
-        .ensure_account_for_email(email, Some(pw), now)
+    let nonce = crate::club::auth::new_session_id();
+    let _ = db.ensure_account_for_email(email, None, now).await.unwrap();
+    let raw = db
+        .issue_account_magic_signup(email, Some(pw), Some(&nonce), now)
         .await
         .unwrap();
-    let raw = db.issue_account_magic_signup(email, now).await.unwrap();
-    let _ = db.consume_account_magic(&raw, now).await.unwrap();
+    let _ = db
+        .consume_account_magic(&raw, Some(&nonce), now)
+        .await
+        .unwrap();
+    assert!(db
+        .account_login_password(email, pw, now, "127.0.0.1")
+        .await
+        .is_ok());
+}
+
+#[tokio::test]
+#[serial]
+async fn account_signup_without_matching_nonce_skips_pending_password() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = "nonce-skip@test";
+    let pw = "password1234";
+    let nonce = crate::club::auth::new_session_id();
+    let _ = db.ensure_account_for_email(email, None, now).await.unwrap();
+    let raw = db
+        .issue_account_magic_signup(email, Some(pw), Some(&nonce), now)
+        .await
+        .unwrap();
+    let wrong = crate::club::auth::new_session_id();
+    let _ = db
+        .consume_account_magic(&raw, Some(&wrong), now)
+        .await
+        .unwrap();
+    assert!(matches!(
+        db.account_login_password(email, pw, now, "127.0.0.1").await,
+        Err(LoginError::Invalid)
+    ));
+}
+
+#[tokio::test]
+#[serial]
+async fn victim_signup_token_wins_over_attacker_pending_password() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = "victim-wins@test";
+    let attacker_pw = "attackerpass1";
+    let victim_pw = "victimpass12";
+    let attacker_nonce = crate::club::auth::new_session_id();
+    let _ = db.ensure_account_for_email(email, None, now).await.unwrap();
+    let _ = db
+        .issue_account_magic_signup(email, Some(attacker_pw), Some(&attacker_nonce), now)
+        .await
+        .unwrap();
+    let victim_nonce = crate::club::auth::new_session_id();
+    let victim_raw = db
+        .issue_account_magic_signup(email, Some(victim_pw), Some(&victim_nonce), now)
+        .await
+        .unwrap();
+    let _ = db
+        .consume_account_magic(&victim_raw, Some(&victim_nonce), now)
+        .await
+        .unwrap();
+    assert!(db
+        .account_login_password(email, victim_pw, now, "127.0.0.1")
+        .await
+        .is_ok());
+    assert!(matches!(
+        db.account_login_password(email, attacker_pw, now, "127.0.0.1")
+            .await,
+        Err(LoginError::Invalid)
+    ));
+}
+
+#[tokio::test]
+#[serial]
+async fn attacker_signup_victim_login_magic_clears_password() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = "magic-wipe@test";
+    let attacker_pw = "attackerpass1";
+    let attacker_nonce = crate::club::auth::new_session_id();
+    let id = db.ensure_account_for_email(email, None, now).await.unwrap();
+    sqlx::query("UPDATE accounts SET password_hash = $1 WHERE id = $2")
+        .bind(hash_password(attacker_pw).unwrap())
+        .bind(&id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let _ = db
+        .issue_account_magic_signup(email, Some(attacker_pw), Some(&attacker_nonce), now)
+        .await
+        .unwrap();
+    let login_raw = db
+        .issue_account_magic_login(email, now)
+        .await
+        .unwrap()
+        .unwrap();
+    let _ = db
+        .consume_account_magic(&login_raw, None, now)
+        .await
+        .unwrap();
+    assert!(matches!(
+        db.account_login_password(email, attacker_pw, now, "127.0.0.1")
+            .await,
+        Err(LoginError::Invalid)
+    ));
+}
+
+#[tokio::test]
+#[serial]
+async fn honest_signup_set_password_after_verify_works() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = "set-pw-after@test";
+    let pw = "honestpass12";
+    let nonce = crate::club::auth::new_session_id();
+    let _ = db.ensure_account_for_email(email, None, now).await.unwrap();
+    let raw = db
+        .issue_account_magic_signup(email, None, Some(&nonce), now)
+        .await
+        .unwrap();
+    let acct = db
+        .consume_account_magic(&raw, Some(&nonce), now)
+        .await
+        .unwrap();
+    db.set_account_password(&acct.id, pw, now).await.unwrap();
     assert!(db
         .account_login_password(email, pw, now, "127.0.0.1")
         .await
@@ -803,7 +927,7 @@ async fn post_account_magic_without_cookies_requires_csrf() {
     let db = ClubDb::open_test().await.unwrap();
     let now = now_ms();
     let raw = db
-        .issue_account_magic_signup("csrf-magic@test", now)
+        .issue_account_magic_signup("csrf-magic@test", None, None, now)
         .await
         .unwrap();
     let (video_queue, _) = tokio::sync::mpsc::channel(4);
@@ -840,6 +964,25 @@ async fn post_account_magic_without_cookies_requires_csrf() {
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }
 
+async fn apply_migration_016_accounts_insert(pool: &sqlx::PgPool) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/000016_accounts_memberships.sql");
+    let sql = std::fs::read_to_string(&path).expect("000016 migration file");
+    let start = sql
+        .find("INSERT INTO accounts")
+        .expect("INSERT INTO accounts in 000016");
+    let end = sql
+        .find("INSERT INTO club_memberships")
+        .expect("membership insert in 000016");
+    for stmt in sql[start..end].split(';') {
+        let stmt = stmt.trim();
+        if stmt.is_empty() {
+            continue;
+        }
+        sqlx::query(stmt).execute(pool).await.unwrap();
+    }
+}
+
 #[tokio::test]
 #[serial]
 async fn migration_016_pending_lookalike_password_not_on_account() {
@@ -860,26 +1003,13 @@ async fn migration_016_pending_lookalike_password_not_on_account() {
     .unwrap();
     let victim_hash = hash_password("victimpass12").unwrap();
     let attacker_hash = hash_password("attackerpass1").unwrap();
-    let acct = new_id();
-    sqlx::query(
-        "INSERT INTO accounts (id, email, password_hash, created_at, email_verified_at)
-         VALUES ($1, $2, $3, $4, $4)",
-    )
-    .bind(&acct)
-    .bind(email)
-    .bind(&victim_hash)
-    .bind(now)
-    .execute(&db.pool)
-    .await
-    .unwrap();
     let victim_pilot = new_id();
     sqlx::query(
-        "INSERT INTO pilots (id, club_id, account_id, name, email, license_no, status, role, password_hash, email_verified_at, created_at)
-         VALUES ($1, $2, $3, 'V', $4, '', 'approved', 'pilot', $5, $6, $6)",
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, email_verified_at, created_at)
+         VALUES ($1, $2, 'V', $3, '', 'approved', 'pilot', $4, $5, $5)",
     )
     .bind(&victim_pilot)
     .bind(&club_a)
-    .bind(&acct)
     .bind(email)
     .bind(&victim_hash)
     .bind(now)
@@ -899,26 +1029,15 @@ async fn migration_016_pending_lookalike_password_not_on_account() {
     .execute(&db.pool)
     .await
     .unwrap();
-    let chosen: Option<String> = sqlx::query_scalar(
-        r#"
-        SELECT first_value(
-            CASE WHEN status = 'approved' AND email_verified_at IS NOT NULL THEN password_hash ELSE NULL END
-        ) OVER (
-            PARTITION BY lower(trim(email))
-            ORDER BY
-                (CASE WHEN status = 'approved' AND email_verified_at IS NOT NULL AND coalesce(password_hash, '') <> '' THEN 1 ELSE 0 END) DESC,
-                created_at DESC
-        )
-        FROM pilots
-        WHERE lower(trim(email)) = lower($1) AND status <> 'guest'
-        LIMIT 1
-        "#,
-    )
-    .bind(email)
-    .fetch_optional(&db.pool)
-    .await
-    .unwrap();
-    assert_eq!(chosen.as_deref(), Some(victim_hash.as_str()));
+    apply_migration_016_accounts_insert(&db.pool).await;
+    let acct_hash: Option<String> =
+        sqlx::query_scalar("SELECT password_hash FROM accounts WHERE lower(email) = lower($1)")
+            .bind(email)
+            .fetch_optional(&db.pool)
+            .await
+            .unwrap()
+            .flatten();
+    assert_eq!(acct_hash.as_deref(), Some(victim_hash.as_str()));
     assert!(matches!(
         db.account_login_password(email, "attackerpass1", now, "127.0.0.1")
             .await,
@@ -1184,4 +1303,157 @@ async fn compat_pilot_session_stored_hashed_not_raw() {
             .unwrap();
     assert_ne!(stored, sess);
     assert_eq!(stored.len(), 64);
+}
+
+#[tokio::test]
+#[serial]
+async fn parallel_pilot_for_active_membership_no_session_churn() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_id = db.default_club_id().await.unwrap();
+    let acct = new_id();
+    let email = "parallel-viewer@test";
+    sqlx::query(
+        "INSERT INTO accounts (id, email, created_at, email_verified_at)
+         VALUES ($1, $2, $3, $3)",
+    )
+    .bind(&acct)
+    .bind(email)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let pilot_id = new_id();
+    let mid = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, account_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, $3, 'P', $4, '', 'approved', 'pilot', '', $5)",
+    )
+    .bind(&pilot_id)
+    .bind(&club_id)
+    .bind(&acct)
+    .bind(email)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
+         VALUES ($1, $2, $3, 'pilot', 'active', $4)",
+    )
+    .bind(&mid)
+    .bind(&pilot_id)
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM pilot_sessions WHERE pilot_id = $1")
+            .bind(&pilot_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let mut handles = Vec::new();
+    for _ in 0..12 {
+        let db = db.clone();
+        let mid = mid.clone();
+        handles.push(tokio::spawn(async move {
+            db.pilot_for_active_membership(&mid).await.is_some()
+        }));
+    }
+    for h in handles {
+        assert!(h.await.unwrap());
+    }
+    let after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM pilot_sessions WHERE pilot_id = $1")
+            .bind(&pilot_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(before, after);
+}
+
+#[tokio::test]
+#[serial]
+async fn admin_invite_clears_legacy_pilot_password() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_id = db.default_club_id().await.unwrap();
+    let email = "invite-strips-pw@test";
+    let inviter = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'Adm', 'admin-invite@test', '', 'approved', 'admin', 'x', $3)",
+    )
+    .bind(&inviter)
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    db.ensure_membership_row(&inviter, &club_id, "admin", "active")
+        .await
+        .unwrap();
+    let attacker_pilot = new_id();
+    let legacy_hash = hash_password("attackerpass1").unwrap();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'Atk', $3, '', 'pending', 'pilot', $4, $5)",
+    )
+    .bind(&attacker_pilot)
+    .bind(&club_id)
+    .bind(email)
+    .bind(&legacy_hash)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let invite = db
+        .invite_admin_membership(&club_id, email, &inviter, now)
+        .await
+        .unwrap();
+    let _ = db.accept_admin_invite(&invite, now).await.unwrap();
+    assert!(matches!(
+        db.login(&club_id, email, "attackerpass1", now).await,
+        Err(LoginError::Invalid)
+    ));
+}
+
+#[tokio::test]
+#[serial]
+async fn legacy_register_does_not_copy_password_to_verified_account() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = "legacy-no-acct-pw@test";
+    let victim_hash = hash_password("victimpass12").unwrap();
+    let acct = new_id();
+    sqlx::query(
+        "INSERT INTO accounts (id, email, password_hash, created_at, email_verified_at)
+         VALUES ($1, $2, $3, $4, $4)",
+    )
+    .bind(&acct)
+    .bind(email)
+    .bind(&victim_hash)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let club_id = db.default_club_id().await.unwrap();
+    let _ = db
+        .register_into_account(&club_id, "New", email, "LIC", "attackerpass1", now)
+        .await
+        .unwrap();
+    let hash: Option<String> =
+        sqlx::query_scalar("SELECT password_hash FROM accounts WHERE id = $1")
+            .bind(&acct)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(hash.as_deref(), Some(victim_hash.as_str()));
+    assert!(matches!(
+        db.account_login_password(email, "attackerpass1", now, "127.0.0.1")
+            .await,
+        Err(LoginError::Invalid)
+    ));
 }
