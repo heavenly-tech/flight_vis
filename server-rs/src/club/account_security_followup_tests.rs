@@ -520,8 +520,31 @@ async fn csrf_forbidden_cross_origin_on_cookie_posts() {
     db.ensure_membership_row(&pid, &club, "admin", "active")
         .await
         .unwrap();
+    let mut superadmin_emails = HashSet::new();
+    superadmin_emails.insert("sa-csrf@test".to_string());
+    let sa_id = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, email_verified_at, created_at)
+         VALUES ($1, $2, 'SA', 'sa-csrf@test', '', 'approved', 'pilot', $3, $4, $4)",
+    )
+    .bind(&sa_id)
+    .bind(&club)
+    .bind(&hash)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
     let pilot_sess = db.create_pilot_session(&pid, now).await.unwrap();
     let pilot_cookie = crate::club::auth::set_session_cookie(&pilot_sess, false);
+    let sa_sess = db.create_pilot_session(&sa_id, now).await.unwrap();
+    let sa_cookie = crate::club::auth::set_session_cookie(&sa_sess, false);
+    let mid: String =
+        sqlx::query_scalar("SELECT id FROM club_memberships WHERE pilot_id = $1 AND club_id = $2")
+            .bind(&pid)
+            .bind(&club)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
     let (video_queue, _) = tokio::sync::mpsc::channel(4);
     let state = AppState {
         dist_dir: data_dir.path().join("dist"),
@@ -537,9 +560,24 @@ async fn csrf_forbidden_cross_origin_on_cookie_posts() {
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
-        superadmin_emails: HashSet::new(),
+        superadmin_emails,
     };
     let mut router = build_router(state);
+    let account_res = router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/join")
+                .header(header::COOKIE, &cookie)
+                .header(header::ORIGIN, "https://evil.example")
+                .header(header::HOST, "127.0.0.1:8080")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(r#"{"slug":"demo","name":"X"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(account_res.status(), StatusCode::FORBIDDEN);
     let account_res = router
         .call(
             Request::builder()
@@ -570,6 +608,34 @@ async fn csrf_forbidden_cross_origin_on_cookie_posts() {
         .await
         .unwrap();
     assert_eq!(invite_res.status(), StatusCode::FORBIDDEN);
+    let demote_res = router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/admin/memberships/{mid}/demote"))
+                .header(header::COOKIE, &pilot_cookie)
+                .header(header::ORIGIN, "https://evil.example")
+                .header(header::HOST, "127.0.0.1:8080")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(demote_res.status(), StatusCode::FORBIDDEN);
+    let sa_suspend = router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/superadmin/accounts/{acct}/suspend"))
+                .header(header::COOKIE, &sa_cookie)
+                .header(header::ORIGIN, "https://evil.example")
+                .header(header::HOST, "127.0.0.1:8080")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(sa_suspend.status(), StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -628,4 +694,156 @@ async fn suspended_membership_stops_account_compat_session() {
         .pilot_session_for_account(&acct_sess, now)
         .await
         .is_none());
+}
+
+#[tokio::test]
+#[serial]
+async fn backfill_startup_uses_max_pilot_email_verified_at() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_a = db.default_club_id().await.unwrap();
+    let club_b = new_id();
+    sqlx::query(
+        "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at,
+         checkin_window_hours, latitude, longitude)
+         VALUES ($1, 'B', 'club-b-bf', $2, 'live', $2, 12, -33.4489, -70.6693)",
+    )
+    .bind(&club_b)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let email = "backfill-verified@test";
+    let early = now - 50_000;
+    let late = now - 1_000;
+    let p1 = new_id();
+    let p2 = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, email_verified_at, created_at)
+         VALUES ($1, $2, 'A', $3, '', 'approved', 'pilot', '', $4, $5)",
+    )
+    .bind(&p1)
+    .bind(&club_a)
+    .bind(email)
+    .bind(early)
+    .bind(early)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, email_verified_at, created_at)
+         VALUES ($1, $2, 'B', $3, '', 'approved', 'pilot', '', $4, $5)",
+    )
+    .bind(&p2)
+    .bind(&club_b)
+    .bind(email)
+    .bind(late)
+    .bind(late)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    db.backfill_accounts_from_pilots().await.unwrap();
+    let verified: Option<i64> = sqlx::query_scalar(
+        "SELECT email_verified_at FROM accounts WHERE lower(trim(email)) = lower(trim($1))",
+    )
+    .bind(email)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(verified, Some(late));
+}
+
+#[tokio::test]
+#[serial]
+async fn backfill_on_conflict_keeps_existing_membership_role() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_id = db.default_club_id().await.unwrap();
+    let pilot_id = new_id();
+    let mid = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, email_verified_at, created_at)
+         VALUES ($1, $2, 'Adm', 'role-keep@test', '', 'approved', 'pilot', 'x', $3, $3)",
+    )
+    .bind(&pilot_id)
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
+         VALUES ($1, $2, $3, 'admin', 'active', $4)",
+    )
+    .bind(&mid)
+    .bind(&pilot_id)
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE pilots SET role = 'pilot' WHERE id = $1")
+        .bind(&pilot_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    db.backfill_accounts_from_pilots().await.unwrap();
+    let role: String = sqlx::query_scalar("SELECT role FROM club_memberships WHERE id = $1")
+        .bind(&mid)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(role, "admin");
+}
+
+#[tokio::test]
+#[serial]
+async fn webauthn_login_finish_rejects_invalid_nonce_via_http() {
+    use crate::auth::Auth;
+    use crate::club::webauthn::WebauthnState;
+    use crate::{build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState};
+    use axum::http::{header, Request, StatusCode};
+    use std::sync::Arc;
+    use tower::Service;
+    std::env::set_var("WEBAUTHN_RP_ID", "localhost");
+    std::env::set_var("FLIGHT_CLUB_PUBLIC_URL", "http://localhost:8080");
+    let webauthn = WebauthnState::from_env().expect("webauthn test rp");
+    let data_dir = tempfile::tempdir().unwrap();
+    let db = ClubDb::open_test().await.unwrap();
+    let (video_queue, _) = tokio::sync::mpsc::channel(4);
+    let state = AppState {
+        dist_dir: data_dir.path().join("dist"),
+        auth: Auth::with_password("x"),
+        device_auth: DeviceAuth::empty(),
+        live: Arc::new(LiveEngine::new(data_dir.path())),
+        store: Store::new(data_dir.path()),
+        club: Some(db),
+        video_queue,
+        login_throttle: crate::LoginThrottle::default(),
+        device_register_throttle: crate::LoginThrottle::default(),
+        share_lookup_throttle: crate::LoginThrottle::default(),
+        mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+        webauthn: Some(webauthn),
+        sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+        superadmin_emails: HashSet::new(),
+    };
+    let mut router = build_router(state);
+    let res = router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/auth/webauthn/login/finish")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(
+                    r#"{"nonce":"not-a-real-nonce","credential":{"id":"x","rawId":"x","type":"public-key","response":{"authenticatorData":"e","clientDataJSON":"e","signature":"e"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        res.status() == StatusCode::BAD_REQUEST || res.status() == StatusCode::UNPROCESSABLE_ENTITY,
+        "unexpected status {}",
+        res.status()
+    );
 }

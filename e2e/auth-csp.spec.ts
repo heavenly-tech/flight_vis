@@ -70,4 +70,18 @@ test.describe("credential pages under prod CSP", () => {
     await page.waitForTimeout(800);
     await assertNoPasswordInUrl(page);
   });
+
+  test("club signup form uses POST without secrets in URL", async ({ page }) => {
+    const { consoleErrors } = installCspObservers(page);
+    await page.goto("/club-signup.html", { waitUntil: "domcontentloaded" });
+    const stamp = Date.now();
+    const email = `club-signup-${stamp}@example.test`;
+    await page.locator('form input[name="name"]').fill("E2E Club");
+    await page.locator('form input[name="slug"]').fill(`e2e-club-${stamp}`);
+    await page.locator('form input[name="email"]').fill(email);
+    await page.locator("form button[type=submit]").click();
+    await page.waitForTimeout(800);
+    await assertNoPasswordInUrl(page);
+    expect(consoleErrors.filter((e) => /Content Security Policy/i.test(e))).toEqual([]);
+  });
 });

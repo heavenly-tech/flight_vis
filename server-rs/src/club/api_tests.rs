@@ -1021,3 +1021,123 @@ async fn account_approve_membership_cross_club_forbidden() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }
+
+#[tokio::test]
+#[serial]
+async fn flight_sse_closes_after_membership_suspended() {
+    use http_body_util::BodyExt;
+    use std::time::Duration;
+
+    let mut fx = setup().await;
+    let cookie_a = login_cookie(&mut fx.router, "a@test").await;
+    let flight_id = start_flight(
+        &mut fx.router,
+        &fx.club,
+        &cookie_a,
+        &fx.device_token,
+        "club",
+    )
+    .await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let mid: String =
+        sqlx::query_scalar("SELECT id FROM club_memberships WHERE pilot_id = $1 AND club_id = $2")
+            .bind(&fx.pilot_a)
+            .bind(&club_id)
+            .fetch_one(&fx.club.pool)
+            .await
+            .unwrap();
+    let club_db = fx.club.clone();
+    let mid_spawn = mid.clone();
+    let suspend = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let _ = club_db.suspend_membership(&mid_spawn).await;
+    });
+    let stream_resp = fx
+        .router
+        .call(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/flights/{flight_id}/stream"))
+                .header(header::COOKIE, &cookie_a)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stream_resp.status(), StatusCode::OK);
+    let collected = tokio::time::timeout(Duration::from_secs(25), async {
+        stream_resp.into_body().collect().await
+    })
+    .await
+    .expect("sse should end within 25s after suspend")
+    .expect("body collect")
+    .to_bytes();
+    let _ = suspend.await;
+    assert!(!collected.is_empty());
+}
+
+#[tokio::test]
+#[serial]
+async fn flight_sse_closes_after_membership_removed() {
+    use http_body_util::BodyExt;
+    use std::time::Duration;
+
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let admin_b = fx
+        .club
+        .register(&club_id, "Admin2", "admin2@test", "", "password12")
+        .await
+        .unwrap();
+    let now = now_ms();
+    fx.club.mark_email_verified(&admin_b, now).await.unwrap();
+    fx.club.approve_pilot(&admin_b).await.unwrap();
+    fx.club
+        .ensure_membership_row(&admin_b, &club_id, "admin", "active")
+        .await
+        .unwrap();
+    let cookie_a = login_cookie(&mut fx.router, "a@test").await;
+    let flight_id = start_flight(
+        &mut fx.router,
+        &fx.club,
+        &cookie_a,
+        &fx.device_token,
+        "club",
+    )
+    .await;
+    let mid_a: String =
+        sqlx::query_scalar("SELECT id FROM club_memberships WHERE pilot_id = $1 AND club_id = $2")
+            .bind(&fx.pilot_a)
+            .bind(&club_id)
+            .fetch_one(&fx.club.pool)
+            .await
+            .unwrap();
+    let club_db = fx.club.clone();
+    let mid_spawn = mid_a.clone();
+    let remove = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let _ = club_db.remove_admin_membership(&club_id, &mid_spawn).await;
+    });
+    let stream_resp = fx
+        .router
+        .call(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/flights/{flight_id}/stream"))
+                .header(header::COOKIE, &cookie_a)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stream_resp.status(), StatusCode::OK);
+    let collected = tokio::time::timeout(Duration::from_secs(25), async {
+        stream_resp.into_body().collect().await
+    })
+    .await
+    .expect("sse should end within 25s after removal")
+    .expect("body collect")
+    .to_bytes();
+    let _ = remove.await;
+    assert!(!collected.is_empty());
+}

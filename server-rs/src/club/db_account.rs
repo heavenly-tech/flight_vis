@@ -172,7 +172,8 @@ impl ClubDb {
                    status = CASE
                      WHEN club_memberships.status IN ('active', 'suspended') THEN club_memberships.status
                      ELSE EXCLUDED.status
-                   END",
+                   END,
+                   role = club_memberships.role",
             )
             .bind(&member_id)
             .bind(&pilot_id)
