@@ -44,6 +44,34 @@ fn share_rate_limit(state: &AppState, ip: &ClientIp) -> bool {
         .allow_up_to(&ip.0, now, SHARE_LOOKUP_MAX_ATTEMPTS)
 }
 
+async fn share_resolve_operational(
+    db: &crate::club::ClubDb,
+    token: &str,
+) -> Result<crate::club::db::ResolvedShare, StatusCode> {
+    let Some(meta) = db.resolve_share_token(token).await else {
+        return Err(StatusCode::NOT_FOUND);
+    };
+    if db.club_operational(&meta.club_id).await.is_err() {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    Ok(meta)
+}
+
+fn share_gate_error(status: StatusCode) -> axum::response::Response {
+    if status == StatusCode::FORBIDDEN {
+        return (
+            status,
+            [
+                (header::CACHE_CONTROL, "no-store"),
+                (header::PRAGMA, "no-cache"),
+            ],
+            Json(json!({ "error": "club unavailable" })),
+        )
+            .into_response();
+    }
+    share_not_found().into_response()
+}
+
 fn share_not_found() -> impl IntoResponse {
     (
         StatusCode::NOT_FOUND,
@@ -206,8 +234,9 @@ async fn share_flight_meta(
     let Some(db) = club_db(&state) else {
         return share_not_found().into_response();
     };
-    let Some(meta) = db.resolve_share_token(&token).await else {
-        return share_not_found().into_response();
+    let meta = match share_resolve_operational(db, &token).await {
+        Ok(m) => m,
+        Err(status) => return share_gate_error(status),
     };
     (
         StatusCode::OK,
@@ -236,8 +265,9 @@ async fn share_flight_fixes(
     let Some(db) = club_db(&state) else {
         return share_not_found().into_response();
     };
-    let Some(meta) = db.resolve_share_token(&token).await else {
-        return share_not_found().into_response();
+    let meta = match share_resolve_operational(db, &token).await {
+        Ok(m) => m,
+        Err(status) => return share_gate_error(status),
     };
     let fixes = db.fixes_for_flight(&meta.flight_id).await;
     (
@@ -264,21 +294,26 @@ async fn share_flight_stream(
     let Some(db) = club_db(&state) else {
         return share_not_found().into_response();
     };
-    let Some(meta) = db.resolve_share_token(&token).await else {
-        return share_not_found().into_response();
+    let meta = match share_resolve_operational(db, &token).await {
+        Ok(m) => m,
+        Err(status) => return share_gate_error(status),
     };
     let db = state.club.clone().unwrap();
     let flight_id = meta.flight_id.clone();
+    let share_club_id = meta.club_id.clone();
     let token_capture = token.clone();
     let backfill = db.fixes_for_flight(&flight_id).await;
     let stream = stream::iter(backfill.into_iter().enumerate().map(move |(i, fix)| {
         Ok::<Event, Infallible>(Event::default().id(i.to_string()).json_data(fix).unwrap())
     }))
     .chain(stream::unfold(
-        (db, flight_id, token_capture, 0_i64),
+        (db, flight_id, share_club_id, token_capture, 0_i64),
         #[allow(clippy::question_mark)]
-        |(db, fid, tok, mut last_t)| async move {
+        |(db, fid, club_id, tok, mut last_t)| async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
+            if db.club_operational(&club_id).await.is_err() {
+                return None;
+            }
             if db.share_flight_id(&tok).await.is_none() {
                 return None;
             }
@@ -293,7 +328,7 @@ async fn share_flight_stream(
                     .json_data(json!({ "fixes": fresh }))
                     .unwrap()
             };
-            Some((Ok(event), (db, fid, tok, last_t)))
+            Some((Ok(event), (db, fid, club_id, tok, last_t)))
         },
     ));
     Sse::new(stream)

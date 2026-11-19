@@ -1,6 +1,7 @@
 //! Superadmin club moderation (`FLIGHT_SUPERADMIN_EMAILS`).
 
 use crate::club::{
+    auth::parse_session_cookie,
     db::now_ms,
     routes::{club_db, viewer},
 };
@@ -59,6 +60,11 @@ async fn suspend_club(
     if let Err(e) = require_superadmin(&state, &headers).await {
         return e.into_response();
     }
+    if parse_session_cookie(&headers).is_some() {
+        if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+            return (status, Json(json!({ "error": "csrf" }))).into_response();
+        }
+    }
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -66,6 +72,23 @@ async fn suspend_club(
         )
             .into_response();
     };
+    let default_club = match db.default_club_id().await {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "db error" })),
+            )
+                .into_response();
+        }
+    };
+    if club_id == default_club {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "cannot suspend default club" })),
+        )
+            .into_response();
+    }
     let now = now_ms();
     match db.set_club_suspended(&club_id, now).await {
         Ok(true) => Json(json!({ "ok": true, "suspended": true })).into_response(),
@@ -85,6 +108,11 @@ async fn unsuspend_club(
 ) -> impl IntoResponse {
     if let Err(e) = require_superadmin(&state, &headers).await {
         return e.into_response();
+    }
+    if parse_session_cookie(&headers).is_some() {
+        if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+            return (status, Json(json!({ "error": "csrf" }))).into_response();
+        }
     }
     let Some(db) = club_db(&state) else {
         return (

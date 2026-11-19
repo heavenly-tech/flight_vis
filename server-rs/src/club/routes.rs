@@ -7,7 +7,7 @@ use crate::club::{
         MAX_DEVICES_PER_PILOT,
     },
     map::TailLivePosition,
-    visibility::{FlightVisibility, PilotRole, PilotStatus, Viewer},
+    visibility::{FlightVisibility, PilotStatus, Viewer},
 };
 use crate::{AppState, ClientIp};
 use axum::{
@@ -368,6 +368,11 @@ async fn club_login(
             Json(json!({ "error": "too many attempts" })),
         )
             .into_response(),
+        Err(crate::club::db::LoginError::ClubUnavailable) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "club unavailable" })),
+        )
+            .into_response(),
         Err(_) => (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "unauthorized" })),
@@ -419,6 +424,13 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
     let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
     match pilot {
         Some(p) => {
+            if db.club_operational(&p.club_id).await.is_err() {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({ "error": "club unavailable" })),
+                )
+                    .into_response();
+            }
             let club_default = db
                 .club_default_locale(&p.club_id)
                 .await
@@ -676,6 +688,15 @@ pub async fn post_club_flight_start(
                 .into_response();
         }
     };
+    if let Some(club_id) = db.club_id_for_aircraft_tail(parsed.tail.trim()).await {
+        if db.club_operational(&club_id).await.is_err() {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "club unavailable" })),
+            )
+                .into_response();
+        }
+    }
     let visibility = match parse_visibility(parsed.visibility.as_deref()) {
         Ok(v) => v,
         Err(msg) => {
@@ -824,6 +845,17 @@ async fn club_map(State(state): State<AppState>, headers: HeaderMap) -> impl Int
     let Some(db) = club_db(&state) else {
         return Json(json!({ "aircraft": [] })).into_response();
     };
+    if let Viewer::Pilot { id, .. } = &v {
+        if let Ok(club_id) = db.pilot_club_id(id).await {
+            if db.club_operational(&club_id).await.is_err() {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({ "error": "club unavailable" })),
+                )
+                    .into_response();
+            }
+        }
+    }
     let positions: Vec<TailLivePosition> = db.club_map_for_viewer(&v).await;
     Json(json!({ "aircraft": positions })).into_response()
 }
@@ -1863,6 +1895,27 @@ async fn display_context(headers: &HeaderMap, db: &ClubDb) -> Option<(String, St
         .map(|(_id, club_id, admin_id)| (club_id, admin_id))
 }
 
+type DisplayClubErr = (StatusCode, Json<serde_json::Value>);
+
+async fn require_display_club(
+    db: &ClubDb,
+    headers: &HeaderMap,
+) -> Result<(String, String), DisplayClubErr> {
+    let Some((club_id, admin_id)) = display_context(headers, db).await else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "display session required" })),
+        ));
+    };
+    if db.club_operational(&club_id).await.is_err() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "club unavailable" })),
+        ));
+    }
+    Ok((club_id, admin_id))
+}
+
 #[derive(Deserialize)]
 struct CheckinBody {
     token: String,
@@ -1907,6 +1960,16 @@ async fn post_checkin(
         )
             .into_response();
     };
+    let token = body.token.trim();
+    if let Some(target_club) = crate::club::checkin::parse_checkin_token_club_id(token) {
+        if db.club_operational(&target_club).await.is_err() {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "club unavailable" })),
+            )
+                .into_response();
+        }
+    }
     if let Some(dev) = &device_id {
         if db.device_pilot_id(dev).await.as_deref() != Some(pilot_id.as_str()) {
             return (
@@ -1917,7 +1980,7 @@ async fn post_checkin(
         }
     }
     match db
-        .submit_checkin(&pilot_id, device_id.as_deref(), body.token.trim(), now)
+        .submit_checkin(&pilot_id, device_id.as_deref(), token, now)
         .await
     {
         Ok(record) => {
@@ -2004,12 +2067,9 @@ async fn display_checkin_qr(
     let Some(db) = club_db(&state) else {
         return Json(json!({ "error": "club disabled" })).into_response();
     };
-    let Some((club_id, _admin)) = display_context(&headers, db).await else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "display session required" })),
-        )
-            .into_response();
+    let (club_id, _admin) = match require_display_club(db, &headers).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
     };
     let now = now_ms();
     match db.mint_checkin_qr_token(&club_id, now).await {
@@ -2034,14 +2094,11 @@ async fn display_map(State(state): State<AppState>, headers: HeaderMap) -> impl 
     let Some(db) = club_db(&state) else {
         return Json(json!({ "aircraft": [] })).into_response();
     };
-    let Some((_club_id, admin_id)) = display_context(&headers, db).await else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "display session required" })),
-        )
-            .into_response();
+    let (club_id, admin_id) = match require_display_club(db, &headers).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
     };
-    let rows = db.display_map(&_club_id, &admin_id).await;
+    let rows = db.display_map(&club_id, &admin_id).await;
     Json(json!({ "aircraft": rows })).into_response()
 }
 
@@ -2056,18 +2113,6 @@ async fn admin_create_display(
     Json(body): Json<DisplaySessionBody>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    let Viewer::Pilot {
-        id,
-        role: PilotRole::Admin,
-        ..
-    } = v
-    else {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin required" })),
-        )
-            .into_response();
-    };
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2075,14 +2120,22 @@ async fn admin_create_display(
         )
             .into_response();
     };
-    let screen_url = match db.pilot_club_id(&id).await {
-        Ok(cid) => db
-            .club_slug(&cid)
-            .await
-            .map(|slug| format!("/c/{slug}/screen"))
-            .unwrap_or_else(|| "/club/screen".to_string()),
-        Err(_) => "/club/screen".to_string(),
+    let club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
     };
+    let Viewer::Pilot { id, .. } = v else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    };
+    let screen_url = db
+        .club_slug(&club_id)
+        .await
+        .map(|slug| format!("/c/{slug}/screen"))
+        .unwrap_or_else(|| "/club/screen".to_string());
     match db.create_display_session(&id, body.label.trim()).await {
         Ok((session_id, token)) => Json(json!({
             "id": session_id,
@@ -2103,20 +2156,19 @@ async fn admin_list_display(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    let Viewer::Pilot {
-        id,
-        role: PilotRole::Admin,
-        ..
-    } = v
-    else {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin required" })),
-        )
-            .into_response();
-    };
     let Some(db) = club_db(&state) else {
         return Json(json!({ "sessions": [] })).into_response();
+    };
+    let _club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    let Viewer::Pilot { id, .. } = v else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
     };
     Json(json!({ "sessions": db.list_display_sessions(&id).await })).into_response()
 }
@@ -2127,22 +2179,21 @@ async fn admin_revoke_display(
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    let Viewer::Pilot {
-        id,
-        role: PilotRole::Admin,
-        ..
-    } = v
-    else {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin required" })),
-        )
-            .into_response();
-    };
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let _club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    let Viewer::Pilot { id, .. } = v else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
         )
             .into_response();
     };
@@ -2217,18 +2268,6 @@ async fn admin_get_kiosk_layout(
     headers: HeaderMap,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    let Viewer::Pilot {
-        id,
-        role: PilotRole::Admin,
-        ..
-    } = v
-    else {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin required" })),
-        )
-            .into_response();
-    };
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2236,15 +2275,9 @@ async fn admin_get_kiosk_layout(
         )
             .into_response();
     };
-    let club_id = match db.pilot_club_id(&id).await {
+    let club_id = match require_club_admin_scope(db, &v).await {
         Ok(c) => c,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "db error" })),
-            )
-                .into_response();
-        }
+        Err(e) => return e.into_response(),
     };
     let _ = db.ensure_kiosk_qr_defaults(&club_id).await;
     match db.kiosk_qr_layout(&club_id).await {
@@ -2263,18 +2296,6 @@ async fn admin_patch_kiosk_layout(
     Json(body): Json<KioskLayoutBody>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    let Viewer::Pilot {
-        id,
-        role: PilotRole::Admin,
-        ..
-    } = v
-    else {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin required" })),
-        )
-            .into_response();
-    };
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2282,15 +2303,9 @@ async fn admin_patch_kiosk_layout(
         )
             .into_response();
     };
-    let club_id = match db.pilot_club_id(&id).await {
+    let club_id = match require_club_admin_scope(db, &v).await {
         Ok(c) => c,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "db error" })),
-            )
-                .into_response();
-        }
+        Err(e) => return e.into_response(),
     };
     if !body.size.is_finite() || !body.x.is_finite() || !body.y.is_finite() {
         return (
@@ -2319,18 +2334,6 @@ async fn admin_reset_kiosk_layout(
     body: Option<Json<KioskLayoutBody>>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    let Viewer::Pilot {
-        id,
-        role: PilotRole::Admin,
-        ..
-    } = v
-    else {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin required" })),
-        )
-            .into_response();
-    };
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2338,15 +2341,9 @@ async fn admin_reset_kiosk_layout(
         )
             .into_response();
     };
-    let club_id = match db.pilot_club_id(&id).await {
+    let club_id = match require_club_admin_scope(db, &v).await {
         Ok(c) => c,
-        Err(_) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": "db error" })),
-            )
-                .into_response();
-        }
+        Err(e) => return e.into_response(),
     };
     let aspect = body
         .as_ref()
@@ -2373,12 +2370,9 @@ async fn display_kiosk_layout(
         )
             .into_response();
     };
-    let Some((club_id, _admin)) = display_context(&headers, db).await else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "display session required" })),
-        )
-            .into_response();
+    let (club_id, _admin) = match require_display_club(db, &headers).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
     };
     let _ = db.ensure_kiosk_qr_defaults(&club_id).await;
     match db.kiosk_qr_layout(&club_id).await {
@@ -2402,19 +2396,19 @@ async fn display_kiosk_layout_stream(
         )
             .into_response();
     };
-    let Some((club_id, _admin)) = display_context(&headers, &db).await else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "display session required" })),
-        )
-            .into_response();
+    let (club_id, _admin) = match require_display_club(&db, &headers).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
     };
     let _ = db.ensure_kiosk_qr_defaults(&club_id).await;
     let club_id2 = club_id.clone();
-    let stream = stream::unfold((db, 0i64), move |(db, mut last_rev)| {
-        let club_id = club_id2.clone();
-        async move {
+    let stream = stream::unfold(
+        (db, club_id2, 0i64),
+        move |(db, club_id, mut last_rev)| async move {
             tokio::time::sleep(Duration::from_secs(2)).await;
+            if db.club_operational(&club_id).await.is_err() {
+                return None;
+            }
             let layout = match db.kiosk_qr_layout(&club_id).await {
                 Ok(l) => l,
                 Err(_) => return None,
@@ -2422,7 +2416,7 @@ async fn display_kiosk_layout_stream(
             if layout.rev == last_rev {
                 return Some((
                     Ok::<_, Infallible>(Event::default().comment("ping")),
-                    (db, last_rev),
+                    (db, club_id, last_rev),
                 ));
             }
             last_rev = layout.rev;
@@ -2432,10 +2426,10 @@ async fn display_kiosk_layout_stream(
             };
             Some((
                 Ok(Event::default().event("layout").data(payload)),
-                (db, last_rev),
+                (db, club_id, last_rev),
             ))
-        }
-    });
+        },
+    );
     Sse::new(stream)
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
         .into_response()
@@ -2448,8 +2442,9 @@ async fn club_screen_qr_svg(
     let Some(db) = club_db(&state) else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let Some((club_id, _admin)) = display_context(&headers, db).await else {
-        return StatusCode::UNAUTHORIZED.into_response();
+    let (club_id, _admin) = match require_display_club(db, &headers).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
     };
     let now = now_ms();
     let token = match db.mint_checkin_qr_token(&club_id, now).await {

@@ -71,6 +71,11 @@ async fn api_magic_complete(
             )
                 .into_response()
         }
+        Err(MagicConsumeError::ClubUnavailable) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "club unavailable" })),
+        )
+            .into_response(),
         Err(MagicConsumeError::Expired) => {
             (StatusCode::GONE, Json(json!({ "error": "expired" }))).into_response()
         }

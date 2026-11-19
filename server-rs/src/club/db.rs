@@ -175,8 +175,9 @@ impl ClubDb {
             let club_id = new_id();
             let slug = std::env::var("FLIGHT_CLUB_SLUG").unwrap_or_else(|_| "default".to_string());
             sqlx::query(
-                "INSERT INTO clubs (id, name, slug, created_at, checkin_window_hours, latitude, longitude)
-                 VALUES ($1, $2, $3, $4, 12, -33.4489, -70.6693)",
+                "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at,
+                 checkin_window_hours, latitude, longitude)
+                 VALUES ($1, $2, $3, $4, 'live', $4, 12, -33.4489, -70.6693)",
             )
             .bind(club_id)
             .bind(std::env::var("FLIGHT_CLUB_NAME").unwrap_or_else(|_| "Flight Club".to_string()))
@@ -205,16 +206,18 @@ impl ClubDb {
                 if exists == 0 {
                     let hash =
                         auth::hash_password(&password).map_err(|_| DbError::protocol("hash"))?;
+                    let boot_now = now_ms();
                     sqlx::query(
-                        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
-                         VALUES ($1, $2, $3, $4, '', 'approved', 'admin', $5, $6)",
+                        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role,
+                         password_hash, email_verified_at, created_at)
+                         VALUES ($1, $2, $3, $4, '', 'approved', 'admin', $5, $6, $6)",
                     )
                     .bind(new_id())
                     .bind(&club_id)
                     .bind("Admin")
                     .bind(&email)
                     .bind(&hash)
-                    .bind(now_ms())
+                    .bind(boot_now)
                     .execute(&self.pool)
                     .await?;
                 }
@@ -675,6 +678,40 @@ impl ClubDb {
             .await
             .ok()
             .flatten()
+    }
+
+    #[allow(dead_code)]
+    pub async fn club_id_for_device(&self, device_id: &str) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT p.club_id FROM devices d
+             JOIN pilots p ON p.id = d.pilot_id
+             WHERE d.id = $1",
+        )
+        .bind(device_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+    }
+
+    pub async fn club_id_for_flight(&self, flight_id: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT club_id FROM flights WHERE id = $1")
+            .bind(flight_id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    pub async fn club_id_for_aircraft_tail(&self, tail: &str) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT club_id FROM aircraft WHERE tail = $1 AND active = true ORDER BY id LIMIT 1",
+        )
+        .bind(tail.trim())
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
     }
 
     pub async fn open_flight_for_device(&self, device_id: &str) -> Option<String> {
@@ -1595,6 +1632,14 @@ impl ClubDb {
                 .fetch_one(&self.pool)
                 .await?;
         if exists > 0 {
+            let t = now_ms();
+            sqlx::query(
+                "UPDATE pilots SET email_verified_at = COALESCE(email_verified_at, $1)
+                 WHERE email IN ('admin@demo.test', 'pilot@demo.test')",
+            )
+            .bind(t)
+            .execute(&self.pool)
+            .await?;
             return Ok(());
         }
         let admin_id = new_id();
@@ -1603,10 +1648,11 @@ impl ClubDb {
         let hash = auth::hash_password("password12").map_err(|_| DbError::protocol("hash"))?;
         let t = now_ms();
         sqlx::query(
-            "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at) VALUES
-             ($1, $4, 'Demo Admin', 'admin@demo.test', 'ADM-1', 'approved', 'admin', $5, $6),
-             ($2, $4, 'Demo Pilot', 'pilot@demo.test', 'P-1', 'approved', 'pilot', $5, $6),
-             ($3, $4, 'Demo Pending', 'pending@demo.test', 'P-2', 'pending', 'pilot', $5, $6)",
+            "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash,
+             email_verified_at, created_at) VALUES
+             ($1, $4, 'Demo Admin', 'admin@demo.test', 'ADM-1', 'approved', 'admin', $5, $6, $6),
+             ($2, $4, 'Demo Pilot', 'pilot@demo.test', 'P-1', 'approved', 'pilot', $5, $6, $6),
+             ($3, $4, 'Demo Pending', 'pending@demo.test', 'P-2', 'pending', 'pilot', $5, NULL, $6)",
         )
         .bind(&admin_id)
         .bind(&pilot_id)
@@ -1699,6 +1745,7 @@ pub enum RegisterError {
 pub enum LoginError {
     Invalid,
     Throttled,
+    ClubUnavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

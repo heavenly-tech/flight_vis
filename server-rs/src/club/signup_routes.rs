@@ -62,14 +62,9 @@ async fn post_club_signup(
     if icao.is_some_and(|s| !s.trim().is_empty() && !validate_icao(s)) {
         return Json(json!({ "ok": true })).into_response();
     }
+    let club_name = body.name.trim();
     match db
-        .signup_club(
-            body.name.trim(),
-            &normalize_slug(&body.slug),
-            email,
-            icao,
-            now,
-        )
+        .signup_club(club_name, &normalize_slug(&body.slug), email, icao, now)
         .await
     {
         Ok((_, token)) => {
@@ -84,7 +79,7 @@ async fn post_club_signup(
                     email,
                     "es",
                     "verifyClub",
-                    &[("minutes", "15"), ("url", &url), ("name", body.name.trim())],
+                    &[("minutes", "15"), ("url", &url), ("name", club_name)],
                 )
                 .await;
             Json(json!({ "ok": true })).into_response()

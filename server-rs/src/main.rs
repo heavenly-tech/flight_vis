@@ -186,7 +186,9 @@ async fn club_admin_login_redirect(
     path: &str,
     query: Option<&str>,
 ) -> Option<axum::response::Response> {
-    if !path.starts_with("/club-admin-") || !path.ends_with(".html") {
+    let normalized =
+        static_files::normalize_url_path(path).unwrap_or_else(|| path.trim().to_string());
+    if !normalized.starts_with("/club-admin-") || !normalized.ends_with(".html") {
         return None;
     }
     let db = state.club.as_ref()?;
@@ -200,8 +202,8 @@ async fn club_admin_login_redirect(
         return None;
     }
     let raw_next = match query {
-        Some(q) if !q.is_empty() => format!("{path}?{q}"),
-        _ => path.to_string(),
+        Some(q) if !q.is_empty() => format!("{normalized}?{q}"),
+        _ => normalized.clone(),
     };
     let next = auth::safe_next(&raw_next);
     Some(

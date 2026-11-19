@@ -121,6 +121,11 @@ pub async fn get_magic_consume(
         Err(MagicConsumeError::Expired) => {
             (StatusCode::GONE, Json(json!({ "error": "expired" }))).into_response()
         }
+        Err(MagicConsumeError::ClubUnavailable) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "club unavailable" })),
+        )
+            .into_response(),
         Err(_) => (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid" }))).into_response(),
     }
 }
@@ -164,6 +169,12 @@ async fn magic_consume_post(
             .into_response();
     };
     let now = now_ms();
+    if db.try_consume_magic_club_verify(&token, now).await.is_ok() {
+        if wants_html(&headers) {
+            return (StatusCode::FOUND, [(header::LOCATION, "/".to_string())]).into_response();
+        }
+        return Json(json!({ "ok": true, "verified": true, "clubVerified": true })).into_response();
+    }
     if db.try_consume_magic_verify(&token, now).await.is_ok() {
         return Json(json!({ "ok": true, "verified": true })).into_response();
     }
@@ -176,6 +187,11 @@ async fn magic_consume_post(
         Err(MagicConsumeError::Expired) => {
             (StatusCode::GONE, Json(json!({ "error": "expired" }))).into_response()
         }
+        Err(MagicConsumeError::ClubUnavailable) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "club unavailable" })),
+        )
+            .into_response(),
         Err(_) => (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid" }))).into_response(),
     }
 }
@@ -343,6 +359,11 @@ pub async fn webauthn_login_finish(
         Err(WebauthnRouteError::InvalidSession) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "invalid nonce" })),
+        )
+            .into_response(),
+        Err(WebauthnRouteError::ClubUnavailable) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "club unavailable" })),
         )
             .into_response(),
         Err(_) => (

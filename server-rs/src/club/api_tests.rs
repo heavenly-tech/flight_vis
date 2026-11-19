@@ -534,10 +534,8 @@ async fn kiosk_layout_admin_clamps_and_display_sse_rev() {
         .execute(&fx.club.pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE club_memberships SET role = 'admin' WHERE pilot_id = $1 AND club_id = $2")
-        .bind(&fx.pilot_a)
-        .bind(&club_id)
-        .execute(&fx.club.pool)
+    fx.club
+        .ensure_membership_row(&fx.pilot_a, &club_id, "admin", "approved")
         .await
         .unwrap();
     let cookie = login_cookie(&mut fx.router, "a@test").await;
