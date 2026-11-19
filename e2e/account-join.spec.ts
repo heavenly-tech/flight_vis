@@ -10,11 +10,15 @@ test.describe("account join club", () => {
       data: { email: "admin@demo.test", password: "password12" },
     });
     expect(login.ok()).toBeTruthy();
-    await page.goto("/account-clubs.html", { waitUntil: "domcontentloaded" });
-    await page.locator("#pick-panel").waitFor({ state: "visible" });
+    const state = await page.request.storageState();
+    await page.context().addCookies(state.cookies);
+    await page.goto("/account-clubs.html", { waitUntil: "load" });
+    await page.waitForResponse(
+      (r) => r.url().includes("/api/account/me") && r.status() === 200,
+    );
     await page.locator("#join-open").click();
     const joinForm = page.locator("#join-form");
-    await joinForm.locator('input[name="slug"]').waitFor({ state: "visible" });
+    await expect(joinForm).toBeVisible();
     await joinForm.locator('input[name="slug"]').fill("demo");
     await joinForm.locator("button[type=submit]").click();
     await page.waitForTimeout(800);
