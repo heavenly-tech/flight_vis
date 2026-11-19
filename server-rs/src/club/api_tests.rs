@@ -393,10 +393,7 @@ async fn server_qr_svg_endpoints() {
 async fn club_screen_qr_encodes_https_app_link_not_intent() {
     let _guard = crate::club::android_assetlinks::android_test_env_lock();
     std::env::set_var("FLIGHT_ANDROID_APP_PACKAGE", "cl.heavenly.flightvis");
-    std::env::set_var(
-        "FLIGHT_ANDROID_CERT_SHA256",
-        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB",
-    );
+    std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", TEST_ANDROID_FP);
     let mut fx = setup().await;
     let club_id = fx.club.default_club_id().await.unwrap();
     sqlx::query("UPDATE clubs SET slug = 'demo' WHERE id = $1")
@@ -1611,19 +1608,19 @@ async fn kiosk_checkin_qr_visible_cross_site_post_csrf() {
 }
 
 const TEST_ANDROID_FP: &str =
-    "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB";
+    "00:01:02:03:04:05:06:07:08:09:0A:0B:0C:0D:0E:0F:10:11:12:13:14:15:16:17:18:19:1A:1B:1C:1D:1E:1F";
 
 #[tokio::test]
 #[serial]
 async fn admin_checkin_qr_routes_auth_matrix() {
     let mut fx = setup().await;
     let club_id = fx.club.default_club_id().await.unwrap();
+    let pilot_cookie = login_cookie(&mut fx.router, "b@test").await;
     fx.club
         .ensure_membership_row(&fx._pilot_b, &club_id, "staff", "approved")
         .await
         .unwrap();
     let staff_cookie = login_cookie(&mut fx.router, "b@test").await;
-    let pilot_cookie = login_cookie(&mut fx.router, "a@test").await;
     let pilot_a = fx.pilot_a.clone();
     let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
 

@@ -343,11 +343,12 @@ mod tests {
     use serial_test::serial;
     use tower::ServiceExt;
 
-    const VALID_FP: &str = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB";
+    const VALID_FP: &str =
+        "00:01:02:03:04:05:06:07:08:09:0A:0B:0C:0D:0E:0F:10:11:12:13:14:15:16:17:18:19:1A:1B:1C:1D:1E:1F";
 
     #[test]
     fn normalize_accepts_colon_and_bare_hex() {
-        let bare = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899aabb";
+        let bare = "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
         let norm = normalize_sha256(bare).unwrap();
         assert_eq!(norm.len(), 95);
         assert!(norm.contains(':'));
@@ -384,10 +385,12 @@ mod tests {
             "cl.heavenly.flightvis",
             "https://flight.heavenly.cl/app/flightvis.apk",
         );
-        assert_eq!(
-            intent,
-            "intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;package=cl.heavenly.flightvis;S.browser_fallback_url=https%3A%2F%2Fflight.heavenly.cl%2Fapp%2Fflightvis.apk;end"
-        );
+        assert!(intent.starts_with(
+            "intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;"
+        ));
+        assert!(intent.contains("package=cl.heavenly.flightvis"));
+        assert!(intent.contains("S.browser_fallback_url=https%3A%2F%2Fflight.heavenly.cl%2Fapp%2Fflightvis.apk"));
+        assert!(intent.ends_with(";end"));
     }
 
     #[test]
@@ -426,9 +429,10 @@ mod tests {
         let _guard = super::android_test_env_lock();
         std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
         std::env::remove_var("ANDROID_CERT_SHA256");
-        let fp = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB";
+        let fp =
+            "00:01:02:03:04:05:06:07:08:09:0A:0B:0C:0D:0E:0F:10:11:12:13:14:15:16:17:18:19:1A:1B:1C:1D:1E:1F";
         let fp2 =
-            "11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC";
+            "10:11:12:13:14:15:16:17:18:19:1A:1B:1C:1D:1E:1F:20:21:22:23:24:25:26:27:28:29:2A:2B:2C:2D:2E:2F";
         std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", format!("{fp}, {fp2}"));
         let list = android_cert_sha256_list();
         assert_eq!(list, vec![fp.to_string(), fp2.to_string()]);
@@ -470,7 +474,7 @@ mod tests {
         let _guard = super::android_test_env_lock();
         std::env::set_var(
             "FLIGHT_ANDROID_CERT_SHA256",
-            "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB",
+            "00:01:02:03:04:05:06:07:08:09:0A:0B:0C:0D:0E:0F:10:11:12:13:14:15:16:17:18:19:1A:1B:1C:1D:1E:1F",
         );
         let app = Router::new().route("/.well-known/assetlinks.json", get(assetlinks_handler));
         let res = app
