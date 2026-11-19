@@ -45,6 +45,10 @@ pub mod webauthn;
 #[cfg(test)]
 mod account_integration_tests;
 #[cfg(test)]
+mod account_takeover_tests;
+#[cfg(test)]
+mod account_security_followup_tests;
+#[cfg(test)]
 mod admin_membership_http_tests;
 #[cfg(test)]
 mod admin_membership_integration_tests;

@@ -12,7 +12,7 @@
       <div id="lang-slot"></div>
       <h1 data-i18n="account.signup.title">Crea tu cuenta</h1>
       <p class="muted" data-i18n="account.signup.lead">Una cuenta personal; después únete a clubs.</p>
-      <form id="form">
+      <form id="form" method="post" action="/api/account/signup">
         <input name="email" type="email" required data-i18n-placeholder="account.signup.email" />
         <input name="password" type="password" data-i18n-placeholder="account.signup.password" minlength="8" />
         <button type="submit" data-i18n="account.signup.submit"></button>
@@ -20,6 +20,6 @@
       <p id="msg" class="muted"></p>
       <p class="muted"><a href="/club-login.html?mode=pilot" data-i18n="account.signup.haveAccount"></a></p>
     </main>
-    <script type="module" src="/src/club/accountSignup.ts"></script>
+    <script type="module" src="/src/club/accountSignupPage.ts"></script>
   </body>
 </html>

@@ -21,7 +21,8 @@
       <section id="login-panel">
         <h1 id="login-heading" data-i18n="club.login.title">Inicio de sesión</h1>
         <p id="club-slug-label" class="muted" hidden></p>
-        <form id="form">
+        <form id="form" method="post" action="/api/account/login">
+          <input type="hidden" name="next" id="next" value="/club-pilot.html" />
           <input name="email" type="email" required data-i18n-placeholder="club.login.email" />
           <input name="password" type="password" data-i18n-placeholder="club.login.password" minlength="8" />
           <button type="submit" data-i18n="club.login.submit"></button>
@@ -31,7 +32,8 @@
         <p id="pilot-signup" class="muted"><a href="/signup.html" data-i18n="account.signup.link"></a></p>
         <details class="muted">
           <summary data-i18n="club.login.legacyApk"></summary>
-          <form id="legacy-login">
+          <form id="legacy-login" method="post" action="/api/club/login">
+            <input type="hidden" name="next" id="legacy-next" value="/club-pilot.html" />
             <input name="email" type="email" required data-i18n-placeholder="club.login.email" />
             <input name="password" type="password" required minlength="8" />
             <button type="submit" data-i18n="club.login.legacySubmit"></button>
@@ -45,7 +47,7 @@
       </section>
       <section id="join-panel" hidden>
         <h1 data-i18n="account.join.title"></h1>
-        <form id="join-form">
+        <form id="join-form" method="post" action="/api/account/join">
           <input name="slug" required data-i18n-placeholder="account.join.slug" />
           <input name="name" data-i18n-placeholder="account.join.name" />
           <button type="submit" data-i18n="account.join.submit"></button>
@@ -54,9 +56,6 @@
       </section>
       <p class="muted"><a href="/club-register.html" data-i18n="nav.register"></a> · <a href="/club-signup.html" data-i18n="nav.createClub"></a></p>
     </main>
-    <script type="module">
-      import { bootClubLoginAccount } from "/src/club/clubLoginAccount.ts";
-      bootClubLoginAccount();
-    </script>
+    <script type="module" src="/src/club/clubLoginAccountPage.ts"></script>
   </body>
 </html>

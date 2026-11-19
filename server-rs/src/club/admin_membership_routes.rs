@@ -92,6 +92,9 @@ async fn invite_admin(
     client_ip: crate::ClientIp,
     Json(body): Json<InviteAdminBody>,
 ) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
     let v = viewer(&state, &headers).await;
     let Some(db) = club_db(&state) else {
         return Json(json!({ "ok": true })).into_response();
@@ -163,6 +166,9 @@ async fn promote_membership(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
     let v = viewer(&state, &headers).await;
     let Some(db) = club_db(&state) else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -185,6 +191,9 @@ async fn demote_membership(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
     let v = viewer(&state, &headers).await;
     let Some(db) = club_db(&state) else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -207,6 +216,9 @@ async fn remove_membership(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
     let v = viewer(&state, &headers).await;
     let Some(db) = club_db(&state) else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();

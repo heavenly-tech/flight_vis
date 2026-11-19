@@ -145,6 +145,9 @@ async fn suspend_account(
     headers: HeaderMap,
     Path(account_id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
     if let Err(e) = require_superadmin(&state, &headers).await {
         return e.into_response();
     }
@@ -172,6 +175,9 @@ async fn unsuspend_account(
     headers: HeaderMap,
     Path(account_id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
     if let Err(e) = require_superadmin(&state, &headers).await {
         return e.into_response();
     }

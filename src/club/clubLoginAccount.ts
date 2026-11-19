@@ -6,15 +6,42 @@ function staffRoles(role: string): boolean {
   return role === "admin" || role === "staff";
 }
 
+declare global {
+  interface Window {
+    __fvClubLoginReady?: boolean;
+  }
+}
+
 export async function bootClubLoginAccount(): Promise<void> {
-  await startClubPage({ persistUser: false });
   const params = new URLSearchParams(location.search);
   const mode = params.get("mode") === "club" ? "club" : "pilot";
   const step = params.get("step") ?? "login";
-  const clubPrefill = (params.get("club") ?? "").trim().toLowerCase();
+  let clubPrefill = (params.get("club") ?? "").trim().toLowerCase();
   const nextAfterLogin = safeNextPath(
     params.get("next") ?? (mode === "club" ? "/club-admin-map.html" : "/club-pilot.html"),
   );
+
+  const form = document.getElementById("form") as HTMLFormElement;
+  const msg = document.getElementById("msg") as HTMLParagraphElement;
+  const legacy = document.getElementById("legacy-login") as HTMLFormElement | null;
+  const joinForm = document.getElementById("join-form") as HTMLFormElement | null;
+
+  let activeClubSlug = clubPrefill;
+
+  form?.addEventListener(
+    "submit",
+    (e) => e.preventDefault(),
+    { capture: true },
+  );
+  legacy?.addEventListener("submit", (e) => e.preventDefault(), { capture: true });
+  joinForm?.addEventListener("submit", (e) => e.preventDefault(), { capture: true });
+  window.__fvClubLoginReady = true;
+  const nextField = document.getElementById("next") as HTMLInputElement | null;
+  if (nextField) nextField.value = nextAfterLogin;
+  const legacyNext = document.getElementById("legacy-next") as HTMLInputElement | null;
+  if (legacyNext) legacyNext.value = nextAfterLogin;
+
+  await startClubPage({ persistUser: false });
 
   const slugPanel = document.getElementById("slug-panel") as HTMLElement;
   const loginPanel = document.getElementById("login-panel") as HTMLElement;
@@ -28,8 +55,6 @@ export async function bootClubLoginAccount(): Promise<void> {
 
   const nextQs = new URLSearchParams({ next: nextAfterLogin });
   back.href = `/login?${nextQs}`;
-
-  let activeClubSlug = clubPrefill;
 
   const show = (panel: "slug" | "login" | "pick" | "join") => {
     slugPanel.hidden = panel !== "slug";
@@ -72,9 +97,6 @@ export async function bootClubLoginAccount(): Promise<void> {
     return;
   }
 
-  const form = document.getElementById("form") as HTMLFormElement;
-  const msg = document.getElementById("msg") as HTMLParagraphElement;
-
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const body = Object.fromEntries(new FormData(form));
@@ -86,9 +108,12 @@ export async function bootClubLoginAccount(): Promise<void> {
     if (password) {
       const res = await fetch("/api/account/login", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
         credentials: "same-origin",
-        body: JSON.stringify({ email: body.email, password }),
+        body: JSON.stringify({ email: body.email, password, next: nextAfterLogin }),
       });
       if (!res.ok) {
         const err = (await res.json().catch(() => ({}))).error ?? "unauthorized";
@@ -181,15 +206,17 @@ export async function bootClubLoginAccount(): Promise<void> {
     return res.ok;
   }
 
-  const legacy = document.getElementById("legacy-login") as HTMLFormElement | null;
   legacy?.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const body = Object.fromEntries(new FormData(legacy));
+    const body = Object.fromEntries(new FormData(legacy!));
     const res = await fetch("/api/club/login", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
       credentials: "same-origin",
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...body, next: nextAfterLogin }),
     });
     if (res.ok) location.href = nextAfterLogin;
   });
@@ -238,13 +265,15 @@ export async function bootClubLoginAccount(): Promise<void> {
   const joinBtn = document.getElementById("join-open");
   joinBtn?.addEventListener("click", () => show("join"));
 
-  const joinForm = document.getElementById("join-form") as HTMLFormElement;
   joinForm?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const body = Object.fromEntries(new FormData(joinForm));
     const res = await fetch("/api/account/join", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
       credentials: "same-origin",
       body: JSON.stringify(body),
     });

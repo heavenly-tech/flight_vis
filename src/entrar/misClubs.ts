@@ -7,6 +7,9 @@ function staffRoles(role: string): boolean {
 }
 
 export async function bootMisClubs(): Promise<void> {
+  const joinFormEl = document.getElementById("join-form") as HTMLFormElement | null;
+  joinFormEl?.addEventListener("submit", (e) => e.preventDefault(), { capture: true });
+
   await startClubPage({ persistUser: true });
   applyI18nDocument(document);
 
@@ -35,8 +38,8 @@ export async function bootMisClubs(): Promise<void> {
   document.getElementById("admin-open")?.addEventListener("click", () => show("admin"));
   document.getElementById("admin-back")?.addEventListener("click", () => show("pick"));
 
-  const joinForm = document.getElementById("join-form") as HTMLFormElement;
-  joinForm?.addEventListener("submit", async (e) => {
+  const joinForm = joinFormEl!;
+  joinForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const body = Object.fromEntries(new FormData(joinForm));
     const res = await fetch("/api/account/join", {
@@ -90,7 +93,9 @@ export async function bootMisClubs(): Promise<void> {
       body: JSON.stringify({ membershipId: match.id }),
     });
     if (res.ok) {
-      location.href = params.get("adminNext") ?? "/club-admin-map.html";
+      location.href = safeNextPath(
+        params.get("adminNext") ?? "/club-admin-map.html",
+      );
     } else {
       msgA.textContent = t("club.login.failed");
     }

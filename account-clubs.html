@@ -83,9 +83,9 @@
       </section>
       <section id="join-panel" hidden>
         <h2 data-i18n="account.join.title"></h2>
-        <form id="join-form">
+        <form id="join-form" method="post" action="/api/account/join">
           <label data-i18n="account.join.slug"></label>
-          <input name="clubSlug" required />
+          <input name="slug" required />
           <label data-i18n="account.join.name"></label>
           <input name="name" />
           <button type="submit" data-i18n="account.join.submit"></button>

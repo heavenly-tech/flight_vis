@@ -20,7 +20,7 @@ export default defineConfig({
     },
     {
       name: "globe-csp",
-      testMatch: /globe-csp\.spec\.ts/,
+      testMatch: /(globe-csp|auth-csp)\.spec\.ts/,
       fullyParallel: false,
       workers: 1,
       use: { baseURL: `http://127.0.0.1:${e2eCspPort}` },

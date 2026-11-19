@@ -114,6 +114,8 @@ async function refresh(): Promise<void> {
   );
 }
 
+inviteForm.addEventListener("submit", (e) => e.preventDefault(), { capture: true });
+
 inviteForm.addEventListener("submit", async (ev) => {
   ev.preventDefault();
   inviteStatus.textContent = "";

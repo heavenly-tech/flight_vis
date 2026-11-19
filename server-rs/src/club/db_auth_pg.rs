@@ -139,6 +139,28 @@ impl ClubDb {
                 return Err(LoginError::Invalid);
             }
         }
+        if let Some(aid) = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT account_id FROM pilots WHERE id = $1",
+        )
+        .bind(&pilot.id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+        {
+            let suspended: bool = sqlx::query_scalar(
+                "SELECT suspended_at IS NOT NULL FROM accounts WHERE id = $1",
+            )
+            .bind(&aid)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(false);
+            if suspended {
+                let _ = self.record_login_attempt(ip, email_norm, now).await;
+                return Err(LoginError::Invalid);
+            }
+        }
         self.ensure_login_club_operational(&pilot.club_id).await?;
         let session_id = self
             .create_pilot_session(&pilot.id, now)

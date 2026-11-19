@@ -15,7 +15,7 @@
         <label for="club-pick" data-i18n="club.register.pickClubLabel"></label>
         <select id="club-pick" hidden></select>
       </p>
-      <form id="form">
+      <form id="form" method="post" action="/api/club/register">
         <input name="name" required data-i18n-placeholder="club.register.name" />
         <input name="email" type="email" required data-i18n-placeholder="club.register.email" />
         <input name="license_no" data-i18n-placeholder="club.register.license" />

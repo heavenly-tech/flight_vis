@@ -78,7 +78,7 @@
       <div id="lang-slot"></div>
       <h1 data-i18n="club.login.title"></h1>
       <p class="lead" data-i18n="entrar.unifiedLead"></p>
-      <form id="login-form">
+      <form id="login-form" method="post" action="/api/account/login">
         <label for="email" data-i18n="club.login.email"></label>
         <input id="email" name="email" type="email" autocomplete="username" required />
         <label for="password" data-i18n="club.login.password"></label>

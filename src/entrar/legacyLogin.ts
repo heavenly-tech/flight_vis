@@ -2,6 +2,8 @@ import { applyI18nDocument, bootI18n, t } from "../i18n/boot";
 import { safeNextPath } from "../club/safeNext";
 
 export async function bootLegacyLogin(): Promise<void> {
+  const legacyForm = document.getElementById("legacy-form") as HTMLFormElement | null;
+  legacyForm?.addEventListener("submit", (e) => e.preventDefault(), { capture: true });
   await bootI18n({ persistUser: false });
   applyI18nDocument(document);
 
@@ -16,7 +18,7 @@ export async function bootLegacyLogin(): Promise<void> {
   ) as { allowed?: boolean; configured?: boolean; authenticated?: boolean };
 
   const denied = document.getElementById("gate-denied") as HTMLElement;
-  const form = document.getElementById("legacy-form") as HTMLFormElement;
+  const form = legacyForm!;
   const locked = document.getElementById("locked") as HTMLElement;
 
   if (!gate.allowed) {

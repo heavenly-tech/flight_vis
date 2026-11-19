@@ -922,6 +922,7 @@ async fn bootstrap_email_exists_lookup_is_case_insensitive() {
         std::env::set_var("FLIGHT_CLUB_BOOTSTRAP_ADMIN_PASSWORD", "password12");
     }
     let db = ClubDb::open_test().await.unwrap();
+    db.bootstrap().await.unwrap();
     let club_id = db.default_club_id().await.unwrap();
     let n: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pilots WHERE club_id = $1 AND lower(email) = lower($2)",

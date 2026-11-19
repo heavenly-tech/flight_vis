@@ -73,6 +73,9 @@ jobs:
       - name: frontend
         run: npm ci && npm run build
 
+      - name: dist has no inline scripts
+        run: node scripts/check-dist-inline.mjs
+
       - name: bundle has no external QR hosts
         run: |
           if rg -q 'qrserver\\.com' dist/; then

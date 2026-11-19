@@ -1,3 +1,1 @@
-import { bootUnifiedLogin } from "./unifiedLogin";
-
-void bootUnifiedLogin();
+import "./unifiedLogin";

@@ -17,7 +17,7 @@
       <div id="lang-slot"></div>
       <h1 data-i18n="club.signup.title"></h1>
       <p class="muted" data-i18n="club.signup.lead"></p>
-      <form id="form">
+      <form id="form" method="post" action="/api/clubs/signup">
         <input name="name" required data-i18n-placeholder="club.signup.clubName" autocomplete="organization" />
         <input name="slug" required pattern="[a-z0-9-]{2,48}" data-i18n-placeholder="club.signup.slug" autocomplete="off" />
         <input name="email" type="email" required data-i18n-placeholder="club.signup.contactEmail" autocomplete="email" />
@@ -28,6 +28,6 @@
       <p id="msg" class="muted"></p>
       <p class="muted"><a href="/club-register.html" data-i18n="nav.register"></a> · <a href="/club-login.html" data-i18n="nav.login"></a></p>
     </main>
-    <script type="module" src="/src/club/clubSignup.ts"></script>
+    <script type="module" src="/src/club/clubSignupPage.ts"></script>
   </body>
 </html>

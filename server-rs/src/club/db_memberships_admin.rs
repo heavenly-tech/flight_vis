@@ -175,6 +175,15 @@ impl ClubDb {
             .map_err(|_| MembershipAdminError::Db)?;
 
         let account_id = if let Some(acct) = self.account_by_email(&email).await {
+            if acct.email_verified_at.is_none() {
+                sqlx::query(
+                    "UPDATE accounts SET password_hash = NULL WHERE id = $1 AND email_verified_at IS NULL",
+                )
+                .bind(&acct.id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| MembershipAdminError::Db)?;
+            }
             acct.id
         } else {
             let aid = new_id();
@@ -201,28 +210,61 @@ impl ClubDb {
 
         let pilot_id: Option<String> = sqlx::query_scalar(
             "SELECT p.id FROM pilots p
-             WHERE p.club_id = $1 AND (p.account_id = $2 OR lower(p.email) = lower($3))
+             WHERE p.club_id = $1 AND p.account_id = $2
              LIMIT 1",
         )
         .bind(&club_id)
         .bind(&account_id)
-        .bind(&email)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|_| MembershipAdminError::Db)?;
 
         let pilot_id = if let Some(pid) = pilot_id {
+            if sqlx::query_scalar::<_, String>("SELECT status FROM pilots WHERE id = $1")
+                .bind(&pid)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(|_| MembershipAdminError::Db)?
+                != "approved"
+            {
+                return Err(MembershipAdminError::Db);
+            }
             sqlx::query(
-                "UPDATE pilots SET account_id = coalesce(account_id, $1), status = 'approved', role = 'admin'
-                 WHERE id = $2",
+                "UPDATE pilots SET role = 'admin' WHERE id = $1 AND account_id = $2",
             )
-            .bind(&account_id)
             .bind(&pid)
+            .bind(&account_id)
             .execute(&mut *tx)
             .await
             .map_err(|_| MembershipAdminError::Db)?;
             pid
         } else {
+            sqlx::query(
+                "DELETE FROM club_memberships WHERE pilot_id IN (
+                    SELECT id FROM pilots
+                    WHERE club_id = $1 AND lower(email) = lower($2)
+                      AND (account_id IS NULL OR account_id <> $3)
+                      AND status = 'pending'
+                )",
+            )
+            .bind(&club_id)
+            .bind(&email)
+            .bind(&account_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| MembershipAdminError::Db)?;
+            sqlx::query(
+                "DELETE FROM pilots
+                 WHERE club_id = $1 AND lower(email) = lower($2)
+                   AND (account_id IS NULL OR account_id <> $3)
+                   AND status = 'pending'",
+            )
+            .bind(&club_id)
+            .bind(&email)
+            .bind(&account_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| MembershipAdminError::Db)?;
             let pid = new_id();
             let display = email.split('@').next().unwrap_or("Admin");
             sqlx::query(

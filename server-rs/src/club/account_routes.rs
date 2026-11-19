@@ -5,14 +5,16 @@ use crate::club::{
 };
 use crate::AppState;
 use axum::{
+    body::Bytes,
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
 };
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashMap;
 
 fn club_db(state: &AppState) -> Option<&ClubDb> {
     state.club.as_ref()
@@ -38,9 +40,13 @@ struct AccountSignupBody {
 
 async fn account_signup(
     State(state): State<AppState>,
+    headers: HeaderMap,
     client_ip: crate::ClientIp,
     Json(body): Json<AccountSignupBody>,
 ) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -76,10 +82,17 @@ async fn account_signup(
         .await
     {
         Ok(_) => {
-            let wants_magic = body.password.as_deref().is_none_or(|p| p.is_empty());
-            if wants_magic && db.magic_send_allowed(email, &client_ip.0, now).await {
+            if db.magic_send_allowed(email, &client_ip.0, now).await {
                 let _ = db.log_magic_send(email, &client_ip.0, now).await;
-                if let Ok(token) = db.issue_account_magic_signup(email, now).await {
+                let token = if body.password.as_deref().is_some_and(|p| !p.is_empty()) {
+                    db.issue_account_magic_login(email, now)
+                        .await
+                        .ok()
+                        .flatten()
+                } else {
+                    db.issue_account_magic_signup(email, now).await.ok()
+                };
+                if let Some(token) = token {
                     let url = format!(
                         "{}/api/account/auth/magic?token={token}",
                         state.mailer.public_url.trim_end_matches('/')
@@ -108,10 +121,58 @@ async fn account_signup(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct AccountLoginBody {
     email: String,
     password: String,
+    #[serde(default)]
+    next: Option<String>,
+}
+
+struct AccountLoginFields {
+    email: String,
+    password: String,
+    next: String,
+}
+
+fn account_wants_json(headers: &HeaderMap) -> bool {
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    crate::auth::wants_json(accept, content_type)
+}
+
+fn account_login_fields(headers: &HeaderMap, body: &[u8]) -> AccountLoginFields {
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if content_type.contains("application/json") {
+        let body: AccountLoginBody = serde_json::from_slice(body).unwrap_or_default();
+        return AccountLoginFields {
+            email: body.email,
+            password: body.password,
+            next: crate::auth::safe_next(body.next.as_deref().unwrap_or("/")),
+        };
+    }
+    let parsed: HashMap<String, String> = serde_urlencoded::from_bytes(body).unwrap_or_default();
+    AccountLoginFields {
+        email: parsed.get("email").cloned().unwrap_or_default(),
+        password: parsed.get("password").cloned().unwrap_or_default(),
+        next: crate::auth::safe_next(parsed.get("next").map(String::as_str).unwrap_or("/")),
+    }
+}
+
+fn account_login_redirect(loc: &str) -> impl IntoResponse {
+    (
+        StatusCode::SEE_OTHER,
+        [(header::LOCATION, loc.to_string())],
+    )
 }
 
 #[derive(Deserialize)]
@@ -127,6 +188,9 @@ async fn account_magic_link(
     client_ip: crate::ClientIp,
     Json(body): Json<AccountMagicBody>,
 ) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
     let email = body.email.trim();
     let now = now_ms();
     let ip = client_ip.0;
@@ -164,34 +228,64 @@ async fn account_login(
     State(state): State<AppState>,
     headers: HeaderMap,
     client_ip: crate::ClientIp,
-    Json(body): Json<AccountLoginBody>,
+    body: Bytes,
 ) -> impl IntoResponse {
+    if !account_wants_json(&headers) {
+        if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+            return status.into_response();
+        }
+    }
+    let json = account_wants_json(&headers);
+    let fields = account_login_fields(&headers, &body);
+    let next_q: String = url::form_urlencoded::byte_serialize(fields.next.as_bytes()).collect();
+    let success_loc = format!("/account-clubs.html?next={next_q}");
+    let fail_loc = format!("/login?e=1&next={next_q}");
     let Some(db) = club_db(&state) else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "club disabled" })),
-        )
-            .into_response();
+        if json {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "club disabled" })),
+            )
+                .into_response();
+        }
+        return account_login_redirect(&fail_loc).into_response();
     };
     let now = now_ms();
     match db
-        .account_login_password(body.email.trim(), &body.password, now, &client_ip.0)
+        .account_login_password(fields.email.trim(), &fields.password, now, &client_ip.0)
         .await
     {
         Ok((session_id, _account)) => {
             let cookie = auth::set_account_session_cookie(&session_id, is_secure(&headers));
-            (
-                StatusCode::OK,
-                [(axum::http::header::SET_COOKIE, cookie)],
-                Json(json!({ "ok": true })),
-            )
-                .into_response()
+            if json {
+                (
+                    StatusCode::OK,
+                    [(header::SET_COOKIE, cookie)],
+                    Json(json!({ "ok": true })),
+                )
+                    .into_response()
+            } else {
+                (
+                    StatusCode::SEE_OTHER,
+                    [
+                        (header::SET_COOKIE, cookie),
+                        (header::LOCATION, success_loc),
+                    ],
+                )
+                    .into_response()
+            }
         }
-        Err(_) => (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
-        )
-            .into_response(),
+        Err(_) => {
+            if json {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": "unauthorized" })),
+                )
+                    .into_response()
+            } else {
+                account_login_redirect(&fail_loc).into_response()
+            }
+        }
     }
 }
 
@@ -248,6 +342,9 @@ async fn switch_club(
     headers: HeaderMap,
     Json(body): Json<SwitchClubBody>,
 ) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -313,6 +410,9 @@ async fn join_club(
     headers: HeaderMap,
     Json(body): Json<JoinClubBody>,
 ) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -447,6 +547,9 @@ async fn approve_membership(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
     let Some(db) = club_db(&state) else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
@@ -476,12 +579,18 @@ async fn approve_membership(
         )
             .into_response();
     }
-    let _ = db.approve_membership(&id, now).await;
-    (
-        StatusCode::OK,
-        Json(json!({ "ok": true, "status": "active" })),
-    )
-        .into_response()
+    match db.approve_membership(&id, now).await {
+        Ok(()) => (
+            StatusCode::OK,
+            Json(json!({ "ok": true, "status": "active" })),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "not pending" })),
+        )
+            .into_response(),
+    }
 }
 
 pub fn routes() -> Router<AppState> {
@@ -501,11 +610,32 @@ pub fn routes() -> Router<AppState> {
         )
 }
 
-async fn serve_signup_page() -> impl IntoResponse {
-    let html = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../signup.html"));
-    (
-        StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        html,
-    )
+async fn serve_signup_page(State(state): State<AppState>) -> impl IntoResponse {
+    let path = state.dist_dir.join("signup.html");
+    match tokio::fs::read_to_string(&path).await {
+        Ok(html) => (
+            StatusCode::OK,
+            [
+                (
+                    axum::http::header::CONTENT_TYPE,
+                    "text/html; charset=utf-8",
+                ),
+                (
+                    axum::http::header::CONTENT_SECURITY_POLICY,
+                    crate::static_files::HTML_CSP,
+                ),
+                (
+                    axum::http::header::REFERRER_POLICY,
+                    crate::static_files::HTML_REFERRER_POLICY,
+                ),
+            ],
+            html,
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            "Signup page not built (npm run build)",
+        )
+            .into_response(),
+    }
 }

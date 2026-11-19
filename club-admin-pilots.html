@@ -26,7 +26,7 @@
         <p style="font-size:.9rem;margin:.25rem 0 .5rem" data-i18n="club.admin.inviteLead">
           Confirma el enlace para administrar este club.
         </p>
-        <form id="invite-form">
+        <form id="invite-form" method="post" action="/api/admin/memberships/invite">
           <label>
             <span class="visually-hidden" data-i18n="club.login.email">Correo</span>
             <input id="invite-email" type="email" required autocomplete="email" data-i18n-placeholder="club.login.email" />

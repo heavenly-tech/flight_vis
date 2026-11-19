@@ -10,6 +10,15 @@ async fn open_db() -> ClubDb {
     ClubDb::open_test().await.expect("db")
 }
 
+async fn mark_account_verified(db: &ClubDb, account_id: &str, now: i64) {
+    sqlx::query("UPDATE accounts SET email_verified_at = coalesce(email_verified_at, $1) WHERE id = $2")
+        .bind(now)
+        .bind(account_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+}
+
 #[serial]
 #[tokio::test]
 async fn legacy_pilot_session_login_still_works() {
@@ -80,6 +89,7 @@ async fn account_switch_active_club() {
         .create_account(email, Some("password12"), now)
         .await
         .unwrap();
+    mark_account_verified(&db, &acct, now).await;
     let pid = crate::club::auth::new_id();
     let mid = crate::club::auth::new_id();
     sqlx::query(
@@ -131,6 +141,12 @@ async fn join_then_approve_membership() {
         .unwrap();
     let acct = db
         .create_account("joiner@test", Some("password12"), now)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(&acct)
+        .execute(&db.pool)
         .await
         .unwrap();
     let mid = db
@@ -195,6 +211,7 @@ async fn suspended_account_cannot_login() {
         .create_account("sus@test", Some("password12"), now)
         .await
         .unwrap();
+    mark_account_verified(&db, &acct, now).await;
     db.set_account_suspended(&acct, now).await.unwrap();
     assert!(db
         .account_login_password("sus@test", "password12", now, "127.0.0.1")
@@ -215,6 +232,14 @@ async fn account_switch_rejects_suspended_club() {
     db.try_consume_magic_club_verify(&token, now).await.unwrap();
     let acct = db
         .create_account("sus-sw@test", Some("password12"), now)
+        .await
+        .unwrap();
+    mark_account_verified(&db, &acct, now).await;
+    let hash = hash_password("password12").unwrap();
+    sqlx::query("UPDATE accounts SET password_hash = $1 WHERE id = $2")
+        .bind(&hash)
+        .bind(&acct)
+        .execute(&db.pool)
         .await
         .unwrap();
     let mid: String = sqlx::query_scalar(

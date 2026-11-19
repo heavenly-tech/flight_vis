@@ -84,15 +84,16 @@ impl ClubDb {
     /// `club_memberships`, copying password hashes for account login in e2e/CI.
     pub async fn backfill_accounts_from_pilots(&self) -> Result<(), DbError> {
         let now = now_ms();
+        let mut tx = self.pool.begin().await?;
         let rows = sqlx::query(
-            "SELECT id, club_id, email, password_hash, role, status, created_at
+            "SELECT id, club_id, email, password_hash, role, status, created_at, email_verified_at
              FROM pilots
              WHERE account_id IS NULL
-               AND status <> 'guest'
+               AND trim(email) <> ''
                AND email NOT LIKE 'guest-%@guest.invalid'
-               AND trim(email) <> ''",
+               AND (status <> 'guest' OR email NOT LIKE 'guest-%@guest.invalid')",
         )
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
         for row in rows {
             let pilot_id: String = row.try_get("id")?;
@@ -102,37 +103,50 @@ impl ClubDb {
             let role: String = row.try_get("role")?;
             let status: String = row.try_get("status")?;
             let pilot_created: i64 = row.try_get("created_at").unwrap_or(now);
+            let pilot_verified: Option<i64> = row.try_get("email_verified_at").ok();
             let email = email.trim().to_ascii_lowercase();
-            let account_id = if let Some(acct) = self.account_by_email(&email).await {
-                acct.id
+            if status == "guest" {
+                continue;
+            }
+            let account_id: String = if let Some(acct) =
+                sqlx::query_scalar("SELECT id FROM accounts WHERE lower(email) = lower($1)")
+                    .bind(&email)
+                    .fetch_optional(&mut *tx)
+                    .await?
+            {
+                acct
             } else {
                 let id = new_id();
+                let verified_at = pilot_verified.filter(|_| status == "approved");
                 sqlx::query(
                     "INSERT INTO accounts (id, email, password_hash, created_at, email_verified_at)
-                     VALUES ($1, $2, $3, $4, $4)",
+                     VALUES ($1, $2, NULL, $3, $4)",
                 )
                 .bind(&id)
                 .bind(&email)
-                .bind(password_hash.trim())
                 .bind(pilot_created)
-                .execute(&self.pool)
+                .bind(verified_at)
+                .execute(&mut *tx)
                 .await?;
                 id
             };
-            if !password_hash.is_empty() {
+            if status == "approved"
+                && pilot_verified.is_some()
+                && !password_hash.trim().is_empty()
+            {
                 let _ = sqlx::query(
-                    "UPDATE accounts SET password_hash = coalesce(nullif(password_hash, ''), $1)
-                     WHERE id = $2",
+                    "UPDATE accounts SET password_hash = coalesce(nullif(trim(password_hash), ''), $1)
+                     WHERE id = $2 AND email_verified_at IS NOT NULL",
                 )
-                .bind(&password_hash)
+                .bind(password_hash.trim())
                 .bind(&account_id)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await;
             }
             sqlx::query("UPDATE pilots SET account_id = $1 WHERE id = $2")
                 .bind(&account_id)
                 .bind(&pilot_id)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await?;
             let membership_role = if membership_role_is_admin(&role) {
                 "admin"
@@ -144,7 +158,6 @@ impl ClubDb {
             let membership_status = match status.as_str() {
                 "approved" => "active",
                 "suspended" => "suspended",
-                "guest" => "pending",
                 _ => "pending",
             };
             let member_id = new_id();
@@ -152,7 +165,6 @@ impl ClubDb {
                 "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
                  VALUES ($1, $2, $3, $4, $5, $6)
                  ON CONFLICT (pilot_id, club_id) DO UPDATE SET
-                   role = EXCLUDED.role,
                    status = CASE
                      WHEN club_memberships.status IN ('active', 'suspended') THEN club_memberships.status
                      ELSE EXCLUDED.status
@@ -164,9 +176,10 @@ impl ClubDb {
             .bind(membership_role)
             .bind(membership_status)
             .bind(pilot_created)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
         }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -185,16 +198,6 @@ impl ClubDb {
             if let Some(p) = password.filter(|s| !s.is_empty()) {
                 if p.len() < 8 {
                     return Err(AccountSignupError::WeakPassword);
-                }
-                if let Ok(hash) = auth::hash_password(p) {
-                    let _ = sqlx::query(
-                        "UPDATE accounts SET password_hash = coalesce(nullif(password_hash, ''), $1)
-                         WHERE id = $2",
-                    )
-                    .bind(&hash)
-                    .bind(&existing.id)
-                    .execute(&self.pool)
-                    .await;
                 }
             }
             return Ok(existing.id);
@@ -367,6 +370,14 @@ impl ClubDb {
             .map_err(|_| MagicConsumeError::Invalid)?;
             aid
         };
+        let was_unverified: bool = sqlx::query_scalar(
+            "SELECT email_verified_at IS NULL FROM accounts WHERE id = $1",
+        )
+        .bind(&acct_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| MagicConsumeError::Invalid)?
+        .unwrap_or(false);
         if purpose == "account_signup" || purpose == "account_login" {
             sqlx::query(
                 "UPDATE accounts SET email_verified_at = coalesce(email_verified_at, $1) WHERE id = $2",
@@ -376,6 +387,21 @@ impl ClubDb {
             .execute(&self.pool)
             .await
             .map_err(|_| MagicConsumeError::Invalid)?;
+            if was_unverified {
+                sqlx::query(
+                    "UPDATE accounts SET password_hash = NULL WHERE id = $1 AND email_verified_at = $2",
+                )
+                .bind(&acct_id)
+                .bind(now)
+                .execute(&self.pool)
+                .await
+                .map_err(|_| MagicConsumeError::Invalid)?;
+                sqlx::query("DELETE FROM account_sessions WHERE account_id = $1")
+                    .bind(&acct_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|_| MagicConsumeError::Invalid)?;
+            }
         }
         self.account_by_id(&acct_id)
             .await
@@ -418,6 +444,11 @@ impl ClubDb {
             return Err(LoginError::Invalid);
         };
         if acct.suspended_at.is_some() {
+            return Err(LoginError::Invalid);
+        }
+        if acct.email_verified_at.is_none() {
+            let _ = auth::verify_password(password, auth::DUMMY_PASSWORD_HASH);
+            let _ = self.record_login_attempt(ip, email, now).await;
             return Err(LoginError::Invalid);
         }
         let hash: Option<String> =
@@ -487,6 +518,9 @@ impl ClubDb {
             .await
             .ok_or_else(|| DbError::protocol("no session"))?;
         let (account, _) = acct;
+        if account.email_verified_at.is_none() {
+            return Err(DbError::protocol("email not verified"));
+        }
         let row = sqlx::query(
             "SELECT m.id, m.pilot_id, m.club_id, m.role, m.status
              FROM club_memberships m
@@ -508,11 +542,13 @@ impl ClubDb {
         if self.club_operational(&club_id).await.is_err() {
             return Err(DbError::protocol("club unavailable"));
         }
-        sqlx::query("UPDATE account_sessions SET active_membership_id = $1 WHERE id = $2")
-            .bind(membership_id)
-            .bind(&session_db_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE account_sessions SET active_membership_id = $1, compat_pilot_session = NULL WHERE id = $2",
+        )
+        .bind(membership_id)
+        .bind(&session_db_id)
+        .execute(&self.pool)
+        .await?;
         let pilot_id: String = row.try_get(1)?;
         let pilot = sqlx::query(
             "SELECT id, club_id, name, email, license_no, status, role, locale FROM pilots WHERE id = $1",
@@ -574,6 +610,9 @@ impl ClubDb {
             .ok_or(AccountJoinError::Db)?;
         if acct.suspended_at.is_some() {
             return Err(AccountJoinError::AccountSuspended);
+        }
+        if acct.email_verified_at.is_none() {
+            return Err(AccountJoinError::Db);
         }
         if let Some(row) = self.club_public_row(club_id).await {
             if row.suspended_at.is_some() {
@@ -648,15 +687,21 @@ impl ClubDb {
             return Err(RegisterError::WeakPassword);
         }
         let email = email.trim().to_ascii_lowercase();
-        let acct_id = self
-            .ensure_account_for_email(&email, Some(password), now)
-            .await
-            .map_err(|e| match e {
-                AccountSignupError::WeakPassword => RegisterError::WeakPassword,
-                AccountSignupError::Db | AccountSignupError::EmailExists => {
-                    RegisterError::Db(DbError::protocol("account"))
-                }
-            })?;
+        let acct_id = if let Some(existing) = self.account_by_email(&email).await {
+            if existing.email_verified_at.is_none() {
+                return Err(RegisterError::EmailExists);
+            }
+            existing.id
+        } else {
+            self.ensure_account_for_email(&email, None, now)
+                .await
+                .map_err(|e| match e {
+                    AccountSignupError::WeakPassword => RegisterError::WeakPassword,
+                    AccountSignupError::Db | AccountSignupError::EmailExists => {
+                        RegisterError::Db(DbError::protocol("account"))
+                    }
+                })?
+        };
         let existing_pilot: Option<String> = sqlx::query_scalar(
             "SELECT id FROM pilots WHERE club_id = $1 AND lower(email) = lower($2)",
         )
@@ -708,15 +753,45 @@ impl ClubDb {
         account_session_id: &str,
         now: i64,
     ) -> Option<(String, PilotRow)> {
+        let session_db_id = auth::digest_token(account_session_id);
         let (_, active_mem) = self.account_from_session(account_session_id, now).await?;
         let mem_id = active_mem?;
-        let row = sqlx::query("SELECT m.pilot_id FROM club_memberships m WHERE m.id = $1")
-            .bind(&mem_id)
-            .fetch_optional(&self.pool)
-            .await
-            .ok()??;
+        let row = sqlx::query(
+            "SELECT m.pilot_id, m.status FROM club_memberships m WHERE m.id = $1",
+        )
+        .bind(&mem_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()??;
         let pilot_id: String = row.try_get(0).ok()?;
+        let mem_status: String = row.try_get(1).ok()?;
+        if !MembershipStatus::parse(&mem_status).allows_club_api() {
+            return None;
+        }
+        if let Some(reuse) = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT compat_pilot_session FROM account_sessions WHERE id = $1",
+        )
+        .bind(&session_db_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+        {
+            if let Some(pilot) = self.pilot_from_session(&reuse, now).await {
+                if pilot.id == pilot_id {
+                    return Some((reuse, pilot));
+                }
+            }
+        }
         let session = self.create_pilot_session(&pilot_id, now).await.ok()?;
+        let _ = sqlx::query(
+            "UPDATE account_sessions SET compat_pilot_session = $1 WHERE id = $2",
+        )
+        .bind(&session)
+        .bind(&session_db_id)
+        .execute(&self.pool)
+        .await;
         let pilot = self.pilot_from_session(&session, now).await?;
         Some((session, pilot))
     }
@@ -729,16 +804,21 @@ impl ClubDb {
     }
 
     pub async fn approve_membership(&self, membership_id: &str, now: i64) -> Result<(), DbError> {
-        let row = sqlx::query("SELECT pilot_id, club_id FROM club_memberships WHERE id = $1")
-            .bind(membership_id)
-            .fetch_optional(&self.pool)
-            .await?;
+        let row =
+            sqlx::query("SELECT pilot_id, club_id, status FROM club_memberships WHERE id = $1")
+                .bind(membership_id)
+                .fetch_optional(&self.pool)
+                .await?;
         let Some(row) = row else {
             return Err(DbError::protocol("missing membership"));
         };
         let pilot_id: String = row.try_get(0)?;
         let club_id: String = row.try_get(1)?;
-        sqlx::query("UPDATE club_memberships SET status = 'active' WHERE id = $1")
+        let cur_status: String = row.try_get(2)?;
+        if cur_status != "pending" {
+            return Err(DbError::protocol("membership not pending"));
+        }
+        sqlx::query("UPDATE club_memberships SET status = 'active' WHERE id = $1 AND status = 'pending'")
             .bind(membership_id)
             .execute(&self.pool)
             .await?;
@@ -759,6 +839,18 @@ impl ClubDb {
         .bind(account_id)
         .execute(&self.pool)
         .await?;
+        if r.rows_affected() > 0 {
+            sqlx::query("DELETE FROM account_sessions WHERE account_id = $1")
+                .bind(account_id)
+                .execute(&self.pool)
+                .await?;
+            sqlx::query(
+                "DELETE FROM pilot_sessions WHERE pilot_id IN (SELECT id FROM pilots WHERE account_id = $1)",
+            )
+            .bind(account_id)
+            .execute(&self.pool)
+            .await?;
+        }
         Ok(r.rows_affected() > 0)
     }
 
@@ -1044,6 +1136,12 @@ mod tests {
         let now = now_ms();
         let aid = db
             .ensure_account_for_email(email, Some("password12"), now)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")
+            .bind(now)
+            .bind(&aid)
+            .execute(&db.pool)
             .await
             .unwrap();
         for (club, name) in [(&club_a, "A"), (&club_b, "B")] {

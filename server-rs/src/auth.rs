@@ -264,6 +264,7 @@ mod tests {
         assert_eq!(parse_cookie(None), None);
         assert_eq!(safe_next("/vuelo-5"), "/vuelo-5");
         assert_eq!(safe_next("//evil"), "/");
+        assert_eq!(safe_next("/\\evil.com"), "/");
         assert_eq!(safe_next("https://evil.example"), "/");
         assert_eq!(safe_next("/login"), "/");
         assert_eq!(safe_next("/club-login.html?next=/x"), "/");
