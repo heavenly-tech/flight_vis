@@ -10,6 +10,16 @@ async fn open_db() -> ClubDb {
     ClubDb::open_test().await.expect("db")
 }
 
+async fn set_account_password_fresh(db: &ClubDb, account_id: &str, password: &str, now: i64) {
+    let sess = db
+        .create_account_session(account_id, None, now)
+        .await
+        .unwrap();
+    db.set_account_password(account_id, password, now, None, Some(&sess))
+        .await
+        .unwrap();
+}
+
 async fn mark_account_verified(db: &ClubDb, account_id: &str, now: i64) {
     sqlx::query(
         "UPDATE accounts SET email_verified_at = coalesce(email_verified_at, $1) WHERE id = $2",
@@ -89,9 +99,7 @@ async fn account_switch_active_club() {
     let now = now_ms();
     let acct = db.create_account(email, None, now).await.unwrap();
     mark_account_verified(&db, &acct, now).await;
-    db.set_account_password(&acct, "password12", now, None, None)
-        .await
-        .unwrap();
+    set_account_password_fresh(&db, &acct, "password12", now).await;
     let pid = crate::club::auth::new_id();
     let mid = crate::club::auth::new_id();
     sqlx::query(
@@ -148,9 +156,7 @@ async fn join_then_approve_membership() {
         .execute(&db.pool)
         .await
         .unwrap();
-    db.set_account_password(&acct, "password12", now, None, None)
-        .await
-        .unwrap();
+    set_account_password_fresh(&db, &acct, "password12", now).await;
     let mid = db
         .join_club_with_account(&acct, &club, "Joiner", "", now)
         .await
@@ -211,9 +217,7 @@ async fn suspended_account_cannot_login() {
     let now = now_ms();
     let acct = db.create_account("sus@test", None, now).await.unwrap();
     mark_account_verified(&db, &acct, now).await;
-    db.set_account_password(&acct, "password12", now, None, None)
-        .await
-        .unwrap();
+    set_account_password_fresh(&db, &acct, "password12", now).await;
     db.set_account_suspended(&acct, now).await.unwrap();
     assert!(db
         .account_login_password("sus@test", "password12", now, "127.0.0.1")
@@ -234,9 +238,7 @@ async fn account_switch_rejects_suspended_club() {
     db.try_consume_magic_club_verify(&token, now).await.unwrap();
     let acct = db.create_account("sus-sw@test", None, now).await.unwrap();
     mark_account_verified(&db, &acct, now).await;
-    db.set_account_password(&acct, "password12", now, None, None)
-        .await
-        .unwrap();
+    set_account_password_fresh(&db, &acct, "password12", now).await;
     let mid: String = sqlx::query_scalar(
         "SELECT m.id FROM club_memberships m
          JOIN pilots p ON p.id = m.pilot_id

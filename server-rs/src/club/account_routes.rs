@@ -705,6 +705,17 @@ async fn account_set_password(
         )
             .into_response();
     };
+    if !state.account_password_account_throttle.allow_up_to(
+        &acct.id,
+        now_sec as u64,
+        crate::ACCOUNT_PASSWORD_PER_ACCOUNT_MAX_ATTEMPTS,
+    ) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "rate limit" })),
+        )
+            .into_response();
+    }
     let current = body.current_password.as_deref();
     match db
         .set_account_password(&acct.id, &body.password, now, current, Some(&sess))

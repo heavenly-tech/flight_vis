@@ -141,7 +141,17 @@ impl ClubDb {
                 .await?;
                 id
             };
-            if status == "approved" && pilot_verified.is_some() && !password_hash.trim().is_empty()
+            let squat_password = pilot_verified.is_none() && !password_hash.trim().is_empty();
+            if squat_password {
+                sqlx::query("DELETE FROM pilot_sessions WHERE pilot_id = $1")
+                    .bind(&pilot_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            if status == "approved"
+                && pilot_verified.is_some()
+                && !password_hash.trim().is_empty()
+                && !squat_password
             {
                 let _ = sqlx::query(
                     "UPDATE accounts SET password_hash = coalesce(nullif(trim(password_hash), ''), $1)
@@ -153,11 +163,19 @@ impl ClubDb {
                 .execute(&mut *tx)
                 .await;
             }
-            sqlx::query("UPDATE pilots SET account_id = $1 WHERE id = $2")
-                .bind(&account_id)
-                .bind(&pilot_id)
-                .execute(&mut *tx)
-                .await?;
+            if squat_password {
+                sqlx::query("UPDATE pilots SET account_id = $1, password_hash = '' WHERE id = $2")
+                    .bind(&account_id)
+                    .bind(&pilot_id)
+                    .execute(&mut *tx)
+                    .await?;
+            } else {
+                sqlx::query("UPDATE pilots SET account_id = $1 WHERE id = $2")
+                    .bind(&account_id)
+                    .bind(&pilot_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
             let membership_role = if membership_role_is_admin(&role) {
                 "admin"
             } else if role == "staff" {
@@ -509,20 +527,16 @@ impl ClubDb {
         Ok(())
     }
 
-    pub async fn recent_account_magic_auth(&self, account_id: &str, now: i64) -> bool {
-        let since = now.saturating_sub(ACCOUNT_PASSWORD_RECENT_AUTH_MS);
-        sqlx::query_scalar(
-            "SELECT EXISTS(
-                SELECT 1 FROM magic_login_tokens
-                WHERE account_id = $1 AND used_at IS NOT NULL AND used_at >= $2
-                  AND purpose IN ('account_login', 'account_signup')
-            )",
-        )
-        .bind(account_id)
-        .bind(since)
-        .fetch_one(&self.pool)
-        .await
-        .unwrap_or(false)
+    pub async fn account_session_is_fresh(&self, session_raw: &str, now: i64) -> bool {
+        let session_db_id = auth::digest_token(session_raw);
+        let created: Option<i64> =
+            sqlx::query_scalar("SELECT created_at FROM account_sessions WHERE id = $1")
+                .bind(&session_db_id)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten();
+        created.is_some_and(|c| c > 0 && now.saturating_sub(c) <= ACCOUNT_PASSWORD_RECENT_AUTH_MS)
     }
 
     pub async fn set_account_password(
@@ -551,19 +565,25 @@ impl ClubDb {
                 .await
                 .map_err(|_| AccountSignupError::Db)?
                 .flatten();
+        let session_fresh = if let Some(raw) = keep_session_raw {
+            self.account_session_is_fresh(raw, now).await
+        } else {
+            false
+        };
         let has_password = existing_hash.as_deref().is_some_and(|h| !h.is_empty());
+        let current_ok = existing_hash.as_deref().is_some_and(|hash| {
+            current_password.is_some_and(|p| auth::verify_password(p, hash))
+        });
         if has_password {
-            let current_ok = existing_hash.as_deref().is_some_and(|hash| {
-                current_password.is_some_and(|p| auth::verify_password(p, hash))
-            });
-            let recent = self.recent_account_magic_auth(account_id, now).await;
-            if !current_ok && !recent {
+            if !current_ok {
                 return if current_password.is_some() {
                     Err(AccountSignupError::WrongPassword)
                 } else {
                     Err(AccountSignupError::AuthRequired)
                 };
             }
+        } else if !session_fresh {
+            return Err(AccountSignupError::AuthRequired);
         }
         let hash = auth::hash_password(new_password).map_err(|_| AccountSignupError::Db)?;
         let keep_id = keep_session_raw.map(auth::digest_token);
@@ -1021,7 +1041,7 @@ impl ClubDb {
     pub async fn approve_membership(&self, membership_id: &str, now: i64) -> Result<(), DbError> {
         let mut tx = self.pool.begin().await?;
         let row = sqlx::query(
-            "SELECT m.pilot_id, m.club_id, m.status, a.email_verified_at
+            "SELECT m.pilot_id, m.club_id, m.status, a.email_verified_at, p.email_verified_at
              FROM club_memberships m
              JOIN pilots p ON p.id = m.pilot_id
              LEFT JOIN accounts a ON a.id = p.account_id
@@ -1038,10 +1058,11 @@ impl ClubDb {
         let club_id: String = row.try_get(1)?;
         let cur_status: String = row.try_get(2)?;
         let account_verified: Option<i64> = row.try_get(3).ok().flatten();
+        let pilot_verified: Option<i64> = row.try_get(4).ok().flatten();
         if cur_status != "pending" {
             return Err(DbError::protocol("membership not pending"));
         }
-        if account_verified.is_none() {
+        if account_verified.is_none() || pilot_verified.is_none() {
             return Err(DbError::protocol("email not verified"));
         }
         let updated = sqlx::query(
@@ -1053,10 +1074,12 @@ impl ClubDb {
         if updated.rows_affected() == 0 {
             return Err(DbError::protocol("membership not pending"));
         }
-        sqlx::query("UPDATE pilots SET status = 'approved', role = role WHERE id = $1")
-            .bind(&pilot_id)
-            .execute(&mut *tx)
-            .await?;
+        sqlx::query(
+            "UPDATE pilots SET status = 'approved', role = role, password_hash = '' WHERE id = $1",
+        )
+        .bind(&pilot_id)
+        .execute(&mut *tx)
+        .await?;
         tx.commit().await?;
         let _ = (club_id, now);
         Ok(())
@@ -1389,7 +1412,8 @@ mod tests {
             .execute(&db.pool)
             .await
             .unwrap();
-        db.set_account_password(&aid, "password12", now, None, None)
+        let sess = db.create_account_session(&aid, None, now).await.unwrap();
+        db.set_account_password(&aid, "password12", now, None, Some(&sess))
             .await
             .unwrap();
         for (club, name) in [(&club_a, "A"), (&club_b, "B")] {
