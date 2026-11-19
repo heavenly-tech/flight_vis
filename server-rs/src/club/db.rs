@@ -2207,6 +2207,85 @@ mod tests {
         assert!(map[0].pilot_name.is_none());
     }
 
+    async fn seed_second_club(db: &ClubDb, slug: &str) -> String {
+        let id = crate::club::auth::new_id();
+        sqlx::query(
+            "INSERT INTO clubs (id, name, slug, created_at, latitude, longitude, show_public_tracks)
+             VALUES ($1, $2, $3, $4, -33.0, -70.0, TRUE)",
+        )
+        .bind(&id)
+        .bind("Club B")
+        .bind(slug)
+        .bind(now_ms())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        id
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn admin_map_hides_other_club_public_name_without_opt_in() {
+        let db = ClubDb::open_test().await.unwrap();
+        let (club_a, pilot_a, _pilot_b, _ac) = seed(&db).await;
+        sqlx::query("UPDATE clubs SET latitude = -33.0, longitude = -70.0 WHERE id = $1")
+            .bind(&club_a)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
+            .bind(&pilot_a)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let slug_b = format!("club-b-{}", &crate::club::auth::new_id()[..8]);
+        let club_b = seed_second_club(&db, &slug_b).await;
+        db.upsert_type(&club_b, "C152").await.unwrap();
+        db.upsert_aircraft(&club_b, "N999", "C152", true)
+            .await
+            .unwrap();
+        let pilot_b = db
+            .register(&club_b, "Cross", "cross@test", "L9", "password12")
+            .await
+            .unwrap();
+        db.approve_pilot(&pilot_b).await.unwrap();
+        db.add_checkout(&pilot_b, "C152", None, None).await.unwrap();
+        let dev = pilot_device_with_checkin(&db, &pilot_b, &club_b).await;
+        let fid = db
+            .start_flight(
+                &pilot_b,
+                &dev,
+                "N999",
+                FlightVisibility::Public,
+                false,
+                now_ms(),
+            )
+            .await
+            .unwrap();
+        db.append_fix(
+            &fid,
+            &dev,
+            &LiveFix {
+                t: now_ms(),
+                lat: -33.05,
+                lon: -70.05,
+                alt: Some(1200.0),
+                alt_ref: Some("wgs84_ellipsoid".to_string()),
+                speed: None,
+                course: None,
+                accuracy: Some(5.0),
+            },
+        )
+        .await
+        .unwrap();
+        let map = db.admin_map(&pilot_a).await;
+        let row = map
+            .iter()
+            .find(|r| r.tail == "N999")
+            .expect("cross club tail");
+        assert!(row.pilot_name.is_none());
+    }
+
     #[serial]
     #[tokio::test]
     async fn club_map_hides_other_pilot_name_without_opt_in() {

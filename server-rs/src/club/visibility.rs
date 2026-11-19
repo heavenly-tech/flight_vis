@@ -88,6 +88,26 @@ pub fn can_view_flight(
 }
 
 /// Whether the viewer may see the pilot's name in the payload.
+/// Admin map: own-club flights keep full name visibility; other clubs' public tracks use the public opt-in flag.
+pub fn show_pilot_name_admin_map(
+    viewer: &Viewer,
+    owner_is_member_of_viewing_club: bool,
+    owner_pilot_id: &str,
+    show_pilot_name_public: bool,
+) -> bool {
+    if matches!(
+        viewer,
+        Viewer::Pilot {
+            role: PilotRole::Admin,
+            ..
+        }
+    ) && !owner_is_member_of_viewing_club
+    {
+        return show_pilot_name(&Viewer::Anonymous, owner_pilot_id, show_pilot_name_public);
+    }
+    show_pilot_name(viewer, owner_pilot_id, show_pilot_name_public)
+}
+
 pub fn show_pilot_name(
     viewer: &Viewer,
     owner_pilot_id: &str,
@@ -209,6 +229,14 @@ mod tests {
     fn pilot_name_anonymous_requires_flag() {
         assert!(!show_pilot_name(&Viewer::Anonymous, "a", false));
         assert!(show_pilot_name(&Viewer::Anonymous, "a", true));
+    }
+
+    #[test]
+    fn admin_map_other_club_public_respects_opt_in() {
+        let admin = admin("adm");
+        assert!(!show_pilot_name_admin_map(&admin, false, "p", false));
+        assert!(show_pilot_name_admin_map(&admin, false, "p", true));
+        assert!(show_pilot_name_admin_map(&admin, true, "p", false));
     }
 
     #[test]

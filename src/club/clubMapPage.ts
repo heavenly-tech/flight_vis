@@ -1,7 +1,7 @@
 import { startClubPage } from "./i18nPage";
 import { t } from "../i18n/boot";
 
-await startClubPage();
+await startClubPage({ persistUser: true });
 const list = document.getElementById("list");
 if (!list) throw new Error("list missing");
 const res = await fetch("/api/club/map", { credentials: "same-origin" });

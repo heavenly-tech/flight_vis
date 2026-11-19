@@ -5,6 +5,7 @@ use crate::club::{
     routes::{club_db, is_secure, viewer},
     visibility::Viewer,
 };
+use crate::html_csp::{HTML_GLOBE_CSP, SENSITIVE_REFERRER_POLICY};
 use crate::{AppState, ClientIp, SHARE_LOOKUP_MAX_ATTEMPTS};
 use axum::{
     extract::{Path, State},
@@ -83,18 +84,21 @@ fn share_not_found() -> impl IntoResponse {
     )
 }
 
+fn share_flight_page_headers() -> [(header::HeaderName, &'static str); 3] {
+    [
+        (header::CACHE_CONTROL, "no-store"),
+        (header::CONTENT_SECURITY_POLICY, HTML_GLOBE_CSP),
+        (header::REFERRER_POLICY, SENSITIVE_REFERRER_POLICY),
+    ]
+}
+
 async fn share_flight_page(
     State(state): State<AppState>,
     Path(_token): Path<String>,
 ) -> impl IntoResponse {
     let path = state.dist_dir.join("share-flight.html");
     match tokio::fs::read_to_string(&path).await {
-        Ok(html) => (
-            StatusCode::OK,
-            [(header::CACHE_CONTROL, "no-store")],
-            Html(html),
-        )
-            .into_response(),
+        Ok(html) => (StatusCode::OK, share_flight_page_headers(), Html(html)).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "share page missing").into_response(),
     }
 }
@@ -350,4 +354,70 @@ pub fn routes() -> Router<AppState> {
             "/api/me/flights/{id}/shares/{share_id}",
             delete(revoke_flight_share),
         )
+}
+
+#[cfg(test)]
+mod share_page_header_tests {
+    use super::*;
+    use crate::{
+        auth::Auth, build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState,
+    };
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn share_flight_page_sends_globe_csp_and_no_referrer() {
+        let dir = tempfile::tempdir().unwrap();
+        let dist = dir.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        std::fs::write(dist.join("share-flight.html"), "<html></html>").unwrap();
+        let locales = crate::i18n::Catalogs::resolve_dir(std::path::Path::new("dist"));
+        let _ = crate::i18n::init_global(&locales);
+        let club = crate::club::ClubDb::open_test().await.expect("club db");
+        let state = AppState {
+            dist_dir: dist,
+            auth: Auth::with_password("x"),
+            device_auth: DeviceAuth::empty(),
+            live: Arc::new(LiveEngine::new(dir.path())),
+            store: Store::new(dir.path()),
+            club: Some(club),
+            video_queue: tokio::sync::mpsc::channel(1).0,
+            login_throttle: crate::LoginThrottle::default(),
+            device_register_throttle: crate::LoginThrottle::default(),
+            share_lookup_throttle: crate::LoginThrottle::default(),
+            account_password_throttle: crate::LoginThrottle::default(),
+            account_password_account_throttle: crate::LoginThrottle::default(),
+            mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+            webauthn: None,
+            sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+            superadmin_emails: Default::default(),
+        };
+        let router = build_router(state);
+        let res = router
+            .oneshot(
+                Request::builder()
+                    .uri("/s/example-share-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .and_then(|v| v.to_str().ok()),
+            Some(crate::html_csp::HTML_GLOBE_CSP)
+        );
+        assert_eq!(
+            res.headers()
+                .get(header::REFERRER_POLICY)
+                .and_then(|v| v.to_str().ok()),
+            Some(crate::html_csp::SENSITIVE_REFERRER_POLICY)
+        );
+    }
 }

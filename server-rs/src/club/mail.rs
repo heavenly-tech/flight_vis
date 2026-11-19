@@ -26,6 +26,60 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+#[derive(Clone, Debug)]
+pub struct MailConfig {
+    pub smtp_host: Option<String>,
+    pub smtp_port: u16,
+    pub smtp_password: Option<String>,
+    pub smtp_from: String,
+    pub public_url: String,
+    pub postal_public_key_pem: Option<String>,
+}
+
+impl MailConfig {
+    pub fn from_env() -> Self {
+        Self::from_lookup(|key| std::env::var(key).ok().filter(|s| !s.is_empty()))
+    }
+
+    pub fn from_lookup(mut lookup: impl FnMut(&str) -> Option<String>) -> Self {
+        let smtp_host = lookup("SMTP_HOST");
+        let smtp_port = lookup("SMTP_PORT")
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(25);
+        let smtp_password = read_smtp_password(&mut lookup);
+        let smtp_from = lookup("SMTP_FROM").unwrap_or_else(|| "noreply@heavenly.cl".to_string());
+        let public_url = lookup("FLIGHT_CLUB_PUBLIC_URL")
+            .unwrap_or_else(|| "https://flight.heavenly.cl".to_string());
+        let postal_public_key_pem = lookup("POSTAL_WEBHOOK_PUBLIC_KEY_FILE").and_then(|path| {
+            std::fs::read_to_string(&path)
+                .ok()
+                .filter(|s| !s.is_empty())
+        });
+        Self {
+            smtp_host,
+            smtp_port,
+            smtp_password,
+            smtp_from,
+            public_url,
+            postal_public_key_pem,
+        }
+    }
+}
+
+pub(crate) fn read_smtp_password(
+    lookup: &mut impl FnMut(&str) -> Option<String>,
+) -> Option<String> {
+    if let Some(path) = lookup("SMTP_PASS_FILE") {
+        if let Ok(raw) = std::fs::read_to_string(&path) {
+            let trimmed = raw.trim_end_matches(['\n', '\r']).to_string();
+            if !trimmed.is_empty() {
+                return Some(trimmed);
+            }
+        }
+    }
+    lookup("SMTP_PASS")
+}
+
 #[derive(Clone)]
 pub struct Mailer {
     pub smtp_host: Option<String>,
@@ -43,27 +97,17 @@ pub struct Mailer {
 
 impl Mailer {
     pub fn from_env(outbox: MailOutbox) -> Self {
-        let smtp_host = std::env::var("SMTP_HOST").ok().filter(|s| !s.is_empty());
-        let smtp_port = std::env::var("SMTP_PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(25);
-        let smtp_password = std::env::var("SMTP_PASS").ok().filter(|s| !s.is_empty());
-        let smtp_from =
-            std::env::var("SMTP_FROM").unwrap_or_else(|_| "noreply@heavenly.cl".to_string());
-        let public_url = std::env::var("FLIGHT_CLUB_PUBLIC_URL")
-            .unwrap_or_else(|_| "https://flight.heavenly.cl".to_string());
-        let postal_public_key_pem = std::env::var("POSTAL_WEBHOOK_PUBLIC_KEY_FILE")
-            .ok()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .filter(|s| !s.is_empty());
+        Self::from_config(MailConfig::from_env(), outbox)
+    }
+
+    pub fn from_config(config: MailConfig, outbox: MailOutbox) -> Self {
         Self {
-            smtp_host,
-            smtp_port,
-            smtp_password,
-            smtp_from,
-            public_url,
-            postal_public_key_pem,
+            smtp_host: config.smtp_host,
+            smtp_port: config.smtp_port,
+            smtp_password: config.smtp_password,
+            smtp_from: config.smtp_from,
+            public_url: config.public_url,
+            postal_public_key_pem: config.postal_public_key_pem,
             outbox,
             per_email_limit: 5,
             per_ip_limit: 20,
@@ -306,9 +350,46 @@ Lv3DKNlKI7q+nRGJyJNHApi1ahe9zJ0dUWbx64jWzOPnAW5WC+cSmsbvyy7qgeXv
 FdfgleEWxIJ9soS53wIDAQAB
 -----END PUBLIC KEY-----";
 
+    fn empty_test_config() -> MailConfig {
+        MailConfig {
+            smtp_host: None,
+            smtp_port: 25,
+            smtp_password: None,
+            smtp_from: "noreply@heavenly.cl".into(),
+            public_url: "https://flight.heavenly.cl".into(),
+            postal_public_key_pem: None,
+        }
+    }
+
+    #[test]
+    fn smtp_pass_file_trims_newline() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("smtp_pass");
+        std::fs::write(&path, "from-file-secret\n").unwrap();
+        let path_str = path.to_string_lossy().into_owned();
+        let pass = read_smtp_password(&mut |key| match key {
+            "SMTP_PASS_FILE" => Some(path_str.clone()),
+            "SMTP_PASS" => Some("from-env".into()),
+            _ => None,
+        });
+        assert_eq!(pass.as_deref(), Some("from-file-secret"));
+    }
+
+    #[test]
+    fn smtp_pass_env_when_no_file() {
+        let pass = read_smtp_password(&mut |key| {
+            if key == "SMTP_PASS" {
+                Some("env-only".into())
+            } else {
+                None
+            }
+        });
+        assert_eq!(pass.as_deref(), Some("env-only"));
+    }
+
     #[test]
     fn send_rate_limit_per_email() {
-        let mailer = Mailer::from_env(MailOutbox::default());
+        let mailer = Mailer::from_config(empty_test_config(), MailOutbox::default());
         for _ in 0..5 {
             assert!(mailer.allow_send("a@test", "1.2.3.4"));
         }
@@ -337,7 +418,7 @@ FdfgleEWxIJ9soS53wIDAQAB
     fn capture_localized_spanish_magic_link() {
         let dir = crate::i18n::Catalogs::resolve_dir(std::path::Path::new("dist"));
         let _ = crate::i18n::init_global(&dir);
-        let mailer = Mailer::from_env(MailOutbox::default());
+        let mailer = Mailer::from_config(empty_test_config(), MailOutbox::default());
         mailer.capture_localized(
             "p@test",
             "es",
@@ -375,7 +456,8 @@ FdfgleEWxIJ9soS53wIDAQAB
             .to_public_key()
             .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
             .expect("pem");
-        let mailer = Mailer::from_env(MailOutbox::default()).with_postal_pubkey_pem(pem);
+        let mailer = Mailer::from_config(empty_test_config(), MailOutbox::default())
+            .with_postal_pubkey_pem(pem);
         let body = br#"{"to":"x@test"}"#;
         let sig = sign_postal_body_sha256(&private, body);
         assert!(mailer.verify_postal_signature(body, &sig));
@@ -386,7 +468,7 @@ FdfgleEWxIJ9soS53wIDAQAB
 
     #[test]
     fn postal_verify_rejects_without_configured_key() {
-        let mailer = Mailer::from_env(MailOutbox::default());
+        let mailer = Mailer::from_config(empty_test_config(), MailOutbox::default());
         assert!(!mailer.verify_postal_signature(b"{}", "abc"));
     }
 
@@ -394,13 +476,17 @@ FdfgleEWxIJ9soS53wIDAQAB
     async fn smtp_send_failure_does_not_capture_magic_link() {
         let dir = crate::i18n::Catalogs::resolve_dir(std::path::Path::new("dist"));
         let _ = crate::i18n::init_global(&dir);
-        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let mailer = {
-            let _g = ENV_LOCK.lock().unwrap();
-            std::env::set_var("SMTP_HOST", "127.0.0.1");
-            std::env::set_var("SMTP_PORT", "9");
-            Mailer::from_env(MailOutbox::default())
-        };
+        let mailer = Mailer::from_config(
+            MailConfig {
+                smtp_host: Some("127.0.0.1".into()),
+                smtp_port: 9,
+                smtp_password: None,
+                smtp_from: "noreply@heavenly.cl".into(),
+                public_url: "https://flight.heavenly.cl".into(),
+                postal_public_key_pem: None,
+            },
+            MailOutbox::default(),
+        );
         mailer
             .send_localized(
                 "p@test",
@@ -410,8 +496,5 @@ FdfgleEWxIJ9soS53wIDAQAB
             )
             .await;
         assert!(mailer.captured().is_empty());
-        let _g = ENV_LOCK.lock().unwrap();
-        std::env::remove_var("SMTP_HOST");
-        std::env::remove_var("SMTP_PORT");
     }
 }

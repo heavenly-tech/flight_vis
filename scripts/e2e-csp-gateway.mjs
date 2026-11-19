@@ -1,27 +1,21 @@
 #!/usr/bin/env node
 /**
- * Serves the production build on PORT (default 9090) with the prod HTML CSP
- * header on every response, and proxies API/auth routes to the Rust API.
+ * Serves the production build with prod HTML CSP headers, proxies API routes to the Rust API,
+ * and injects e2e-only scripts that are not shipped in dist/.
  */
 import http from "node:http";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { globeE2eCsp, readHtmlPageCsp } from "./read-html-csp.mjs";
+import { cspForPath, policyKindForPath } from "./read-html-csp.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(root, "..", "dist");
+const e2eGatewayDir = path.join(root, "e2e-gateway");
 const apiOrigin = process.env.FLIGHT_VIS_API_ORIGIN ?? "http://127.0.0.1:8080";
 const port = Number(process.env.E2E_CSP_PORT ?? "19090");
 
-const HTML_PAGE_CSP = readHtmlPageCsp();
-const GLOBE_E2E_CSP = globeE2eCsp();
-
-function cspForPath(pathOnly) {
-  return pathOnly === "/login" || pathOnly === "/club-login.html"
-    ? HTML_PAGE_CSP
-    : GLOBE_E2E_CSP;
-}
+const E2E_ONLY = new Set(["e2e-csp-hooks.js", "e2e-live-csp-sse.js"]);
 
 function mime(ext) {
   switch (ext) {
@@ -68,15 +62,7 @@ function proxyToApi(req, res, body) {
       headers,
     },
     (proxyRes) => {
-      const pathOnly = target.pathname;
-      const csp =
-        pathOnly === "/login" || pathOnly === "/club-login.html"
-          ? HTML_PAGE_CSP
-          : GLOBE_E2E_CSP;
-      res.writeHead(proxyRes.statusCode ?? 502, {
-        ...proxyRes.headers,
-        "content-security-policy": csp,
-      });
+      res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
       proxyRes.pipe(res);
     },
   );
@@ -112,17 +98,40 @@ const server = http.createServer((req, res) => {
       proxyToApi(req, res, body);
       return;
     }
+
+    const baseName = urlPath.split("?")[0].replace(/^\//, "");
+    if (E2E_ONLY.has(baseName)) {
+      const e2ePath = path.join(e2eGatewayDir, baseName);
+      if (existsSync(e2ePath)) {
+        res.writeHead(200, {
+          "content-type": "text/javascript; charset=utf-8",
+          "cache-control": "no-cache",
+        });
+        createReadStream(e2ePath).pipe(res);
+        return;
+      }
+    }
+
     let filePath = safeJoin(urlPath);
-    if (!filePath || !existsSync(filePath) || !statSync(filePath).isFile()) {
+    const pathOnly = urlPath.split("?")[0];
+    const spaFallback =
+      !filePath || !existsSync(filePath) || !statSync(filePath).isFile();
+    if (spaFallback) {
       filePath = path.join(distDir, "index.html");
     }
     const ext = path.extname(filePath).slice(1);
-    const pathOnly = urlPath.split("?")[0];
-    res.writeHead(200, {
+    const headers = {
       "content-type": mime(ext),
-      "content-security-policy": cspForPath(pathOnly),
       "cache-control": "no-cache",
-    });
+    };
+    if (ext === "html") {
+      let policyPath = pathOnly;
+      if (spaFallback && policyKindForPath(pathOnly) === undefined) {
+        policyPath = "/__spa_index__";
+      }
+      headers["content-security-policy"] = cspForPath(policyPath);
+    }
+    res.writeHead(200, headers);
     if (ext === "html") {
       let html = readFileSync(filePath, "utf8");
       let hook = '<script src="/e2e-csp-hooks.js"></script>';

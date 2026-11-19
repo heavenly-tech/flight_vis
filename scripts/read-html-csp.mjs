@@ -1,33 +1,35 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { policyKindForPath, HTML_CSP_ROUTE_TABLE } from "./html-csp-routes.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
+const cspDir = path.resolve(root, "..", "server-rs", "csp");
 
-/** Same string as `static_files::HTML_CSP` / `server-rs/csp/html-page.csp`. */
+export function readHtmlStrictCsp() {
+  return readFileSync(path.join(cspDir, "html-strict.csp"), "utf8").trim();
+}
+
+export function readHtmlGlobeCsp() {
+  return readFileSync(path.join(cspDir, "html-globe.csp"), "utf8").trim();
+}
+
+/** @deprecated name kept for imports; strict login/form policy */
 export function readHtmlPageCsp() {
-  return readFileSync(
-    path.resolve(root, "..", "server-rs", "csp", "html-page.csp"),
-    "utf8",
-  ).trim();
+  return readHtmlStrictCsp();
 }
 
-/** Cesium globe e2e: prod HTML CSP plus wasm/ArcGIS allowances (single img-src directive). */
-export function globeE2eCsp() {
-  let csp = readHtmlPageCsp();
-  if (csp.includes("script-src 'self'")) {
-    csp = csp.replace(
-      "script-src 'self'",
-      "script-src 'self' 'wasm-unsafe-eval'",
-    );
-  } else {
-    csp = `${csp}; script-src 'self' 'wasm-unsafe-eval'`;
-  }
-  const imgSrc = "img-src 'self' https://services.arcgisonline.com";
-  if (/img-src\s[^;]+/.test(csp)) {
-    csp = csp.replace(/img-src\s[^;]+/, imgSrc);
-  } else {
-    csp = `${csp}; ${imgSrc}`;
-  }
-  return `${csp}; worker-src 'self' blob:; connect-src 'self' https://services.arcgisonline.com https://elevation3d.arcgis.com; font-src 'self'`;
+/** CSP header string for a request path (prod server or e2e gateway). */
+export function cspForPath(urlPath) {
+  const kind = policyKindForPath(urlPath);
+  if (kind === "globe") return readHtmlGlobeCsp();
+  if (kind === "strict") return readHtmlStrictCsp();
+  throw new Error(`no HTML CSP mapping for path ${urlPath}`);
 }
+
+/** Production globe routes (e2e gateway default for viewer HTML). */
+export function globeE2eCsp() {
+  return readHtmlGlobeCsp();
+}
+
+export { HTML_CSP_ROUTE_TABLE, policyKindForPath };

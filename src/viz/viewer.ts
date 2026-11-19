@@ -89,7 +89,8 @@ export type { FollowMode };
 
 export async function createFlightViewer(container: HTMLElement): Promise<FlightViewer> {
   const ionToken = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
-  if (ionToken) Ion.defaultAccessToken = ionToken;
+  const useIonTerrain = import.meta.env.VITE_USE_CESIUM_ION_TERRAIN === "1";
+  if (useIonTerrain && ionToken) Ion.defaultAccessToken = ionToken;
 
   const viewer = new CesiumWidget(container, {
     creditContainer: document.getElementById("credits") ?? undefined,
@@ -147,7 +148,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   viewer.scene.screenSpaceCameraController.maximumZoomDistance = 2_000_000;
 
   try {
-    if (ionToken) {
+    if (useIonTerrain && ionToken) {
       viewer.terrainProvider = await createWorldTerrainAsync();
     } else {
       viewer.terrainProvider = await ArcGISTiledElevationTerrainProvider.fromUrl(ESRI_TERRAIN);

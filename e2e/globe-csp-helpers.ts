@@ -111,9 +111,14 @@ export async function assertGlobeRenders(
   expect(png.height).toBeGreaterThan(10);
   expect(distinctRgbColors(png)).toBeGreaterThanOrEqual(2);
 
-  const violations = await page.evaluate(() => window.__cspViolations ?? []);
+  const violations = await page.evaluate(() => {
+    if (!window.__cspViolations) {
+      throw new Error("missing window.__cspViolations (e2e-csp-hooks.js)");
+    }
+    return window.__cspViolations;
+  });
   expect(violations).toEqual([]);
-  expect(pageErrors.filter((e) => /EvalError/i.test(e))).toEqual([]);
+  expect(pageErrors).toEqual([]);
   expect(consoleErrors).toEqual([]);
 }
 

@@ -126,6 +126,40 @@ for (const file of uiFiles) {
   }
 }
 
+const VOSEO_PATTERN =
+  /\b(instalá|abrí|descargá|permití|escaneá|iniciá|ingresá|esperá|concedé|configurá|copiá|arrastrá|pegá|elegí|usá|confirmá|pedí|abrilo|escanealo|tenés|podés|mirá|tocá|buscá)\b/giu;
+const VOSEO_ALLOWLIST = new Set([
+  "escanéalo",
+  "ignóralo",
+  "pégalo",
+  "ábrelo",
+  "matrículas",
+  "matrícula",
+]);
+
+const esPath = path.join(localesDir, "es.json");
+const esText = fs.readFileSync(esPath, "utf8");
+const esData = loadJson(esPath);
+function walkStrings(obj, keyPath = "") {
+  for (const [k, v] of Object.entries(obj)) {
+    const p = keyPath ? `${keyPath}.${k}` : k;
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      walkStrings(v, p);
+    } else if (typeof v === "string") {
+      const matches = v.match(VOSEO_PATTERN);
+      if (!matches) continue;
+      for (const m of matches) {
+        const lower = m.toLowerCase();
+        if (VOSEO_ALLOWLIST.has(lower)) continue;
+        if (v.toLowerCase().includes("escanéalo") && lower === "escanea") continue;
+        failed = true;
+        console.error(`voseo "${m}" in es.json key ${p}: ${v.slice(0, 80)}`);
+      }
+    }
+  }
+}
+walkStrings(esData);
+
 if (failed) {
   process.exit(1);
 }

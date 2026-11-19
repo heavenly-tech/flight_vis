@@ -7,7 +7,8 @@ import { viteStaticCopy } from "vite-plugin-static-copy";
 const root = path.dirname(fileURLToPath(import.meta.url));
 const cesiumSource = "node_modules/cesium/Build/Cesium";
 const cesiumBaseUrl = "cesiumStatic";
-const api = "http://127.0.0.1:8080";
+const apiPort = process.env.PORT ?? "8080";
+const api = `http://127.0.0.1:${apiPort}`;
 
 function normalizeUrlPath(urlPath: string): string | null {
   const trimmed = urlPath.trim();
@@ -40,6 +41,21 @@ const authProxy: Record<string, string | ProxyOptions> = {
   "/login/legacy": api,
   "/club-login.html": api,
 };
+
+function liveSpaFallback(): Plugin {
+  return {
+    name: "live-spa-fallback",
+    configureServer(server) {
+      server.middlewares.use((req, _res, next) => {
+        const pathOnly = req.url?.split("?")[0] ?? "";
+        if (/^\/live\/[A-Za-z0-9._-]+$/i.test(pathOnly)) {
+          req.url = "/index.html";
+        }
+        next();
+      });
+    },
+  };
+}
 
 function clubAdminHtmlGateMiddleware(
   apiOrigin: string,
@@ -116,7 +132,9 @@ function clubAdminHtmlGateMiddleware(
 }
 
 function clubAdminHtmlGatePlugin(apiOrigin: string): Plugin {
-  const attach = (server: { middlewares: { use: (fn: ReturnType<typeof clubAdminHtmlGateMiddleware>) => void } }) => {
+  const attach = (server: {
+    middlewares: { use: (fn: ReturnType<typeof clubAdminHtmlGateMiddleware>) => void };
+  }) => {
     const gate = clubAdminHtmlGateMiddleware(apiOrigin);
     if (gate) server.middlewares.use(gate);
   };
@@ -140,6 +158,7 @@ export default defineConfig({
     ),
   },
   plugins: [
+    liveSpaFallback(),
     clubAdminHtmlGatePlugin(process.env.FLIGHT_VIS_API_ORIGIN ?? api),
     viteStaticCopy({
       targets: [
@@ -186,6 +205,7 @@ export default defineConfig({
         clubAdminCheckouts: path.resolve(root, "club-admin-checkouts.html"),
         clubAdminMap: path.resolve(root, "club-admin-map.html"),
         clubAdminKioskLayout: path.resolve(root, "club-admin-kiosk-layout.html"),
+        clubAdminRequests: path.resolve(root, "club-admin-requests.html"),
         clubAdminCheckinQr: path.resolve(root, "club-admin-checkin-qr.html"),
         clubScreen: path.resolve(root, "club-screen.html"),
         clubGlobeScreen: path.resolve(root, "club-globe-screen.html"),

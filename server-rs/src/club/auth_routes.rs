@@ -3,6 +3,7 @@ use crate::club::{
     db::{now_ms, GuestClaimError, MagicConsumeError, PilotRow},
     webauthn::WebauthnRouteError,
 };
+use crate::html_csp::{HTML_STRICT_CSP, SENSITIVE_REFERRER_POLICY};
 use crate::{AppState, ClientIp};
 use axum::{
     extract::{Query, State},
@@ -76,13 +77,22 @@ pub async fn get_magic_consume(
 ) -> impl IntoResponse {
     if wants_html(&headers) {
         let token = html_escape(&q.token);
-        return Html(format!(
-            r#"<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head>
+        return (
+            [
+                (
+                    header::CONTENT_SECURITY_POLICY,
+                    HTML_STRICT_CSP,
+                ),
+                (header::REFERRER_POLICY, SENSITIVE_REFERRER_POLICY),
+            ],
+            Html(format!(
+                r#"<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Sign in</title></head>
 <body><h1>Sign in</h1><form method="post" action="/api/club/auth/magic">
 <input type="hidden" name="token" value="{token}">
 <button type="submit">Continue</button></form></body></html>"#
-        ))
-        .into_response();
+            )),
+        )
+            .into_response();
     }
     let Some(db) = club_db(&state) else {
         return (

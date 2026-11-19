@@ -2496,15 +2496,34 @@ async fn admin_revoke_display(
     }
 }
 
-fn html_csp_header() -> (header::HeaderName, &'static str) {
+fn html_csp_header(dist_html: &str) -> (header::HeaderName, &'static str) {
     (
         header::CONTENT_SECURITY_POLICY,
-        crate::static_files::HTML_CSP,
+        crate::html_csp::csp_for_dist_relative(dist_html)
+            .expect("club HTML dist file in HTML_CSP_ROUTE_TABLE"),
     )
 }
 
 async fn club_screen_page(State(state): State<AppState>) -> impl IntoResponse {
-    serve_dist_html(&state, "club-screen.html").await
+    let path = state.dist_dir.join("club-screen.html");
+    match tokio::fs::read_to_string(&path).await {
+        Ok(html) => (
+            [
+                html_csp_header("club-screen.html"),
+                (
+                    header::REFERRER_POLICY,
+                    crate::html_csp::SENSITIVE_REFERRER_POLICY,
+                ),
+            ],
+            Html(html),
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            "Club screen page not built (npm run build)",
+        )
+            .into_response(),
+    }
 }
 
 async fn club_slug_screen_page(
@@ -2531,7 +2550,17 @@ async fn club_slug_screen_page(
     }
     let path = state.dist_dir.join("club-screen.html");
     match tokio::fs::read_to_string(&path).await {
-        Ok(html) => ([(html_csp_header())], Html(html)).into_response(),
+        Ok(html) => (
+            [
+                html_csp_header("club-screen.html"),
+                (
+                    header::REFERRER_POLICY,
+                    crate::html_csp::SENSITIVE_REFERRER_POLICY,
+                ),
+            ],
+            Html(html),
+        )
+            .into_response(),
         Err(_) => (
             StatusCode::NOT_FOUND,
             "Club screen page not built (npm run build)",
@@ -2560,7 +2589,7 @@ async fn club_slug_globe_screen_page(
 async fn serve_dist_html(state: &AppState, name: &str) -> axum::response::Response {
     let path = state.dist_dir.join(name);
     match tokio::fs::read_to_string(&path).await {
-        Ok(html) => ([(html_csp_header())], Html(html)).into_response(),
+        Ok(html) => ([(html_csp_header(name))], Html(html)).into_response(),
         Err(_) => (
             StatusCode::NOT_FOUND,
             format!("{name} not built (npm run build)"),

@@ -1,6 +1,6 @@
 import { startClubPage } from "./i18nPage";
 
-await startClubPage();
+await startClubPage({ persistUser: false });
 const list = document.getElementById("list");
 if (!list) throw new Error("list missing");
 const club = new URLSearchParams(location.search).get("club");
