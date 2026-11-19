@@ -341,10 +341,7 @@ async fn login_page(
         [
             (header::CONTENT_TYPE, "text/html; charset=UTF-8"),
             (header::CONTENT_SECURITY_POLICY, static_files::HTML_CSP),
-            (
-                header::REFERRER_POLICY,
-                static_files::HTML_REFERRER_POLICY,
-            ),
+            (header::REFERRER_POLICY, static_files::HTML_REFERRER_POLICY),
         ],
         html,
     )
