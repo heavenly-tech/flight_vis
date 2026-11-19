@@ -34,11 +34,12 @@ Compose attaches the container to external `proxy_network` and `db_shared`, reso
 
 ## Android App Links (production)
 
-The API does **not** assume a default Android package. To enable verified App Links, **Abrir en la app** on `/app.html`, and the optional intent button on the check-in landing page, set both variables on the host (`.env` or compose `environment`) before `docker compose up`:
+The API defaults the Android package to `cl.heavenly.flightvis` (override with `FLIGHT_ANDROID_APP_PACKAGE`). To enable verified App Links, **Abrir en la app** on `/app.html`, and the launcher intent on the check-in landing page, set release cert fingerprints on the host (`.env` or compose `environment`) before `docker compose up`:
 
 ```bash
-FLIGHT_ANDROID_APP_PACKAGE=cl.heavenly.flightvis
 FLIGHT_ANDROID_CERT_SHA256=<release signing cert SHA-256 fingerprint>
+# optional override:
+# FLIGHT_ANDROID_APP_PACKAGE=cl.heavenly.flightvis
 ```
 
 Obtain the fingerprint from the **flightvis-client** release keystore (same cert that signs Play/APK builds), for example:
@@ -49,8 +50,8 @@ keytool -list -v -keystore /path/to/release.keystore -alias <alias>
 
 Copy the `SHA256:` line (colons optional; comma-separate if you rotate keys). Alternatively mount fingerprints via `FLIGHT_ANDROID_CERT_SHA256_FILE`.
 
-When **both** package and fingerprint are set, the container serves `GET /.well-known/assetlinks.json` and `GET /api/app/install-link` includes `intentUrl`. Club check-in QR symbols always encode a plain HTTPS URL (`https://<host>/c/{slug}/q/{token}`) so camera apps can scan them; opening the native app relies on verified App Links plus the client manifest, not `intent://` in the QR.
+When at least one valid fingerprint is configured, the container serves `GET /.well-known/assetlinks.json` (package defaults to `cl.heavenly.flightvis`) and `GET /api/app/install-link` includes a launcher `intentUrl` with APK `browser_fallback_url`. QR payloads use `FLIGHT_CLUB_PUBLIC_URL` when set (`https://…/c/{slug}/q/{token}`), never `intent://`.
 
-When either variable is unset, `/.well-known/assetlinks.json` is **404**, **Abrir en la app** stays hidden, and check-in still works over the web flow.
+When no valid fingerprints are configured, `/.well-known/assetlinks.json` is **404**, **Abrir en la app** stays hidden, and check-in still works over the web flow.
 
 Do not deploy from a review task unless that task explicitly says to.

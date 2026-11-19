@@ -393,7 +393,10 @@ async fn server_qr_svg_endpoints() {
 async fn club_screen_qr_encodes_https_app_link_not_intent() {
     let _guard = crate::club::android_assetlinks::android_test_env_lock();
     std::env::set_var("FLIGHT_ANDROID_APP_PACKAGE", "cl.heavenly.flightvis");
-    std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", "AA:BB:CC");
+    std::env::set_var(
+        "FLIGHT_ANDROID_CERT_SHA256",
+        "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB",
+    );
     let mut fx = setup().await;
     let club_id = fx.club.default_club_id().await.unwrap();
     sqlx::query("UPDATE clubs SET slug = 'demo' WHERE id = $1")
@@ -1605,4 +1608,101 @@ async fn kiosk_checkin_qr_visible_cross_site_post_csrf() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+const TEST_ANDROID_FP: &str =
+    "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB";
+
+#[tokio::test]
+#[serial]
+async fn admin_checkin_qr_routes_auth_matrix() {
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    fx.club
+        .ensure_membership_row(&fx._pilot_b, &club_id, "staff", "approved")
+        .await
+        .unwrap();
+    let staff_cookie = login_cookie(&mut fx.router, "b@test").await;
+    let pilot_cookie = login_cookie(&mut fx.router, "a@test").await;
+    let admin_cookie = make_admin(&mut fx, &fx.pilot_a, &club_id, "a@test").await;
+
+    let anon_svg = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/admin/checkin-qr.svg")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anon_svg.status(), StatusCode::UNAUTHORIZED);
+
+    for cookie in [staff_cookie.clone(), pilot_cookie] {
+        let res = fx
+            .router
+            .call(
+                Request::builder()
+                    .uri("/api/admin/checkin-qr.svg")
+                    .header(header::COOKIE, cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    let admin_svg = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/admin/checkin-qr.svg")
+                .header(header::COOKIE, admin_cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(admin_svg.status(), StatusCode::OK);
+
+    let anon_consumed = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/admin/checkin-qr/consumed?sinceMs=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anon_consumed.status(), StatusCode::UNAUTHORIZED);
+
+    let staff_consumed = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/admin/checkin-qr/consumed?sinceMs=1")
+                .header(header::COOKIE, staff_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(staff_consumed.status(), StatusCode::FORBIDDEN);
+}
+
+#[test]
+#[serial]
+#[allow(clippy::await_holding_lock)]
+fn android_fingerprint_env_validation() {
+    let _guard = crate::club::android_assetlinks::android_test_env_lock();
+    std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
+    std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", "AA:BB:CC, not-valid");
+    let list = crate::club::android_assetlinks::android_cert_sha256_list();
+    assert!(list.is_empty());
+    std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", TEST_ANDROID_FP);
+    let list = crate::club::android_assetlinks::android_cert_sha256_list();
+    assert_eq!(list.len(), 1);
+    std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
 }
