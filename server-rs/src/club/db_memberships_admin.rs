@@ -52,10 +52,7 @@ pub struct AdminInviteAccept {
 }
 
 impl ClubDb {
-    pub async fn list_club_memberships_admin(
-        &self,
-        club_id: &str,
-    ) -> Vec<AdminMembershipListRow> {
+    pub async fn list_club_memberships_admin(&self, club_id: &str) -> Vec<AdminMembershipListRow> {
         let rows = sqlx::query(
             "SELECT m.id, m.pilot_id, p.name, p.email, m.role, m.status
              FROM club_memberships m
@@ -419,8 +416,7 @@ impl ClubDb {
         let current_role: String = row.try_get(1).map_err(|_| MembershipAdminError::Db)?;
         let current_status: String = row.try_get(2).map_err(|_| MembershipAdminError::Db)?;
         let admin_count = Self::count_active_admins_tx(&mut tx, club_id).await?;
-        if Self::would_violate_last_admin(&current_role, &current_status, None, true, admin_count)
-        {
+        if Self::would_violate_last_admin(&current_role, &current_status, None, true, admin_count) {
             return Err(MembershipAdminError::LastAdmin);
         }
         sqlx::query("UPDATE club_memberships SET status = 'suspended' WHERE id = $1")

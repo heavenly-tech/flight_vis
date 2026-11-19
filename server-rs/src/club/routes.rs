@@ -1164,7 +1164,18 @@ async fn club_flight_stream(
             0_u32,
         ),
         #[allow(clippy::question_mark)]
-        move |(db, fid, viewer, mut last_t, mut idle_since, _sse_guard, flight_club, pilot_sess, acct_sess, mut ticks)| async move {
+        move |(
+            db,
+            fid,
+            viewer,
+            mut last_t,
+            mut idle_since,
+            _sse_guard,
+            flight_club,
+            pilot_sess,
+            acct_sess,
+            mut ticks,
+        )| async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
             ticks = ticks.wrapping_add(1);
             if ticks.is_multiple_of(10) {

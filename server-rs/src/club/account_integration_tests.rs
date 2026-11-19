@@ -269,5 +269,8 @@ async fn aircraft_tail_lookup_scoped_by_club() {
         db.club_id_for_aircraft_tail(&club_b, tail).await.as_deref(),
         Some(club_b.as_str())
     );
-    assert!(db.club_id_for_aircraft_tail(&club_a, "NOPE").await.is_none());
+    assert!(db
+        .club_id_for_aircraft_tail(&club_a, "NOPE")
+        .await
+        .is_none());
 }

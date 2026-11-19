@@ -82,15 +82,14 @@ impl ClubDb {
         if self.is_superadmin(pilot_id).await {
             return true;
         }
-        if let Some(aid) = sqlx::query_scalar::<_, Option<String>>(
-            "SELECT account_id FROM pilots WHERE id = $1",
-        )
-        .bind(pilot_id)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten()
-        .flatten()
+        if let Some(aid) =
+            sqlx::query_scalar::<_, Option<String>>("SELECT account_id FROM pilots WHERE id = $1")
+                .bind(pilot_id)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten()
+                .flatten()
         {
             if self.account_is_platform_superadmin(&aid).await {
                 return true;

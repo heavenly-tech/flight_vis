@@ -266,11 +266,7 @@ async fn switch_club(
     let club_id = match db.membership_club_id(&body.membership_id).await {
         Ok(Some(cid)) => cid,
         _ => {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "forbidden" })),
-            )
-                .into_response();
+            return (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response();
         }
     };
     if db.club_operational(&club_id).await.is_err() {

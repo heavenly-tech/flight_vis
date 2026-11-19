@@ -23,12 +23,7 @@ async fn ensure_live_club(db: &ClubDb, club_id: &str) {
     .await;
 }
 
-async fn insert_admin(
-    db: &ClubDb,
-    club_id: &str,
-    email: &str,
-    name: &str,
-) -> (String, String) {
+async fn insert_admin(db: &ClubDb, club_id: &str, email: &str, name: &str) -> (String, String) {
     let now = now_ms();
     let hash = hash_password("password12").unwrap();
     let pilot_id = crate::club::auth::new_id();
@@ -48,22 +43,17 @@ async fn insert_admin(
     db.ensure_membership_row(&pilot_id, club_id, "admin", "active")
         .await
         .unwrap();
-    let mid: String = sqlx::query_scalar(
-        "SELECT id FROM club_memberships WHERE pilot_id = $1 AND club_id = $2",
-    )
-    .bind(&pilot_id)
-    .bind(club_id)
-    .fetch_one(&db.pool)
-    .await
-    .unwrap();
+    let mid: String =
+        sqlx::query_scalar("SELECT id FROM club_memberships WHERE pilot_id = $1 AND club_id = $2")
+            .bind(&pilot_id)
+            .bind(club_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
     (pilot_id, mid)
 }
 
-async fn insert_staff(
-    db: &ClubDb,
-    club_id: &str,
-    email: &str,
-) -> (String, String) {
+async fn insert_staff(db: &ClubDb, club_id: &str, email: &str) -> (String, String) {
     let now = now_ms();
     let hash = hash_password("password12").unwrap();
     let pilot_id = crate::club::auth::new_id();
@@ -82,14 +72,13 @@ async fn insert_staff(
     db.ensure_membership_row(&pilot_id, club_id, "staff", "active")
         .await
         .unwrap();
-    let mid: String = sqlx::query_scalar(
-        "SELECT id FROM club_memberships WHERE pilot_id = $1 AND club_id = $2",
-    )
-    .bind(&pilot_id)
-    .bind(club_id)
-    .fetch_one(&db.pool)
-    .await
-    .unwrap();
+    let mid: String =
+        sqlx::query_scalar("SELECT id FROM club_memberships WHERE pilot_id = $1 AND club_id = $2")
+            .bind(&pilot_id)
+            .bind(club_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
     (pilot_id, mid)
 }
 
@@ -107,24 +96,21 @@ async fn admin_invite_and_accept_creates_active_admin() {
         .unwrap();
     let accept = db.accept_admin_invite(&raw, now).await.unwrap();
     assert_eq!(accept.club_id, club);
-    let row = sqlx::query(
-        "SELECT role, status FROM club_memberships WHERE id = $1",
-    )
-    .bind(&accept.membership_id)
-    .fetch_one(&db.pool)
-    .await
-    .unwrap();
+    let row = sqlx::query("SELECT role, status FROM club_memberships WHERE id = $1")
+        .bind(&accept.membership_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
     let role: String = row.try_get(0).unwrap();
     let status: String = row.try_get(1).unwrap();
     assert_eq!(role, "admin");
     assert_eq!(status, "active");
-    let purpose: String = sqlx::query_scalar(
-        "SELECT purpose FROM magic_login_tokens WHERE purpose = $1 LIMIT 1",
-    )
-    .bind(ADMIN_INVITE_PURPOSE)
-    .fetch_one(&db.pool)
-    .await
-    .unwrap();
+    let purpose: String =
+        sqlx::query_scalar("SELECT purpose FROM magic_login_tokens WHERE purpose = $1 LIMIT 1")
+            .bind(ADMIN_INVITE_PURPOSE)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
     assert_eq!(purpose, ADMIN_INVITE_PURPOSE);
 }
 
@@ -225,10 +211,7 @@ async fn concurrent_double_demote_two_admins_leaves_one() {
         async move { db_a.set_membership_role(&club_a, &ma, "staff").await },
         async move { db_b.set_membership_role(&club_b, &mb, "staff").await },
     );
-    let ok_count = [&r1, &r2]
-        .iter()
-        .filter(|r| r.is_ok())
-        .count();
+    let ok_count = [&r1, &r2].iter().filter(|r| r.is_ok()).count();
     let last_admin_count = [&r1, &r2]
         .iter()
         .filter(|r| matches!(r, Err(MembershipAdminError::LastAdmin)))
@@ -252,7 +235,7 @@ async fn non_admin_invite_promote_403() {
     let db = open_db().await;
     let club = db.default_club_id().await.unwrap();
     ensure_live_club(&db, &club).await;
-  let (pilot_id, _) = {
+    let (pilot_id, _) = {
         let now = now_ms();
         let hash = hash_password("password12").unwrap();
         let pilot_id = crate::club::auth::new_id();

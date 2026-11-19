@@ -122,7 +122,12 @@ async fn invite_admin(
             let loc = auth::parse_display_cookie(&headers).unwrap_or_else(|| "es".to_string());
             let _ = state
                 .mailer
-                .send_localized(email, &loc, "adminInvite", &[("minutes", "15"), ("url", &url)])
+                .send_localized(
+                    email,
+                    &loc,
+                    "adminInvite",
+                    &[("minutes", "15"), ("url", &url)],
+                )
                 .await;
         }
     }
@@ -135,10 +140,9 @@ fn map_membership_err(err: MembershipAdminError) -> (StatusCode, Json<serde_json
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "last_admin" })),
         ),
-        MembershipAdminError::NotFound => (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": "not found" })),
-        ),
+        MembershipAdminError::NotFound => {
+            (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" })))
+        }
         MembershipAdminError::InvalidRole => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "invalid_role" })),
@@ -228,6 +232,12 @@ pub fn routes() -> Router<AppState> {
             "/api/admin/memberships/{id}/promote",
             post(promote_membership),
         )
-        .route("/api/admin/memberships/{id}/demote", post(demote_membership))
-        .route("/api/admin/memberships/{id}/remove", post(remove_membership))
+        .route(
+            "/api/admin/memberships/{id}/demote",
+            post(demote_membership),
+        )
+        .route(
+            "/api/admin/memberships/{id}/remove",
+            post(remove_membership),
+        )
 }
