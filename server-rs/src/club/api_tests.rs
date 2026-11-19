@@ -1273,7 +1273,7 @@ async fn kiosk_checkin_qr_visible_admin_can_set_and_display_reads() {
         .call(
             Request::builder()
                 .uri("/api/display/kiosk-layout")
-                .header(header::COOKIE, display_cookie)
+                .header(header::COOKIE, display_cookie.clone())
                 .body(Body::empty())
                 .unwrap(),
         )
