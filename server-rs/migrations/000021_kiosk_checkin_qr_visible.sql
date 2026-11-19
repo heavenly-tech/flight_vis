@@ -1,0 +1,1 @@
+ALTER TABLE clubs ADD COLUMN IF NOT EXISTS kiosk_checkin_qr_visible BOOLEAN NOT NULL DEFAULT true;

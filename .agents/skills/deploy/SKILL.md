@@ -32,4 +32,26 @@ There is no shell in the runtime image, so `docker exec -it <container> sh` fail
 
 Compose attaches the container to external `proxy_network` and `db_shared`, resolves `postal-smtp` via `extra_hosts: host-gateway`, and mounts `./data` on `/data`. The mount must be writable by uid `65534` (`chown -R 65534:65534 ./data` on the host). Postgres is the shared heavenly cluster (`DATABASE_URL`); this compose file does not start a local Postgres service.
 
+## Android App Links (production)
+
+The API defaults the Android package to `cl.heavenly.flightvis` (override with `FLIGHT_ANDROID_APP_PACKAGE`). To enable verified App Links, **Abrir en la app** on `/app.html`, and the launcher intent on the check-in landing page, set release cert fingerprints on the host (`.env` or compose `environment`) before `docker compose up`:
+
+```bash
+FLIGHT_ANDROID_CERT_SHA256=<release signing cert SHA-256 fingerprint>
+# optional override:
+# FLIGHT_ANDROID_APP_PACKAGE=cl.heavenly.flightvis
+```
+
+Obtain the fingerprint from the **flightvis-client** release keystore (same cert that signs Play/APK builds), for example:
+
+```bash
+keytool -list -v -keystore /path/to/release.keystore -alias <alias>
+```
+
+Copy the `SHA256:` line (colons optional; comma-separate if you rotate keys). Alternatively mount fingerprints via `FLIGHT_ANDROID_CERT_SHA256_FILE`.
+
+When at least one valid fingerprint is configured, the container serves `GET /.well-known/assetlinks.json` (package defaults to `cl.heavenly.flightvis`) and `GET /api/app/install-link` includes a launcher `intentUrl` with APK `browser_fallback_url`. QR payloads use `FLIGHT_CLUB_PUBLIC_URL` when set (`https://…/c/{slug}/q/{token}`), never `intent://`.
+
+When no valid fingerprints are configured, `/.well-known/assetlinks.json` is **404**, **Abrir en la app** stays hidden, and check-in still works over the web flow.
+
 Do not deploy from a review task unless that task explicitly says to.

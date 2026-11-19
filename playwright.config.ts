@@ -21,7 +21,7 @@ export default defineConfig({
   projects: [
     {
       name: "dev-ui",
-      testIgnore: [/csp-prod\.spec\.ts/, /globe-csp\.spec\.ts/, /auth-csp\.spec\.ts/],
+      testIgnore: [/csp-prod\.spec\.ts/, /globe-csp\.spec\.ts/, /auth-csp\.spec\.ts/, /admin-checkin-qr\.spec\.ts/],
       use: {
         baseURL: "http://127.0.0.1:5173",
       },
@@ -44,6 +44,12 @@ export default defineConfig({
         baseURL: `http://127.0.0.1:${e2eCspPort}`,
       },
     },
+    {
+      name: "admin-checkin-qr",
+      testMatch: /admin-checkin-qr\.spec\.ts/,
+      fullyParallel: false,
+      workers: 1,
+    },
   ],
   webServer: [
     {
@@ -55,7 +61,7 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
     },
     {
-      command: "node scripts/e2e-csp-gateway.mjs",
+      command: "npx --yes wait-on dist/index.html && node scripts/e2e-csp-gateway.mjs",
       url: `http://127.0.0.1:${e2eCspPort}/`,
       env: {
         ...process.env,
@@ -66,13 +72,15 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
     },
     {
-      command: `PORT=${e2eApiPort} VITE_E2E_SKIP_GLOBE=1 npm run dev -- --host 127.0.0.1 --port 5173`,
+      command:
+        "npx --yes wait-on dist/index.html && VITE_E2E_SKIP_GLOBE=1 npm run preview -- --host 127.0.0.1 --port 5173",
       url: "http://127.0.0.1:5173",
       env: {
         ...process.env,
         PORT: e2eApiPort,
         VITE_E2E_SKIP_GLOBE: "1",
       },
+      timeout: 180_000,
       reuseExistingServer: !process.env.CI,
     },
   ],

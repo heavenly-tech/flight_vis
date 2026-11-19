@@ -196,14 +196,21 @@ impl Catalogs {
         &self,
         user: Option<&str>,
         club_default: Option<&str>,
-        _accept_language: Option<&str>,
+        accept_language: Option<&str>,
+        stored: Option<&str>,
     ) -> String {
         let pick = |v: Option<&str>| {
             v.map(Self::normalize)
                 .filter(|id| self.is_known(id))
                 .map(|id| id.to_string())
         };
-        pick(user)
+        pick(stored)
+            .or_else(|| pick(user))
+            .or_else(|| {
+                accept_language
+                    .and_then(parse_accept)
+                    .and_then(|id| pick(Some(id.as_str())))
+            })
             .or_else(|| pick(club_default))
             .unwrap_or_else(|| self.canonical.clone())
     }
@@ -282,13 +289,14 @@ mod tests {
     fn resolve_prefers_user() {
         let dir = Catalogs::resolve_dir(Path::new("dist"));
         let cat = Catalogs::load_from_dir(&dir).unwrap();
-        assert_eq!(cat.resolve_locale(Some("en"), Some("es"), None), "en");
+        assert_eq!(cat.resolve_locale(Some("en"), Some("es"), None, None), "en");
     }
 
     #[test]
     fn resolve_defaults_spanish_without_user_or_accept() {
         let dir = Catalogs::resolve_dir(Path::new("dist"));
         let cat = Catalogs::load_from_dir(&dir).unwrap();
-        assert_eq!(cat.resolve_locale(None, None, Some("en")), "es");
+        assert_eq!(cat.resolve_locale(None, None, Some("en"), None), "en");
+        assert_eq!(cat.resolve_locale(None, None, Some("en"), Some("es")), "es");
     }
 }

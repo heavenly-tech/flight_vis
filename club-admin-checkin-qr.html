@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="es-CL">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="admin.checkinQrTitle">flight_vis</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      main { max-width: 28rem; margin: 1rem auto; padding: 0 1rem 2rem; }
+      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
+      #qr-panel {
+        margin: 1rem 0;
+        padding: 1rem;
+        background: #fff;
+        border-radius: 12px;
+        text-align: center;
+      }
+      #qr-panel img { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+      .toolbar { display: flex; gap: .75rem; flex-wrap: wrap; margin: 1rem 0; }
+      button { font: inherit; padding: .55rem .85rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div id="lang-slot"></div>
+      <h1 data-i18n="admin.checkinQrTitle"></h1>
+      <p class="muted" data-i18n="admin.checkinQrLead"></p>
+      <div id="admin-nav"></div>
+      <div class="toolbar">
+        <button type="button" id="btn-show-qr" data-i18n="admin.checkinQrShow" disabled></button>
+        <button type="button" id="btn-hide-qr" data-i18n="admin.checkinQrHide" hidden></button>
+      </div>
+      <div id="qr-panel" hidden>
+        <img id="qr-img" alt="" width="280" height="280" />
+      </div>
+      <p id="status" class="muted"></p>
+    </main>
+    <script type="module" src="/src/club/adminCheckinQr.ts"></script>
+  </body>
+</html>

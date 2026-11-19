@@ -76,6 +76,26 @@ impl ClubDb {
         Ok(())
     }
 
+    pub async fn login_throttled_email(&self, email: &str, now: i64) -> Result<(), LoginError> {
+        let email = email.trim().to_ascii_lowercase();
+        if email.is_empty() {
+            return Ok(());
+        }
+        let cutoff = now - LOGIN_THROTTLE_WINDOW_MS;
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM login_attempts WHERE lower(email) = $1 AND ts > $2",
+        )
+        .bind(&email)
+        .bind(cutoff)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|_| LoginError::Invalid)?;
+        if count >= LOGIN_THROTTLE_MAX {
+            return Err(LoginError::Throttled);
+        }
+        Ok(())
+    }
+
     pub async fn record_login_attempt(
         &self,
         ip: &str,
@@ -100,6 +120,7 @@ impl ClubDb {
         ip: &str,
     ) -> Result<(String, PilotRow), LoginError> {
         self.login_throttled(ip, now).await?;
+        self.login_throttled_email(email, now).await?;
         let email_norm = email.trim();
         let row = sqlx::query(
             "SELECT id, club_id, name, email, license_no, status, role, locale, password_hash,

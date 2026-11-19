@@ -51,6 +51,7 @@
     "checkouts": "Checkouts",
     "adminMap": "Admin map",
     "kioskQr": "Kiosk QR",
+    "adminCheckinQr": "Check-in QR",
     "login": "Log in",
     "clubMap": "Club map",
     "globe": "Globe viewer",
@@ -220,6 +221,7 @@
     "subtitle": "Install the heavenly.cl flight tracker on your phone. No Play Store required.",
     "loadingRelease": "Loading release info…",
     "downloadApk": "Download APK",
+    "openInApp": "Open in the app",
     "sideloadTitle": "Sideloading steps",
     "sideloadStep1": "On Android, open Settings → Apps → Special access → Install unknown apps and allow your browser to install packages.",
     "sideloadStep2": "Download the APK using the button above (when available) and open it to install.",
@@ -254,15 +256,32 @@
     "reset": "Reset",
     "saving": "Saving…",
     "saved": "Saved",
+    "savedRev": "Saved (rev {rev})",
     "resetDone": "Reset",
     "kioskOpenUrl": "Open on the kiosk:",
-    "kioskActivationToken": "Activation token (paste on that page, not in the URL):"
+    "kioskActivationToken": "Activation token (paste on that page, not in the URL):",
+    "kioskCheckinQrVisible": "Show check-in QR on club displays",
+    "kioskCheckinQrVisibleSave": "Save QR visibility",
+    "checkinQrTitle": "Check-in QR (phone)",
+    "checkinQrLead": "Show the QR only when you need it; it hides after a scan or 60 seconds. Codes already shown stay valid for about 30–90 seconds even if you hide them on screen.",
+    "checkinQrShow": "Show QR",
+    "checkinQrHide": "Hide QR",
+    "checkinQrRotateHint": "QR rotates every {seconds} seconds.",
+    "checkinQrAlreadyUsed": "This QR was already used. Generate a new one when you need it.",
+    "checkinQrHidden": "QR hidden."
   },
   "kiosk": {
     "screenTitle": "Club check-in screen",
+    "globeScreenTitle": "Club globe display",
+    "liveAircraft": "Live aircraft",
+    "starting": "Starting display…",
+    "activate": "Activate display",
     "invalidToken": "Invalid display token.",
     "activated": "Display activated.",
-    "pasteToken": "Paste the display activation token from the admin map page."
+    "pasteToken": "Paste the display activation token from the admin map page.",
+    "qrShow": "Show QR",
+    "qrHide": "Hide QR",
+    "qrRotateHint": "QR rotates every {seconds} seconds."
   },
   "globe": {
     "metaDescription": "3D flight visualization for IGC and GPX tracks.",
@@ -386,6 +405,7 @@
       "haveAccount": "Already have an account? Sign in"
     },
     "password": {
+      "title": "Account password",
       "current": "Current password",
       "currentOptionalMagic": "Current password (optional if you signed in with a magic link recently)",
       "new": "New password",
