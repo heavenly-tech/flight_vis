@@ -217,7 +217,9 @@ export function mountLangSwitcher(slot: HTMLElement): void {
   if (!select) {
     select = document.createElement("select");
     select.addEventListener("change", () => {
-      void setLocale(select!.value);
+      void setLocale(select!.value).then(() => {
+        location.reload();
+      });
     });
     slot.replaceChildren(document.createElement("label"), select);
   }

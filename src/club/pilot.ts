@@ -89,4 +89,7 @@ logoutBtn?.addEventListener("click", async () => {
 void (async () => {
   await startClubPage();
   await boot();
+  window.addEventListener("fv-locale-change", () => {
+    void boot();
+  });
 })();
