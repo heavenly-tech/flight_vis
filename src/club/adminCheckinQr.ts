@@ -72,7 +72,6 @@ void (async () => {
   try {
     await requireAdmin();
     btnShow.disabled = false;
-    document.body.dataset.checkinQrReady = "1";
   } catch (e) {
     if (!isClubAdminRedirect(e)) status.textContent = t("admin.adminRequired");
   }
