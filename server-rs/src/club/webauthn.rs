@@ -251,13 +251,6 @@ impl WebauthnState {
             return Err(WebauthnRouteError::ClubUnavailable);
         }
         let now = now_ms();
-        let _ = sqlx::query(
-            "UPDATE pilots SET email_verified_at = COALESCE(email_verified_at, $1) WHERE id = $2",
-        )
-        .bind(now)
-        .bind(&pilot.id)
-        .execute(&db.pool)
-        .await;
         let session_id = db
             .create_pilot_session(&pilot.id, now)
             .await

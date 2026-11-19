@@ -691,3 +691,317 @@ async fn checkin_gates_on_target_club_not_home_when_home_operational() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }
+
+async fn apply_migration_015(pool: &sqlx::PgPool) {
+    sqlx::query(
+        "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
+         SELECT replace(gen_random_uuid()::text, '-', ''), p.id, p.club_id, p.role, p.status, p.created_at
+         FROM pilots p
+         WHERE p.status IN ('approved', 'pending')
+           AND p.role IN ('admin', 'pilot')
+         ON CONFLICT (pilot_id, club_id) DO NOTHING",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+#[serial]
+async fn migration_015_prod_cas_one_admin_membership() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_id = new_id();
+    let admin_id = new_id();
+    sqlx::query(
+        "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at,
+         checkin_window_hours, latitude, longitude)
+         VALUES ($1, 'CAS', 'cas', $2, 'live', $2, 12, -33.4489, -70.6693)",
+    )
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'CAS Admin', 'admin@cas', '', 'approved', 'admin', 'hash', $3),
+                ($4, $2, 'Guest', 'guest@cas', '', 'guest', 'pilot', '', $3)",
+    )
+    .bind(&admin_id)
+    .bind(&club_id)
+    .bind(now)
+    .bind(new_id())
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM club_memberships")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(before, 0);
+    apply_migration_015(&db.pool).await;
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM club_memberships")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+    let member: (String, String) = sqlx::query_as(
+        "SELECT role, status FROM club_memberships WHERE pilot_id = $1 AND club_id = $2",
+    )
+    .bind(&admin_id)
+    .bind(&club_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(member, ("admin".to_string(), "approved".to_string()));
+}
+
+#[tokio::test]
+#[serial]
+async fn prod_admin_admin_api_200_after_membership_backfill() {
+    use crate::club::auth::hash_password;
+    use crate::{
+        auth::Auth, build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState,
+    };
+    use axum::{
+        body::Body,
+        http::{header, Request, StatusCode},
+    };
+    use std::sync::Arc;
+    use tower::Service;
+
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_id = db.default_club_id().await.unwrap();
+    let admin_id = new_id();
+    let hash = hash_password("password12").unwrap();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'Admin', 'prod-admin@test', '', 'approved', 'admin', $3, $4)",
+    )
+    .bind(&admin_id)
+    .bind(&club_id)
+    .bind(&hash)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    apply_migration_015(&db.pool).await;
+    assert!(db.require_club_admin(&admin_id, &club_id).await.is_ok());
+    let data_dir = tempfile::tempdir().unwrap();
+    let (video_queue, _) = tokio::sync::mpsc::channel(4);
+    let state = AppState {
+        dist_dir: data_dir.path().join("dist"),
+        auth: Auth::with_password("x"),
+        device_auth: DeviceAuth::empty(),
+        live: Arc::new(LiveEngine::new(data_dir.path())),
+        store: Store::new(data_dir.path()),
+        club: Some(db),
+        video_queue,
+        login_throttle: crate::LoginThrottle::default(),
+        device_register_throttle: crate::LoginThrottle::default(),
+        share_lookup_throttle: crate::LoginThrottle::default(),
+        mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+        webauthn: None,
+        sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+        superadmin_emails: Default::default(),
+    };
+    let mut router = build_router(state);
+    let login = router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"email":"prod-admin@test","password":"password12"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let cookie = login
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap()
+        .to_string();
+    for uri in ["/api/admin/pilots", "/api/admin/display-sessions"] {
+        let res = router
+            .call(
+                Request::builder()
+                    .uri(uri)
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "{uri}");
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn approve_pilot_with_checkout_upserts_membership_row() {
+    use crate::club::auth::hash_password;
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_id = db.default_club_id().await.unwrap();
+    let hash = hash_password("password12").unwrap();
+    let admin_id = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, email_verified_at, created_at)
+         VALUES ($1, $2, 'Admin', 'club-admin@test', '', 'approved', 'admin', $3, $4, $4)",
+    )
+    .bind(&admin_id)
+    .bind(&club_id)
+    .bind(&hash)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    db.ensure_membership_row(&admin_id, &club_id, "admin", "approved")
+        .await
+        .unwrap();
+    let pending_id = db
+        .register(&club_id, "New", "pending-appr@test", "", "password12")
+        .await
+        .unwrap();
+    db.mark_email_verified(&pending_id, now).await.unwrap();
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM club_memberships WHERE pilot_id = $1 AND club_id = $2",
+    )
+    .bind(&pending_id)
+    .bind(&club_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1);
+    db.approve_pilot_with_checkout(&admin_id, &pending_id, None)
+        .await
+        .unwrap();
+    let row: (String, String) = sqlx::query_as(
+        "SELECT role, status FROM club_memberships WHERE pilot_id = $1 AND club_id = $2",
+    )
+    .bind(&pending_id)
+    .bind(&club_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(row, ("pilot".to_string(), "approved".to_string()));
+}
+
+#[tokio::test]
+#[serial]
+async fn pilot_is_approved_member_after_membership_backfill() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_id = db.default_club_id().await.unwrap();
+    let pilot_id = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'P', 'map-member@test', '', 'approved', 'pilot', '', $3)",
+    )
+    .bind(&pilot_id)
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert!(!db.pilot_is_approved_member(&pilot_id, &club_id).await);
+    apply_migration_015(&db.pool).await;
+    assert!(db.pilot_is_approved_member(&pilot_id, &club_id).await);
+}
+
+#[tokio::test]
+#[serial]
+async fn bootstrap_email_exists_lookup_is_case_insensitive() {
+    let db = ClubDb::open_test().await.unwrap();
+    let club_id = db.default_club_id().await.unwrap();
+    let now = now_ms();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'Admin', 'Admin@Cas.example', '', 'approved', 'admin', 'x', $3)",
+    )
+    .bind(new_id())
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pilots WHERE club_id = $1 AND lower(email) = lower($2)",
+    )
+    .bind(&club_id)
+    .bind("admin@cas.example")
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1);
+}
+
+#[tokio::test]
+#[serial]
+async fn passkey_login_path_preserves_null_email_verified() {
+    let db = ClubDb::open_test().await.unwrap();
+    let club_id = db.default_club_id().await.unwrap();
+    let pilot_id = new_id();
+    let now = now_ms();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'PK', 'passkey@test', '', 'approved', 'pilot', '', $3)",
+    )
+    .bind(&pilot_id)
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert!(db.club_operational(&club_id).await.is_ok());
+    let _ = db.create_pilot_session(&pilot_id, now).await.unwrap();
+    let verified: Option<i64> =
+        sqlx::query_scalar("SELECT email_verified_at FROM pilots WHERE id = $1")
+            .bind(&pilot_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert!(verified.is_none());
+}
+
+#[tokio::test]
+#[serial]
+async fn allowlisted_passkey_pilot_unverified_not_platform_superadmin() {
+    use std::collections::HashSet;
+    let db = ClubDb::open_test().await.unwrap();
+    let club_id = db.default_club_id().await.unwrap();
+    let now = now_ms();
+    let pilot_id = new_id();
+    let email = "super-passkey@test".to_string();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'SA', $3, '', 'approved', 'pilot', '', $4)",
+    )
+    .bind(&pilot_id)
+    .bind(&club_id)
+    .bind(&email)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO webauthn_credentials (id, pilot_id, credential_id, public_key, counter, created_at)
+         VALUES ($1, $2, '\\x01', '\\x01', 0, $3)",
+    )
+    .bind(new_id())
+    .bind(&pilot_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let mut allow = HashSet::new();
+    allow.insert(email);
+    assert!(!db.is_platform_superadmin(&pilot_id, &allow).await);
+}
