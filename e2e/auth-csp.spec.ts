@@ -30,17 +30,17 @@ test.describe("credential pages under prod CSP", () => {
     expect(consoleErrors.filter((e) => /Content Security Policy/i.test(e))).toEqual([]);
   });
 
-  test("unified login without JS never leaks password in request URLs", async ({ page }) => {
+  test("unified login without JS never leaks password in request URLs", async ({ browser }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    const page = await context.newPage();
     const leaks = installPasswordUrlGuard(page);
-    await page.context().addInitScript(() => {
-      Object.defineProperty(window, "__fvUnifiedLoginReady", { value: false, writable: false });
-    });
     await page.goto("/login", { waitUntil: "domcontentloaded" });
     await page.locator("#login-form input[name=email]").fill("admin@demo.test");
     await page.locator("#login-form input[name=password]").fill("password12");
     await page.locator("#login-form button[type=submit]").click();
     await page.waitForTimeout(1500);
     expect(leaks).toEqual([]);
+    await context.close();
   });
 
   test("magic link request never puts password in URL", async ({ page }) => {

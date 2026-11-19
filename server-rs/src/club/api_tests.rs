@@ -75,6 +75,7 @@ pub(crate) async fn setup() -> Fixture {
         login_throttle: crate::LoginThrottle::default(),
         device_register_throttle: crate::LoginThrottle::default(),
         share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),

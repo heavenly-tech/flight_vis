@@ -134,6 +134,11 @@ async fn account_signup(
         Err(AccountSignupError::EmailExists) | Err(AccountSignupError::Db) => {
             (StatusCode::CREATED, Json(json!({ "ok": true }))).into_response()
         }
+        Err(_) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "signup failed" })),
+        )
+            .into_response(),
     }
 }
 
@@ -628,18 +633,22 @@ async fn account_magic_consume(
                     .create_account_session(&account.id, None, now)
                     .await
                     .unwrap_or_default();
-                let cookie = auth::set_account_session_cookie(&session_id, is_secure(&headers));
-                (
+                let secure = is_secure(&headers);
+                let cookie = auth::set_account_session_cookie(&session_id, secure);
+                let clear_nonce = auth::clear_signup_nonce_cookie(secure);
+                let mut res = (
                     StatusCode::FOUND,
-                    [
-                        (axum::http::header::SET_COOKIE, cookie),
-                        (
-                            axum::http::header::LOCATION,
-                            "/account-clubs.html".to_string(),
-                        ),
-                    ],
+                    [(
+                        axum::http::header::LOCATION,
+                        "/account-clubs.html".to_string(),
+                    )],
                 )
-                    .into_response()
+                    .into_response();
+                res.headers_mut()
+                    .append(axum::http::header::SET_COOKIE, cookie.parse().unwrap());
+                res.headers_mut()
+                    .append(axum::http::header::SET_COOKIE, clear_nonce.parse().unwrap());
+                res
             }
             Err(_) => (StatusCode::BAD_REQUEST, "invalid token").into_response(),
         }
@@ -649,11 +658,14 @@ async fn account_magic_consume(
 #[derive(Deserialize)]
 struct AccountSetPasswordBody {
     password: String,
+    #[serde(default)]
+    current_password: Option<String>,
 }
 
 async fn account_set_password(
     State(state): State<AppState>,
     headers: HeaderMap,
+    client_ip: crate::ClientIp,
     Json(body): Json<AccountSetPasswordBody>,
 ) -> impl IntoResponse {
     if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
@@ -674,6 +686,18 @@ async fn account_set_password(
             .into_response();
     };
     let now = now_ms();
+    let now_sec = now / 1000;
+    if !state.account_password_throttle.allow_up_to(
+        &client_ip.0,
+        now_sec as u64,
+        crate::ACCOUNT_PASSWORD_MAX_ATTEMPTS,
+    ) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "rate limit" })),
+        )
+            .into_response();
+    }
     let Some((acct, _)) = db.account_from_session(&sess, now).await else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -681,14 +705,43 @@ async fn account_set_password(
         )
             .into_response();
     };
+    let current = body.current_password.as_deref();
     match db
-        .set_account_password(&acct.id, body.password.trim(), now)
+        .set_account_password(&acct.id, &body.password, now, current, Some(&sess))
         .await
     {
-        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true }))).into_response(),
+        Ok(()) => {
+            let locale = acct.locale.as_deref().unwrap_or("es");
+            let login_url = format!("{}/login", state.mailer.public_url.trim_end_matches('/'));
+            let _ = state
+                .mailer
+                .send_localized(
+                    &acct.email,
+                    locale,
+                    "passwordChanged",
+                    &[("loginUrl", &login_url)],
+                )
+                .await;
+            (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
+        }
         Err(AccountSignupError::WeakPassword) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "weak password" })),
+        )
+            .into_response(),
+        Err(AccountSignupError::TooLong) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "password too long" })),
+        )
+            .into_response(),
+        Err(AccountSignupError::WrongPassword) => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "wrong password" })),
+        )
+            .into_response(),
+        Err(AccountSignupError::AuthRequired) => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "auth required" })),
         )
             .into_response(),
         Err(_) => (

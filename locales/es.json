@@ -418,6 +418,11 @@
       "bodyPlain": "Hola,\n\nVerifica el club {name} con este enlace (vence en {minutes} minutos):\n{url}\n",
       "bodyHtml": "<p>Verifica el club <strong>{name}</strong> con <a href=\"{url}\">este enlace</a> (vence en {minutes} minutos).</p>"
     },
+    "passwordChanged": {
+      "subject": "Tu contraseña de flight_vis fue cambiada",
+      "bodyPlain": "Hola,\n\nSe cambió la contraseña de tu cuenta.\n\nSi no fuiste tú, entra en:\n{loginUrl}\n",
+      "bodyHtml": "<p>Hola,</p><p>Se cambió la contraseña de tu cuenta.</p><p>Si no fuiste tú, <a href=\"{loginUrl}\">inicia sesión</a> y asegura tu cuenta.</p>"
+    },
     "adminInvite": {
       "subject": "Invitación de administrador en flight_vis",
       "bodyPlain": "Hola,\n\nTe invitaron como administrador del club. Usa este enlace (vence en {minutes} minutos):\n{url}\n\nSi no esperabas este correo, ignóralo.",

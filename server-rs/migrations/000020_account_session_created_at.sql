@@ -1,0 +1,2 @@
+ALTER TABLE account_sessions
+    ADD COLUMN IF NOT EXISTS created_at BIGINT NOT NULL DEFAULT 0;

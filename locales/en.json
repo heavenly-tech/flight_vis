@@ -415,6 +415,11 @@
       "bodyPlain": "Your request was rejected. Reason: {reason}",
       "bodyHtml": "<p>Your request was rejected.</p><p>Reason: {reason}</p>"
     },
+    "passwordChanged": {
+      "subject": "Your flight_vis password was changed",
+      "bodyPlain": "Hello,\n\nYour account password was just changed.\n\nIf you did not make this change, reset access at:\n{loginUrl}\n",
+      "bodyHtml": "<p>Hello,</p><p>Your account password was just changed.</p><p>If you did not make this change, <a href=\"{loginUrl}\">sign in</a> and secure your account.</p>"
+    },
     "adminInvite": {
       "subject": "Administrator invitation on flight_vis",
       "bodyPlain": "Hello,\n\nYou were invited as a club administrator. Use this link (expires in {minutes} minutes):\n{url}\n\nIf you did not expect this email, ignore it.",

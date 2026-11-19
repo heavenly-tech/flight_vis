@@ -41,6 +41,7 @@ pub(crate) struct AppState {
     pub(crate) login_throttle: LoginThrottle,
     pub(crate) device_register_throttle: LoginThrottle,
     pub(crate) share_lookup_throttle: LoginThrottle,
+    pub(crate) account_password_throttle: LoginThrottle,
     pub(crate) mailer: club::mail::Mailer,
     pub(crate) webauthn: Option<club::webauthn::WebauthnState>,
     pub(crate) sse_limiter: std::sync::Arc<club::sse_limit::SseLimiter>,
@@ -67,6 +68,7 @@ fn app_state(
             login_throttle: LoginThrottle::default(),
             device_register_throttle: LoginThrottle::default(),
             share_lookup_throttle: LoginThrottle::default(),
+            account_password_throttle: LoginThrottle::default(),
             mailer: club::mail::Mailer::from_env(club::mail::MailOutbox::default()),
             webauthn: club::webauthn::WebauthnState::from_env(),
             sse_limiter: std::sync::Arc::new(club::sse_limit::SseLimiter::default()),
@@ -396,6 +398,7 @@ fn login_fields(headers: &HeaderMap, body: &[u8]) -> LoginFields {
 /// (the one appended by our own proxy).
 pub(crate) const LOGIN_MAX_ATTEMPTS: usize = 8;
 pub(crate) const SHARE_LOOKUP_MAX_ATTEMPTS: usize = 60;
+pub(crate) const ACCOUNT_PASSWORD_MAX_ATTEMPTS: usize = 10;
 const LOGIN_WINDOW_SECS: u64 = 60;
 
 #[derive(Clone, Default)]

@@ -89,7 +89,7 @@ async fn account_switch_active_club() {
     let now = now_ms();
     let acct = db.create_account(email, None, now).await.unwrap();
     mark_account_verified(&db, &acct, now).await;
-    db.set_account_password(&acct, "password12", now)
+    db.set_account_password(&acct, "password12", now, None, None)
         .await
         .unwrap();
     let pid = crate::club::auth::new_id();
@@ -148,20 +148,13 @@ async fn join_then_approve_membership() {
         .execute(&db.pool)
         .await
         .unwrap();
-    db.set_account_password(&acct, "password12", now)
+    db.set_account_password(&acct, "password12", now, None, None)
         .await
         .unwrap();
     let mid = db
         .join_club_with_account(&acct, &club, "Joiner", "", now)
         .await
         .unwrap();
-    let pilot_id: String =
-        sqlx::query_scalar("SELECT pilot_id FROM club_memberships WHERE id = $1")
-            .bind(&mid)
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
-    db.mark_email_verified(&pilot_id, now).await.unwrap();
     db.approve_membership(&mid, now).await.unwrap();
     let status: String = sqlx::query_scalar("SELECT status FROM club_memberships WHERE id = $1")
         .bind(&mid)
@@ -218,7 +211,7 @@ async fn suspended_account_cannot_login() {
     let now = now_ms();
     let acct = db.create_account("sus@test", None, now).await.unwrap();
     mark_account_verified(&db, &acct, now).await;
-    db.set_account_password(&acct, "password12", now)
+    db.set_account_password(&acct, "password12", now, None, None)
         .await
         .unwrap();
     db.set_account_suspended(&acct, now).await.unwrap();
@@ -241,7 +234,7 @@ async fn account_switch_rejects_suspended_club() {
     db.try_consume_magic_club_verify(&token, now).await.unwrap();
     let acct = db.create_account("sus-sw@test", None, now).await.unwrap();
     mark_account_verified(&db, &acct, now).await;
-    db.set_account_password(&acct, "password12", now)
+    db.set_account_password(&acct, "password12", now, None, None)
         .await
         .unwrap();
     let mid: String = sqlx::query_scalar(

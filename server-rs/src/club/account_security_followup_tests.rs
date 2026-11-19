@@ -320,6 +320,7 @@ async fn account_magic_get_does_not_consume_token() {
         login_throttle: crate::LoginThrottle::default(),
         device_register_throttle: crate::LoginThrottle::default(),
         share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -670,6 +671,7 @@ async fn webauthn_login_finish_rejects_invalid_nonce_via_http() {
         login_throttle: crate::LoginThrottle::default(),
         device_register_throttle: crate::LoginThrottle::default(),
         share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: Some(webauthn),
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -829,7 +831,9 @@ async fn honest_signup_set_password_after_verify_works() {
         .consume_account_magic(&raw, Some(&nonce), now)
         .await
         .unwrap();
-    db.set_account_password(&acct.id, pw, now).await.unwrap();
+    db.set_account_password(&acct.id, pw, now, None, None)
+        .await
+        .unwrap();
     assert!(db
         .account_login_password(email, pw, now, "127.0.0.1")
         .await
@@ -872,6 +876,7 @@ async fn account_login_magic_http_roundtrip_sets_session_cookie() {
         login_throttle: crate::LoginThrottle::default(),
         device_register_throttle: crate::LoginThrottle::default(),
         share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -942,6 +947,7 @@ async fn post_account_magic_without_cookies_requires_csrf() {
         login_throttle: crate::LoginThrottle::default(),
         device_register_throttle: crate::LoginThrottle::default(),
         share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -1227,6 +1233,7 @@ async fn webauthn_login_begin_returns_public_key_via_http() {
         login_throttle: crate::LoginThrottle::default(),
         device_register_throttle: crate::LoginThrottle::default(),
         share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: Some(webauthn),
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -1395,20 +1402,10 @@ async fn admin_invite_clears_legacy_pilot_password() {
     db.ensure_membership_row(&inviter, &club_id, "admin", "active")
         .await
         .unwrap();
-    let attacker_pilot = new_id();
-    let legacy_hash = hash_password("attackerpass1").unwrap();
-    sqlx::query(
-        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
-         VALUES ($1, $2, 'Atk', $3, '', 'pending', 'pilot', $4, $5)",
-    )
-    .bind(&attacker_pilot)
-    .bind(&club_id)
-    .bind(email)
-    .bind(&legacy_hash)
-    .bind(now)
-    .execute(&db.pool)
-    .await
-    .unwrap();
+    let _ = db
+        .register_into_account(&club_id, "Atk", email, "", "attackerpass1", now)
+        .await
+        .unwrap();
     let invite = db
         .invite_admin_membership(&club_id, email, &inviter, now)
         .await
@@ -1456,4 +1453,279 @@ async fn legacy_register_does_not_copy_password_to_verified_account() {
             .await,
         Err(LoginError::Invalid)
     ));
+}
+
+#[tokio::test]
+#[serial]
+async fn approve_membership_rejects_unverified_account_leaves_membership_pending() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_id = db.default_club_id().await.unwrap();
+    sqlx::query("UPDATE clubs SET status = 'live', email_verified_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(&club_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let acct = db
+        .create_account("unverified-approve@test", None, now)
+        .await
+        .unwrap();
+    let pilot_id = new_id();
+    let mid = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, account_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, $3, 'U', 'unverified-approve@test', '', 'pending', 'pilot', '', $4)",
+    )
+    .bind(&pilot_id)
+    .bind(&club_id)
+    .bind(&acct)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
+         VALUES ($1, $2, $3, 'pilot', 'pending', $4)",
+    )
+    .bind(&mid)
+    .bind(&pilot_id)
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert!(db.approve_membership(&mid, now).await.is_err());
+    let status: String = sqlx::query_scalar("SELECT status FROM club_memberships WHERE id = $1")
+        .bind(&mid)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "pending");
+    let pilot_status: String = sqlx::query_scalar(
+        "SELECT status FROM pilots WHERE id = (SELECT pilot_id FROM club_memberships WHERE id = $1)",
+    )
+    .bind(&mid)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(pilot_status, "pending");
+}
+
+#[tokio::test]
+#[serial]
+async fn legacy_register_verified_account_pilot_has_no_password() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = "legacy-verified-pilot-pw@test";
+    let victim_hash = hash_password("victimpass12").unwrap();
+    let acct = new_id();
+    sqlx::query(
+        "INSERT INTO accounts (id, email, password_hash, created_at, email_verified_at)
+         VALUES ($1, $2, $3, $4, $4)",
+    )
+    .bind(&acct)
+    .bind(email)
+    .bind(&victim_hash)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let club_id = db.default_club_id().await.unwrap();
+    let (pilot_id, _) = db
+        .register_into_account(&club_id, "Atk", email, "L", "attackerpass1", now)
+        .await
+        .unwrap();
+    let ph: String = sqlx::query_scalar("SELECT password_hash FROM pilots WHERE id = $1")
+        .bind(&pilot_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert!(ph.is_empty());
+    assert!(matches!(
+        db.login(&club_id, email, "attackerpass1", now).await,
+        Err(LoginError::Invalid)
+    ));
+}
+
+#[tokio::test]
+#[serial]
+async fn set_account_password_wrong_current_rejected() {
+    use crate::club::db_account::AccountSignupError;
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = "wrong-current-pw@test";
+    let id = db.create_account(email, None, now).await.unwrap();
+    sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(&id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    db.set_account_password(&id, "password12", now, None, None)
+        .await
+        .unwrap();
+    let err = db
+        .set_account_password(&id, "newpassword1", now, Some("wrongpass1"), None)
+        .await
+        .unwrap_err();
+    assert_eq!(err, AccountSignupError::WrongPassword);
+}
+
+#[tokio::test]
+#[serial]
+async fn set_account_password_revokes_other_account_sessions() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = "revoke-sessions-pw@test";
+    let id = db.create_account(email, None, now).await.unwrap();
+    sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(&id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    db.set_account_password(&id, "password12", now, None, None)
+        .await
+        .unwrap();
+    let (keep, _) = db
+        .account_login_password(email, "password12", now, "127.0.0.1")
+        .await
+        .unwrap();
+    let other = db.create_account_session(&id, None, now).await.unwrap();
+    let before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM account_sessions WHERE account_id = $1")
+            .bind(&id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(before, 2);
+    db.set_account_password(&id, "newpassword1", now, Some("password12"), Some(&keep))
+        .await
+        .unwrap();
+    let after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM account_sessions WHERE account_id = $1")
+            .bind(&id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(after, 1);
+    assert!(db.account_from_session(&keep, now).await.is_some());
+    assert!(db.account_from_session(&other, now).await.is_none());
+}
+
+#[tokio::test]
+#[serial]
+async fn set_account_password_rejects_over_max_length() {
+    use crate::club::db_account::AccountSignupError;
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let id = db.create_account("long-pw@test", None, now).await.unwrap();
+    sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(&id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let long = "a".repeat(129);
+    let err = db
+        .set_account_password(&id, &long, now, None, None)
+        .await
+        .unwrap_err();
+    assert_eq!(err, AccountSignupError::TooLong);
+}
+
+#[tokio::test]
+#[serial]
+async fn account_signup_nonce_cookie_http_set_and_cleared() {
+    use crate::auth::Auth;
+    use crate::club::auth;
+    use crate::{build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState};
+    use axum::http::{header, Request, StatusCode};
+    use std::sync::Arc;
+    use tower::Service;
+    let data_dir = tempfile::tempdir().unwrap();
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = "signup-nonce-cookie@test";
+    let raw = db
+        .issue_account_magic_signup(email, Some("password12"), Some("nonce-abc"), now)
+        .await
+        .unwrap();
+    let make_router = |db: ClubDb| {
+        let (video_queue, _) = tokio::sync::mpsc::channel(4);
+        AppState {
+            dist_dir: data_dir.path().join("dist"),
+            auth: Auth::with_password("x"),
+            device_auth: DeviceAuth::empty(),
+            live: Arc::new(LiveEngine::new(data_dir.path())),
+            store: Store::new(data_dir.path()),
+            club: Some(db),
+            video_queue,
+            login_throttle: crate::LoginThrottle::default(),
+            device_register_throttle: crate::LoginThrottle::default(),
+            share_lookup_throttle: crate::LoginThrottle::default(),
+            account_password_throttle: crate::LoginThrottle::default(),
+            mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+            webauthn: None,
+            sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+            superadmin_emails: HashSet::new(),
+        }
+    };
+    let mut router = build_router(make_router(db.clone()));
+    let post_res = router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/auth/magic")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::HOST, "127.0.0.1:8080")
+                .header(
+                    header::COOKIE,
+                    format!("{}=nonce-abc", auth::SIGNUP_NONCE_COOKIE),
+                )
+                .body(axum::body::Body::from(format!("token={raw}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(post_res.status(), StatusCode::FOUND);
+    let cookies: Vec<String> = post_res
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .map(String::from)
+        .collect();
+    assert!(
+        cookies
+            .iter()
+            .any(|c| c.starts_with(auth::SIGNUP_NONCE_COOKIE) && c.contains("Max-Age=0")),
+        "expected cleared signup nonce cookie, got {cookies:?}"
+    );
+    let mut router2 = build_router(make_router(db));
+    let signup_res = router2
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/signup")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::HOST, "127.0.0.1:8080")
+                .header("Sec-Fetch-Site", "same-origin")
+                .body(axum::body::Body::from(
+                    r#"{"email":"other-nonce@test","password":"password12"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(signup_res.status(), StatusCode::CREATED);
+    let set = signup_res
+        .headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(set.starts_with(auth::SIGNUP_NONCE_COOKIE));
+    assert!(set.contains("Secure"));
+    assert!(set.contains("Path=/"));
 }

@@ -8,7 +8,11 @@ use sha2::{Digest, Sha256};
 
 pub const COOKIE: &str = "fv_club_session";
 pub const ACCOUNT_COOKIE: &str = "fv_account_session";
-pub const SIGNUP_NONCE_COOKIE: &str = "fv_account_signup_nonce";
+/// `__Host-` prefix: Path=/, Secure, no Domain (set/clear helpers enforce this).
+pub const SIGNUP_NONCE_COOKIE: &str = "__Host-fv_account_signup_nonce";
+pub const ACCOUNT_PASSWORD_MAX_CHARS: usize = 128;
+/// bcrypt only uses the first 72 bytes; reject longer UTF-8 passwords for parity.
+pub const ACCOUNT_PASSWORD_MAX_BYTES: usize = 72;
 pub const DISPLAY_COOKIE: &str = "fv_club_display";
 pub const SESSION_TTL_SEC: i64 = 12 * 3600;
 
@@ -155,13 +159,12 @@ pub fn parse_signup_nonce_cookie(headers: &HeaderMap) -> Option<String> {
     None
 }
 
-pub fn set_signup_nonce_cookie(nonce: &str, secure: bool) -> String {
-    let mut cookie =
-        format!("{SIGNUP_NONCE_COOKIE}={nonce}; Path=/; HttpOnly; SameSite=Lax; Max-Age=900");
-    if secure {
-        cookie.push_str("; Secure");
-    }
-    cookie
+pub fn set_signup_nonce_cookie(nonce: &str, _secure: bool) -> String {
+    format!("{SIGNUP_NONCE_COOKIE}={nonce}; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=900")
+}
+
+pub fn clear_signup_nonce_cookie(_secure: bool) -> String {
+    format!("{SIGNUP_NONCE_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=0")
 }
 
 pub fn parse_session_cookie(headers: &HeaderMap) -> Option<String> {
