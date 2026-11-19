@@ -22,20 +22,18 @@ test("club login honours safe next when session already exists", async ({ page }
     data: { membershipId: adminMem!.id },
   });
   expect(sw.ok()).toBeTruthy();
-  await page.goto("/club-login.html?mode=club&club=demo&next=/club-admin-kiosk-layout.html", {
-    waitUntil: "load",
-  });
+  await page.goto("/login?next=/club-admin-kiosk-layout.html", { waitUntil: "load" });
   await page.waitForURL(/\/club-admin-kiosk-layout\.html/, { timeout: 20_000 });
 });
 
-test("club login form honours safe next after sign-in", async ({ page }) => {
-  await page.goto("/club-login.html?mode=club&club=demo&next=/club-admin-kiosk-layout.html", {
+test("password login honours safe next after sign-in", async ({ page }) => {
+  await page.goto("/login?mode=password&next=/club-admin-kiosk-layout.html", {
     waitUntil: "domcontentloaded",
   });
-  await page.locator("#form input[name=email]").fill("admin@demo.test");
-  await page.locator("#form input[name=password]").fill("password12");
+  await page.locator("#password-form input[name=email]").fill("admin@demo.test");
+  await page.locator("#password-form input[name=password]").fill("password12");
   await Promise.all([
     page.waitForURL(/\/club-admin-kiosk-layout\.html/, { timeout: 25_000 }),
-    page.locator("#form button[type=submit]").click(),
+    page.locator("#password-form button[type=submit]").click(),
   ]);
 });

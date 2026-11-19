@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Inicia sesión en flight_vis con correo y contraseña o enlace mágico." />
+    <meta name="description" content="Inicia sesión en flight_vis con enlace mágico o contraseña." />
     <title data-i18n="club.login.title">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
@@ -43,7 +43,7 @@
         display: flex;
         flex-direction: column;
         gap: 0.5rem;
-        margin-top: 1rem;
+        margin-top: 1.25rem;
       }
       .row-links a {
         text-align: center;
@@ -65,11 +65,23 @@
         min-height: 1.2em;
         font-size: 0.9rem;
       }
-      .magic {
-        background: transparent;
-        border: 1px solid rgba(255, 255, 255, 0.18);
+      .muted-link {
+        display: inline-block;
+        margin-top: 0.75rem;
+        font-size: 0.9rem;
         color: #67e8f9;
+      }
+      .primary-btn {
+        background: #ecebff;
+        color: #15132a;
+        border: 0;
+        border-radius: 10px;
+        font-weight: 650;
         cursor: pointer;
+      }
+      details.muted {
+        margin-top: 1rem;
+        font-size: 0.9rem;
       }
     </style>
   </head>
@@ -77,20 +89,37 @@
     <main>
       <div id="lang-slot"></div>
       <h1 data-i18n="club.login.title"></h1>
-      <p class="lead" data-i18n="entrar.unifiedLead"></p>
-      <form id="login-form" method="post" action="/api/account/login">
-        <label for="email" data-i18n="club.login.email"></label>
-        <input id="email" name="email" type="email" autocomplete="username" required />
-        <label for="password" data-i18n="club.login.password"></label>
-        <input id="password" name="password" type="password" autocomplete="current-password" />
-        <input type="hidden" name="next" id="next" value="/" />
-        <button type="submit" data-i18n="club.login.submit"></button>
-        <button type="button" id="magic-btn" class="magic" data-i18n="club.login.sendMagic"></button>
-        <p class="msg" id="msg"></p>
-      </form>
+      <p class="lead" data-i18n="entrar.magicLead"></p>
+      <section id="magic-panel">
+        <label for="email-magic" data-i18n="club.login.email"></label>
+        <input id="email-magic" name="email" type="email" autocomplete="username" required />
+        <button type="button" id="magic-btn" class="primary-btn" data-i18n="entrar.sendLink"></button>
+        <a id="use-password" class="muted-link" href="/login?mode=password" data-i18n="entrar.usePassword"></a>
+        <p class="msg" id="magic-msg"></p>
+      </section>
+      <section id="password-panel" hidden>
+        <p class="lead" data-i18n="entrar.passwordLead"></p>
+        <form id="password-form" method="post" action="/api/account/login">
+          <input name="email" type="email" autocomplete="username" required data-i18n-placeholder="club.login.email" />
+          <input name="password" type="password" autocomplete="current-password" required data-i18n-placeholder="club.login.password" />
+          <input type="hidden" name="next" id="next" value="/" />
+          <button type="submit" class="primary-btn" data-i18n="club.login.submit"></button>
+        </form>
+        <p class="msg" id="password-msg"></p>
+        <details class="muted">
+          <summary data-i18n="club.login.legacyApk"></summary>
+          <form id="legacy-club-form" method="post" action="/api/club/login">
+            <input type="hidden" name="next" id="legacy-next" value="/club-pilot.html" />
+            <input name="email" type="email" required autocomplete="username" data-i18n-placeholder="club.login.email" />
+            <input name="password" type="password" required minlength="8" autocomplete="current-password" data-i18n-placeholder="club.login.password" />
+            <button type="submit" data-i18n="club.login.legacySubmit"></button>
+          </form>
+        </details>
+        <a class="muted-link" id="back-magic" href="/login" data-i18n="entrar.backMagic"></a>
+      </section>
       <div class="row-links">
-        <a class="primary" href="/club-signup.html" data-i18n="nav.createClub"></a>
-        <a class="secondary" href="/signup.html" data-i18n="account.signup.link"></a>
+        <a class="secondary" href="/signup.html" data-i18n="entrar.createAccount"></a>
+        <a class="primary" href="/club-signup.html" data-i18n="nav.registerClub"></a>
       </div>
     </main>
     <script type="module" src="/src/entrar/loginPage.ts"></script>

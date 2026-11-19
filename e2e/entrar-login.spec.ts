@@ -1,8 +1,8 @@
 import { expect, test } from "@playwright/test";
 
-test("unified login shows email form and signup links", async ({ page }) => {
+test("unified login shows magic email and signup links", async ({ page }) => {
   await page.goto("/login?next=/club-pilot.html", { waitUntil: "load" });
-  await expect(page.locator("#login-form input[name=email]")).toBeVisible();
+  await expect(page.locator("#email-magic")).toBeVisible();
   await expect(page.locator('a[href="/signup.html"]')).toBeVisible();
   await expect(page.locator('a[href="/club-signup.html"]')).toBeVisible();
 });
@@ -23,19 +23,20 @@ test("account password login reaches mis clubs", async ({ page }) => {
   await expect(page.locator("#pick-panel")).toBeVisible();
 });
 
-test("mis clubs: staff slug path for admin next", async ({ page }) => {
-  await page.goto("/club-login.html?mode=club&club=demo&next=/club-admin-kiosk-layout.html", {
+test("password mode account login reaches admin next", async ({ page }) => {
+  await page.goto("/login?mode=password&next=/club-admin-kiosk-layout.html", {
     waitUntil: "domcontentloaded",
   });
-  await page.locator("#form input[name=email]").fill("admin@demo.test");
-  await page.locator("#form input[name=password]").fill("password12");
+  await page.locator("#password-form input[name=email]").fill("admin@demo.test");
+  await page.locator("#password-form input[name=password]").fill("password12");
   await Promise.all([
     page.waitForURL(/\/club-admin-kiosk-layout\.html/, { timeout: 25_000 }),
-    page.locator("#form button[type=submit]").click(),
+    page.locator("#password-form button[type=submit]").click(),
   ]);
 });
 
 test("legacy login route is not linked from public login", async ({ page }) => {
   await page.goto("/login", { waitUntil: "domcontentloaded" });
   await expect(page.locator('a[href*="/login/legacy"]')).toHaveCount(0);
+  await expect(page.locator('a[href*="club-login"]')).toHaveCount(0);
 });

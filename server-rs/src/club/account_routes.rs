@@ -255,7 +255,7 @@ async fn account_login(
     let fields = account_login_fields(&headers, &body);
     let next_q: String = url::form_urlencoded::byte_serialize(fields.next.as_bytes()).collect();
     let success_loc = format!("/account-clubs.html?next={next_q}");
-    let fail_loc = format!("/login?e=1&next={next_q}");
+    let fail_loc = format!("/login?e=1&mode=password&next={next_q}");
     let Some(db) = club_db(&state) else {
         if json {
             return (

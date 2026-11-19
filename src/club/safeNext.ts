@@ -39,20 +39,15 @@ export function safeNextPath(input: string): string {
   return value;
 }
 
-export function clubStaffLoginRedirectUrl(next?: string, club?: string): string {
+export function clubStaffLoginRedirectUrl(next?: string): string {
   const dest = safeNextPath(
     next ?? `${window.location.pathname}${window.location.search}`,
   );
-  const qs = new URLSearchParams({ mode: "club", next: dest });
-  if (club?.trim()) qs.set("club", club.trim().toLowerCase());
-  return `/login?${qs}`;
+  return `/login?${new URLSearchParams({ next: dest })}`;
 }
 
 export function pilotLoginRedirectUrl(next?: string): string {
-  const dest = safeNextPath(
-    next ?? `${window.location.pathname}${window.location.search}`,
-  );
-  return `/login?${new URLSearchParams({ mode: "pilot", next: dest })}`;
+  return clubStaffLoginRedirectUrl(next);
 }
 
 /** @deprecated use {@link clubStaffLoginRedirectUrl} */

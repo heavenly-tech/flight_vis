@@ -340,9 +340,9 @@ fn club_login_is_form_content(content_type: &str) -> bool {
 fn club_login_fail_location(next: &str) -> String {
     let safe = crate::auth::safe_next(next);
     format!(
-        "/club-login.html?{}",
-        serde_urlencoded::to_string([("e", "1"), ("next", safe.as_str())])
-            .unwrap_or_else(|_| "e=1".to_string())
+        "/login?{}",
+        serde_urlencoded::to_string([("e", "1"), ("mode", "password"), ("next", safe.as_str())])
+            .unwrap_or_else(|_| "e=1&mode=password".to_string())
     )
 }
 

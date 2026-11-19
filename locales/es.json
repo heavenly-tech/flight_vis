@@ -21,6 +21,12 @@
   },
   "entrar": {
     "unifiedLead": "Usa tu correo y contraseña, o pide un enlace mágico.",
+    "magicLead": "Ingresa tu correo y te enviaremos un enlace para iniciar sesión.",
+    "passwordLead": "Inicia sesión con tu contraseña.",
+    "sendLink": "Enviar enlace",
+    "usePassword": "Usar contraseña",
+    "backMagic": "← Usar enlace mágico",
+    "createAccount": "Crear cuenta",
     "clubAdmin": "Admin / staff del club",
     "title": "Iniciar sesión",
     "lead": "Elige si entras como club (administración) o como piloto (tu cuenta).",

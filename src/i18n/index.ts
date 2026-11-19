@@ -56,8 +56,6 @@ export function resolveLocale(opts: {
     pick(opts.stored) ??
     pick(opts.userLocale) ??
     pick(opts.clubDefaultLocale) ??
-    parseAcceptLanguage(opts.acceptLanguage ?? null) ??
-    (opts.navigatorLang?.toLowerCase().startsWith("es") ? "es" : null) ??
     pick(CANONICAL_LOCALE) ??
     CANONICAL_LOCALE
   );
@@ -72,7 +70,6 @@ export function initI18n(opts?: {
     userLocale: opts?.userLocale,
     clubDefaultLocale: opts?.clubDefaultLocale,
     stored,
-    navigatorLang: navigator.language,
   });
   state = {
     locale,

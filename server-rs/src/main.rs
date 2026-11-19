@@ -278,6 +278,50 @@ async fn read_login_page(dist_dir: &std::path::Path, configured: bool) -> String
     login_fallback_html(configured)
 }
 
+fn login_redirect_query(query: &HashMap<String, String>, force_password_mode: bool) -> String {
+    let mut pairs: Vec<(&str, String)> = Vec::new();
+    if let Some(next) = query.get("next") {
+        let safe = auth::safe_next(next);
+        if safe != "/" {
+            pairs.push(("next", safe));
+        }
+    }
+    if query.get("e") == Some(&"1".to_string()) {
+        pairs.push(("e", "1".to_string()));
+    }
+    if force_password_mode || query.get("mode").map(String::as_str) == Some("password") {
+        pairs.push(("mode", "password".to_string()));
+    }
+    if pairs.is_empty() {
+        "/login".to_string()
+    } else {
+        let qs = pairs
+            .iter()
+            .map(|(k, v)| format!("{k}={}", url_encode(v)))
+            .collect::<Vec<_>>()
+            .join("&");
+        format!("/login?{qs}")
+    }
+}
+
+async fn club_login_html_redirect(
+    Query(query): Query<HashMap<String, String>>,
+) -> impl IntoResponse {
+    redirect_found(&login_redirect_query(&query, false))
+}
+
+async fn login_legacy_redirect(Query(query): Query<HashMap<String, String>>) -> impl IntoResponse {
+    redirect_found(&login_redirect_query(&query, true))
+}
+
+fn apply_login_mode_html(html: &str, query: &HashMap<String, String>) -> String {
+    if query.get("mode") != Some(&"password".to_string()) {
+        return html.to_string();
+    }
+    html.replace(r#"id="password-panel" hidden"#, r#"id="password-panel""#)
+        .replace(r#"id="magic-panel""#, r#"id="magic-panel" hidden"#)
+}
+
 async fn login_page(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -290,7 +334,8 @@ async fn login_page(
         let next = query.get("next").map(String::as_str).unwrap_or("/");
         return redirect_found(&auth::safe_next(next)).into_response();
     }
-    let html = read_login_page(&state.dist_dir, state.auth.configured()).await;
+    let raw = read_login_page(&state.dist_dir, state.auth.configured()).await;
+    let html = apply_login_mode_html(&raw, &query);
     (
         StatusCode::OK,
         [(header::CONTENT_TYPE, "text/html; charset=UTF-8")],
@@ -304,39 +349,6 @@ async fn login_html_redirect(Query(query): Query<HashMap<String, String>>) -> im
         Some(next) => redirect_found(&format!("/login?next={}", url_encode(next))).into_response(),
         None => redirect_found("/login").into_response(),
     }
-}
-
-async fn login_legacy_page(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
-    let gate = auth_legacy_gate(State(state.clone()), headers.clone())
-        .await
-        .0;
-    let allowed = gate
-        .get("allowed")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if !allowed {
-        let next = query.get("next").map(String::as_str).unwrap_or("/");
-        return redirect_found(&format!("/login?next={}", url_encode(next))).into_response();
-    }
-    let candidate = state.dist_dir.join("login-legacy.html");
-    if let Ok(html) = tokio::fs::read_to_string(&candidate).await {
-        return (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, "text/html; charset=UTF-8")],
-            html,
-        )
-            .into_response();
-    }
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/html; charset=UTF-8")],
-        login_fallback_html(state.auth.configured()),
-    )
-        .into_response()
 }
 
 fn redirect_found(location: &str) -> impl IntoResponse {
@@ -617,7 +629,7 @@ async fn login_post(
         if json {
             return (StatusCode::UNAUTHORIZED, Json(json!({ "error": "locked" }))).into_response();
         }
-        return redirect_found("/login/legacy?locked=1").into_response();
+        return redirect_found("/login?mode=password&locked=1").into_response();
     }
     let fields = login_fields(&headers, &body);
     if !state.auth.check_password(&fields.password) {
@@ -628,7 +640,12 @@ async fn login_post(
             )
                 .into_response();
         }
-        return redirect_found("/login/legacy?e=1").into_response();
+        let mut q = HashMap::new();
+        q.insert("e".to_string(), "1".to_string());
+        if fields.next != "/" {
+            q.insert("next".to_string(), fields.next.clone());
+        }
+        return redirect_found(&login_redirect_query(&q, true)).into_response();
     }
     let secure = is_secure(&headers);
     let cookie = auth::set_cookie_header(&state.auth.mint(now_secs()), secure);
@@ -684,7 +701,8 @@ fn build_router(state: AppState) -> Router {
         .route("/api/auth/legacy-gate", get(auth_legacy_gate))
         .route("/login", get(login_page).post(login_post))
         .route("/login.html", get(login_html_redirect))
-        .route("/login/legacy", get(login_legacy_page))
+        .route("/login/legacy", get(login_legacy_redirect))
+        .route("/club-login.html", get(club_login_html_redirect))
         .route("/logout", get(logout).post(logout));
     if state.club.is_some() {
         app = app.merge(club::router()).merge(club::contract_router());

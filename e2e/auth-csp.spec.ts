@@ -70,11 +70,12 @@ test.describe("credential pages under prod CSP", () => {
   test("club login forms never put password in URL", async ({ page }) => {
     const leaks = installPasswordUrlGuard(page);
     const { consoleErrors } = installCspObservers(page);
-    await page.goto("/club-login.html?mode=pilot", { waitUntil: "domcontentloaded" });
-    await page.locator("#form input[name=email]").waitFor({ state: "visible" });
-    await page.locator("#form input[name=email]").fill("admin@demo.test");
-    await page.locator("#form input[name=password]").fill("password12");
-    const submit = page.locator("#form button[type=submit]");
+    await page.goto("/login?mode=password", { waitUntil: "domcontentloaded" });
+    await page.locator("#legacy-club-form input[name=email]").waitFor({ state: "visible" });
+    await page.locator("details").click();
+    await page.locator('#legacy-club-form input[name="email"]').fill("admin@demo.test");
+    await page.locator('#legacy-club-form input[name="password"]').fill("password12");
+    const submit = page.locator('#legacy-club-form button[type=submit]');
     await submit.click();
     await page.waitForTimeout(800);
     await assertNoPasswordInUrl(page);

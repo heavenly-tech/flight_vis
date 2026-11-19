@@ -679,7 +679,7 @@ mod tests {
         assert_eq!(status, StatusCode::FOUND);
         assert_eq!(
             headers_text.unwrap().to_str().unwrap(),
-            "/login/legacy?locked=1"
+            "/login?mode=password&locked=1"
         );
         cleanup(&data_dir).await;
     }

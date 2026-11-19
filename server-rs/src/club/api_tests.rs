@@ -1144,6 +1144,32 @@ async fn flight_sse_closes_after_membership_removed() {
     assert!(!collected.is_empty());
 }
 
+#[tokio::test]
+#[serial]
+async fn club_login_html_redirects_to_unified_login() {
+    let mut fx = setup().await;
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/club-login.html?next=%2Fclub-pilot.html&e=1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FOUND);
+    let location = res
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(location.starts_with("/login?"));
+    assert!(location.contains("next=%2Fclub-pilot.html"));
+    assert!(location.contains("e=1"));
+    assert!(!location.to_lowercase().contains("password"));
+}
+
 fn ensure_test_i18n() {
     let locales = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../locales");
     let _ = crate::i18n::init_global(&locales);
@@ -1329,10 +1355,12 @@ async fn club_login_form_post_bad_password_preserves_safe_next() {
         .get(header::LOCATION)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert!(location.starts_with("/club-login.html?"));
+    assert!(location.starts_with("/login?"));
     assert!(location.contains("e=1"));
+    assert!(location.contains("mode=password"));
     assert!(location.contains("next=%2Fclub-admin-types.html"));
-    assert!(!location.to_lowercase().contains("password"));
+    assert!(location.contains("mode=password"));
+    assert!(!location.to_lowercase().contains("password="));
 }
 
 #[tokio::test]

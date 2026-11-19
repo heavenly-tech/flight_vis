@@ -2,12 +2,41 @@ import { safeNextPath } from "../club/safeNext";
 
 const params = new URLSearchParams(location.search);
 let nextAfterLogin = safeNextPath(params.get("next") ?? "/");
+const passwordMode = params.get("mode") === "password";
 
-const form = document.querySelector<HTMLFormElement>("#login-form");
-const msg = document.querySelector<HTMLParagraphElement>("#msg");
+const magicPanel = document.getElementById("magic-panel");
+const passwordPanel = document.getElementById("password-panel");
 const nextInput = document.querySelector<HTMLInputElement>("#next");
+const legacyNext = document.querySelector<HTMLInputElement>("#legacy-next");
+const magicMsg = document.querySelector<HTMLParagraphElement>("#magic-msg");
+const passwordMsg = document.querySelector<HTMLParagraphElement>("#password-msg");
+const emailMagic = document.querySelector<HTMLInputElement>("#email-magic");
+const passwordForm = document.querySelector<HTMLFormElement>("#password-form");
+const usePassword = document.getElementById("use-password");
+const backMagic = document.getElementById("back-magic");
 
-if (nextInput) nextInput.value = nextAfterLogin;
+function syncNextInputs(): void {
+  if (nextInput) nextInput.value = nextAfterLogin;
+  if (legacyNext) legacyNext.value = nextAfterLogin;
+}
+
+function applyModeUi(): void {
+  if (passwordMode) {
+    magicPanel?.setAttribute("hidden", "");
+    passwordPanel?.removeAttribute("hidden");
+  } else {
+    passwordPanel?.setAttribute("hidden", "");
+    magicPanel?.removeAttribute("hidden");
+  }
+}
+
+function linkWithNext(href: string): string {
+  const q = new URLSearchParams();
+  if (href.includes("mode=password")) q.set("mode", "password");
+  if (nextAfterLogin !== "/") q.set("next", nextAfterLogin);
+  const qs = q.toString();
+  return qs ? `${href.split("?")[0]}?${qs}` : href.split("?")[0];
+}
 
 declare global {
   interface Window {
@@ -17,45 +46,23 @@ declare global {
 
 window.__fvUnifiedLoginReady = true;
 
-if (form) {
-  form.addEventListener(
-    "submit",
-    async (e) => {
-      e.preventDefault();
-      const body = Object.fromEntries(new FormData(form));
-      const email = String(body.email ?? "").trim();
-      const password = String(body.password ?? "");
-      if (!email) return;
-      const { t, apiErrorMessage } = await import("../i18n/index");
-      if (!password) {
-        if (msg) msg.textContent = t("club.login.passwordOrMagic");
-        return;
-      }
-      const res = await fetch("/api/account/login", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        credentials: "same-origin",
-        body: JSON.stringify({ email, password, next: nextAfterLogin }),
-      });
-      if (!res.ok) {
-        const err = (await res.json().catch(() => ({}))).error ?? "unauthorized";
-        if (msg) msg.textContent = apiErrorMessage(String(err));
-        return;
-      }
-      location.replace(
-        `/account-clubs.html?next=${encodeURIComponent(nextAfterLogin)}`,
-      );
-    },
-    { capture: true },
-  );
+applyModeUi();
+syncNextInputs();
+
+if (usePassword instanceof HTMLAnchorElement) {
+  usePassword.href = linkWithNext("/login?mode=password");
+}
+if (backMagic instanceof HTMLAnchorElement) {
+  backMagic.href = linkWithNext("/login");
 }
 
+passwordForm?.addEventListener("submit", () => {
+  const button = passwordForm.querySelector("button[type=submit]");
+  if (button instanceof HTMLButtonElement) button.disabled = true;
+});
+
 document.getElementById("magic-btn")?.addEventListener("click", async () => {
-  if (!form) return;
-  const email = (form.querySelector('input[name="email"]') as HTMLInputElement).value.trim();
+  const email = emailMagic?.value.trim() ?? "";
   if (!email) return;
   const { t, getLocale } = await import("../i18n/index");
   const res = await fetch("/api/account/magic-link", {
@@ -64,8 +71,16 @@ document.getElementById("magic-btn")?.addEventListener("click", async () => {
     credentials: "same-origin",
     body: JSON.stringify({ email, locale: getLocale() }),
   });
-  if (msg) {
-    msg.textContent = res.ok ? t("club.login.magicSent") : t("club.login.failed");
+  if (magicMsg) {
+    magicMsg.textContent = res.ok ? t("club.login.magicSent") : t("club.login.failed");
+  }
+});
+
+passwordForm?.addEventListener("input", () => {
+  const emailField = passwordForm.querySelector<HTMLInputElement>('input[name="email"]');
+  const magicEmail = emailMagic?.value.trim();
+  if (emailField && magicEmail && !emailField.value) {
+    emailField.value = magicEmail;
   }
 });
 
@@ -76,10 +91,19 @@ void (async () => {
   nextAfterLogin = safeNextPath(
     new URLSearchParams(location.search).get("next") ?? "/",
   );
-  if (nextInput) nextInput.value = nextAfterLogin;
-  if (params.get("e") === "1" && msg) {
+  syncNextInputs();
+  if (usePassword instanceof HTMLAnchorElement) {
+    usePassword.href = linkWithNext("/login?mode=password");
+  }
+  if (backMagic instanceof HTMLAnchorElement) {
+    backMagic.href = linkWithNext("/login");
+  }
+  const err = params.get("e") === "1";
+  if (err) {
     const { apiErrorMessage } = await import("../i18n/index");
-    msg.textContent = apiErrorMessage("unauthorized");
+    const text = apiErrorMessage("unauthorized");
+    if (passwordMode && passwordMsg) passwordMsg.textContent = text;
+    else if (magicMsg) magicMsg.textContent = text;
   }
   const meRes = await fetch("/api/account/me", { credentials: "same-origin" });
   if (meRes.ok) {
