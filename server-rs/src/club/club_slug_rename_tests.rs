@@ -284,6 +284,7 @@ async fn club_slug_same_club_reclaims_old_slug() {
 async fn club_slug_rename_authz_matrix() {
     let mut fx = slug_fixture().await;
     let slug = format!("authz-{}", &new_id()[..6]);
+    let club_a_before = db_slug(&fx.db, &fx.club_a).await;
     let pilot_cookie = fx.pilot_cookie.clone();
     let staff_cookie = fx.staff_cookie.clone();
     let admin_b_cookie = fx.admin_b_cookie.clone();
