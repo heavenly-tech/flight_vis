@@ -11,10 +11,15 @@ test.describe("account join club", () => {
     });
     expect(login.ok()).toBeTruthy();
     await page.goto("/account-clubs.html", { waitUntil: "load" });
-    await expect(page.locator("#pick-panel")).toBeVisible({ timeout: 15_000 });
+    await page.waitForResponse(
+      (r) => r.url().includes("/api/account/me") && r.status() === 200,
+      { timeout: 20_000 },
+    );
+    await expect(page.locator("#club-list li").first()).toBeVisible({ timeout: 15_000 });
     await page.locator("#join-open").click();
+    await expect(page.locator("#join-panel")).toBeVisible({ timeout: 10_000 });
     const joinForm = page.locator("#join-form");
-    await expect(joinForm).toBeVisible({ timeout: 10_000 });
+    await expect(joinForm).toBeVisible();
     await joinForm.locator('input[name="slug"]').fill("demo");
     await joinForm.locator("button[type=submit]").click();
     await page.waitForTimeout(800);
