@@ -13,14 +13,19 @@ test("admin phone check-in QR is hidden until Mostrar", async ({ page }) => {
     page.waitForURL(/\/club-admin-checkin-qr\.html/, { timeout: 30_000 }),
     page.locator('button[type="submit"]').click(),
   ]);
+  await expect(page.locator("#btn-show-qr")).toBeAttached({ timeout: 30_000 });
   await page.waitForFunction(
-    () => !(document.querySelector("#btn-show-qr") as HTMLButtonElement | null)?.disabled,
+    () => {
+      const b = document.querySelector("#btn-show-qr") as HTMLButtonElement | null;
+      return b !== null && !b.disabled;
+    },
     { timeout: 60_000 },
   );
   await expect(page.locator("#qr-panel")).toBeHidden();
-  const showBtn = page.locator("#btn-show-qr");
-  await showBtn.click({ force: true });
-  await expect(page.locator("#qr-panel")).toHaveJSProperty("hidden", false);
+  await page.locator("#btn-show-qr").evaluate((el) => {
+    (el as HTMLButtonElement).click();
+  });
+  await expect(page.locator("#qr-panel")).toHaveJSProperty("hidden", false, { timeout: 10_000 });
   await expect(page.locator("#qr-img")).toHaveAttribute("src", /\/api\/admin\/checkin-qr\.svg/, {
     timeout: 15_000,
   });

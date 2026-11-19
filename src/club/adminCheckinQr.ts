@@ -80,6 +80,7 @@ void (async () => {
   mountAdminNav();
   try {
     await requireAdmin();
+    btnShow.removeAttribute("disabled");
     btnShow.disabled = false;
     document.body.dataset.checkinQrReady = "1";
   } catch (e) {
