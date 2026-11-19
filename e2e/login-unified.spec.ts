@@ -7,13 +7,13 @@ import { HTML_PAGE_CSP } from "./csp-constants";
 
 test.describe("unified /login", () => {
   test("club-login.html redirects to /login with next preserved", async ({
-    page,
+    request,
   }) => {
-    const res = await page.goto("/club-login.html?next=%2Fclub-pilot.html", {
-      waitUntil: "commit",
+    const res = await request.get("/club-login.html?next=%2Fclub-pilot.html", {
+      maxRedirects: 0,
     });
-    expect(res?.status()).toBe(302);
-    const location = res?.headers()["location"] ?? "";
+    expect(res.status()).toBe(302);
+    const location = res.headers().location ?? "";
     expect(location).toMatch(/^\/login\?/);
     expect(location).toContain("next=%2Fclub-pilot.html");
     assertNoPasswordInUrl(location);
@@ -50,6 +50,7 @@ test.describe("unified /login", () => {
     });
     const page = await context.newPage();
     await page.goto("/login", { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(() => document.documentElement.lang.startsWith("es"));
     const title = await page.locator("h1").innerText();
     expect(title.toLowerCase()).toMatch(/sesión|iniciar/);
     await context.close();

@@ -22,7 +22,7 @@ test.describe("credential pages under prod CSP", () => {
     await page.goto("/login?mode=password&next=/club-pilot.html", {
       waitUntil: "domcontentloaded",
     });
-    await page.waitForFunction(() => window.__fvUnifiedLoginReady === true);
+    await page.locator("#password-form input[name=email]").waitFor({ state: "visible" });
     await page.locator("#password-form input[name=email]").fill("admin@demo.test");
     await page.locator("#password-form input[name=password]").fill("password12");
     await page.locator("#password-form button[type=submit]").click();
@@ -48,7 +48,7 @@ test.describe("credential pages under prod CSP", () => {
   test("magic link request never puts password in URL", async ({ page }) => {
     const leaks = installPasswordUrlGuard(page);
     await page.goto("/login", { waitUntil: "domcontentloaded" });
-    await page.waitForFunction(() => window.__fvUnifiedLoginReady === true);
+    await page.locator("#email-magic").waitFor({ state: "visible" });
     await page.locator("#email-magic").fill("admin@demo.test");
     await page.locator("#magic-btn").click();
     await page.waitForTimeout(300);
