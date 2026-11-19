@@ -75,7 +75,7 @@ btnHide.addEventListener("click", () => setVisible(false));
 btnShow.disabled = true;
 
 void (async () => {
-  void startClubPage({ switcher: "#lang-slot" });
+  await startClubPage({ switcher: "#lang-slot" });
   if (!(await ensureClubAdminOrRedirect())) return;
   mountAdminNav();
   try {

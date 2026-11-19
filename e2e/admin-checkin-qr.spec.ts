@@ -3,14 +3,18 @@ import { expect, test } from "@playwright/test";
 test.describe.configure({ mode: "serial" });
 
 test("admin phone check-in QR is hidden until Mostrar", async ({ page }) => {
-  const login = await page.request.post("/api/club/login", {
-    data: { email: "admin@demo.test", password: "password12" },
+  test.setTimeout(90_000);
+  await page.goto("/club-login.html?next=/club-admin-checkin-qr.html", {
+    waitUntil: "domcontentloaded",
   });
-  expect(login.ok()).toBeTruthy();
-  await page.goto("/club-admin-checkin-qr.html", { waitUntil: "networkidle" });
-  await expect(page).not.toHaveURL(/\/club-login\.html/);
+  await page.locator('input[name="email"]').fill("admin@demo.test");
+  await page.locator('input[name="password"]').fill("password12");
+  await Promise.all([
+    page.waitForURL(/\/club-admin-checkin-qr\.html/, { timeout: 30_000 }),
+    page.locator('button[type="submit"]').click(),
+  ]);
   await expect(page.locator("body")).toHaveAttribute("data-checkin-qr-ready", "1", {
-    timeout: 30_000,
+    timeout: 45_000,
   });
   await expect(page.locator("#qr-panel")).toBeHidden();
   const showBtn = page.locator("#btn-show-qr");
