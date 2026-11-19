@@ -1282,7 +1282,9 @@ async fn kiosk_checkin_qr_visible_admin_can_set_and_display_reads() {
     let disp_body = to_bytes(disp.into_body(), usize::MAX).await.unwrap();
     let disp_layout: serde_json::Value = serde_json::from_slice(&disp_body).unwrap();
     assert_eq!(
-        disp_layout.get("checkinQrVisible").and_then(|v| v.as_bool()),
+        disp_layout
+            .get("checkinQrVisible")
+            .and_then(|v| v.as_bool()),
         Some(false)
     );
 }
@@ -1292,7 +1294,7 @@ async fn kiosk_checkin_qr_visible_admin_can_set_and_display_reads() {
 async fn kiosk_checkin_qr_visible_staff_and_pilot_forbidden() {
     let mut fx = setup().await;
     let club_id = fx.club.default_club_id().await.unwrap();
-  fx.club
+    fx.club
         .ensure_membership_row(&fx._pilot_b, &club_id, "staff", "approved")
         .await
         .unwrap();

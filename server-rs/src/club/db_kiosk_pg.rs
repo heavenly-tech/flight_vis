@@ -60,7 +60,11 @@ impl ClubDb {
         self.kiosk_qr_layout(club_id).await
     }
 
-    pub async fn club_checkin_ok_since(&self, club_id: &str, since_ms: i64) -> Result<bool, DbError> {
+    pub async fn club_checkin_ok_since(
+        &self,
+        club_id: &str,
+        since_ms: i64,
+    ) -> Result<bool, DbError> {
         let n: i64 = sqlx::query_scalar(
             "SELECT COUNT(*)::bigint FROM checkins
              WHERE club_id = $1 AND outcome = 'ok' AND created_at > $2",
