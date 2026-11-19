@@ -1,11 +1,6 @@
 //! Shared HTTP handling for club slug rename (admin + superadmin).
 
-use crate::club::{
-    db::now_ms,
-    db_club_slug::ClubSlugRenameError,
-    routes::club_db,
-    slug::validate_club_slug_candidate,
-};
+use crate::club::{db::now_ms, db_club_slug::ClubSlugRenameError, routes::club_db, slug::validate_club_slug_candidate};
 use crate::{auth, AppState};
 use axum::{
     http::{header, HeaderMap, StatusCode},
