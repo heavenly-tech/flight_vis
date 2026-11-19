@@ -123,6 +123,21 @@
       "title": "Club suspended",
       "body": "This club is suspended. Club admins should contact the platform operator."
     },
+    "admin": {
+      "addAdmin": "Add administrator",
+      "inviteSent": "If the email is valid, we sent an invitation.",
+      "inviteAcceptTitle": "Administrator invitation",
+      "inviteLead": "Confirm the link to manage this club.",
+      "promote": "Promote to administrator",
+      "demote": "Remove administrator role",
+      "remove": "Remove access",
+      "lastAdmin": "At least one active administrator must remain.",
+      "membershipsHeading": "Memberships",
+      "pendingHeading": "Pending pilots",
+      "roleAdmin": "Administrator",
+      "roleStaff": "Staff",
+      "rolePilot": "Pilot"
+    },
     "map": {
       "title": "Club map",
       "membersOnly": "Approved members only. Visibility enforced server-side.",
@@ -306,6 +321,11 @@
       "subject": "Access request rejected",
       "bodyPlain": "Your request was rejected. Reason: {reason}",
       "bodyHtml": "<p>Your request was rejected.</p><p>Reason: {reason}</p>"
+    },
+    "adminInvite": {
+      "subject": "Administrator invitation on flight_vis",
+      "bodyPlain": "Hello,\n\nYou were invited as a club administrator. Use this link (expires in {minutes} minutes):\n{url}\n\nIf you did not expect this email, ignore it.",
+      "bodyHtml": "<p>Hello,</p><p>You were invited as a club administrator. <a href=\"{url}\">Accept the invitation</a> (expires in {minutes} minutes).</p><p>If you did not expect this email, ignore it.</p>"
     }
   }
 }

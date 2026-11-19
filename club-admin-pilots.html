@@ -9,16 +9,36 @@
       main { max-width: 44rem; margin: 1rem auto; padding: 0 1rem 2rem; }
       .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
       button { font: inherit; padding: .3rem .5rem; }
+      #invite-form { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1rem; align-items: center; }
+      #invite-form input { font: inherit; padding: .3rem .5rem; min-width: 14rem; }
+      .mem-row { margin: .5rem 0; padding: .5rem 0; border-bottom: 1px solid #ddd; }
+      .mem-row .badge { font-size: .85rem; opacity: .85; margin-left: .35rem; }
+      .mem-actions { margin-top: .35rem; display: flex; flex-wrap: wrap; gap: .35rem; }
+      #invite-status { font-size: .9rem; min-height: 1.2rem; }
     </style>
   </head>
   <body>
     <main>
-      <h1>Pilots</h1>
+      <h1 data-i18n="nav.pilots">Pilotos</h1>
       <div id="admin-nav"></div>
-      <h2 style="font-size:1rem">Pending approval</h2>
+      <section id="invite-section">
+        <h2 style="font-size:1rem" data-i18n="club.admin.addAdmin">Agregar administrador</h2>
+        <p style="font-size:.9rem;margin:.25rem 0 .5rem" data-i18n="club.admin.inviteLead">
+          Confirma el enlace para administrar este club.
+        </p>
+        <form id="invite-form">
+          <label>
+            <span class="visually-hidden" data-i18n="club.login.email">Correo</span>
+            <input id="invite-email" type="email" required autocomplete="email" data-i18n-placeholder="club.login.email" />
+          </label>
+          <button type="submit" data-i18n="club.admin.addAdmin">Agregar administrador</button>
+        </form>
+        <p id="invite-status" role="status" aria-live="polite"></p>
+      </section>
+      <h2 style="font-size:1rem" data-i18n="club.admin.pendingHeading">Pilotos pendientes</h2>
       <ul id="pending"></ul>
-      <h2 style="font-size:1rem">All pilots</h2>
-      <ul id="all"></ul>
+      <h2 style="font-size:1rem" data-i18n="club.admin.membershipsHeading">Membresías</h2>
+      <div id="memberships"></div>
     </main>
     <script type="module" src="/src/club/adminPilots.ts"></script>
   </body>

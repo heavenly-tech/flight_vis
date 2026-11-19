@@ -137,6 +137,21 @@
     "suspended": {
       "title": "Club suspendido",
       "body": "Este club está suspendido. Si eres administrador, contacta a la plataforma."
+    },
+    "admin": {
+      "addAdmin": "Agregar administrador",
+      "inviteSent": "Si el correo es válido, enviamos una invitación.",
+      "inviteAcceptTitle": "Invitación de administrador",
+      "inviteLead": "Confirma el enlace para administrar este club.",
+      "promote": "Promover a administrador",
+      "demote": "Dejar de ser administrador",
+      "remove": "Quitar acceso",
+      "lastAdmin": "Debe quedar al menos un administrador activo.",
+      "membershipsHeading": "Membresías",
+      "pendingHeading": "Pilotos pendientes",
+      "roleAdmin": "Administrador",
+      "roleStaff": "Staff",
+      "rolePilot": "Piloto"
     }
   },
   "pilot": {
@@ -309,6 +324,11 @@
       "subject": "Verifica tu club en flight_vis",
       "bodyPlain": "Hola,\n\nVerifica el club {name} con este enlace (vence en {minutes} minutos):\n{url}\n",
       "bodyHtml": "<p>Verifica el club <strong>{name}</strong> con <a href=\"{url}\">este enlace</a> (vence en {minutes} minutos).</p>"
+    },
+    "adminInvite": {
+      "subject": "Invitación de administrador en flight_vis",
+      "bodyPlain": "Hola,\n\nTe invitaron como administrador del club. Usa este enlace (vence en {minutes} minutos):\n{url}\n\nSi no esperabas este correo, ignóralo.",
+      "bodyHtml": "<p>Hola,</p><p>Te invitaron como administrador del club. <a href=\"{url}\">Acepta la invitación</a> (vence en {minutes} minutos).</p><p>Si no esperabas este correo, ignóralo.</p>"
     }
   }
 }
