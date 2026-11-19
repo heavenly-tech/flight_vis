@@ -1234,7 +1234,8 @@ async fn make_admin(fx: &mut Fixture, pilot_id: &str, club_id: &str, cookie_emai
 async fn kiosk_checkin_qr_visible_admin_can_set_and_display_reads() {
     let mut fx = setup().await;
     let club_id = fx.club.default_club_id().await.unwrap();
-    let admin_cookie = make_admin(&mut fx, &fx.pilot_a, &club_id, "a@test").await;
+    let pilot_a = fx.pilot_a.clone();
+    let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
     let post = fx
         .router
         .call(
@@ -1341,7 +1342,8 @@ async fn kiosk_checkin_qr_visible_anonymous_unauthorized() {
 async fn kiosk_checkin_qr_visible_cross_site_post_csrf() {
     let mut fx = setup().await;
     let club_id = fx.club.default_club_id().await.unwrap();
-    let admin_cookie = make_admin(&mut fx, &fx.pilot_a, &club_id, "a@test").await;
+    let pilot_a = fx.pilot_a.clone();
+    let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
     let res = fx
         .router
         .call(

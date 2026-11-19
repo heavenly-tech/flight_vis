@@ -311,7 +311,7 @@ async fn checkin_landing_config(
     let intent = android_package_name()
         .filter(|_| android_deep_link_configured())
         .map(|pkg| intent_url_for_https(&https_url, &pkg, &https_url));
-    match build_landing_json(&state, db, &headers, &slug, Some(intent)).await {
+    match build_landing_json(&state, db, &headers, &slug, intent).await {
         Ok(body) => Json(body).into_response(),
         Err(LandingError::NotFound) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()

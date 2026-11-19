@@ -9,13 +9,13 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::Mutex;
 
 static ANDROID_TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Serializes tests that mutate Android deep-link environment variables.
 #[cfg(test)]
-pub(crate) fn android_test_env_lock() -> MutexGuard<'static, ()> {
+pub(crate) fn android_test_env_lock() -> std::sync::MutexGuard<'static, ()> {
     ANDROID_TEST_ENV_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -313,7 +313,7 @@ mod tests {
         std::env::remove_var("FLIGHT_ANDROID_APP_PACKAGE");
         std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
         std::env::remove_var("ANDROID_CERT_SHA256");
-        let app = well_known_routes();
+        let app = Router::new().route("/.well-known/assetlinks.json", get(assetlinks_handler));
         let res = app
             .oneshot(
                 Request::builder()
@@ -331,7 +331,7 @@ mod tests {
         let _guard = super::android_test_env_lock();
         std::env::set_var("FLIGHT_ANDROID_APP_PACKAGE", "cl.heavenly.flightvis");
         std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", "AA:BB:CC");
-        let app = well_known_routes();
+        let app = Router::new().route("/.well-known/assetlinks.json", get(assetlinks_handler));
         let res = app
             .oneshot(
                 Request::builder()
