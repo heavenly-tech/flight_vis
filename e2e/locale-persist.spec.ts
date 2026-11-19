@@ -1,11 +1,15 @@
 import { test, expect } from "@playwright/test";
 
+async function loginDemoAdmin(page: import("@playwright/test").Page): Promise<void> {
+  const res = await page.request.post("/api/club/login", {
+    data: { email: "admin@demo.test", password: "password12" },
+  });
+  expect(res.ok()).toBeTruthy();
+}
+
 test("logged-in pilot locale persists after reload", async ({ page }) => {
-  await page.goto("/club-login.html", { waitUntil: "networkidle" });
-  await page.fill('input[type="email"]', "admin@demo.test");
-  await page.fill('input[type="password"]', "password12");
-  await page.locator("button[type=submit]").click();
-  await page.waitForURL(/club-pilot\.html/);
+  await loginDemoAdmin(page);
+  await page.goto("/club-pilot.html", { waitUntil: "networkidle" });
   const select = page.locator("#lang-slot select");
   await expect(select).toBeVisible();
   await select.selectOption("en");
@@ -18,11 +22,7 @@ test("logged-in pilot locale persists after reload", async ({ page }) => {
 });
 
 test("admin page language switch updates nav", async ({ page }) => {
-  await page.goto("/club-login.html", { waitUntil: "networkidle" });
-  await page.fill('input[type="email"]', "admin@demo.test");
-  await page.fill('input[type="password"]', "password12");
-  await page.locator("button[type=submit]").click();
-  await page.waitForURL(/club-pilot\.html/);
+  await loginDemoAdmin(page);
   await page.goto("/club-admin-pilots.html", { waitUntil: "networkidle" });
   const nav = page.locator("#admin-nav");
   await expect(nav).toBeVisible();
