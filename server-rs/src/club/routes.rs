@@ -2515,7 +2515,7 @@ async fn admin_checkin_qr_svg(
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
-    checkin_qr_svg_for_club(db, &headers, &club_id).await
+    checkin_qr_svg_for_club(db, &headers, &club_id, false).await
 }
 
 #[derive(Deserialize)]
@@ -2665,12 +2665,13 @@ async fn checkin_qr_svg_for_club(
     db: &ClubDb,
     headers: &HeaderMap,
     club_id: &str,
+    enforce_kiosk_visible: bool,
 ) -> axum::response::Response {
     let layout = match db.kiosk_qr_layout(club_id).await {
         Ok(l) => l,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    if !layout.checkin_qr_visible {
+    if enforce_kiosk_visible && !layout.checkin_qr_visible {
         return StatusCode::NOT_FOUND.into_response();
     }
     let now = now_ms();
@@ -2709,7 +2710,7 @@ async fn club_screen_qr_svg(
         Ok(v) => v,
         Err(e) => return e.into_response(),
     };
-    checkin_qr_svg_for_club(db, &headers, &club_id).await
+    checkin_qr_svg_for_club(db, &headers, &club_id, true).await
 }
 
 async fn device_pair_qr_svg(

@@ -1288,6 +1288,32 @@ async fn kiosk_checkin_qr_visible_admin_can_set_and_display_reads() {
             .and_then(|v| v.as_bool()),
         Some(false)
     );
+
+    let screen_qr = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/club/screen/qr.svg")
+                .header(header::COOKIE, display_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(screen_qr.status(), StatusCode::NOT_FOUND);
+
+    let admin_qr = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/admin/checkin-qr.svg")
+                .header(header::COOKIE, admin_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(admin_qr.status(), StatusCode::OK);
 }
 
 #[tokio::test]
