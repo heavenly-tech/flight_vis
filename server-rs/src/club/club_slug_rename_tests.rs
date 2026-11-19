@@ -23,28 +23,6 @@ struct SlugFx {
     superadmin_cookie: String,
 }
 
-async fn login_cookie(router: &mut axum::Router, email: &str) -> String {
-    let res = router
-        .call(
-            Request::builder()
-                .method("POST")
-                .uri("/api/club/login")
-                .header(header::CONTENT_TYPE, "application/json")
-                .header("sec-fetch-site", "same-origin")
-                .body(Body::from(format!(
-                    r#"{{"email":"{email}","password":"password12"}}"#
-                )))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    res.headers()
-        .get(header::SET_COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .map(String::from)
-        .expect("set-cookie")
-}
-
 async fn session_for_pilot(db: &ClubDb, club_id: &str, email: &str, role: &str) -> String {
     let now = now_ms();
     let pid = new_id();
@@ -116,8 +94,8 @@ async fn slug_fixture() -> SlugFx {
         sse_limiter: Arc::new(crate::club::sse_limit::SseLimiter::default()),
         superadmin_emails: std::collections::HashSet::new(),
     };
-    let mut router = build_router(state);
-    let admin_a_cookie = login_cookie(&mut router, "admin@demo.test").await;
+    let router = build_router(state);
+    let admin_a_cookie = session_for_pilot(&db, &club_a, "slug-adm-a@test", "admin").await;
     let admin_b_cookie = session_for_pilot(&db, &club_b, "slug-adm-b@test", "admin").await;
     let pilot_cookie = session_for_pilot(&db, &club_a, "slug-pilot@test", "pilot").await;
     let staff_cookie = session_for_pilot(&db, &club_a, "slug-staff@test", "staff").await;
