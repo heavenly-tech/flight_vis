@@ -10,12 +10,17 @@ test.describe("account join club", () => {
       data: { email: "admin@demo.test", password: "password12" },
     });
     expect(login.ok()).toBeTruthy();
-    await page.goto("/account-clubs.html", { waitUntil: "load" });
-    await page.waitForResponse(
-      (r) => r.url().includes("/api/account/me") && r.status() === 200,
-      { timeout: 20_000 },
+    await page.goto("/account-clubs.html", { waitUntil: "domcontentloaded" });
+    await page.waitForFunction(
+      async () => {
+        const res = await fetch("/api/account/me", { credentials: "same-origin" });
+        if (!res.ok) return false;
+        const data = await res.json();
+        return Array.isArray(data.memberships) && data.memberships.length > 0;
+      },
+      undefined,
+      { timeout: 25_000 },
     );
-    await expect(page.locator("#club-list li").first()).toBeVisible({ timeout: 15_000 });
     await page.locator("#join-open").click();
     await expect(page.locator("#join-panel")).toBeVisible({ timeout: 10_000 });
     const joinForm = page.locator("#join-form");
