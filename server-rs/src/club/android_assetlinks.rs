@@ -117,7 +117,7 @@ fn certs_from_file(path: &str) -> std::io::Result<Vec<String>> {
     Ok(body
         .lines()
         .map(|l| l.split('#').next().unwrap_or("").trim())
-        .filter_map(|s| normalize_sha256(s))
+        .filter_map(normalize_sha256)
         .collect())
 }
 
