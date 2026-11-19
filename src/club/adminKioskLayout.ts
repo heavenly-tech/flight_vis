@@ -1,6 +1,7 @@
 import { ensureClubAdminOrRedirect } from "./adminGate";
 import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 import { startClubPage } from "./i18nPage";
+import { t } from "../i18n/index";
 import {
   applyLayoutToEl,
   clampKioskQrLayout,
@@ -105,24 +106,24 @@ async function loadLayout(): Promise<void> {
 
 saveVisibleBtn?.addEventListener("click", async () => {
   if (!qrVisible) return;
-  saveStatus.textContent = "Guardando…";
+  saveStatus.textContent = t("admin.saving");
   layout = await api<KioskQrLayout>("/api/admin/club/kiosk-checkin-qr-visible", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ visible: qrVisible.checked }),
   });
   paint();
-  saveStatus.textContent = `Guardado (rev ${layout.rev ?? "?"})`;
+  saveStatus.textContent = t("admin.savedRev", { rev: String(layout.rev ?? "?") });
 });
 
 saveBtn.addEventListener("click", async () => {
-  saveStatus.textContent = "Guardando…";
+  saveStatus.textContent = t("admin.saving");
   layout = await api<KioskQrLayout>("/api/admin/kiosk-layout", {
     method: "PATCH" as const,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...layout, aspect: aspect() }),
   });
-  saveStatus.textContent = `Guardado (rev ${layout.rev ?? "?"})`;
+  saveStatus.textContent = t("admin.savedRev", { rev: String(layout.rev ?? "?") });
 });
 
 resetBtn.addEventListener("click", async () => {
@@ -132,7 +133,7 @@ resetBtn.addEventListener("click", async () => {
     body: JSON.stringify({ aspect: aspect() }),
   });
   paint();
-  saveStatus.textContent = "Restablecido";
+  saveStatus.textContent = t("admin.resetDone");
 });
 
 aspectSel.addEventListener("change", () => {

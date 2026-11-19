@@ -1,5 +1,7 @@
 import { CHECKIN_STEP_SEC } from "./checkinStep";
 import { applyLayoutToEl, type KioskQrLayout } from "./kioskQrLayout";
+import { startClubPage } from "./i18nPage";
+import { t } from "../i18n/index";
 
 export type ClubDisplayOpts = {
   statusEl: HTMLParagraphElement;
@@ -34,6 +36,7 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
   let layout: KioskQrLayout = { x: 0.76, y: 0.76, size: 0.22 };
   let clubQrVisible = true;
   let localQrHidden = false;
+  let qrStepTimer: number | undefined;
 
   async function displaySessionActive(): Promise<boolean> {
     const res = await fetch("/api/display/map", { credentials: "same-origin" });
@@ -50,12 +53,19 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
       body: JSON.stringify({ token }),
     });
     if (!res.ok) {
-      statusEl.textContent = "Invalid display token.";
+      statusEl.textContent = t("kiosk.invalidToken");
       return false;
     }
     activatePanel.hidden = true;
-    statusEl.textContent = "Display activated.";
+    statusEl.textContent = t("kiosk.activated");
     return true;
+  }
+
+  function startQrRefreshLoop(): void {
+    window.clearInterval(qrStepTimer);
+    qrStepTimer = window.setInterval(() => {
+      if (showQr()) refreshQrImage();
+    }, CHECKIN_STEP_SEC * 1000);
   }
 
   function refreshQrImage(): void {
@@ -78,7 +88,16 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     applyMapLayout();
     if (visible) {
       applyLayoutToEl(qrWrap, layout, viewport);
+    } else {
+      qr.removeAttribute("src");
     }
+  }
+
+  function syncLocalToggleLabel(): void {
+    if (!localToggleBtn) return;
+    localToggleBtn.textContent = localQrHidden
+      ? t("kiosk.qrShow")
+      : t("kiosk.qrHide");
   }
 
   async function refreshMap(): Promise<void> {
@@ -135,6 +154,7 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     void (async () => {
       if (await activateDisplay()) {
         refreshQrImage();
+        startQrRefreshLoop();
         await fetchLayout();
         await refreshMap();
         watchLayoutStream();
@@ -145,33 +165,29 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
 
   localToggleBtn?.addEventListener("click", () => {
     localQrHidden = !localQrHidden;
-    localToggleBtn.textContent = localQrHidden
-      ? localToggleBtn.dataset.labelShow ?? "Show QR"
-      : localToggleBtn.dataset.labelHide ?? "Hide QR";
+    syncLocalToggleLabel();
     paintQr();
     if (showQr()) refreshQrImage();
   });
 
   void (async () => {
+    await startClubPage();
     if (!(await displaySessionActive())) {
       activatePanel.hidden = false;
-      statusEl.textContent = "Paste the display activation token from the admin map page.";
+      statusEl.textContent = t("kiosk.pasteToken");
       return;
     }
     activatePanel.hidden = true;
     if (localToggleBtn) {
       localToggleBtn.hidden = false;
-      localToggleBtn.textContent =
-        localToggleBtn.dataset.labelHide ?? localToggleBtn.textContent ?? "Hide QR";
+      syncLocalToggleLabel();
     }
     await fetchLayout();
-    statusEl.textContent = `QR rotates every ${CHECKIN_STEP_SEC}s.`;
+    statusEl.textContent = t("kiosk.qrRotateHint", { seconds: String(CHECKIN_STEP_SEC) });
     await refreshMap();
     watchLayoutStream();
     window.setInterval(() => void fetchLayout(), 8000);
-    window.setInterval(() => {
-      if (showQr()) refreshQrImage();
-    }, CHECKIN_STEP_SEC * 1000);
+    startQrRefreshLoop();
     window.setInterval(() => void refreshMap(), 5000);
   })();
 }

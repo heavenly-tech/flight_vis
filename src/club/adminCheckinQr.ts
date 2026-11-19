@@ -25,7 +25,9 @@ let stepTimer: number | undefined;
 let consumeGraceTimer: number | undefined;
 let consumePollTimer: number | undefined;
 
-function setVisible(next: boolean): void {
+type HideReason = "manual" | "timeout" | "consumed";
+
+function setVisible(next: boolean, reason: HideReason = "manual"): void {
   visible = next;
   qrPanel.hidden = !visible;
   btnShow.hidden = visible;
@@ -36,14 +38,20 @@ function setVisible(next: boolean): void {
     window.clearTimeout(consumeGraceTimer);
     window.clearInterval(consumePollTimer);
     qrImg.removeAttribute("src");
-    status.textContent = "";
+    if (reason === "consumed") {
+      status.textContent = t("admin.checkinQrAlreadyUsed");
+    } else if (reason === "timeout") {
+      status.textContent = t("admin.checkinQrHidden");
+    } else {
+      status.textContent = "";
+    }
     return;
   }
   shownAtMs = Date.now();
   refreshQr();
   status.textContent = t("admin.checkinQrRotateHint", { seconds: String(CHECKIN_STEP_SEC) });
   stepTimer = window.setInterval(() => refreshQr(), CHECKIN_STEP_SEC * 1000);
-  hideTimer = window.setTimeout(() => setVisible(false), ADMIN_PHONE_QR_TIMEOUT_MS);
+  hideTimer = window.setTimeout(() => setVisible(false, "timeout"), ADMIN_PHONE_QR_TIMEOUT_MS);
   consumeGraceTimer = window.setTimeout(() => {
     void watchConsumed();
     consumePollTimer = window.setInterval(() => void watchConsumed(), 2000);
@@ -67,8 +75,7 @@ async function watchConsumed(): Promise<void> {
     if (!res.ok) return;
     const data = (await res.json()) as { consumed?: boolean };
     if (data.consumed) {
-      status.textContent = t("admin.checkinQrAlreadyUsed");
-      setVisible(false);
+      setVisible(false, "consumed");
     }
   } catch {
     /* ignore */
@@ -78,7 +85,7 @@ async function watchConsumed(): Promise<void> {
 window.__fvClubCheckinQrBoot = "script";
 
 btnShow.addEventListener("click", () => setVisible(true));
-btnHide.addEventListener("click", () => setVisible(false));
+btnHide.addEventListener("click", () => setVisible(false, "manual"));
 btnShow.disabled = true;
 
 void (async () => {

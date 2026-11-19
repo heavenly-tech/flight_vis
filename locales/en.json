@@ -256,17 +256,19 @@
     "reset": "Reset",
     "saving": "Saving…",
     "saved": "Saved",
+    "savedRev": "Saved (rev {rev})",
     "resetDone": "Reset",
     "kioskOpenUrl": "Open on the kiosk:",
     "kioskActivationToken": "Activation token (paste on that page, not in the URL):",
     "kioskCheckinQrVisible": "Show check-in QR on club displays",
     "kioskCheckinQrVisibleSave": "Save QR visibility",
     "checkinQrTitle": "Check-in QR (phone)",
-    "checkinQrLead": "Show the QR only when you need it; it hides after a scan or 60 seconds.",
+    "checkinQrLead": "Show the QR only when you need it; it hides after a scan or 60 seconds. Codes already shown stay valid for about 30–90 seconds even if you hide them on screen.",
     "checkinQrShow": "Show QR",
     "checkinQrHide": "Hide QR",
     "checkinQrRotateHint": "QR rotates every {seconds} seconds.",
-    "checkinQrAlreadyUsed": "This QR was already used. Generate a new one when you need it."
+    "checkinQrAlreadyUsed": "This QR was already used. Generate a new one when you need it.",
+    "checkinQrHidden": "QR hidden."
   },
   "kiosk": {
     "screenTitle": "Club check-in screen",
@@ -276,7 +278,10 @@
     "activate": "Activate display",
     "invalidToken": "Invalid display token.",
     "activated": "Display activated.",
-    "pasteToken": "Paste the display activation token from the admin map page."
+    "pasteToken": "Paste the display activation token from the admin map page.",
+    "qrShow": "Show QR",
+    "qrHide": "Hide QR",
+    "qrRotateHint": "QR rotates every {seconds} seconds."
   },
   "globe": {
     "metaDescription": "3D flight visualization for IGC and GPX tracks.",
