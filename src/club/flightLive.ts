@@ -55,7 +55,7 @@ shareCopy.addEventListener("click", async () => {
 });
 
 async function run(): Promise<void> {
-  await startClubPage({ persistUser: true });
+  await startClubPage();
   if (!id) {
     title.textContent = t("flight.missingId");
     return;

@@ -9,7 +9,7 @@ const title = document.querySelector<HTMLHeadingElement>("#title")!;
 const statusEl = document.querySelector<HTMLParagraphElement>("#status")!;
 
 async function run(): Promise<void> {
-  await startClubPage({ persistUser: false });
+  await startClubPage();
   title.textContent = t("sharePage.title");
   if (!token) {
     title.textContent = t("sharePage.invalidLink");

@@ -16,6 +16,9 @@
     "dateShort": "MM/dd/yyyy",
     "dateTimeShort": "MM/dd/yyyy h:mm a"
   },
+  "auth": {
+    "wrongPassword": "Wrong password."
+  },
   "nav": {
     "types": "Types",
     "tails": "Tails",
@@ -30,6 +33,7 @@
     "globe": "Globe viewer",
     "register": "Register",
     "createClub": "Create club",
+    "registerClub": "Register club",
     "pilotProfile": "Pilot profile",
     "androidApp": "Android app"
   },

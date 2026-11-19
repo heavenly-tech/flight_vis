@@ -15,6 +15,7 @@ import { ACC_DIM_M, createLiveRuntime, parseLivePath } from "./live/runtime";
 import { createE2eFlightViewer } from "./viz/e2eViewerStub";
 import type { FlightViewer, PathMode } from "./viz/viewer";
 import { e2eGlobeHooksEnabled, type FvE2eSurface } from "./e2eGlobeHooks";
+import { bootI18n } from "./i18n/boot";
 
 const SAMPLE_URL = `${import.meta.env.BASE_URL}samples/vuelo5.gpx`;
 const HANDLE = 10;
@@ -332,6 +333,7 @@ function hitHandle(x: number, width: number): "start" | "end" | null {
 }
 
 async function boot(): Promise<void> {
+  void bootI18n();
   const liveRouteEarly = parseLivePath(window.location.pathname);
   if (liveRouteEarly.sessionId) {
     nameEl.textContent = "Live session";

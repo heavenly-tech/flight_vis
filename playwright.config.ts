@@ -16,11 +16,18 @@ export default defineConfig({
   projects: [
     {
       name: "default",
-      testIgnore: /globe-csp\.spec\.ts/,
+      testIgnore: /globe-csp\.spec\.ts|club-login-csp\.spec\.ts/,
     },
     {
       name: "globe-csp",
       testMatch: /globe-csp\.spec\.ts/,
+      fullyParallel: false,
+      workers: 1,
+      use: { baseURL: `http://127.0.0.1:${e2eCspPort}` },
+    },
+    {
+      name: "club-login-csp",
+      testMatch: /club-login-csp\.spec\.ts/,
       fullyParallel: false,
       workers: 1,
       use: { baseURL: `http://127.0.0.1:${e2eCspPort}` },

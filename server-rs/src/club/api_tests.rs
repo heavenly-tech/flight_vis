@@ -954,3 +954,219 @@ async fn postal_bounce_webhook_requires_and_verifies_rsa256() {
     assert_eq!(ok.status(), StatusCode::OK);
     std::env::remove_var("POSTAL_WEBHOOK_PUBLIC_KEY_FILE");
 }
+
+fn ensure_test_i18n() {
+    let locales = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../locales");
+    let _ = crate::i18n::init_global(&locales);
+}
+
+#[tokio::test]
+#[serial]
+async fn patch_me_locale_requires_session() {
+    ensure_test_i18n();
+    let mut fx = setup().await;
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/club/me/locale")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"locale":"en"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+#[serial]
+async fn patch_me_locale_rejects_invalid() {
+    ensure_test_i18n();
+    let mut fx = setup().await;
+    let cookie = login_cookie(&mut fx.router, "a@test").await;
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/club/me/locale")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &cookie)
+                .body(Body::from(r#"{"locale":"fr"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[serial]
+async fn patch_me_locale_persists_for_pilot() {
+    ensure_test_i18n();
+    let mut fx = setup().await;
+    let cookie = login_cookie(&mut fx.router, "a@test").await;
+    let ok = fx
+        .router
+        .call(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/club/me/locale")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &cookie)
+                .body(Body::from(r#"{"locale":"en"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+    let ctx = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/club/i18n/context")
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ctx.status(), StatusCode::OK);
+    let body = to_bytes(ctx.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json.get("userLocale").and_then(|v| v.as_str()), Some("en"));
+}
+
+#[tokio::test]
+#[serial]
+async fn club_login_form_post_redirects_without_password_in_location() {
+    let mut fx = setup().await;
+    let body = "email=a%40test&password=password12&next=%2Fclub-pilot.html";
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let location = res
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(location, "/club-pilot.html");
+    assert!(!location.to_lowercase().contains("password"));
+    assert!(res.headers().get(header::SET_COOKIE).is_some());
+}
+
+#[tokio::test]
+#[serial]
+async fn club_login_form_post_rejects_open_redirect_next() {
+    let mut fx = setup().await;
+    let body = "email=a%40test&password=password12&next=%2F%5Cevil.com";
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let location = res
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(location, "/");
+}
+
+#[tokio::test]
+#[serial]
+async fn club_login_form_post_cross_site_is_forbidden() {
+    let mut fx = setup().await;
+    let body = "email=a%40test&password=password12&next=%2Fclub-pilot.html";
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+#[serial]
+async fn club_login_form_post_bad_password_preserves_safe_next() {
+    let mut fx = setup().await;
+    let body = "email=a%40test&password=wrong&next=%2Fclub-admin-types.html";
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let location = res
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(location.starts_with("/club-login.html?"));
+    assert!(location.contains("e=1"));
+    assert!(location.contains("next=%2Fclub-admin-types.html"));
+    assert!(!location.to_lowercase().contains("password"));
+}
+
+#[tokio::test]
+#[serial]
+async fn patch_me_locale_cross_site_is_forbidden() {
+    let mut fx = setup().await;
+    let cookie = login_cookie(&mut fx.router, "a@test").await;
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/club/me/locale")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &cookie)
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::from(r#"{"locale":"en"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json.get("error").and_then(|v| v.as_str()), Some("csrf"));
+}

@@ -137,12 +137,12 @@
     </style>
   </head>
   <body>
-    <form class="sheet" id="login-form" method="post" action="/login" autocomplete="current-password">
+    <form class="sheet" id="login-form" method="post" action="/login">
       <h1>flight_vis</h1>
       <p class="lead">heavenly.cl · password to save and upload tracks</p>
       <div id="body">
         <label for="password">Password</label>
-        <input id="password" name="password" type="password" required autofocus />
+        <input id="password" name="password" type="password" required autofocus autocomplete="current-password" />
         <input type="hidden" name="next" id="next" value="/" />
         <button type="submit">Log in</button>
         <p class="err" id="err"></p>
@@ -151,47 +151,6 @@
         </p>
       </div>
     </form>
-    <script type="module">
-      import { applyI18nDocument, bootI18n, t } from "/src/i18n/boot.ts";
-      await bootI18n({ persistUser: false });
-      applyI18nDocument(document);
-      const clubBtn = document.getElementById("club-login-btn");
-      if (clubBtn) {
-        clubBtn.textContent = t("nav.clubLogin");
-        const next = new URLSearchParams(location.search).get("next");
-        if (next && next.startsWith("/") && !next.startsWith("//")) {
-          clubBtn.setAttribute("href", `/club-login.html?${new URLSearchParams({ next })}`);
-        }
-      }
-    </script>
-    <script>
-      (function () {
-        var q = new URLSearchParams(location.search);
-        var err = document.getElementById("err");
-        var next = document.getElementById("next");
-        var dest = q.get("next") || "/";
-        if (!dest.startsWith("/") || dest.startsWith("//") || dest.indexOf("://") !== -1) dest = "/";
-        next.value = dest;
-        if (q.get("e") === "1") err.textContent = "Wrong password.";
-        function showLocked() {
-          document.getElementById("body").innerHTML =
-            '<p class="lock">Upload is locked. Administrator must set <code>FLIGHT_VIS_PASSWORD</code>.</p>';
-        }
-        if (q.get("locked") === "1") showLocked();
-        document.getElementById("login-form").addEventListener("submit", function () {
-          var button = this.querySelector("button");
-          if (button) button.disabled = true;
-        });
-        fetch("/api/auth/me", { credentials: "same-origin" })
-          .then(function (res) {
-            return res.ok ? res.json() : { authenticated: false, configured: true };
-          })
-          .then(function (me) {
-            if (me.authenticated) location.replace(next.value || "/");
-            else if (!me.configured) showLocked();
-          })
-          .catch(function () {});
-      })();
-    </script>
+    <script type="module" src="/src/loginPage.ts"></script>
   </body>
 </html>

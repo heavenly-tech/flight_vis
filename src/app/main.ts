@@ -47,7 +47,7 @@ async function loadRelease(): Promise<void> {
 }
 
 void (async () => {
-  await bootI18n({ switcher: "#lang-slot", persistUser: false });
+  await bootI18n({ switcher: "#lang-slot" });
   sideloadSteps.replaceChildren(
     ...[1, 2, 3, 4, 5].map((n) => {
       const li = document.createElement("li");

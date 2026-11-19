@@ -11,48 +11,15 @@
     <main>
       <div id="lang-slot"></div>
       <h1 data-i18n="club.login.title">Inicio de sesión del club</h1>
-      <form id="form">
-        <input name="email" type="email" required data-i18n-placeholder="club.login.email" />
-        <input name="password" type="password" required data-i18n-placeholder="club.login.password" minlength="8" />
+      <form id="form" method="post" action="/api/club/login">
+        <input type="hidden" name="next" id="next" value="/club-pilot.html" />
+        <input name="email" type="email" required autocomplete="username" data-i18n-placeholder="club.login.email" />
+        <input name="password" type="password" required autocomplete="current-password" data-i18n-placeholder="club.login.password" minlength="8" />
         <button type="submit" data-i18n="club.login.submit"></button>
       </form>
       <p id="msg" class="muted"></p>
       <p class="muted"><a href="/club-register.html" data-i18n="nav.register"></a> · <a href="/club-signup.html" data-i18n="nav.createClub"></a> · <a href="/club-pilot.html" data-i18n="nav.pilotProfile"></a> · <a href="/app.html" data-i18n="nav.androidApp"></a></p>
     </main>
-    <script type="module">
-      import { startClubPage } from "/src/club/i18nPage.ts";
-      import { t, apiErrorMessage } from "/src/i18n/boot.ts";
-      import { safeNextPath } from "/src/club/safeNext.ts";
-      await startClubPage({ persistUser: false });
-      const nextAfterLogin = safeNextPath(
-        new URLSearchParams(location.search).get("next") ?? "/club-pilot.html",
-      );
-      const existing = await fetch("/api/club/me", { credentials: "same-origin" });
-      if (existing.ok) {
-        const me = await existing.json();
-        if (me.pilot) {
-          location.replace(nextAfterLogin);
-        }
-      }
-      const form = document.getElementById("form");
-      const msg = document.getElementById("msg");
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const body = Object.fromEntries(new FormData(form));
-        const res = await fetch("/api/club/login", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          body: JSON.stringify(body),
-        });
-        if (res.ok) {
-          msg.textContent = t("club.login.success");
-          location.href = nextAfterLogin;
-        } else {
-          const err = (await res.json().catch(() => ({}))).error ?? "unauthorized";
-          msg.textContent = apiErrorMessage(String(err));
-        }
-      });
-    </script>
+    <script type="module" src="/src/club/clubLogin.ts"></script>
   </body>
 </html>

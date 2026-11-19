@@ -1,5 +1,6 @@
 import { ensureClubAdminOrRedirect } from "./adminGate";
 import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
+import { startClubPage } from "./i18nPage";
 
 const list = document.querySelector<HTMLUListElement>("#list")!;
 const form = document.querySelector<HTMLFormElement>("#form")!;
@@ -55,6 +56,7 @@ form.addEventListener("submit", async (e) => {
 });
 
 void (async () => {
+  void startClubPage({ switcher: "#lang-slot" });
   if (!(await ensureClubAdminOrRedirect())) return;
   mountAdminNav();
   try {
