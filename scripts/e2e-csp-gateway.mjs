@@ -18,7 +18,9 @@ const HTML_PAGE_CSP = readHtmlPageCsp();
 const GLOBE_E2E_CSP = globeE2eCsp();
 
 function cspForPath(pathOnly) {
-  return pathOnly === "/club-login.html" ? HTML_PAGE_CSP : GLOBE_E2E_CSP;
+  return pathOnly === "/login" || pathOnly === "/club-login.html"
+    ? HTML_PAGE_CSP
+    : GLOBE_E2E_CSP;
 }
 
 function mime(ext) {
@@ -66,9 +68,14 @@ function proxyToApi(req, res, body) {
       headers,
     },
     (proxyRes) => {
+      const pathOnly = target.pathname;
+      const csp =
+        pathOnly === "/login" || pathOnly === "/club-login.html"
+          ? HTML_PAGE_CSP
+          : GLOBE_E2E_CSP;
       res.writeHead(proxyRes.statusCode ?? 502, {
         ...proxyRes.headers,
-        "content-security-policy": GLOBE_E2E_CSP,
+        "content-security-policy": csp,
       });
       proxyRes.pipe(res);
     },
@@ -82,7 +89,10 @@ function proxyToApi(req, res, body) {
 }
 
 function shouldProxy(urlPath) {
+  const pathOnly = urlPath.split("?")[0];
   return (
+    pathOnly === "/signup" ||
+    pathOnly === "/club-login.html" ||
     urlPath.startsWith("/api") ||
     urlPath.startsWith("/login") ||
     urlPath.startsWith("/logout") ||

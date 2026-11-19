@@ -8,10 +8,19 @@ function slugFromPath(): string | null {
   return q?.trim() || null;
 }
 
-await startClubPage();
-
 const form = document.getElementById("form") as HTMLFormElement;
 const msg = document.getElementById("msg")!;
+
+form?.addEventListener("submit", (e) => e.preventDefault(), { capture: true });
+
+declare global {
+  interface Window {
+    __fvClubRegisterReady?: boolean;
+  }
+}
+window.__fvClubRegisterReady = true;
+
+await startClubPage({ persistUser: false });
 const clubTitle = document.getElementById("club-title");
 const clubPick = document.getElementById("club-pick") as HTMLSelectElement | null;
 

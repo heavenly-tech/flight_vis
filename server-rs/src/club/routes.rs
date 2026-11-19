@@ -42,8 +42,19 @@ pub(crate) fn is_secure(headers: &HeaderMap) -> bool {
 }
 
 pub(crate) async fn viewer(state: &AppState, headers: &HeaderMap) -> Viewer {
-    let session = parse_session_cookie(headers);
     let now = now_ms();
+    if let Some(db) = club_db(state) {
+        if let Some(acct_sess) = auth::parse_account_session_cookie(headers) {
+            if let Some((_, Some(mem_id))) = db.account_from_session(&acct_sess, now).await {
+                if let Some(pilot) = db.pilot_for_active_membership(&mem_id).await {
+                    if db.club_operational(&pilot.club_id).await.is_ok() {
+                        return db.viewer_from_pilot_row(&pilot).await;
+                    }
+                }
+            }
+        }
+    }
+    let session = parse_session_cookie(headers);
     match state.club.as_ref() {
         Some(db) => db.viewer_from_session(session.as_deref(), now).await,
         None => Viewer::Anonymous,
@@ -107,7 +118,11 @@ async fn admin_may_act_on_pilot(
             Json(json!({ "error": "db error" })),
         )
     })?;
-    if db.require_club_admin(admin_id, &admin_club).await.is_err() {
+    if db
+        .require_club_checkin_approver(admin_id, &admin_club)
+        .await
+        .is_err()
+    {
         return Err((
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "admin only" })),
@@ -325,9 +340,9 @@ fn club_login_is_form_content(content_type: &str) -> bool {
 fn club_login_fail_location(next: &str) -> String {
     let safe = crate::auth::safe_next(next);
     format!(
-        "/club-login.html?{}",
-        serde_urlencoded::to_string([("e", "1"), ("next", safe.as_str())])
-            .unwrap_or_else(|_| "e=1".to_string())
+        "/login?{}",
+        serde_urlencoded::to_string([("e", "1"), ("mode", "password"), ("next", safe.as_str())])
+            .unwrap_or_else(|_| "e=1&mode=password".to_string())
     )
 }
 
@@ -336,7 +351,7 @@ fn club_login_fields(headers: &HeaderMap, body: &[u8]) -> ClubLoginFields {
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if content_type.contains("application/json") {
+    if crate::auth::media_type_is_json(content_type) {
         let body: LoginBody = serde_json::from_slice(body).unwrap_or_default();
         return ClubLoginFields {
             email: body.email,
@@ -381,10 +396,11 @@ async fn club_login(
     body: Bytes,
 ) -> impl IntoResponse {
     let json = club_wants_json(&headers);
-    if !json {
-        if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
-            return (status, "csrf").into_response();
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        if json {
+            return (status, Json(json!({ "error": "csrf" }))).into_response();
         }
+        return status.into_response();
     }
     let fields = club_login_fields(&headers, &body);
     let fail = |next: &str| club_login_redirect(&club_login_fail_location(next));
@@ -587,19 +603,8 @@ async fn club_i18n_context(State(state): State<AppState>, headers: HeaderMap) ->
         }))
         .into_response();
     };
-    let session = parse_session_cookie(&headers);
     let now = now_ms();
-    let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
-    let (user_locale, club_default) = match pilot {
-        Some(p) => (
-            Some(p.locale),
-            db.club_default_locale(&p.club_id)
-                .await
-                .ok()
-                .or(Some("es".to_string())),
-        ),
-        None => (None, None),
-    };
+    let (user_locale, club_default) = db.user_club_locale_context(&headers, now).await;
     let resolved = cat.resolve_locale(user_locale.as_deref(), club_default.as_deref(), accept);
     Json(json!({
         "userLocale": user_locale,
@@ -625,6 +630,19 @@ async fn patch_me_locale(
         )
             .into_response();
     };
+    let now = now_ms();
+    if let Some(acct_sess) = auth::parse_account_session_cookie(&headers) {
+        if let Some((account, _)) = db.account_from_session(&acct_sess, now).await {
+            return match db.set_account_locale(&account.id, &body.locale).await {
+                Ok(()) => Json(json!({ "locale": body.locale })).into_response(),
+                Err(_) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "invalid locale" })),
+                )
+                    .into_response(),
+            };
+        }
+    }
     let session = parse_session_cookie(&headers);
     let Some(session) = session else {
         return (
@@ -633,7 +651,6 @@ async fn patch_me_locale(
         )
             .into_response();
     };
-    let now = now_ms();
     let Some(pilot) = db.pilot_from_session(&session, now).await else {
         return (
             StatusCode::UNAUTHORIZED,
@@ -1245,6 +1262,9 @@ async fn club_flight_stream(
     let db = state.club.clone().unwrap();
     let viewer = v;
     let flight_id_capture = flight_id.clone();
+    let flight_club_id = db.club_id_for_flight(&flight_id).await;
+    let pilot_sess = parse_session_cookie(&headers);
+    let acct_sess = auth::parse_account_session_cookie(&headers);
     let backfill: Vec<_> = db.fixes_for_flight(&flight_id).await;
     let idle_ms = super::sse_limit::SSE_IDLE_MS;
     let stream = stream::iter(backfill.into_iter().enumerate().map(move |(i, fix)| {
@@ -1258,10 +1278,77 @@ async fn club_flight_stream(
             0_i64,
             tokio::time::Instant::now(),
             sse_guard,
+            flight_club_id,
+            pilot_sess,
+            acct_sess,
+            0_u32,
         ),
         #[allow(clippy::question_mark)]
-        move |(db, fid, viewer, mut last_t, mut idle_since, _sse_guard)| async move {
+        move |(
+            db,
+            fid,
+            viewer,
+            mut last_t,
+            mut idle_since,
+            _sse_guard,
+            flight_club,
+            pilot_sess,
+            acct_sess,
+            mut ticks,
+        )| async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
+            ticks = ticks.wrapping_add(1);
+            if ticks.is_multiple_of(10) {
+                let now = now_ms();
+                if let Some(ref cid) = flight_club {
+                    if db.club_operational(cid).await.is_err() {
+                        return None;
+                    }
+                }
+                if let Some(ref acct) = acct_sess {
+                    if db.account_from_session(acct, now).await.is_none() {
+                        return None;
+                    }
+                    let active_mem = db
+                        .account_from_session(acct, now)
+                        .await
+                        .and_then(|(_, m)| m);
+                    if let Some(mem_id) = active_mem {
+                        let Some(pilot) = db.pilot_for_active_membership(&mem_id).await else {
+                            return None;
+                        };
+                        if db.club_operational(&pilot.club_id).await.is_err() {
+                            return None;
+                        }
+                        if let Some((_, mem_status)) =
+                            db.membership_in_club(&pilot.id, &pilot.club_id).await
+                        {
+                            if !crate::club::membership_status::MembershipStatus::parse(&mem_status)
+                                .allows_club_api()
+                            {
+                                return None;
+                            }
+                        } else {
+                            return None;
+                        }
+                    } else if pilot_sess.is_some() {
+                        return None;
+                    }
+                } else if let Some(ref ps) = pilot_sess {
+                    let Some(pilot) = db.pilot_from_session(ps, now).await else {
+                        return None;
+                    };
+                    if let Some((_, mem_status)) =
+                        db.membership_in_club(&pilot.id, &pilot.club_id).await
+                    {
+                        if !crate::club::membership_status::MembershipStatus::parse(&mem_status)
+                            .allows_club_api()
+                        {
+                            return None;
+                        }
+                    }
+                }
+            }
             if db.flight_visible_to(&viewer, &fid).await.is_none() {
                 return None;
             }
@@ -1283,7 +1370,21 @@ async fn club_flight_stream(
                     .json_data(json!({ "fixes": fresh }))
                     .unwrap()
             };
-            Some((Ok(event), (db, fid, viewer, last_t, idle_since, _sse_guard)))
+            Some((
+                Ok(event),
+                (
+                    db,
+                    fid,
+                    viewer,
+                    last_t,
+                    idle_since,
+                    _sse_guard,
+                    flight_club,
+                    pilot_sess,
+                    acct_sess,
+                    ticks,
+                ),
+            ))
         },
     ));
     Sse::new(stream)
@@ -2789,6 +2890,8 @@ async fn postal_bounce_webhook(
 pub fn router() -> Router<AppState> {
     Router::new()
         .merge(crate::club::auth_routes::router())
+        .merge(crate::club::account_routes::routes())
+        .merge(crate::club::admin_membership_routes::routes())
         .route("/api/webhooks/postal/bounce", post(postal_bounce_webhook))
         .route("/club/screen", get(club_screen_page))
         .route("/club/globe-screen", get(club_globe_screen_page))

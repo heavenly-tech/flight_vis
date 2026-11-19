@@ -169,6 +169,12 @@ pub fn safe_next(input: &str) -> String {
     if value == "/club-login.html" || value.starts_with("/club-login.html?") {
         return "/".to_string();
     }
+    if value == "/login/legacy" || value.starts_with("/login/legacy?") {
+        return "/".to_string();
+    }
+    if value == "/login.html" || value.starts_with("/login.html?") {
+        return "/".to_string();
+    }
     value.to_string()
 }
 
@@ -198,8 +204,23 @@ pub fn is_secure_request(forwarded_proto: Option<&str>) -> bool {
         .unwrap_or(false)
 }
 
+/// Exact media type match (case-insensitive); parameters such as `charset` are ignored.
+pub fn media_type_is_json(value: &str) -> bool {
+    value
+        .split(';')
+        .next()
+        .map(str::trim)
+        .is_some_and(|m| m.eq_ignore_ascii_case("application/json"))
+}
+
+pub fn accept_wants_json(accept: &str) -> bool {
+    accept
+        .split(',')
+        .any(|part| media_type_is_json(part.trim()))
+}
+
 pub fn wants_json(accept: &str, content_type: &str) -> bool {
-    accept.contains("application/json") || content_type.contains("application/json")
+    accept_wants_json(accept) || media_type_is_json(content_type)
 }
 
 #[cfg(test)]
@@ -249,6 +270,16 @@ mod tests {
     }
 
     #[test]
+    fn json_media_type_exact_match_ignores_params() {
+        assert!(super::media_type_is_json("application/json; charset=utf-8"));
+        assert!(!super::media_type_is_json("application/json+xml"));
+        assert!(!super::media_type_is_json("text/application/json"));
+        assert!(super::accept_wants_json(
+            "text/html, application/json;q=0.9"
+        ));
+    }
+
+    #[test]
     fn parses_cookie_and_sanitizes_next() {
         assert_eq!(
             parse_cookie(Some("a=1; fv_session=v1.1.abc; b=2")).as_deref(),
@@ -258,6 +289,7 @@ mod tests {
         assert_eq!(parse_cookie(None), None);
         assert_eq!(safe_next("/vuelo-5"), "/vuelo-5");
         assert_eq!(safe_next("//evil"), "/");
+        assert_eq!(safe_next("/\\evil.com"), "/");
         assert_eq!(safe_next("https://evil.example"), "/");
         assert_eq!(safe_next("/login"), "/");
         assert_eq!(safe_next("/club-login.html?next=/x"), "/");

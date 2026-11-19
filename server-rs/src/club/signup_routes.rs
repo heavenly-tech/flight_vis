@@ -73,15 +73,15 @@ async fn post_club_signup(
                 "{}/api/club/auth/magic?token={token}",
                 state.mailer.public_url.trim_end_matches('/')
             );
-            let mailer = state.mailer.clone();
-            let email_owned = email.to_string();
-            let name_owned = club_name.to_string();
-            let url_owned = url;
-            tokio::spawn(async move {
-                mailer
-                    .send_verify_club(&email_owned, "es", &name_owned, &url_owned, "15")
-                    .await;
-            });
+            let _ = state
+                .mailer
+                .send_localized(
+                    email,
+                    "es",
+                    "verifyClub",
+                    &[("minutes", "15"), ("url", &url), ("name", club_name)],
+                )
+                .await;
             Json(json!({ "ok": true })).into_response()
         }
         Err(ClubSignupError::InvalidSlug) | Err(ClubSignupError::InvalidEmail) => {

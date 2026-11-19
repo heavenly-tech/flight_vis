@@ -9,7 +9,7 @@ test("admin phone check-in QR is hidden until Mostrar", async ({ page }) => {
   });
   expect(login.ok()).toBeTruthy();
   await page.goto("/club-admin-checkin-qr.html", { waitUntil: "load" });
-  await expect(page).not.toHaveURL(/\/club-login\.html/);
+  await expect(page).not.toHaveURL(/\/login/);
   const meInPage = await page.evaluate(async () => {
     const res = await fetch("/api/club/me", { credentials: "same-origin" });
     return res.ok;

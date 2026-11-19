@@ -26,6 +26,11 @@ describe("i18n catalogs", () => {
     expect(resolveLocale({ userLocale: "en", clubDefaultLocale: "es" })).toBe("en");
   });
 
+  it("defaults to Spanish without stored locale, account, or browser", () => {
+    expect(resolveLocale({})).toBe("es");
+    expect(resolveLocale({ acceptLanguage: "en-US,en;q=0.9" })).toBe("es");
+  });
+
   it("PATCHes pilot locale when session exists", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal("fetch", fetchMock);

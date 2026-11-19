@@ -1,6 +1,6 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import "./style.css";
-import { getAuth, getFlight, loginUrl, logout, saveFlight, shareUrl, type AuthStatus } from "./api";
+import { getAuth, getFlight, entrarUrl, loginUrl, logout, saveFlight, shareUrl, type AuthStatus } from "./api";
 import { isTrackFile, mountLibrary, type LibraryHandle } from "./library";
 import { formatClock, formatDuration } from "./track/geo";
 import { isGeoidReady } from "./geo/geoid";
@@ -15,7 +15,13 @@ import { ACC_DIM_M, createLiveRuntime, parseLivePath } from "./live/runtime";
 import { createE2eFlightViewer } from "./viz/e2eViewerStub";
 import type { FlightViewer, PathMode } from "./viz/viewer";
 import { e2eGlobeHooksEnabled, type FvE2eSurface } from "./e2eGlobeHooks";
-import { bootI18n } from "./i18n/boot";
+import {
+  applyI18nDocument,
+  bootI18n,
+  getLocale,
+  setLocale,
+  t,
+} from "./i18n/index";
 
 const SAMPLE_URL = `${import.meta.env.BASE_URL}samples/vuelo5.gpx`;
 const HANDLE = 10;
@@ -52,7 +58,7 @@ const morePanel = document.querySelector<HTMLDivElement>("#more-panel")!;
 const hudGrid = document.querySelector<HTMLElement>("#hud-grid")!;
 const chromeRestore = document.querySelector<HTMLButtonElement>("#btn-chrome-restore")!;
 const cesiumContainer = document.getElementById("cesiumContainer")!;
-const shareButtonLabel = shareButton.textContent ?? "Save & copy link";
+let shareButtonLabel = "";
 const authHint = document.querySelector<HTMLParagraphElement>("#auth-hint")!;
 const loginLink = document.querySelector<HTMLAnchorElement>("#btn-login")!;
 const logoutButton = document.querySelector<HTMLButtonElement>("#btn-logout")!;
@@ -60,25 +66,38 @@ const logoutButton = document.querySelector<HTMLButtonElement>("#btn-logout")!;
 let auth: AuthStatus = { authenticated: false, configured: true };
 let library: LibraryHandle | null = null;
 
+function syncPlayLabel(): void {
+  playButton.textContent = playing ? t("globe.pause") : t("globe.play");
+}
+
+function refreshGlobeChrome(): void {
+  applyI18nDocument();
+  shareButtonLabel = t("globe.saveCopyLink");
+  syncAuthUi();
+  syncPlayLabel();
+  document.querySelector<HTMLButtonElement>("#btn-lang")!.textContent =
+    getLocale().toUpperCase();
+}
+
 function syncAuthUi(): void {
-  loginLink.href = loginUrl();
+  loginLink.href = entrarUrl();
   loginLink.hidden = auth.authenticated;
   logoutButton.hidden = !auth.authenticated;
   library?.setAuth(auth);
   if (!auth.configured) {
     authHint.hidden = false;
-    authHint.textContent = "Upload is locked until FLIGHT_VIS_PASSWORD is set.";
-    shareButton.textContent = "Save locked";
+    authHint.textContent = t("globe.uploadLocked");
+    shareButton.textContent = t("globe.saveLocked");
     return;
   }
   if (auth.authenticated) {
     authHint.hidden = true;
-    shareButton.textContent = shareButtonLabel;
+    shareButton.textContent = shareButtonLabel || t("globe.saveCopyLink");
     return;
   }
   authHint.hidden = false;
-  authHint.textContent = "Log in to upload and save a shareable slug.";
-  shareButton.textContent = "Log in to save";
+  authHint.textContent = t("globe.logInToUpload");
+  shareButton.textContent = t("globe.logInToSave");
 }
 
 const ctx = profile.getContext("2d")!;
@@ -219,7 +238,7 @@ function renderTags(): void {
     chip.addEventListener("click", () => seekPlayhead?.(tag.timeMs));
     const remove = document.createElement("span");
     remove.textContent = "×";
-    remove.title = "Remove tag";
+    remove.title = t("globe.removeTag");
     remove.addEventListener("click", (event) => {
       event.stopPropagation();
       tags = tags.filter((t) => t.id !== tag.id);
@@ -333,13 +352,14 @@ function hitHandle(x: number, width: number): "start" | "end" | null {
 }
 
 async function boot(): Promise<void> {
-  void bootI18n();
+  await bootI18n({ persistUser: true });
+  refreshGlobeChrome();
   const liveRouteEarly = parseLivePath(window.location.pathname);
   if (liveRouteEarly.sessionId) {
-    nameEl.textContent = "Live session";
+    nameEl.textContent = t("globe.liveSession");
     setStatus(null);
   } else {
-    setStatus("Preparing 3D globe…");
+    setStatus(t("globe.preparingGlobe"));
   }
   const skipGlobe = import.meta.env.VITE_E2E_SKIP_GLOBE === "1";
   const viewer: FlightViewer = skipGlobe
@@ -399,7 +419,7 @@ async function boot(): Promise<void> {
     const endCap = liveRuntime?.playCap() ?? trim.endMs;
     cursorMs = Math.min(Math.max(timeMs, trim.startMs), Math.min(trim.endMs, endCap));
     playing = false;
-    playButton.textContent = "Play";
+    syncPlayLabel();
     viewer.seekSample(sampleAt(flight, cursorMs), follow);
     liveRuntime?.onScrub();
     renderHud();
@@ -417,7 +437,7 @@ async function boot(): Promise<void> {
     trim = clampTrim(next, opts?.trim ?? fullRange(next));
     cursorMs = trim.startMs;
     playing = false;
-    playButton.textContent = "Play";
+    syncPlayLabel();
     nameEl.textContent = next.name;
     await viewer.setFlight(next, colorMode, trim);
     viewer.setTags(tags);
@@ -429,7 +449,7 @@ async function boot(): Promise<void> {
   }
 
   async function loadText(text: string, fileName: string, opts?: { trim?: TrimRange; tags?: FlightTag[]; slug?: string }): Promise<void> {
-    setStatus("Parsing track…");
+    setStatus(t("globe.parsingTrack"));
     await loadParsed(await parseFlight(text, fileName), text, opts);
   }
 
@@ -440,7 +460,7 @@ async function boot(): Promise<void> {
       cursorMs = Math.min(endCap, trim.endMs, cursorMs + dt * playSpeed);
       if (cursorMs >= Math.min(trim.endMs, endCap)) {
         playing = false;
-        playButton.textContent = "Play";
+        syncPlayLabel();
         viewer.flyOverview();
       } else {
         viewer.setSample(sampleAt(flight, cursorMs), follow);
@@ -529,7 +549,7 @@ async function boot(): Promise<void> {
     if (!flight || !trim) return;
     if (cursorMs >= trim.endMs || cursorMs < trim.startMs) cursorMs = trim.startMs;
     playing = !playing;
-    playButton.textContent = playing ? "Pause" : "Play";
+    syncPlayLabel();
   });
 
   document.querySelectorAll<HTMLButtonElement>("[data-path-mode]").forEach((button) => {
@@ -687,7 +707,7 @@ async function boot(): Promise<void> {
     }
     const slug = normalizeSlug(slugInput.value);
     if (!isValidSlug(slug)) {
-      setStatus("Slug must be lowercase letters, numbers, and dashes.");
+      setStatus(t("globe.invalidSlug"));
       window.setTimeout(() => setStatus(null), 2400);
       return;
     }
@@ -901,7 +921,7 @@ async function boot(): Promise<void> {
       playing = v;
     },
     syncPlayLabel: () => {
-      playButton.textContent = playing ? "Pause" : "Play";
+      syncPlayLabel();
     },
     applyTrim: async (fly) => applyTrim?.(fly),
     afterSeek: () => {
@@ -934,7 +954,7 @@ async function boot(): Promise<void> {
     currentSlug: () => pathSlug() || slugInput.value || null,
     onOpenFlight: async (slug) => {
       const ok = await loadFromSlug(slug);
-      if (!ok) setStatus("Could not open that flight");
+      if (!ok) setStatus(t("globe.couldNotOpen"));
     },
     onRenamed: (from, to) => {
       if (slugInput.value === from || pathSlug() === from) {
@@ -953,6 +973,14 @@ async function boot(): Promise<void> {
     setStatus,
   });
   syncAuthUi();
+
+  document.querySelector<HTMLButtonElement>("#btn-lang")!.addEventListener("click", () => {
+    const next = getLocale() === "es" ? "en" : "es";
+    void setLocale(next, { persistUser: auth.authenticated }).then(() => {
+      refreshGlobeChrome();
+      liveRuntime?.onLocale();
+    });
+  });
 
   const liveRoute = parseLivePath(window.location.pathname);
   if (auth.authenticated && !liveRoute.sessionId && !liveRoute.listOnly) {
@@ -976,7 +1004,7 @@ async function boot(): Promise<void> {
     if (!res.ok) throw new Error("Could not load Vuelo5");
     await loadText(await res.text(), "vuelo5.gpx", { slug: "vuelo-5" });
   } catch (error) {
-    setStatus(error instanceof Error ? error.message : "Could not load flight");
+    setStatus(error instanceof Error ? error.message : t("globe.couldNotLoadFlight"));
   }
 }
 

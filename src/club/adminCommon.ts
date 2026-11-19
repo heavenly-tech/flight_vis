@@ -15,7 +15,7 @@ const NAV_KEYS = [
   ["club-admin-map.html", "nav.adminMap"],
   ["club-admin-kiosk-layout.html", "nav.kioskQr"],
   ["club-admin-checkin-qr.html", "nav.adminCheckinQr"],
-  ["club-login.html", "nav.login"],
+  ["login?mode=club", "nav.login"],
 ] as const;
 
 function mountAdminNavInner(): void {
@@ -55,7 +55,10 @@ export async function requireAdmin(): Promise<{ name: string }> {
     redirectToClubLogin();
     throw new Error(CLUB_ADMIN_REDIRECT);
   }
-  if (!me.pilot || me.pilot.role !== "admin") {
+  if (
+    !me.pilot ||
+    (me.pilot.role !== "admin" && me.pilot.role !== "staff")
+  ) {
     redirectToClubLogin();
     throw new Error(CLUB_ADMIN_REDIRECT);
   }

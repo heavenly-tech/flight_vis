@@ -196,7 +196,7 @@ impl Catalogs {
         &self,
         user: Option<&str>,
         club_default: Option<&str>,
-        accept_language: Option<&str>,
+        _accept_language: Option<&str>,
     ) -> String {
         let pick = |v: Option<&str>| {
             v.map(Self::normalize)
@@ -205,8 +205,6 @@ impl Catalogs {
         };
         pick(user)
             .or_else(|| pick(club_default))
-            .or_else(|| accept_language.and_then(parse_accept))
-            .filter(|id| self.is_known(id))
             .unwrap_or_else(|| self.canonical.clone())
     }
 
@@ -243,6 +241,7 @@ impl Catalogs {
     }
 }
 
+#[allow(dead_code)]
 fn parse_accept(header: &str) -> Option<String> {
     let first = header.split(',').next()?.trim().to_ascii_lowercase();
     let id = first.split('-').next()?.to_string();
@@ -284,5 +283,12 @@ mod tests {
         let dir = Catalogs::resolve_dir(Path::new("dist"));
         let cat = Catalogs::load_from_dir(&dir).unwrap();
         assert_eq!(cat.resolve_locale(Some("en"), Some("es"), None), "en");
+    }
+
+    #[test]
+    fn resolve_defaults_spanish_without_user_or_accept() {
+        let dir = Catalogs::resolve_dir(Path::new("dist"));
+        let cat = Catalogs::load_from_dir(&dir).unwrap();
+        assert_eq!(cat.resolve_locale(None, None, Some("en")), "es");
     }
 }

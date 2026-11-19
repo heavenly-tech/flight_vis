@@ -27,16 +27,18 @@ const authProxy: Record<string, string | ProxyOptions> = {
   "/c/": api,
   "/s/": api,
   "/api": api,
-  "/logout": api,
-  "/login": {
+  "/signup": {
     target: api,
     bypass(req) {
       if (req.method === "GET" || req.method === "HEAD") {
-        const query = req.url?.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
-        return `/login.html${query}`;
+        return "/signup.html";
       }
     },
   },
+  "/logout": api,
+  "/login": api,
+  "/login/legacy": api,
+  "/club-login.html": api,
 };
 
 function clubAdminHtmlGateMiddleware(
@@ -57,27 +59,57 @@ function clubAdminHtmlGateMiddleware(
       return;
     }
     const search = raw.includes("?") ? raw.slice(raw.indexOf("?")) : "";
-    void fetch(`${apiOrigin}/api/club/me`, {
-      headers: { cookie: req.headers.cookie ?? "" },
-    })
-      .then(async (meRes) => {
-        if (meRes.ok) {
-          const me = (await meRes.json()) as { pilot?: { role?: string } | null };
-          if (me.pilot?.role === "admin") {
-            next();
-            return;
-          }
+    const cookie = req.headers.cookie ?? "";
+    const allowStaff = async (): Promise<boolean> => {
+      const accountMe = await fetch(`${apiOrigin}/api/account/me`, {
+        headers: { cookie },
+      });
+      if (accountMe.ok) {
+        const data = (await accountMe.json()) as {
+          activeMembershipId?: string | null;
+          memberships?: Array<{ id: string; status: string; role?: string }>;
+        };
+        const list = data.memberships ?? [];
+        const active = data.activeMembershipId
+          ? list.find((m) => m.id === data.activeMembershipId)
+          : undefined;
+        const staff = (m: { status: string; role?: string }) =>
+          m.status === "active" && (m.role === "admin" || m.role === "staff");
+        if (active && staff(active)) {
+          return true;
+        }
+        if (list.some(staff)) {
+          return true;
+        }
+      }
+      const clubMe = await fetch(`${apiOrigin}/api/club/me`, { headers: { cookie } });
+      if (clubMe.ok) {
+        const me = (await clubMe.json()) as { pilot?: { role?: string } | null };
+        if (me.pilot?.role === "admin" || me.pilot?.role === "staff") {
+          return true;
+        }
+      }
+      return false;
+    };
+    void allowStaff()
+      .then((ok) => {
+        if (ok) {
+          next();
+          return;
         }
         res.statusCode = 302;
         res.setHeader(
           "Location",
-          `/club-login.html?next=${encodeURIComponent(pathOnly + search)}`,
+          `/login?next=${encodeURIComponent(pathOnly + search)}`,
         );
         res.end();
       })
       .catch(() => {
         res.statusCode = 302;
-        res.setHeader("Location", `/club-login.html?next=${encodeURIComponent(pathOnly + search)}`);
+        res.setHeader(
+          "Location",
+          `/login?next=${encodeURIComponent(pathOnly + search)}`,
+        );
         res.end();
       });
   };
@@ -136,10 +168,12 @@ export default defineConfig({
       input: {
         main: path.resolve(root, "index.html"),
         login: path.resolve(root, "login.html"),
+        loginLegacy: path.resolve(root, "login-legacy.html"),
+        accountClubs: path.resolve(root, "account-clubs.html"),
         app: path.resolve(root, "app.html"),
         clubPilot: path.resolve(root, "club-pilot.html"),
         clubFlight: path.resolve(root, "club-flight.html"),
-        clubLogin: path.resolve(root, "club-login.html"),
+        signup: path.resolve(root, "signup.html"),
         clubMap: path.resolve(root, "club-map.html"),
         publicMap: path.resolve(root, "public-map.html"),
         clubRegister: path.resolve(root, "club-register.html"),

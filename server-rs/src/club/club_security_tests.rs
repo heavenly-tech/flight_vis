@@ -133,6 +133,8 @@ async fn magic_post_club_verify_browser_flow() {
         login_throttle: crate::LoginThrottle::default(),
         device_register_throttle: crate::LoginThrottle::default(),
         share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
+        account_password_account_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -241,6 +243,8 @@ async fn superadmin_allowlist_requires_verified_approved() {
         login_throttle: crate::LoginThrottle::default(),
         device_register_throttle: crate::LoginThrottle::default(),
         share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
+        account_password_account_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -329,6 +333,8 @@ async fn suspended_and_pending_clubs_forbidden_on_operational_routes() {
             login_throttle: crate::LoginThrottle::default(),
             device_register_throttle: crate::LoginThrottle::default(),
             share_lookup_throttle: crate::LoginThrottle::default(),
+            account_password_throttle: crate::LoginThrottle::default(),
+            account_password_account_throttle: crate::LoginThrottle::default(),
             mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
             webauthn: None,
             sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -461,6 +467,8 @@ async fn prod_style_null_verified_pilot_club_login_http() {
         login_throttle: crate::LoginThrottle::default(),
         device_register_throttle: crate::LoginThrottle::default(),
         share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
+        account_password_account_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -531,6 +539,8 @@ async fn verified_allowlisted_superadmin_lists_clubs() {
         login_throttle: crate::LoginThrottle::default(),
         device_register_throttle: crate::LoginThrottle::default(),
         share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
+        account_password_account_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -596,6 +606,8 @@ async fn superadmin_cannot_suspend_default_club() {
         login_throttle: crate::LoginThrottle::default(),
         device_register_throttle: crate::LoginThrottle::default(),
         share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
+        account_password_account_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -671,6 +683,8 @@ async fn checkin_gates_on_target_club_not_home_when_home_operational() {
         login_throttle: crate::LoginThrottle::default(),
         device_register_throttle: crate::LoginThrottle::default(),
         share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
+        account_password_account_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -693,17 +707,10 @@ async fn checkin_gates_on_target_club_not_home_when_home_operational() {
 }
 
 async fn apply_migration_015(pool: &sqlx::PgPool) {
-    sqlx::query(
-        "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
-         SELECT replace(gen_random_uuid()::text, '-', ''), p.id, p.club_id, p.role, p.status, p.created_at
-         FROM pilots p
-         WHERE p.status IN ('approved', 'pending')
-           AND p.role IN ('admin', 'pilot')
-         ON CONFLICT (pilot_id, club_id) DO NOTHING",
-    )
-    .execute(pool)
-    .await
-    .unwrap();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/000015_backfill_club_memberships.sql");
+    let sql = std::fs::read_to_string(&path).expect("000015 migration file");
+    sqlx::query(&sql).execute(pool).await.unwrap();
 }
 
 #[tokio::test]
@@ -802,6 +809,8 @@ async fn prod_admin_admin_api_200_after_membership_backfill() {
         login_throttle: crate::LoginThrottle::default(),
         device_register_throttle: crate::LoginThrottle::default(),
         share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
+        account_password_account_throttle: crate::LoginThrottle::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -891,7 +900,7 @@ async fn approve_pilot_with_checkout_upserts_membership_row() {
     .fetch_one(&db.pool)
     .await
     .unwrap();
-    assert_eq!(row, ("pilot".to_string(), "approved".to_string()));
+    assert_eq!(row, ("pilot".to_string(), "active".to_string()));
 }
 
 #[tokio::test]
@@ -919,19 +928,18 @@ async fn pilot_is_approved_member_after_membership_backfill() {
 #[tokio::test]
 #[serial]
 async fn bootstrap_email_exists_lookup_is_case_insensitive() {
+    use std::sync::{Mutex, MutexGuard};
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    let saved_email = std::env::var("FLIGHT_CLUB_BOOTSTRAP_ADMIN_EMAIL").ok();
+    let saved_pw = std::env::var("FLIGHT_CLUB_BOOTSTRAP_ADMIN_PASSWORD").ok();
+    {
+        let _guard: MutexGuard<'_, ()> = ENV_LOCK.lock().unwrap();
+        std::env::set_var("FLIGHT_CLUB_BOOTSTRAP_ADMIN_EMAIL", "Admin@Cas.example");
+        std::env::set_var("FLIGHT_CLUB_BOOTSTRAP_ADMIN_PASSWORD", "password12");
+    }
     let db = ClubDb::open_test().await.unwrap();
+    db.bootstrap().await.unwrap();
     let club_id = db.default_club_id().await.unwrap();
-    let now = now_ms();
-    sqlx::query(
-        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
-         VALUES ($1, $2, 'Admin', 'Admin@Cas.example', '', 'approved', 'admin', 'x', $3)",
-    )
-    .bind(new_id())
-    .bind(&club_id)
-    .bind(now)
-    .execute(&db.pool)
-    .await
-    .unwrap();
     let n: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM pilots WHERE club_id = $1 AND lower(email) = lower($2)",
     )
@@ -941,11 +949,24 @@ async fn bootstrap_email_exists_lookup_is_case_insensitive() {
     .await
     .unwrap();
     assert_eq!(n, 1);
+    {
+        let _guard: MutexGuard<'_, ()> = ENV_LOCK.lock().unwrap();
+        match saved_email {
+            Some(v) => std::env::set_var("FLIGHT_CLUB_BOOTSTRAP_ADMIN_EMAIL", v),
+            None => std::env::remove_var("FLIGHT_CLUB_BOOTSTRAP_ADMIN_EMAIL"),
+        }
+        match saved_pw {
+            Some(v) => std::env::set_var("FLIGHT_CLUB_BOOTSTRAP_ADMIN_PASSWORD", v),
+            None => std::env::remove_var("FLIGHT_CLUB_BOOTSTRAP_ADMIN_PASSWORD"),
+        }
+    }
 }
 
 #[tokio::test]
 #[serial]
 async fn passkey_login_path_preserves_null_email_verified() {
+    use crate::club::db::PilotRow;
+    use crate::club::webauthn::WebauthnState;
     let db = ClubDb::open_test().await.unwrap();
     let club_id = db.default_club_id().await.unwrap();
     let pilot_id = new_id();
@@ -960,8 +981,19 @@ async fn passkey_login_path_preserves_null_email_verified() {
     .execute(&db.pool)
     .await
     .unwrap();
-    assert!(db.club_operational(&club_id).await.is_ok());
-    let _ = db.create_pilot_session(&pilot_id, now).await.unwrap();
+    let pilot = PilotRow {
+        id: pilot_id.clone(),
+        club_id: club_id.clone(),
+        name: "PK".to_string(),
+        email: "passkey@test".to_string(),
+        license_no: String::new(),
+        status: "approved".to_string(),
+        role: "pilot".to_string(),
+        locale: None,
+    };
+    let _ = WebauthnState::complete_passkey_login(&db, &pilot)
+        .await
+        .expect("passkey post-login session");
     let verified: Option<i64> =
         sqlx::query_scalar("SELECT email_verified_at FROM pilots WHERE id = $1")
             .bind(&pilot_id)
@@ -974,6 +1006,8 @@ async fn passkey_login_path_preserves_null_email_verified() {
 #[tokio::test]
 #[serial]
 async fn allowlisted_passkey_pilot_unverified_not_platform_superadmin() {
+    use crate::club::db::PilotRow;
+    use crate::club::webauthn::WebauthnState;
     use std::collections::HashSet;
     let db = ClubDb::open_test().await.unwrap();
     let club_id = db.default_club_id().await.unwrap();
@@ -991,17 +1025,92 @@ async fn allowlisted_passkey_pilot_unverified_not_platform_superadmin() {
     .execute(&db.pool)
     .await
     .unwrap();
+    let pilot = PilotRow {
+        id: pilot_id.clone(),
+        club_id,
+        name: "SA".to_string(),
+        email: email.clone(),
+        license_no: String::new(),
+        status: "approved".to_string(),
+        role: "pilot".to_string(),
+        locale: None,
+    };
+    let _ = WebauthnState::complete_passkey_login(&db, &pilot)
+        .await
+        .expect("passkey post-login session");
+    let mut allow = HashSet::new();
+    allow.insert(email);
+    assert!(!db.is_platform_superadmin(&pilot_id, &allow).await);
+}
+
+#[tokio::test]
+#[serial]
+async fn pending_admin_pilot_admin_api_403() {
+    use crate::club::auth::hash_password;
+    use crate::{
+        auth::Auth, build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState,
+    };
+    use axum::{
+        body::Body,
+        http::{header, Request, StatusCode},
+    };
+    use std::sync::Arc;
+    use tower::Service;
+
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_id = db.default_club_id().await.unwrap();
+    let admin_id = new_id();
+    let hash = hash_password("password12").unwrap();
     sqlx::query(
-        "INSERT INTO webauthn_credentials (id, pilot_id, credential_id, public_key, counter, created_at)
-         VALUES ($1, $2, '\\x01', '\\x01', 0, $3)",
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'Pending Admin', 'pending-admin@test', '', 'pending', 'admin', $3, $4)",
     )
-    .bind(new_id())
-    .bind(&pilot_id)
+    .bind(&admin_id)
+    .bind(&club_id)
+    .bind(&hash)
     .bind(now)
     .execute(&db.pool)
     .await
     .unwrap();
-    let mut allow = HashSet::new();
-    allow.insert(email);
-    assert!(!db.is_platform_superadmin(&pilot_id, &allow).await);
+    apply_migration_015(&db.pool).await;
+    let cookie = format!(
+        "fv_club_session={}",
+        db.create_pilot_session(&admin_id, now).await.unwrap()
+    );
+    let data_dir = tempfile::tempdir().unwrap();
+    let (video_queue, _) = tokio::sync::mpsc::channel(4);
+    let state = AppState {
+        dist_dir: data_dir.path().join("dist"),
+        auth: Auth::with_password("x"),
+        device_auth: DeviceAuth::empty(),
+        live: Arc::new(LiveEngine::new(data_dir.path())),
+        store: Store::new(data_dir.path()),
+        club: Some(db),
+        video_queue,
+        login_throttle: crate::LoginThrottle::default(),
+        device_register_throttle: crate::LoginThrottle::default(),
+        share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
+        account_password_account_throttle: crate::LoginThrottle::default(),
+        mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+        webauthn: None,
+        sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+        superadmin_emails: Default::default(),
+    };
+    let mut router = build_router(state);
+    for uri in ["/api/admin/pilots", "/api/admin/display-sessions"] {
+        let res = router
+            .call(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .header(header::COOKIE, &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN, "{uri}");
+    }
 }

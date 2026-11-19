@@ -9,6 +9,8 @@ use sqlx::Row;
 
 pub const CLUB_SIGNUP_PURPOSE: &str = "club_verify";
 const MAGIC_TTL_MS: i64 = 15 * 60 * 1000;
+/// Unverified self-serve clubs older than this are purged so the slug can be reused.
+pub const PENDING_CLUB_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -179,6 +181,34 @@ impl ClubDb {
         Ok(r.rows_affected() > 0)
     }
 
+    pub async fn purge_stale_pending_clubs(&self, now: i64) -> Result<u64, DbError> {
+        let cutoff = now - PENDING_CLUB_TTL_MS;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM pilots
+             WHERE club_id IN (
+                 SELECT id FROM clubs
+                 WHERE status = 'pending'
+                   AND email_verified_at IS NULL
+                   AND created_at < $1
+             )",
+        )
+        .bind(cutoff)
+        .execute(&mut *tx)
+        .await?;
+        let r = sqlx::query(
+            "DELETE FROM clubs
+             WHERE status = 'pending'
+               AND email_verified_at IS NULL
+               AND created_at < $1",
+        )
+        .bind(cutoff)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(r.rows_affected())
+    }
+
     pub async fn signup_club(
         &self,
         name: &str,
@@ -187,6 +217,7 @@ impl ClubDb {
         aerodrome_icao: Option<&str>,
         now: i64,
     ) -> Result<(String, String), ClubSignupError> {
+        let _ = self.purge_stale_pending_clubs(now).await;
         let name = name.trim();
         let slug = normalize_slug(slug);
         let email = contact_email.trim().to_ascii_lowercase();
@@ -234,12 +265,29 @@ impl ClubDb {
             return Err(ClubSignupError::Db);
         }
         let admin_name = format!("Admin · {name}");
+        let account_id = if let Some(a) = self.account_by_email(&email).await {
+            a.id
+        } else {
+            let aid = new_id();
+            sqlx::query(
+                "INSERT INTO accounts (id, email, created_at)
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(&aid)
+            .bind(&email)
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ClubSignupError::Db)?;
+            aid
+        };
         sqlx::query(
-            "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
-             VALUES ($1, $2, $3, $4, '', 'approved', 'admin', '', $5)",
+            "INSERT INTO pilots (id, club_id, account_id, name, email, license_no, status, role, password_hash, created_at)
+             VALUES ($1, $2, $3, $4, $5, '', 'pending', 'admin', '', $6)",
         )
         .bind(&admin_id)
         .bind(&club_id)
+        .bind(&account_id)
         .bind(&admin_name)
         .bind(&email)
         .bind(now)
@@ -248,7 +296,7 @@ impl ClubDb {
         .map_err(|_| ClubSignupError::Db)?;
         sqlx::query(
             "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
-             VALUES ($1, $2, $3, 'admin', 'approved', $4)",
+             VALUES ($1, $2, $3, 'admin', 'pending', $4)",
         )
         .bind(&member_id)
         .bind(&admin_id)
@@ -343,7 +391,26 @@ impl ClubDb {
             .await
             .map_err(|_| MagicConsumeError::Invalid)?;
         sqlx::query(
-            "UPDATE pilots SET email_verified_at = $1 WHERE club_id = $2 AND role = 'admin'",
+            "UPDATE pilots SET email_verified_at = $1, status = 'approved'
+             WHERE club_id = $2 AND role = 'admin'",
+        )
+        .bind(now)
+        .bind(&club_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|_| MagicConsumeError::Invalid)?;
+        sqlx::query(
+            "UPDATE club_memberships SET status = 'active'
+             WHERE club_id = $1 AND role = 'admin'",
+        )
+        .bind(&club_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|_| MagicConsumeError::Invalid)?;
+        sqlx::query(
+            "UPDATE accounts AS a SET email_verified_at = coalesce(a.email_verified_at, $1)
+             FROM pilots p
+             WHERE p.club_id = $2 AND p.role = 'admin' AND a.id = p.account_id",
         )
         .bind(now)
         .bind(&club_id)

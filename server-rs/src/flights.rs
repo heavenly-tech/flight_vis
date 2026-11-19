@@ -247,6 +247,8 @@ mod tests {
             login_throttle: crate::LoginThrottle::default(),
             device_register_throttle: crate::LoginThrottle::default(),
             share_lookup_throttle: crate::LoginThrottle::default(),
+            account_password_throttle: crate::LoginThrottle::default(),
+            account_password_account_throttle: crate::LoginThrottle::default(),
             mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
             webauthn: None,
             sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -675,7 +677,10 @@ mod tests {
             (status, location, String::new())
         };
         assert_eq!(status, StatusCode::FOUND);
-        assert_eq!(headers_text.unwrap().to_str().unwrap(), "/login?locked=1");
+        assert_eq!(
+            headers_text.unwrap().to_str().unwrap(),
+            "/login?mode=password&locked=1"
+        );
         cleanup(&data_dir).await;
     }
 

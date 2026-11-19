@@ -7,7 +7,7 @@ export function trackPasswordInRequestUrls(page: Page): {
   const urls: string[] = [];
   page.on("request", (req) => {
     const u = req.url();
-    if (/password/i.test(u)) urls.push(u);
+    if (/[?&]password=/i.test(u)) urls.push(u);
   });
   return {
     urls,
@@ -16,5 +16,7 @@ export function trackPasswordInRequestUrls(page: Page): {
 }
 
 export function assertNoPasswordInUrl(url: string): void {
-  expect(url).not.toMatch(/password/i);
+  expect(url).not.toMatch(/[?&]password=/i);
+  const decoded = decodeURIComponent(url).toLowerCase();
+  expect(decoded).not.toMatch(/[?&]password=/);
 }

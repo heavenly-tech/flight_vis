@@ -18,7 +18,10 @@ export async function ensureClubAdminOrRedirect(): Promise<boolean> {
     redirectToClubLogin();
     return false;
   }
-  if (!me.pilot || me.pilot.role !== "admin") {
+  if (
+    !me.pilot ||
+    (me.pilot.role !== "admin" && me.pilot.role !== "staff")
+  ) {
     redirectToClubLogin();
     return false;
   }
