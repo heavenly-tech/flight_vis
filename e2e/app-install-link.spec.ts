@@ -16,11 +16,13 @@ test("app install-link exposes intent with APK browser fallback when configured"
 
   await page.goto("/app.html", { waitUntil: "domcontentloaded" });
   if (link.intentUrl) {
+    expect(link.intentUrl).toMatch(
+      /^intent:#Intent;action=android\.intent\.action\.MAIN;category=android\.intent\.category\.LAUNCHER;/,
+    );
     expect(link.intentUrl).toContain("S.browser_fallback_url=");
     await expect(page.locator("#open-in-app")).toBeVisible({ timeout: 15_000 });
     const href = await page.locator("#open-in-app").getAttribute("href");
     expect(href).toBe(link.intentUrl);
-    expect(href).toContain("S.browser_fallback_url=");
   } else {
     await expect(page.locator("#open-in-app")).toBeHidden();
   }

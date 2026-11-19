@@ -15,26 +15,37 @@
       a.dl { display: inline-block; margin-top: 1rem; padding: .65rem 1.1rem; border-radius: 10px; background: #ecebff; color: #15132a; font-weight: 650; text-decoration: none; }
       a.dl[disabled] { opacity: .45; pointer-events: none; }
       #lang-slot { font-size: .9rem; margin-bottom: .75rem; }
+      h1.app-title { margin-top: .5rem; }
+      #release-card { margin-top: 1.25rem; }
+      a.dl.secondary {
+        margin-left: .5rem;
+        background: transparent;
+        color: #ecebff;
+        border: 1px solid rgba(236,235,255,.35);
+      }
+      section.card-spaced { margin-top: 1rem; }
+      h2.card-heading { margin-top: 0; font-size: 1rem; }
+      p.footer-spaced { margin-top: 1.5rem; }
     </style>
   </head>
   <body>
     <main>
       <div id="lang-slot"></div>
       <p class="badge" data-i18n="app.badge"></p>
-      <h1 style="margin-top: .5rem" data-i18n="app.title"></h1>
+      <h1 class="app-title" data-i18n="app.title"></h1>
       <p class="muted" data-i18n="app.subtitle"></p>
-      <section class="card" id="release-card" style="margin-top: 1.25rem">
+      <section class="card" id="release-card">
         <p id="status" data-i18n="common.loading"></p>
         <p id="version" hidden></p>
         <p id="sha" hidden><strong>SHA-256</strong> <code id="sha-val"></code></p>
         <a class="dl" id="download" hidden download="flightvis.apk" data-i18n="app.downloadApk"></a>
-        <a class="dl" id="open-in-app" hidden data-i18n="app.openInApp" style="margin-left:.5rem;background:transparent;color:#ecebff;border:1px solid rgba(236,235,255,.35)"></a>
+        <a class="dl secondary" id="open-in-app" hidden data-i18n="app.openInApp"></a>
       </section>
-      <section class="card" style="margin-top: 1rem">
-        <h2 style="margin-top: 0; font-size: 1rem" data-i18n="app.sideloadTitle"></h2>
+      <section class="card card-spaced">
+        <h2 class="card-heading" data-i18n="app.sideloadTitle"></h2>
         <ol id="sideload-steps"></ol>
       </section>
-      <p class="muted" style="margin-top: 1.5rem"><a href="/" data-i18n="common.backHome"></a></p>
+      <p class="muted footer-spaced"><a href="/" data-i18n="common.backHome"></a></p>
     </main>
     <script type="module" src="/src/app/main.ts"></script>
   </body>

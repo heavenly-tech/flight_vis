@@ -45,7 +45,10 @@ async function loadRelease(): Promise<void> {
       const linkRes = await fetch("/api/app/install-link", { credentials: "same-origin" });
       if (linkRes.ok) {
         const link = (await linkRes.json()) as { intentUrl?: string | null; apkUrl?: string };
-        if (link.intentUrl?.includes("S.browser_fallback_url=")) {
+        if (
+          link.intentUrl?.startsWith("intent:#Intent;action=android.intent.action.MAIN;") &&
+          link.intentUrl.includes("S.browser_fallback_url=")
+        ) {
           openInApp.href = link.intentUrl;
           openInApp.hidden = false;
         }
