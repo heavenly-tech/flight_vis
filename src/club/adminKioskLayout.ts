@@ -1,6 +1,7 @@
 import { ensureClubAdminOrRedirect } from "./adminGate";
 import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 import { startClubPage } from "./i18nPage";
+import { t } from "../i18n/index";
 import {
   applyLayoutToEl,
   clampKioskQrLayout,
@@ -16,6 +17,8 @@ const aspectSel = document.querySelector<HTMLSelectElement>("#aspect")!;
 const saveBtn = document.querySelector<HTMLButtonElement>("#btn-save")!;
 const resetBtn = document.querySelector<HTMLButtonElement>("#btn-reset")!;
 const saveStatus = document.querySelector<HTMLSpanElement>("#save-status")!;
+const qrVisible = document.querySelector<HTMLInputElement>("#checkin-qr-visible")!;
+const saveVisibleBtn = document.querySelector<HTMLButtonElement>("#btn-save-visible")!;
 
 let layout: KioskQrLayout = defaultKioskQrLayout(DEFAULT_PREVIEW_ASPECT);
 
@@ -31,6 +34,9 @@ function resizeFrame(): void {
 function paint(): void {
   resizeFrame();
   applyLayoutToEl(qr, layout, frame);
+  const show = layout.checkinQrVisible !== false;
+  qr.hidden = !show;
+  if (qrVisible) qrVisible.checked = show;
 }
 
 function pointerLayoutFromRect(left: number, top: number, side: number): KioskQrLayout {
@@ -98,14 +104,26 @@ async function loadLayout(): Promise<void> {
   paint();
 }
 
+saveVisibleBtn?.addEventListener("click", async () => {
+  if (!qrVisible) return;
+  saveStatus.textContent = t("admin.saving");
+  layout = await api<KioskQrLayout>("/api/admin/club/kiosk-checkin-qr-visible", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ visible: qrVisible.checked }),
+  });
+  paint();
+  saveStatus.textContent = t("admin.savedRev", { rev: String(layout.rev ?? "?") });
+});
+
 saveBtn.addEventListener("click", async () => {
-  saveStatus.textContent = "Guardando…";
+  saveStatus.textContent = t("admin.saving");
   layout = await api<KioskQrLayout>("/api/admin/kiosk-layout", {
     method: "PATCH" as const,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...layout, aspect: aspect() }),
   });
-  saveStatus.textContent = `Guardado (rev ${layout.rev ?? "?"})`;
+  saveStatus.textContent = t("admin.savedRev", { rev: String(layout.rev ?? "?") });
 });
 
 resetBtn.addEventListener("click", async () => {
@@ -115,7 +133,7 @@ resetBtn.addEventListener("click", async () => {
     body: JSON.stringify({ aspect: aspect() }),
   });
   paint();
-  saveStatus.textContent = "Restablecido";
+  saveStatus.textContent = t("admin.resetDone");
 });
 
 aspectSel.addEventListener("change", () => {

@@ -14,7 +14,8 @@ const NAV_KEYS = [
   ["club-admin-checkouts.html", "nav.checkouts"],
   ["club-admin-map.html", "nav.adminMap"],
   ["club-admin-kiosk-layout.html", "nav.kioskQr"],
-  ["/login?mode=club", "nav.login"],
+  ["club-admin-checkin-qr.html", "nav.adminCheckinQr"],
+  ["login?mode=club", "nav.login"],
 ] as const;
 
 function mountAdminNavInner(): void {

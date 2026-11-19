@@ -16,7 +16,7 @@ export default defineConfig({
   projects: [
     {
       name: "default",
-      testIgnore: /globe-csp\.spec\.ts/,
+      testIgnore: /globe-csp\.spec\.ts|auth-csp\.spec\.ts|admin-checkin-qr\.spec\.ts/,
     },
     {
       name: "globe-csp",
@@ -24,6 +24,12 @@ export default defineConfig({
       fullyParallel: false,
       workers: 1,
       use: { baseURL: `http://127.0.0.1:${e2eCspPort}` },
+    },
+    {
+      name: "admin-checkin-qr",
+      testMatch: /admin-checkin-qr\.spec\.ts/,
+      fullyParallel: false,
+      workers: 1,
     },
   ],
   webServer: [
@@ -42,7 +48,7 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
     },
     {
-      command: "node scripts/e2e-csp-gateway.mjs",
+      command: "npx --yes wait-on dist/index.html && node scripts/e2e-csp-gateway.mjs",
       url: `http://127.0.0.1:${e2eCspPort}/`,
       env: {
         ...process.env,
@@ -53,12 +59,14 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
     },
     {
-      command: "VITE_E2E_SKIP_GLOBE=1 npm run dev -- --host 127.0.0.1 --port 5173",
+      command:
+        "npx --yes wait-on dist/index.html && VITE_E2E_SKIP_GLOBE=1 npm run preview -- --host 127.0.0.1 --port 5173",
       url: "http://127.0.0.1:5173",
       env: {
         ...process.env,
         VITE_E2E_SKIP_GLOBE: "1",
       },
+      timeout: 180_000,
       reuseExistingServer: !process.env.CI,
     },
   ],

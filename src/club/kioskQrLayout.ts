@@ -5,7 +5,13 @@ export const KIOSK_QR_MAX = 0.5;
 export const KIOSK_QR_MARGIN = 0.02;
 export const DEFAULT_PREVIEW_ASPECT = 16 / 9;
 
-export type KioskQrLayout = { x: number; y: number; size: number; rev?: number };
+export type KioskQrLayout = {
+  x: number;
+  y: number;
+  size: number;
+  rev?: number;
+  checkinQrVisible?: boolean;
+};
 
 export function qrFootprintFractions(
   aspect: number,

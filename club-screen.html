@@ -24,6 +24,17 @@
       #map-layer h2 { margin: 0 0 0.75rem; font-size: 1.1rem; font-weight: 600; }
       #map-layer ul { list-style: none; margin: 0; padding: 0; columns: 2; gap: 1rem; }
       #map-layer li { padding: 0.35rem 0; font-size: 1.05rem; }
+      #map-layer.map-expanded { padding: 2rem 2.5rem 2.5rem; }
+      #map-layer.map-expanded ul { columns: 3; font-size: 1.2rem; }
+      #toolbar-local {
+        position: absolute;
+        right: 1rem;
+        top: 1rem;
+        z-index: 6;
+        display: flex;
+        gap: 0.5rem;
+      }
+      #toolbar-local button { font: inherit; padding: 0.35rem 0.65rem; }
       #status-bar {
         position: absolute;
         left: 1rem;
@@ -62,9 +73,12 @@
   </head>
   <body>
     <div class="kiosk-viewport" id="viewport">
-      <p id="status-bar">Starting kiosk…</p>
+      <p id="status-bar" data-i18n="kiosk.starting"></p>
+      <div id="toolbar-local">
+        <button type="button" id="btn-local-qr" data-i18n="kiosk.qrHide" hidden></button>
+      </div>
       <section id="map-layer" aria-label="Live club map">
-        <h2>Live aircraft</h2>
+        <h2 data-i18n="kiosk.liveAircraft"></h2>
         <ul id="map"></ul>
       </section>
       <div id="qr-wrap" hidden>
