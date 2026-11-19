@@ -137,12 +137,12 @@
     </style>
   </head>
   <body>
-    <form class="sheet" id="login-form" method="post" action="/login" autocomplete="current-password">
+    <form class="sheet" id="login-form" method="post" action="/login">
       <h1>flight_vis</h1>
       <p class="lead">heavenly.cl · password to save and upload tracks</p>
       <div id="body">
         <label for="password">Password</label>
-        <input id="password" name="password" type="password" required autofocus />
+        <input id="password" name="password" type="password" required autofocus autocomplete="current-password" />
         <input type="hidden" name="next" id="next" value="/" />
         <button type="submit">Log in</button>
         <p class="err" id="err"></p>

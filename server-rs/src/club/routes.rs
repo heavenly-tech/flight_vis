@@ -317,6 +317,20 @@ fn club_wants_json(headers: &HeaderMap) -> bool {
     crate::auth::wants_json(accept, content_type)
 }
 
+fn club_login_is_form_content(content_type: &str) -> bool {
+    content_type.contains("application/x-www-form-urlencoded")
+        || content_type.contains("text/plain")
+}
+
+fn club_login_fail_location(next: &str) -> String {
+    let safe = crate::auth::safe_next(next);
+    format!(
+        "/club-login.html?{}",
+        serde_urlencoded::to_string([("e", "1"), ("next", safe.as_str())])
+            .unwrap_or_else(|_| "e=1".to_string())
+    )
+}
+
 fn club_login_fields(headers: &HeaderMap, body: &[u8]) -> ClubLoginFields {
     let content_type = headers
         .get(header::CONTENT_TYPE)
@@ -333,7 +347,11 @@ fn club_login_fields(headers: &HeaderMap, body: &[u8]) -> ClubLoginFields {
             model: body.model,
         };
     }
-    let parsed: HashMap<String, String> = serde_urlencoded::from_bytes(body).unwrap_or_default();
+    let parsed: HashMap<String, String> = if club_login_is_form_content(content_type) {
+        serde_urlencoded::from_bytes(body).unwrap_or_default()
+    } else {
+        HashMap::new()
+    };
     ClubLoginFields {
         email: parsed.get("email").cloned().unwrap_or_default(),
         password: parsed.get("password").cloned().unwrap_or_default(),
@@ -363,7 +381,13 @@ async fn club_login(
     body: Bytes,
 ) -> impl IntoResponse {
     let json = club_wants_json(&headers);
+    if !json {
+        if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+            return (status, "csrf").into_response();
+        }
+    }
     let fields = club_login_fields(&headers, &body);
+    let fail = |next: &str| club_login_redirect(&club_login_fail_location(next));
     let Some(db) = club_db(&state) else {
         if json {
             return (
@@ -372,7 +396,7 @@ async fn club_login(
             )
                 .into_response();
         }
-        return club_login_redirect("/club-login.html?e=1").into_response();
+        return fail(&fields.next).into_response();
     };
     let club_id = db.default_club_id().await.unwrap_or_default();
     let now = now_ms();
@@ -438,7 +462,7 @@ async fn club_login(
                 )
                     .into_response();
             }
-            club_login_redirect("/club-login.html?e=1").into_response()
+            fail(&fields.next).into_response()
         }
         Err(crate::club::db::LoginError::ClubUnavailable) => {
             if json {
@@ -448,7 +472,7 @@ async fn club_login(
                 )
                     .into_response();
             }
-            club_login_redirect("/club-login.html?e=1").into_response()
+            fail(&fields.next).into_response()
         }
         Err(_) => {
             if json {
@@ -458,7 +482,7 @@ async fn club_login(
                 )
                     .into_response();
             }
-            club_login_redirect("/club-login.html?e=1").into_response()
+            fail(&fields.next).into_response()
         }
     }
 }

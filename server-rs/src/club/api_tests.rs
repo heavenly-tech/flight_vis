@@ -1051,6 +1051,7 @@ async fn club_login_form_post_redirects_without_password_in_location() {
                 .method("POST")
                 .uri("/api/club/login")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "same-origin")
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -1079,6 +1080,7 @@ async fn club_login_form_post_rejects_open_redirect_next() {
                 .method("POST")
                 .uri("/api/club/login")
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "same-origin")
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -1091,4 +1093,80 @@ async fn club_login_form_post_rejects_open_redirect_next() {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     assert_eq!(location, "/");
+}
+
+#[tokio::test]
+#[serial]
+async fn club_login_form_post_cross_site_is_forbidden() {
+    let mut fx = setup().await;
+    let body = "email=a%40test&password=password12&next=%2Fclub-pilot.html";
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+#[serial]
+async fn club_login_form_post_bad_password_preserves_safe_next() {
+    let mut fx = setup().await;
+    let body = "email=a%40test&password=wrong&next=%2Fclub-admin-types.html";
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/login")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let location = res
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(location.starts_with("/club-login.html?"));
+    assert!(location.contains("e=1"));
+    assert!(location.contains("next=%2Fclub-admin-types.html"));
+    assert!(!location.to_lowercase().contains("password"));
+}
+
+#[tokio::test]
+#[serial]
+async fn patch_me_locale_cross_site_is_forbidden() {
+    let mut fx = setup().await;
+    let cookie = login_cookie(&mut fx.router, "a@test").await;
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/club/me/locale")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::COOKIE, &cookie)
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::from(r#"{"locale":"en"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json.get("error").and_then(|v| v.as_str()), Some("csrf"));
 }

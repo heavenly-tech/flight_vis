@@ -1,6 +1,11 @@
 import { test, expect } from "@playwright/test";
+import {
+  assertNoPasswordInUrl,
+  trackPasswordInRequestUrls,
+} from "./club-login-helpers";
 
 async function loginViaClubForm(page: import("@playwright/test").Page): Promise<void> {
+  const leak = trackPasswordInRequestUrls(page);
   await page.goto("/club-login.html", { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => window.__fvClubLoginReady === true);
   await page.fill('input[name="email"]', "admin@demo.test");
@@ -9,7 +14,8 @@ async function loginViaClubForm(page: import("@playwright/test").Page): Promise<
     page.waitForURL(/club-pilot\.html/),
     page.locator("#form button[type=submit]").click(),
   ]);
-  expect(page.url()).not.toMatch(/password/i);
+  assertNoPasswordInUrl(page.url());
+  leak.assertClean();
 }
 
 declare global {

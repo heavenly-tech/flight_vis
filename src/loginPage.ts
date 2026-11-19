@@ -6,7 +6,6 @@ const err = document.getElementById("err");
 const next = document.getElementById("next") as HTMLInputElement | null;
 const dest = safeNextPath(q.get("next") ?? "/");
 if (next) next.value = dest;
-if (q.get("e") === "1" && err) err.textContent = "Wrong password.";
 
 function showLocked(): void {
   const body = document.getElementById("body");
@@ -35,6 +34,7 @@ void fetch("/api/auth/me", { credentials: "same-origin" })
 
 void bootI18n().then(() => {
   applyI18nDocument(document);
+  if (q.get("e") === "1" && err) err.textContent = t("auth.wrongPassword");
   const clubBtn = document.getElementById("club-login-btn");
   if (!clubBtn) return;
   clubBtn.textContent = t("nav.clubLogin");

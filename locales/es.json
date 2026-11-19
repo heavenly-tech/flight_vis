@@ -37,6 +37,9 @@
     "createClub": "Crear club",
     "registerClub": "Registrar club"
   },
+  "auth": {
+    "wrongPassword": "Contraseña incorrecta."
+  },
   "api": {
     "unauthorized": "No autorizado",
     "adminOnly": "Solo administradores",

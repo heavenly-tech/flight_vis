@@ -16,6 +16,9 @@
     "dateShort": "MM/dd/yyyy",
     "dateTimeShort": "MM/dd/yyyy h:mm a"
   },
+  "auth": {
+    "wrongPassword": "Wrong password."
+  },
   "nav": {
     "types": "Types",
     "tails": "Tails",

@@ -1,12 +1,11 @@
-/** Production nginx CSP on flight.heavenly.cl (must match the vhost). */
-export const PROD_HTML_CSP =
-  "default-src 'self'; " +
-  "script-src 'self' 'wasm-unsafe-eval'; " +
-  "worker-src 'self' blob:; " +
-  "style-src 'self' 'unsafe-inline'; " +
-  "img-src 'self' https://services.arcgisonline.com; " +
-  "connect-src 'self' https://services.arcgisonline.com https://elevation3d.arcgis.com; " +
-  "font-src 'self'; " +
-  "frame-ancestors 'none'; " +
-  "base-uri 'none'; " +
-  "form-action 'self'";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/** Matches `static_files::HTML_CSP` / `csp/html-page.csp`. */
+export const HTML_PAGE_CSP = readFileSync(
+  path.join(repoRoot, "csp", "html-page.csp"),
+  "utf8",
+).trim();
