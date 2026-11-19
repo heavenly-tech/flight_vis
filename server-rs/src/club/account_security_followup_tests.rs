@@ -1560,6 +1560,114 @@ async fn legacy_register_verified_account_pilot_has_no_password() {
 
 #[tokio::test]
 #[serial]
+async fn set_account_password_magic_fresh_session_sets_new_without_current() {
+    use crate::club::db_account::AccountSignupError;
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = format!("magic-fresh-pw-{}@test", &new_id()[..10]);
+    let id = db.create_account(&email, None, now).await.unwrap();
+    sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(&id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let boot = db.create_account_session(&id, None, now).await.unwrap();
+    db.set_account_password(&id, "password12", now, None, Some(&boot))
+        .await
+        .unwrap();
+    let magic_sess = db
+        .create_account_session_auth(
+            &id,
+            None,
+            now,
+            crate::club::db_account::ACCOUNT_SESSION_AUTH_MAGIC,
+        )
+        .await
+        .unwrap();
+    db.set_account_password(&id, "newpassword1", now, None, Some(&magic_sess))
+        .await
+        .unwrap();
+    assert!(matches!(
+        db.account_login_password(&email, "newpassword1", now, "127.0.0.1")
+            .await,
+        Ok(_)
+    ));
+}
+
+#[tokio::test]
+#[serial]
+async fn set_account_password_stale_magic_session_requires_current() {
+    use crate::club::db_account::AccountSignupError;
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = format!("stale-magic-pw-{}@test", &new_id()[..10]);
+    let id = db.create_account(&email, None, now).await.unwrap();
+    sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(&id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let boot = db.create_account_session(&id, None, now).await.unwrap();
+    db.set_account_password(&id, "password12", now, None, Some(&boot))
+        .await
+        .unwrap();
+    let magic_sess = db
+        .create_account_session_auth(
+            &id,
+            None,
+            now,
+            crate::club::db_account::ACCOUNT_SESSION_AUTH_MAGIC,
+        )
+        .await
+        .unwrap();
+    let session_db_id = crate::club::auth::digest_token(&magic_sess);
+    let stale = now - crate::club::db_account::ACCOUNT_PASSWORD_RECENT_AUTH_MS - 1;
+    sqlx::query("UPDATE account_sessions SET created_at = $1 WHERE id = $2")
+        .bind(stale)
+        .bind(&session_db_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let err = db
+        .set_account_password(&id, "newpassword1", now, None, Some(&magic_sess))
+        .await
+        .unwrap_err();
+    assert_eq!(err, AccountSignupError::AuthRequired);
+}
+
+#[tokio::test]
+#[serial]
+async fn set_account_password_fresh_password_login_session_requires_current() {
+    use crate::club::db_account::AccountSignupError;
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = format!("fresh-pass-sess-{}@test", &new_id()[..10]);
+    let id = db.create_account(&email, None, now).await.unwrap();
+    sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(&id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let boot = db.create_account_session(&id, None, now).await.unwrap();
+    db.set_account_password(&id, "password12", now, None, Some(&boot))
+        .await
+        .unwrap();
+    let (login_sess, _) = db
+        .account_login_password(&email, "password12", now, "127.0.0.1")
+        .await
+        .unwrap();
+    let err = db
+        .set_account_password(&id, "newpassword1", now, None, Some(&login_sess))
+        .await
+        .unwrap_err();
+    assert_eq!(err, AccountSignupError::AuthRequired);
+}
+
+#[tokio::test]
+#[serial]
 async fn set_account_password_wrong_current_rejected() {
     use crate::club::db_account::AccountSignupError;
     let db = ClubDb::open_test().await.unwrap();

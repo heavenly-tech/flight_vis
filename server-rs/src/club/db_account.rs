@@ -45,6 +45,9 @@ pub enum AccountSignupError {
 
 pub const ACCOUNT_PASSWORD_RECENT_AUTH_MS: i64 = 15 * 60 * 1000;
 
+pub const ACCOUNT_SESSION_AUTH_MAGIC: &str = "magic";
+pub const ACCOUNT_SESSION_AUTH_PASSWORD: &str = "password";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountJoinError {
     EmailExists,
@@ -496,18 +499,35 @@ impl ClubDb {
         active_membership_id: Option<&str>,
         now: i64,
     ) -> Result<String, DbError> {
+        self.create_account_session_auth(
+            account_id,
+            active_membership_id,
+            now,
+            ACCOUNT_SESSION_AUTH_PASSWORD,
+        )
+        .await
+    }
+
+    pub async fn create_account_session_auth(
+        &self,
+        account_id: &str,
+        active_membership_id: Option<&str>,
+        now: i64,
+        auth_method: &str,
+    ) -> Result<String, DbError> {
         let session_id = new_session_id();
         let session_db_id = digest_token(&session_id);
         let exp = now + SESSION_TTL_SEC * 1000;
         sqlx::query(
-            "INSERT INTO account_sessions (id, account_id, active_membership_id, expires_at, created_at)
-             VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO account_sessions (id, account_id, active_membership_id, expires_at, created_at, auth_method)
+             VALUES ($1, $2, $3, $4, $5, $6)",
         )
         .bind(&session_db_id)
         .bind(account_id)
         .bind(active_membership_id)
         .bind(exp)
         .bind(now)
+        .bind(auth_method)
         .execute(&self.pool)
         .await?;
         Ok(session_id)
@@ -537,6 +557,21 @@ impl ClubDb {
                 .ok()
                 .flatten();
         created.is_some_and(|c| c > 0 && now.saturating_sub(c) <= ACCOUNT_PASSWORD_RECENT_AUTH_MS)
+    }
+
+    pub async fn account_session_magic_fresh(&self, session_raw: &str, now: i64) -> bool {
+        if !self.account_session_is_fresh(session_raw, now).await {
+            return false;
+        }
+        let session_db_id = auth::digest_token(session_raw);
+        let method: Option<String> =
+            sqlx::query_scalar("SELECT auth_method FROM account_sessions WHERE id = $1")
+                .bind(&session_db_id)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten();
+        method.as_deref() == Some(ACCOUNT_SESSION_AUTH_MAGIC)
     }
 
     pub async fn set_account_password(
@@ -570,12 +605,17 @@ impl ClubDb {
         } else {
             false
         };
+        let magic_fresh = if let Some(raw) = keep_session_raw {
+            self.account_session_magic_fresh(raw, now).await
+        } else {
+            false
+        };
         let has_password = existing_hash.as_deref().is_some_and(|h| !h.is_empty());
         let current_ok = existing_hash
             .as_deref()
             .is_some_and(|hash| current_password.is_some_and(|p| auth::verify_password(p, hash)));
         if has_password {
-            if !current_ok {
+            if !current_ok && !magic_fresh {
                 return if current_password.is_some() {
                     Err(AccountSignupError::WrongPassword)
                 } else {
@@ -694,7 +734,7 @@ impl ClubDb {
             return Err(LoginError::Invalid);
         }
         let session_id = self
-            .create_account_session(&acct.id, None, now)
+            .create_account_session_auth(&acct.id, None, now, ACCOUNT_SESSION_AUTH_PASSWORD)
             .await
             .map_err(|_| LoginError::Invalid)?;
         Ok((session_id, acct))

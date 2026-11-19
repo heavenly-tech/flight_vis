@@ -373,6 +373,7 @@ async fn account_me(State(state): State<AppState>, headers: HeaderMap) -> impl I
             .into_response();
     };
     let memberships = db.list_account_memberships(&account.id).await;
+    let skip_current_password = db.account_session_magic_fresh(&sess, now).await;
     (
         StatusCode::OK,
         Json(json!({
@@ -381,6 +382,7 @@ async fn account_me(State(state): State<AppState>, headers: HeaderMap) -> impl I
                 "email": account.email,
                 "emailVerifiedAt": account.email_verified_at,
             },
+            "skipCurrentPassword": skip_current_password,
             "activeMembershipId": active,
             "memberships": memberships.iter().map(|m| json!({
                 "id": m.id,
@@ -652,7 +654,12 @@ async fn account_magic_consume(
         match db.accept_admin_invite(&token, now).await {
             Ok(accept) => {
                 let session_id = db
-                    .create_account_session(&accept.account_id, Some(&accept.membership_id), now)
+                    .create_account_session_auth(
+                        &accept.account_id,
+                        Some(&accept.membership_id),
+                        now,
+                        crate::club::db_account::ACCOUNT_SESSION_AUTH_MAGIC,
+                    )
                     .await
                     .unwrap_or_default();
                 let cookie = auth::set_account_session_cookie(&session_id, is_secure(&headers));
@@ -678,7 +685,12 @@ async fn account_magic_consume(
         {
             Ok(account) => {
                 let session_id = db
-                    .create_account_session(&account.id, None, now)
+                    .create_account_session_auth(
+                        &account.id,
+                        None,
+                        now,
+                        crate::club::db_account::ACCOUNT_SESSION_AUTH_MAGIC,
+                    )
                     .await
                     .unwrap_or_default();
                 let secure = is_secure(&headers);

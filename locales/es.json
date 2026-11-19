@@ -388,6 +388,12 @@
       "link": "Crear cuenta",
       "haveAccount": "¿Ya tienes cuenta? Inicia sesión"
     },
+    "password": {
+      "current": "Contraseña actual",
+      "currentOptionalMagic": "Contraseña actual (opcional si ingresaste con enlace mágico hace poco)",
+      "new": "Nueva contraseña",
+      "submit": "Guardar contraseña"
+    },
     "join": {
       "title": "Únete a un club",
       "slug": "Slug del club",
