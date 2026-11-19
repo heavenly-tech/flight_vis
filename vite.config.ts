@@ -36,24 +36,9 @@ const authProxy: Record<string, string | ProxyOptions> = {
     },
   },
   "/logout": api,
-  "/login": {
-    target: api,
-    bypass(req) {
-      if (req.method === "GET" || req.method === "HEAD") {
-        const query = req.url?.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
-        return `/login.html${query}`;
-      }
-    },
-  },
-  "/login/legacy": {
-    target: api,
-    bypass(req) {
-      if (req.method === "GET" || req.method === "HEAD") {
-        const query = req.url?.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
-        return `/login-legacy.html${query}`;
-      }
-    },
-  },
+  "/login": api,
+  "/login/legacy": api,
+  "/club-login.html": api,
 };
 
 function clubAdminHtmlGateMiddleware(

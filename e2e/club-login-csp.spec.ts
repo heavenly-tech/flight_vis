@@ -33,7 +33,7 @@ test.describe("login under prod CSP", () => {
     const leak = trackPasswordInRequestUrls(page);
     await page.goto("/login?mode=password", { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => window.__fvUnifiedLoginReady === true);
-    await page.locator("details").click();
+    await page.locator("details").setAttribute("open", "");
     await page.fill('#legacy-club-form input[name="email"]', "admin@demo.test");
     await page.fill('#legacy-club-form input[name="password"]', "password12");
     await Promise.all([

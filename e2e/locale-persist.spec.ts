@@ -28,8 +28,8 @@ test("club pilot session loads profile after API login", async ({ page }) => {
   await expect(page).toHaveURL(/club-pilot\.html/);
   const me = await page.request.get("/api/club/i18n/context");
   expect(me.ok()).toBeTruthy();
-  const json = (await me.json()) as { userLocale?: string | null };
-  expect(json.userLocale).toBeTruthy();
+  const json = (await me.json()) as { resolvedLocale?: string };
+  expect(json.resolvedLocale).toBe("es");
 });
 
 test("logged-in pilot locale persists across reload", async ({ page }) => {

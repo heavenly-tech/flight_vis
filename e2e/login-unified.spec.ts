@@ -36,7 +36,7 @@ test.describe("unified /login", () => {
       failOnStatusCode: false,
     });
     const loc = res.headers().location ?? "";
-    expect(loc).not.toMatch(/password/i);
+    expect(loc).not.toMatch(/[?&]password=/i);
     expect(loc).toContain("mode=password");
   });
 

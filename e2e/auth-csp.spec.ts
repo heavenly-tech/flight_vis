@@ -10,7 +10,7 @@ declare global {
 }
 
 async function assertNoPasswordInUrl(page: import("@playwright/test").Page) {
-  expect(page.url()).not.toMatch(/password/i);
+  expect(page.url()).not.toMatch(/[?&]password=/i);
 }
 
 test.describe("credential pages under prod CSP", () => {
@@ -19,11 +19,13 @@ test.describe("credential pages under prod CSP", () => {
   test("unified login password never leaks to URL", async ({ page }) => {
     const leaks = installPasswordUrlGuard(page);
     const { consoleErrors } = installCspObservers(page);
-    await page.goto("/login?next=/club-pilot.html", { waitUntil: "domcontentloaded" });
+    await page.goto("/login?mode=password&next=/club-pilot.html", {
+      waitUntil: "domcontentloaded",
+    });
     await page.waitForFunction(() => window.__fvUnifiedLoginReady === true);
-    await page.locator("#login-form input[name=email]").fill("admin@demo.test");
-    await page.locator("#login-form input[name=password]").fill("password12");
-    await page.locator("#login-form button[type=submit]").click();
+    await page.locator("#password-form input[name=email]").fill("admin@demo.test");
+    await page.locator("#password-form input[name=password]").fill("password12");
+    await page.locator("#password-form button[type=submit]").click();
     await page.waitForTimeout(1500);
     await assertNoPasswordInUrl(page);
     expect(leaks).toEqual([]);
@@ -34,10 +36,10 @@ test.describe("credential pages under prod CSP", () => {
     const context = await browser.newContext({ javaScriptEnabled: false });
     const page = await context.newPage();
     const leaks = installPasswordUrlGuard(page);
-    await page.goto("/login", { waitUntil: "domcontentloaded" });
-    await page.locator("#login-form input[name=email]").fill("admin@demo.test");
-    await page.locator("#login-form input[name=password]").fill("password12");
-    await page.locator("#login-form button[type=submit]").click();
+    await page.goto("/login?mode=password", { waitUntil: "domcontentloaded" });
+    await page.locator("#password-form input[name=email]").fill("admin@demo.test");
+    await page.locator("#password-form input[name=password]").fill("password12");
+    await page.locator("#password-form button[type=submit]").click();
     await page.waitForTimeout(1500);
     expect(leaks).toEqual([]);
     await context.close();
@@ -47,7 +49,7 @@ test.describe("credential pages under prod CSP", () => {
     const leaks = installPasswordUrlGuard(page);
     await page.goto("/login", { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => window.__fvUnifiedLoginReady === true);
-    await page.locator("#login-form input[name=email]").fill("admin@demo.test");
+    await page.locator("#email-magic").fill("admin@demo.test");
     await page.locator("#magic-btn").click();
     await page.waitForTimeout(300);
     await assertNoPasswordInUrl(page);
@@ -71,8 +73,8 @@ test.describe("credential pages under prod CSP", () => {
     const leaks = installPasswordUrlGuard(page);
     const { consoleErrors } = installCspObservers(page);
     await page.goto("/login?mode=password", { waitUntil: "domcontentloaded" });
-    await page.locator("#legacy-club-form input[name=email]").waitFor({ state: "visible" });
     await page.locator("details").click();
+    await page.locator("#legacy-club-form input[name=email]").waitFor({ state: "visible" });
     await page.locator('#legacy-club-form input[name="email"]').fill("admin@demo.test");
     await page.locator('#legacy-club-form input[name="password"]').fill("password12");
     const submit = page.locator('#legacy-club-form button[type=submit]');

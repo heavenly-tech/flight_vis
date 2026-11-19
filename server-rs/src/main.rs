@@ -338,7 +338,14 @@ async fn login_page(
     let html = apply_login_mode_html(&raw, &query);
     (
         StatusCode::OK,
-        [(header::CONTENT_TYPE, "text/html; charset=UTF-8")],
+        [
+            (header::CONTENT_TYPE, "text/html; charset=UTF-8"),
+            (header::CONTENT_SECURITY_POLICY, static_files::HTML_CSP),
+            (
+                header::REFERRER_POLICY,
+                static_files::HTML_REFERRER_POLICY,
+            ),
+        ],
         html,
     )
         .into_response()
