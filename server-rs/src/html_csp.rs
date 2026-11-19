@@ -2,10 +2,12 @@
 //! `scripts/html-csp-routes.mjs` and Playwright `e2e/csp-constants.ts`.
 
 /// Strict policy (auth, admin, club forms). Matches `server-rs/csp/html-strict.csp`.
-pub const HTML_STRICT_CSP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/csp/html-strict.csp"));
+pub const HTML_STRICT_CSP: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/csp/html-strict.csp"));
 
 /// Globe / map viewer policy. Matches `server-rs/csp/html-globe.csp`.
-pub const HTML_GLOBE_CSP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/csp/html-globe.csp"));
+pub const HTML_GLOBE_CSP: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/csp/html-globe.csp"));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HtmlCspKind {
@@ -121,9 +123,7 @@ pub fn csp_for_dist_relative(relative: &str) -> Result<&'static str, ()> {
 }
 
 pub fn csp_for_spa_fallback() -> &'static str {
-    csp_string(
-        policy_for_route("/__spa_index__").expect("__spa_index__ in HTML_CSP_ROUTE_TABLE"),
-    )
+    csp_string(policy_for_route("/__spa_index__").expect("__spa_index__ in HTML_CSP_ROUTE_TABLE"))
 }
 
 #[cfg(test)]
@@ -184,7 +184,12 @@ mod tests {
 
     #[test]
     fn globe_pages_use_globe_policy() {
-        for path in ["/index.html", "/club-map.html", "/public-map.html", "/club-screen.html"] {
+        for path in [
+            "/index.html",
+            "/club-map.html",
+            "/public-map.html",
+            "/club-screen.html",
+        ] {
             assert_eq!(policy_for_route(path), Some(HtmlCspKind::Globe));
         }
     }

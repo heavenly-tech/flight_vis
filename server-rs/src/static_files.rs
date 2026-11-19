@@ -293,7 +293,10 @@ pub async fn serve(
                 None
             };
             let html_csp = if ext_of(relative).eq_ignore_ascii_case("html") {
-                Some(csp_for_dist_relative(relative).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?)
+                Some(
+                    csp_for_dist_relative(relative)
+                        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+                )
             } else {
                 None
             };
