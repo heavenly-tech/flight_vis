@@ -388,9 +388,11 @@ async fn server_qr_svg_endpoints() {
 #[tokio::test]
 #[serial]
 async fn club_screen_qr_encodes_https_app_link_not_intent() {
-    let _guard = crate::club::android_assetlinks::android_test_env_lock();
-    std::env::set_var("FLIGHT_ANDROID_APP_PACKAGE", "cl.heavenly.flightvis");
-    std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", "AA:BB:CC");
+    {
+        let _guard = crate::club::android_assetlinks::android_test_env_lock();
+        std::env::set_var("FLIGHT_ANDROID_APP_PACKAGE", "cl.heavenly.flightvis");
+        std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", "AA:BB:CC");
+    }
     let mut fx = setup().await;
     let club_id = fx.club.default_club_id().await.unwrap();
     sqlx::query("UPDATE clubs SET slug = 'demo' WHERE id = $1")
@@ -425,8 +427,11 @@ async fn club_screen_qr_encodes_https_app_link_not_intent() {
     )
     .unwrap();
     assert!(!svg.to_lowercase().contains("intent:"));
-    std::env::remove_var("FLIGHT_ANDROID_APP_PACKAGE");
-    std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
+    {
+        let _guard = crate::club::android_assetlinks::android_test_env_lock();
+        std::env::remove_var("FLIGHT_ANDROID_APP_PACKAGE");
+        std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
+    }
 }
 
 #[tokio::test]

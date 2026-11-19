@@ -257,6 +257,7 @@ mod tests {
     use super::*;
     use axum::body::{to_bytes, Body};
     use axum::http::Request;
+    use serial_test::serial;
     use tower::ServiceExt;
 
     #[test]
@@ -308,11 +309,14 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn assetlinks_http_404_when_unconfigured() {
-        let _guard = super::android_test_env_lock();
-        std::env::remove_var("FLIGHT_ANDROID_APP_PACKAGE");
-        std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
-        std::env::remove_var("ANDROID_CERT_SHA256");
+        {
+            let _guard = super::android_test_env_lock();
+            std::env::remove_var("FLIGHT_ANDROID_APP_PACKAGE");
+            std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
+            std::env::remove_var("ANDROID_CERT_SHA256");
+        }
         let app = Router::new().route("/.well-known/assetlinks.json", get(assetlinks_handler));
         let res = app
             .oneshot(
@@ -327,10 +331,13 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn assetlinks_http_json_when_configured() {
-        let _guard = super::android_test_env_lock();
-        std::env::set_var("FLIGHT_ANDROID_APP_PACKAGE", "cl.heavenly.flightvis");
-        std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", "AA:BB:CC");
+        {
+            let _guard = super::android_test_env_lock();
+            std::env::set_var("FLIGHT_ANDROID_APP_PACKAGE", "cl.heavenly.flightvis");
+            std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", "AA:BB:CC");
+        }
         let app = Router::new().route("/.well-known/assetlinks.json", get(assetlinks_handler));
         let res = app
             .oneshot(
@@ -351,7 +358,10 @@ mod tests {
         let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
         let j: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(j[0]["target"]["package_name"], "cl.heavenly.flightvis");
-        std::env::remove_var("FLIGHT_ANDROID_APP_PACKAGE");
-        std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
+        {
+            let _guard = super::android_test_env_lock();
+            std::env::remove_var("FLIGHT_ANDROID_APP_PACKAGE");
+            std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
+        }
     }
 }
