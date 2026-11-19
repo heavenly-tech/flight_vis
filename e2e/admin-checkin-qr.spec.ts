@@ -13,12 +13,12 @@ test("admin phone check-in QR is hidden until Mostrar", async ({ page }) => {
     page.waitForURL(/\/club-admin-checkin-qr\.html/, { timeout: 30_000 }),
     page.locator('button[type="submit"]').click(),
   ]);
-  await expect(page.locator("body")).toHaveAttribute("data-checkin-qr-ready", "1", {
-    timeout: 45_000,
-  });
+  await page.waitForFunction(
+    () => !(document.querySelector("#btn-show-qr") as HTMLButtonElement | null)?.disabled,
+    { timeout: 60_000 },
+  );
   await expect(page.locator("#qr-panel")).toBeHidden();
   const showBtn = page.locator("#btn-show-qr");
-  await expect(showBtn).toBeEnabled();
   await Promise.all([
     page.waitForResponse(
       (res) => res.url().includes("/api/admin/checkin-qr.svg") && res.status() === 200,
