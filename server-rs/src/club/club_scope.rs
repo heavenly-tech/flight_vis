@@ -121,6 +121,28 @@ impl ClubDb {
         Some((row.try_get(0).ok()?, row.try_get(1).ok()?))
     }
 
+    /// Active `admin` membership only (not staff).
+    pub async fn require_active_club_admin_role(
+        &self,
+        pilot_id: &str,
+        club_id: &str,
+    ) -> Result<(), ClubScopeError> {
+        if self.is_superadmin(pilot_id).await {
+            return Ok(());
+        }
+        self.club_operational(club_id).await?;
+        match self.membership_in_club(pilot_id, club_id).await {
+            Some((role, status))
+                if role == "admin"
+                    && crate::club::membership_status::MembershipStatus::parse(&status)
+                        .allows_club_api() =>
+            {
+                Ok(())
+            }
+            _ => Err(ClubScopeError::Forbidden),
+        }
+    }
+
     pub async fn require_club_admin(
         &self,
         pilot_id: &str,

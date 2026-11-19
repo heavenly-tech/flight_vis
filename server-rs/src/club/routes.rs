@@ -2548,6 +2548,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .merge(crate::club::auth_routes::router())
         .merge(crate::club::account_routes::routes())
+        .merge(crate::club::admin_membership_routes::routes())
         .route("/api/webhooks/postal/bounce", post(postal_bounce_webhook))
         .route("/club/screen", get(club_screen_page))
         .route("/c/{slug}/screen", get(club_slug_screen_page))

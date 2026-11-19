@@ -382,26 +382,50 @@ async fn account_magic(
         .get("purpose")
         .map(String::as_str)
         .unwrap_or("account_signup");
-    match db.consume_account_magic(token, purpose, now).await {
-        Ok(account) => {
-            let session_id = db
-                .create_account_session(&account.id, None, now)
-                .await
-                .unwrap_or_default();
-            let cookie = auth::set_account_session_cookie(&session_id, is_secure(&headers));
-            (
-                StatusCode::FOUND,
-                [
-                    (axum::http::header::SET_COOKIE, cookie),
-                    (
-                        axum::http::header::LOCATION,
-                        "/club-login.html?step=pick".to_string(),
-                    ),
-                ],
-            )
-                .into_response()
+    if purpose == crate::club::db_memberships_admin::ADMIN_INVITE_PURPOSE {
+        match db.accept_admin_invite(token, now).await {
+            Ok(accept) => {
+                let session_id = db
+                    .create_account_session(&accept.account_id, Some(&accept.membership_id), now)
+                    .await
+                    .unwrap_or_default();
+                let cookie = auth::set_account_session_cookie(&session_id, is_secure(&headers));
+                (
+                    StatusCode::FOUND,
+                    [
+                        (axum::http::header::SET_COOKIE, cookie),
+                        (
+                            axum::http::header::LOCATION,
+                            "/club-admin-pilots.html".to_string(),
+                        ),
+                    ],
+                )
+                    .into_response()
+            }
+            Err(_) => (StatusCode::BAD_REQUEST, "invalid token").into_response(),
         }
-        Err(_) => (StatusCode::BAD_REQUEST, "invalid token").into_response(),
+    } else {
+        match db.consume_account_magic(token, purpose, now).await {
+            Ok(account) => {
+                let session_id = db
+                    .create_account_session(&account.id, None, now)
+                    .await
+                    .unwrap_or_default();
+                let cookie = auth::set_account_session_cookie(&session_id, is_secure(&headers));
+                (
+                    StatusCode::FOUND,
+                    [
+                        (axum::http::header::SET_COOKIE, cookie),
+                        (
+                            axum::http::header::LOCATION,
+                            "/club-login.html?step=pick".to_string(),
+                        ),
+                    ],
+                )
+                    .into_response()
+            }
+            Err(_) => (StatusCode::BAD_REQUEST, "invalid token").into_response(),
+        }
     }
 }
 
