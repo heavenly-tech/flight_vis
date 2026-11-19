@@ -1,0 +1,29 @@
+{
+  "name": "flight_vis",
+  "short_name": "flight_vis",
+  "description": "3D flight visualization for IGC and GPX tracks.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#152B52",
+  "theme_color": "#152B52",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512-maskable.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}
