@@ -30,8 +30,17 @@ EXECUTE FUNCTION club_slug_registry_on_clubs_insert();
 CREATE OR REPLACE FUNCTION club_slug_registry_on_clubs_update() RETURNS trigger AS $$
 BEGIN
     IF OLD.slug IS DISTINCT FROM NEW.slug THEN
-        DELETE FROM club_slug_registry WHERE slug = OLD.slug AND club_id = OLD.id;
-        INSERT INTO club_slug_registry (slug, club_id) VALUES (NEW.slug, NEW.id);
+        -- Only delete the old slug from registry if it's NOT in history for this club
+        -- (if it's in history, it must stay reserved)
+        DELETE FROM club_slug_registry 
+        WHERE slug = OLD.slug AND club_id = OLD.id
+        AND NOT EXISTS (
+            SELECT 1 FROM club_slug_history 
+            WHERE old_slug = OLD.slug AND club_id = OLD.id
+        );
+        -- Insert new slug only if not already registered for this club
+        INSERT INTO club_slug_registry (slug, club_id) VALUES (NEW.slug, NEW.id)
+        ON CONFLICT (slug) DO NOTHING;
     END IF;
     RETURN NEW;
 END;
@@ -44,7 +53,9 @@ EXECUTE FUNCTION club_slug_registry_on_clubs_update();
 
 CREATE OR REPLACE FUNCTION club_slug_registry_on_history_insert() RETURNS trigger AS $$
 BEGIN
-    INSERT INTO club_slug_registry (slug, club_id) VALUES (NEW.old_slug, NEW.club_id);
+    -- Only insert if not already registered for this club (avoids duplicate on rename)
+    INSERT INTO club_slug_registry (slug, club_id) VALUES (NEW.old_slug, NEW.club_id)
+    ON CONFLICT (slug) DO NOTHING;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -56,7 +67,13 @@ EXECUTE FUNCTION club_slug_registry_on_history_insert();
 
 CREATE OR REPLACE FUNCTION club_slug_registry_on_history_delete() RETURNS trigger AS $$
 BEGIN
-    DELETE FROM club_slug_registry WHERE slug = OLD.old_slug AND club_id = OLD.club_id;
+    -- Only delete from registry if the slug is NOT the current slug for this club
+    DELETE FROM club_slug_registry 
+    WHERE slug = OLD.old_slug AND club_id = OLD.club_id
+    AND NOT EXISTS (
+        SELECT 1 FROM clubs 
+        WHERE id = OLD.club_id AND slug = OLD.old_slug
+    );
     RETURN OLD;
 END;
 $$ LANGUAGE plpgsql;

@@ -24,8 +24,11 @@ fn safe_redirect_target(path: &str, query: Option<&str>) -> Option<String> {
     let (path_only, extra_q) = path
         .split_once('?')
         .map_or((path, None), |(p, q)| (p, Some(q)));
+    if path_only.starts_with("//") {
+        return None;
+    }
     let normalized = normalize_url_path(path_only)?;
-    if !normalized.starts_with('/') || normalized.starts_with("//") {
+    if !normalized.starts_with('/') {
         return None;
     }
     let merged_q = match (query, extra_q) {
