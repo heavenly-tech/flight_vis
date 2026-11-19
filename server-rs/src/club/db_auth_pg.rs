@@ -375,6 +375,25 @@ impl ClubDb {
         if self.club_operational(&pilot.club_id).await.is_err() {
             return Err(MagicConsumeError::ClubUnavailable);
         }
+        if let Some(aid) =
+            sqlx::query_scalar::<_, Option<String>>("SELECT account_id FROM pilots WHERE id = $1")
+                .bind(&pilot.id)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()
+                .flatten()
+                .flatten()
+        {
+            let suspended: bool =
+                sqlx::query_scalar("SELECT suspended_at IS NOT NULL FROM accounts WHERE id = $1")
+                    .bind(&aid)
+                    .fetch_one(&self.pool)
+                    .await
+                    .unwrap_or(false);
+            if suspended {
+                return Err(MagicConsumeError::Invalid);
+            }
+        }
         let _ = self.touch_email_verified_on_login(&pilot.id, now).await;
         let session_id = self
             .create_pilot_session(&pilot.id, now)

@@ -220,21 +220,32 @@ impl ClubDb {
         .map_err(|_| MembershipAdminError::Db)?;
 
         let pilot_id = if let Some(pid) = pilot_id {
-            if sqlx::query_scalar::<_, String>("SELECT status FROM pilots WHERE id = $1")
+            let status: String = sqlx::query_scalar("SELECT status FROM pilots WHERE id = $1")
                 .bind(&pid)
                 .fetch_one(&mut *tx)
                 .await
-                .map_err(|_| MembershipAdminError::Db)?
-                != "approved"
-            {
-                return Err(MembershipAdminError::Db);
-            }
-            sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1 AND account_id = $2")
-                .bind(&pid)
-                .bind(&account_id)
-                .execute(&mut *tx)
-                .await
                 .map_err(|_| MembershipAdminError::Db)?;
+            match status.as_str() {
+                "approved" => {
+                    sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1 AND account_id = $2")
+                        .bind(&pid)
+                        .bind(&account_id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|_| MembershipAdminError::Db)?;
+                }
+                "pending" => {
+                    sqlx::query(
+                        "UPDATE pilots SET status = 'approved', role = 'admin' WHERE id = $1 AND account_id = $2",
+                    )
+                    .bind(&pid)
+                    .bind(&account_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|_| MembershipAdminError::Db)?;
+                }
+                _ => return Err(MembershipAdminError::Db),
+            }
             pid
         } else {
             sqlx::query(

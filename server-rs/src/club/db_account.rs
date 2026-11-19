@@ -308,10 +308,21 @@ impl ClubDb {
         Ok(Some(raw))
     }
 
+    pub async fn peek_magic_token_purpose(&self, raw_token: &str) -> Option<String> {
+        let token_hash = digest_token(raw_token.trim());
+        sqlx::query_scalar(
+            "SELECT purpose FROM magic_login_tokens WHERE token_hash = $1",
+        )
+        .bind(&token_hash)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+    }
+
     pub async fn consume_account_magic(
         &self,
         raw_token: &str,
-        purpose: &str,
         now: i64,
     ) -> Result<AccountRow, crate::club::db_auth_pg::MagicConsumeError> {
         use crate::club::db_auth_pg::MagicConsumeError;
@@ -330,9 +341,9 @@ impl ClubDb {
         let email: String = row.try_get(1).map_err(|_| MagicConsumeError::Invalid)?;
         let expires_at: i64 = row.try_get(2).map_err(|_| MagicConsumeError::Invalid)?;
         let used_at: Option<i64> = row.try_get(3).map_err(|_| MagicConsumeError::Invalid)?;
-        let tok_purpose: String = row.try_get(4).unwrap_or_default();
+        let purpose: String = row.try_get(4).unwrap_or_default();
         let account_id: Option<String> = row.try_get(5).ok();
-        if tok_purpose != purpose {
+        if purpose != "account_signup" && purpose != "account_login" {
             return Err(MagicConsumeError::Invalid);
         }
         if used_at.is_some() {
@@ -365,7 +376,7 @@ impl ClubDb {
             .bind(&aid)
             .bind(email.trim().to_ascii_lowercase())
             .bind(now)
-            .bind(if purpose == "account_signup" {
+            .bind(if purpose.as_str() == "account_signup" {
                 Some(now)
             } else {
                 None
@@ -391,7 +402,7 @@ impl ClubDb {
             .execute(&self.pool)
             .await
             .map_err(|_| MagicConsumeError::Invalid)?;
-            if was_unverified {
+            if was_unverified && purpose == "account_login" {
                 sqlx::query(
                     "UPDATE accounts SET password_hash = NULL WHERE id = $1 AND email_verified_at = $2",
                 )
@@ -407,9 +418,14 @@ impl ClubDb {
                     .map_err(|_| MagicConsumeError::Invalid)?;
             }
         }
-        self.account_by_id(&acct_id)
+        let acct = self
+            .account_by_id(&acct_id)
             .await
-            .ok_or(MagicConsumeError::Invalid)
+            .ok_or(MagicConsumeError::Invalid)?;
+        if acct.suspended_at.is_some() {
+            return Err(MagicConsumeError::Invalid);
+        }
+        Ok(acct)
     }
 
     pub async fn create_account_session(
@@ -692,9 +708,6 @@ impl ClubDb {
         }
         let email = email.trim().to_ascii_lowercase();
         let acct_id = if let Some(existing) = self.account_by_email(&email).await {
-            if existing.email_verified_at.is_none() {
-                return Err(RegisterError::EmailExists);
-            }
             existing.id
         } else {
             self.ensure_account_for_email(&email, None, now)
@@ -771,7 +784,7 @@ impl ClubDb {
         if !MembershipStatus::parse(&mem_status).allows_club_api() {
             return None;
         }
-        if let Some(reuse) = sqlx::query_scalar::<_, Option<String>>(
+        if let Some(reuse_hash) = sqlx::query_scalar::<_, Option<String>>(
             "SELECT compat_pilot_session FROM account_sessions WHERE id = $1",
         )
         .bind(&session_db_id)
@@ -781,15 +794,19 @@ impl ClubDb {
         .flatten()
         .flatten()
         {
-            if let Some(pilot) = self.pilot_from_session(&reuse, now).await {
+            if let Some(pilot) = self.pilot_from_pilot_session_db_id(&reuse_hash, now).await {
                 if pilot.id == pilot_id {
-                    return Some((reuse, pilot));
+                    let _ = sqlx::query("DELETE FROM pilot_sessions WHERE id = $1")
+                        .bind(&reuse_hash)
+                        .execute(&self.pool)
+                        .await;
                 }
             }
         }
         let session = self.create_pilot_session(&pilot_id, now).await.ok()?;
+        let pilot_session_db_id = auth::digest_token(&session);
         let _ = sqlx::query("UPDATE account_sessions SET compat_pilot_session = $1 WHERE id = $2")
-            .bind(&session)
+            .bind(&pilot_session_db_id)
             .bind(&session_db_id)
             .execute(&self.pool)
             .await;

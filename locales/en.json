@@ -46,7 +46,7 @@
     "clubMap": "Club map",
     "globe": "Globe viewer",
     "register": "Register",
-    "createClub": "Create club",
+    "createClub": "Register club",
     "pilotProfile": "Pilot profile",
     "androidApp": "Android app"
   },
@@ -156,7 +156,7 @@
     "title": "Pilot",
     "checking": "Checking session…",
     "notSignedIn": "Not signed in.",
-    "logInLink": "Log in at /club-login.html",
+    "logInLink": "Log in at /login",
     "logOut": "Log out",
     "downloadApp": "Download Android tracker app",
     "deviceToken": "Device token",

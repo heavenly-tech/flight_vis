@@ -159,7 +159,7 @@
     "title": "Piloto",
     "checking": "Verificando sesión…",
     "notSignedIn": "Sin sesión.",
-    "logInLink": "Ingresa en /club-login.html",
+    "logInLink": "Ingresa en /login",
     "logOut": "Cerrar sesión",
     "downloadApp": "Descargar app rastreador Android",
     "deviceToken": "Token de dispositivo",

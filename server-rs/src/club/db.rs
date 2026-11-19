@@ -295,13 +295,22 @@ impl ClubDb {
 
     pub async fn pilot_from_session(&self, session_id: &str, now: i64) -> Option<PilotRow> {
         let session_db_id = auth::digest_token(session_id);
+        self.pilot_from_pilot_session_db_id(&session_db_id, now)
+            .await
+    }
+
+    pub async fn pilot_from_pilot_session_db_id(
+        &self,
+        session_db_id: &str,
+        now: i64,
+    ) -> Option<PilotRow> {
         let row = sqlx::query(
             "SELECT p.id, p.club_id, p.name, p.email, p.license_no, p.status, p.role, p.locale
              FROM pilot_sessions s
              JOIN pilots p ON p.id = s.pilot_id
              WHERE s.id = $1 AND s.expires_at > $2",
         )
-        .bind(&session_db_id)
+        .bind(session_db_id)
         .bind(now)
         .fetch_optional(&self.pool)
         .await

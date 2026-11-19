@@ -84,14 +84,7 @@ async fn account_signup(
         Ok(_) => {
             if db.magic_send_allowed(email, &client_ip.0, now).await {
                 let _ = db.log_magic_send(email, &client_ip.0, now).await;
-                let token = if body.password.as_deref().is_some_and(|p| !p.is_empty()) {
-                    db.issue_account_magic_login(email, now)
-                        .await
-                        .ok()
-                        .flatten()
-                } else {
-                    db.issue_account_magic_signup(email, now).await.ok()
-                };
+                let token = db.issue_account_magic_signup(email, now).await.ok();
                 if let Some(token) = token {
                     let url = format!(
                         "{}/api/account/auth/magic?token={token}",
@@ -227,10 +220,8 @@ async fn account_login(
     client_ip: crate::ClientIp,
     body: Bytes,
 ) -> impl IntoResponse {
-    if !account_wants_json(&headers) {
-        if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
-            return status.into_response();
-        }
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return status.into_response();
     }
     let json = account_wants_json(&headers);
     let fields = account_login_fields(&headers, &body);
@@ -484,27 +475,36 @@ fn account_magic_html_escape(raw: &str) -> String {
 }
 
 async fn get_account_magic(
+    State(state): State<AppState>,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let Some(token) = q.get("token") else {
         return (StatusCode::BAD_REQUEST, "missing token").into_response();
     };
-    let purpose = q
-        .get("purpose")
-        .map(String::as_str)
-        .unwrap_or("account_signup");
+    let purpose = if let Some(p) = q.get("purpose") {
+        p.clone()
+    } else if let Some(db) = club_db(&state) {
+        db.peek_magic_token_purpose(token)
+            .await
+            .unwrap_or_else(|| "account_signup".to_string())
+    } else {
+        "account_signup".to_string()
+    };
     let token_e = account_magic_html_escape(token);
-    let purpose_e = account_magic_html_escape(purpose);
-    Html(format!(
-        r#"<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Confirm</title></head>
+    let purpose_e = account_magic_html_escape(&purpose);
+    (
+        [(header::CONTENT_SECURITY_POLICY, crate::static_files::HTML_CSP)],
+        Html(format!(
+            r#"<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Confirm</title></head>
 <body><h1>Continue sign-in</h1>
 <form method="post" action="/api/account/auth/magic">
 <input type="hidden" name="token" value="{token_e}">
 <input type="hidden" name="purpose" value="{purpose_e}">
 <button type="submit">Continue</button>
 </form></body></html>"#
-    ))
-    .into_response()
+        )),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -519,12 +519,8 @@ async fn post_account_magic(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
-    if auth::parse_account_session_cookie(&headers).is_some()
-        || auth::parse_session_cookie(&headers).is_some()
-    {
-        if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
-            return (status, Json(json!({ "error": "csrf" }))).into_response();
-        }
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
     }
     let content_type = headers
         .get(header::CONTENT_TYPE)
@@ -548,8 +544,15 @@ async fn post_account_magic(
     if token.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, "missing token").into_response();
     }
-    let purpose = purpose.as_deref().unwrap_or("account_signup");
-    account_magic_consume(state, headers, token, purpose).await
+    let purpose = if let Some(db) = club_db(&state) {
+        db.peek_magic_token_purpose(token.trim())
+            .await
+            .or(purpose)
+            .unwrap_or_else(|| "account_signup".to_string())
+    } else {
+        purpose.unwrap_or_else(|| "account_signup".to_string())
+    };
+    account_magic_consume(state, headers, token, &purpose).await
 }
 
 #[derive(Deserialize, Default)]
@@ -592,7 +595,7 @@ async fn account_magic_consume(
             Err(_) => (StatusCode::BAD_REQUEST, "invalid token").into_response(),
         }
     } else {
-        match db.consume_account_magic(&token, purpose, now).await {
+        match db.consume_account_magic(&token, now).await {
             Ok(account) => {
                 let session_id = db
                     .create_account_session(&account.id, None, now)

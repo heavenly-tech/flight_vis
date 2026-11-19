@@ -884,7 +884,7 @@ async fn approve_pilot_with_checkout_upserts_membership_row() {
     .fetch_one(&db.pool)
     .await
     .unwrap();
-    assert_eq!(row, ("pilot".to_string(), "approved".to_string()));
+    assert_eq!(row, ("pilot".to_string(), "active".to_string()));
 }
 
 #[tokio::test]

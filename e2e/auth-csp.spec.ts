@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { installCspObservers } from "./globe-csp-helpers";
+import { installPasswordUrlGuard } from "./auth-csp-helpers";
 
 declare global {
   interface Window {
@@ -14,6 +15,10 @@ async function assertNoPasswordInUrl(page: import("@playwright/test").Page) {
 
 test.describe("credential pages under prod CSP", () => {
   test.setTimeout(60_000);
+
+  test.beforeEach(({ page }) => {
+    installPasswordUrlGuard(page);
+  });
 
   test("unified login password never leaks to URL", async ({ page }) => {
     const { consoleErrors } = installCspObservers(page);

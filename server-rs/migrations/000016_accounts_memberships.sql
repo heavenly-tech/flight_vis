@@ -47,10 +47,22 @@ SELECT
 FROM (
     SELECT
         lower(trim(email)) AS email_lower,
-        first_value(password_hash) OVER (
+        first_value(
+            CASE
+                WHEN status = 'approved' AND email_verified_at IS NOT NULL
+                THEN password_hash
+                ELSE NULL
+            END
+        ) OVER (
             PARTITION BY lower(trim(email))
             ORDER BY
-                (CASE WHEN coalesce(password_hash, '') <> '' THEN 1 ELSE 0 END) DESC,
+                (CASE
+                    WHEN status = 'approved'
+                         AND email_verified_at IS NOT NULL
+                         AND coalesce(password_hash, '') <> ''
+                    THEN 1
+                    ELSE 0
+                END) DESC,
                 created_at DESC
         ) AS password_hash,
         max(email_verified_at) OVER (PARTITION BY lower(trim(email))) AS email_verified_at,
