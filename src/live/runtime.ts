@@ -11,7 +11,8 @@ import { dedupeFixes } from "./sseClient";
 import { ensureGeoidLoading, isGeoidReady, onGeoidReady } from "../geo/geoid";
 import { getLocalFlight, putLocalFlight } from "./localFlights";
 import { liveFixesFromGpx } from "./gpxLive";
-import { detectLang, msg, setLiveLang, type LiveLang } from "./messages";
+import { getLocale } from "../i18n/index";
+import { msg, setLiveLang, type LiveLang } from "./messages";
 import { openLiveStream, type LiveStreamHandle } from "./sseClient";
 import type { LiveFix } from "./types";
 
@@ -69,10 +70,11 @@ export type LiveRuntime = {
   stop: () => void;
   lang: () => LiveLang;
   toggleLang: () => void;
+  onLocale: () => void;
 };
 
 export function createLiveRuntime(host: LiveHost): LiveRuntime {
-  let lang = detectLang();
+  let lang = getLocale() as LiveLang;
   let active = false;
   let sessionId: string | null = null;
   let stream: LiveStreamHandle | null = null;
@@ -501,6 +503,10 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     toggleLang: () => {
       lang = lang === "en" ? "es" : "en";
       setLiveLang(lang);
+      applyLangUi();
+    },
+    onLocale: () => {
+      lang = getLocale() as LiveLang;
       applyLangUi();
     },
   };

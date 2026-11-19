@@ -115,7 +115,7 @@ function clubAdminHtmlGateMiddleware(
         res.statusCode = 302;
         res.setHeader(
           "Location",
-          `/club-login.html?mode=club&next=${encodeURIComponent(pathOnly + search)}`,
+          `/login?next=${encodeURIComponent(pathOnly + search)}`,
         );
         res.end();
       })
@@ -123,7 +123,7 @@ function clubAdminHtmlGateMiddleware(
         res.statusCode = 302;
         res.setHeader(
           "Location",
-          `/club-login.html?mode=club&next=${encodeURIComponent(pathOnly + search)}`,
+          `/login?next=${encodeURIComponent(pathOnly + search)}`,
         );
         res.end();
       });
@@ -183,6 +183,7 @@ export default defineConfig({
         main: path.resolve(root, "index.html"),
         login: path.resolve(root, "login.html"),
         loginLegacy: path.resolve(root, "login-legacy.html"),
+        accountClubs: path.resolve(root, "account-clubs.html"),
         app: path.resolve(root, "app.html"),
         clubPilot: path.resolve(root, "club-pilot.html"),
         clubFlight: path.resolve(root, "club-flight.html"),

@@ -481,19 +481,8 @@ async fn club_i18n_context(State(state): State<AppState>, headers: HeaderMap) ->
         }))
         .into_response();
     };
-    let session = parse_session_cookie(&headers);
     let now = now_ms();
-    let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
-    let (user_locale, club_default) = match pilot {
-        Some(p) => (
-            Some(p.locale),
-            db.club_default_locale(&p.club_id)
-                .await
-                .ok()
-                .or(Some("es".to_string())),
-        ),
-        None => (None, None),
-    };
+    let (user_locale, club_default) = db.user_club_locale_context(&headers, now).await;
     let resolved = cat.resolve_locale(user_locale.as_deref(), club_default.as_deref(), accept);
     Json(json!({
         "userLocale": user_locale,
@@ -516,6 +505,19 @@ async fn patch_me_locale(
         )
             .into_response();
     };
+    let now = now_ms();
+    if let Some(acct_sess) = auth::parse_account_session_cookie(&headers) {
+        if let Some((account, _)) = db.account_from_session(&acct_sess, now).await {
+            return match db.set_account_locale(&account.id, &body.locale).await {
+                Ok(()) => Json(json!({ "locale": body.locale })).into_response(),
+                Err(_) => (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "invalid locale" })),
+                )
+                    .into_response(),
+            };
+        }
+    }
     let session = parse_session_cookie(&headers);
     let Some(session) = session else {
         return (
@@ -524,7 +526,6 @@ async fn patch_me_locale(
         )
             .into_response();
     };
-    let now = now_ms();
     let Some(pilot) = db.pilot_from_session(&session, now).await else {
         return (
             StatusCode::UNAUTHORIZED,

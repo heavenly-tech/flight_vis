@@ -208,7 +208,7 @@ async fn club_admin_login_redirect(
     let next = auth::safe_next(&raw_next);
     Some(
         redirect_found(&format!(
-            "/club-login.html?mode=club&next={}",
+            "/login?next={}",
             url_encode(&next)
         ))
         .into_response(),

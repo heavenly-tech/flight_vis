@@ -431,7 +431,7 @@ async fn account_magic(
                         (axum::http::header::SET_COOKIE, cookie),
                         (
                             axum::http::header::LOCATION,
-                            "/club-login.html?step=pick".to_string(),
+                            "/account-clubs.html".to_string(),
                         ),
                     ],
                 )

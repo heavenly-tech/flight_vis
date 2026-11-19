@@ -17,6 +17,7 @@ pub struct AccountRow {
     #[allow(dead_code)]
     pub global_role: String,
     pub suspended_at: Option<i64>,
+    pub locale: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,7 +58,7 @@ impl ClubDb {
 
     pub async fn account_by_email(&self, email: &str) -> Option<AccountRow> {
         let row = sqlx::query(
-            "SELECT id, email, email_verified_at, global_role, suspended_at
+            "SELECT id, email, email_verified_at, global_role, suspended_at, locale
              FROM accounts WHERE lower(email) = lower($1)",
         )
         .bind(email.trim())
@@ -69,7 +70,7 @@ impl ClubDb {
 
     pub async fn account_by_id(&self, account_id: &str) -> Option<AccountRow> {
         let row = sqlx::query(
-            "SELECT id, email, email_verified_at, global_role, suspended_at
+            "SELECT id, email, email_verified_at, global_role, suspended_at, locale
              FROM accounts WHERE id = $1",
         )
         .bind(account_id)
@@ -449,7 +450,7 @@ impl ClubDb {
     ) -> Option<(AccountRow, Option<String>)> {
         let session_db_id = digest_token(session_id);
         let row = sqlx::query(
-            "SELECT a.id, a.email, a.email_verified_at, a.global_role, a.suspended_at, s.active_membership_id
+            "SELECT a.id, a.email, a.email_verified_at, a.global_role, a.suspended_at, a.locale, s.active_membership_id
              FROM account_sessions s
              JOIN accounts a ON a.id = s.account_id
              WHERE s.id = $1 AND s.expires_at > $2",
@@ -465,11 +466,12 @@ impl ClubDb {
             email_verified_at: row.try_get(2).ok()?,
             global_role: row.try_get(3).ok()?,
             suspended_at: row.try_get(4).ok()?,
+            locale: row.try_get(5).ok().flatten(),
         };
         if acct.suspended_at.is_some() {
             return None;
         }
-        let mem: Option<String> = row.try_get(5).ok()?;
+        let mem: Option<String> = row.try_get(6).ok()?;
         Some((acct, mem))
     }
 
@@ -914,6 +916,7 @@ fn row_to_account(row: &sqlx::postgres::PgRow) -> AccountRow {
         email_verified_at: row.try_get(2).ok().flatten(),
         global_role: row.try_get(3).unwrap_or_default(),
         suspended_at: row.try_get(4).ok().flatten(),
+        locale: row.try_get(5).ok().flatten(),
     }
 }
 

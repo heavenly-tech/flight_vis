@@ -3,13 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="description" content="3D flight visualization for IGC and GPX tracks." />
-    <title>flight_vis</title>
+    <meta name="description" content="3D flight visualization for IGC and GPX tracks." data-i18n-meta="globe.metaDescription" />
+    <title data-i18n="common.appName">flight_vis</title>
   </head>
   <body>
     <div id="cesiumContainer"></div>
     <div id="credits"></div>
-    <button type="button" id="btn-chrome-restore" class="chrome-restore" hidden aria-label="Show controls">
+    <button type="button" id="btn-chrome-restore" class="chrome-restore" hidden data-i18n-aria="globe.chromeRestore">
       UI
     </button>
 
@@ -17,61 +17,61 @@
       <header class="topbar">
         <div class="brand-block">
           <p class="brand">flight_vis</p>
-          <p id="flight-name" class="flight-name">Loading…</p>
+          <p id="flight-name" class="flight-name" data-i18n="common.loading">Loading…</p>
         </div>
         <div class="top-actions">
-          <a id="btn-login" class="chip" href="/login">Log in</a>
-          <button type="button" id="btn-logout" class="chip" hidden>Log out</button>
+          <a id="btn-login" class="chip" href="/login" data-i18n="globe.logIn">Log in</a>
+          <button type="button" id="btn-logout" class="chip" hidden data-i18n="globe.logOut">Log out</button>
           <button type="button" id="btn-library" class="chip disclosure" aria-expanded="false" aria-controls="library-panel">
-            Library <span class="caret" aria-hidden="true">^</span>
+            <span data-i18n="globe.library">Library</span> <span class="caret" aria-hidden="true">^</span>
           </button>
           <div class="menu" id="file-menu">
             <button type="button" id="btn-file" class="chip disclosure" aria-expanded="false" aria-controls="file-panel">
-              File <span class="caret" aria-hidden="true">^</span>
+              <span data-i18n="globe.file">File</span> <span class="caret" aria-hidden="true">^</span>
             </button>
             <div id="file-panel" class="menu-panel" hidden>
               <label class="file-btn">
-                Open track
+                <span data-i18n="globe.openTrack">Open track</span>
                 <input id="file-input" type="file" accept=".gpx,.igc,.GPX,.IGC" />
               </label>
-              <p class="auth-hint">Open one file to preview. Use Library to save several tracks.</p>
+              <p class="auth-hint" data-i18n="globe.openTrackHint">Open one file to preview. Use Library to save several tracks.</p>
               <label class="slug">
-                <span>Slug</span>
+                <span data-i18n="globe.slug">Slug</span>
                 <input id="slug-input" class="slug-input" type="text" maxlength="64" value="vuelo-5" spellcheck="false" />
               </label>
-              <button type="button" id="btn-share" class="chip">Save & copy link</button>
-              <p id="auth-hint" class="auth-hint">Log in to upload and save a shareable slug.</p>
+              <button type="button" id="btn-share" class="chip" data-i18n="globe.saveCopyLink">Save & copy link</button>
+              <p id="auth-hint" class="auth-hint" data-i18n="globe.logInToUpload">Log in to upload and save a shareable slug.</p>
             </div>
           </div>
           <div class="readout-stack">
-            <div class="modes color-modes desktop-color" role="group" aria-label="Track color">
-              <span class="group-label">Color</span>
-              <button type="button" data-mode="altitude" class="chip active">Alt</button>
-              <button type="button" data-mode="speed" class="chip">Speed</button>
-              <button type="button" data-mode="vario" class="chip">Vario</button>
+            <div class="modes color-modes desktop-color" role="group" data-i18n-aria="globe.trackColor">
+              <span class="group-label" data-i18n="globe.trackColor">Color</span>
+              <button type="button" data-mode="altitude" class="chip active" data-i18n="globe.colorAlt">Alt</button>
+              <button type="button" data-mode="speed" class="chip" data-i18n="globe.colorSpeed">Speed</button>
+              <button type="button" data-mode="vario" class="chip" data-i18n="globe.colorVario">Vario</button>
             </div>
           </div>
         </div>
         <aside id="library-panel" class="library-panel" hidden>
           <div class="library-head">
-            <h2>Library</h2>
-            <button type="button" id="btn-library-close" class="chip">Close</button>
+            <h2 data-i18n="globe.library">Library</h2>
+            <button type="button" id="btn-library-close" class="chip" data-i18n="globe.close">Close</button>
           </div>
-          <p id="library-hint" class="library-hint">Saved tracks on this server.</p>
+          <p id="library-hint" class="library-hint" data-i18n="globe.libraryHint">Saved tracks on this server.</p>
           <div id="library-tools" class="library-tools" hidden>
             <label class="file-btn">
-              Upload tracks
+              <span data-i18n="globe.uploadTracks">Upload tracks</span>
               <input id="library-input" type="file" accept=".gpx,.igc,.GPX,.IGC" multiple />
             </label>
-            <p class="library-drop">Drop .igc / .gpx here to save</p>
+            <p class="library-drop" data-i18n="globe.libraryDrop">Drop .igc / .gpx here to save</p>
           </div>
-          <a id="library-login" class="chip" href="/login" hidden>Log in to manage</a>
+          <a id="library-login" class="chip" href="/login" hidden data-i18n="globe.logInToManage">Log in to manage</a>
           <ul id="library-list" class="library-list"></ul>
         </aside>
       </header>
 
       <aside id="hud" class="hud" hidden>
-        <div id="hud-grid" class="hud-grid" role="group" aria-label="Flight stats">
+        <div id="hud-grid" class="hud-grid" role="group" data-i18n-aria="globe.flightStats">
           <div class="hud-stat hud-primary"><span>ALT</span><strong id="stat-alt">—</strong></div>
           <div class="hud-stat hud-primary"><span>SPD</span><strong id="stat-spd">—</strong></div>
           <div class="hud-stat hud-primary"><span>VARIO</span><strong id="stat-vario">—</strong></div>
@@ -81,7 +81,7 @@
           <div class="hud-stat hud-secondary" id="hud-acc-row" hidden><span>ACC</span><strong id="stat-acc">—</strong></div>
         </div>
         <button type="button" id="btn-hud" class="chip disclosure hud-toggle" hidden aria-expanded="false">
-          Stats <span class="caret" aria-hidden="true">^</span>
+          <span data-i18n="globe.stats">Stats</span> <span class="caret" aria-hidden="true">^</span>
         </button>
       </aside>
 
@@ -90,45 +90,45 @@
 
       <footer class="transport">
         <div class="transport-row transport-primary transport-compact">
-          <button type="button" id="btn-play" class="play">Play</button>
-          <button type="button" id="btn-follow" class="chip" aria-pressed="true">Follow</button>
-          <button type="button" id="btn-record" class="chip transport-extra" hidden>Record</button>
-          <button type="button" id="btn-live" class="chip live-slot" hidden title="Jump to live edge">Live</button>
-          <div class="modes transport-extra" role="group" aria-label="Follow heading">
-            <button type="button" data-follow-mode="fixed" class="chip">Fixed</button>
-            <button type="button" data-follow-mode="relative" class="chip active">Relative</button>
+          <button type="button" id="btn-play" class="play" data-i18n="globe.play">Play</button>
+          <button type="button" id="btn-follow" class="chip" aria-pressed="true" data-i18n="globe.follow">Follow</button>
+          <button type="button" id="btn-record" class="chip transport-extra" hidden data-i18n="globe.record">Record</button>
+          <button type="button" id="btn-live" class="chip live-slot" hidden data-i18n-title="globe.liveJump">Live</button>
+          <div class="modes transport-extra" role="group" data-i18n-aria="globe.followHeading">
+            <button type="button" data-follow-mode="fixed" class="chip" data-i18n="globe.followFixed">Fixed</button>
+            <button type="button" data-follow-mode="relative" class="chip active" data-i18n="globe.followRelative">Relative</button>
           </div>
-          <div class="modes transport-extra" role="group" aria-label="Path display">
-            <button type="button" data-path-mode="trace" class="chip active">Trace</button>
-            <button type="button" data-path-mode="draw" class="chip">Draw</button>
+          <div class="modes transport-extra" role="group" data-i18n-aria="globe.pathDisplay">
+            <button type="button" data-path-mode="trace" class="chip active" data-i18n="globe.pathTrace">Trace</button>
+            <button type="button" data-path-mode="draw" class="chip" data-i18n="globe.pathDraw">Draw</button>
           </div>
-          <button type="button" id="btn-overview" class="chip">Overview</button>
+          <button type="button" id="btn-overview" class="chip" data-i18n="globe.overview">Overview</button>
           <button type="button" id="btn-tags" class="chip disclosure transport-extra" aria-expanded="false" aria-controls="tags-panel">
-            Tags <span class="caret" aria-hidden="true">^</span>
+            <span data-i18n="globe.tags">Tags</span> <span class="caret" aria-hidden="true">^</span>
           </button>
           <button type="button" id="btn-more" class="chip disclosure" aria-expanded="false" aria-controls="more-panel">
-            More <span class="caret" aria-hidden="true">^</span>
+            <span data-i18n="globe.more">More</span> <span class="caret" aria-hidden="true">^</span>
           </button>
           <p id="summary" class="summary"></p>
         </div>
         <div id="tags-panel" class="tags-panel transport-extra" hidden>
-          <button type="button" id="btn-tag" class="chip">Tag</button>
+          <button type="button" id="btn-tag" class="chip" data-i18n="globe.tag">Tag</button>
           <div id="tag-list" class="tag-list" hidden></div>
         </div>
         <div id="more-panel" class="more-panel" hidden>
           <div class="more-live-row transport-extra" role="group" aria-label="Live and language">
-            <button type="button" id="btn-live-sessions" class="chip" hidden aria-label="Browse live sessions">Live</button>
-            <button type="button" id="btn-lang" class="chip" title="Language" aria-label="Toggle language">EN</button>
+            <button type="button" id="btn-live-sessions" class="chip" hidden data-i18n-aria="viewer.liveSessions">Live</button>
+            <button type="button" id="btn-lang" class="chip" data-i18n-title="common.language" aria-label="Toggle language">EN</button>
           </div>
-          <div class="modes color-modes mobile-color" role="group" aria-label="Track color">
-            <span class="group-label">Color</span>
-            <button type="button" data-mode="altitude" class="chip active">Alt</button>
-            <button type="button" data-mode="speed" class="chip">Speed</button>
-            <button type="button" data-mode="vario" class="chip">Vario</button>
+          <div class="modes color-modes mobile-color" role="group" data-i18n-aria="globe.trackColor">
+            <span class="group-label" data-i18n="globe.trackColor">Color</span>
+            <button type="button" data-mode="altitude" class="chip active" data-i18n="globe.colorAlt">Alt</button>
+            <button type="button" data-mode="speed" class="chip" data-i18n="globe.colorSpeed">Speed</button>
+            <button type="button" data-mode="vario" class="chip" data-i18n="globe.colorVario">Vario</button>
           </div>
           <div class="transport-row transport-extra">
             <label class="speed">
-              <span>Speed</span>
+              <span data-i18n="globe.speedLabel">Speed</span>
               <select id="play-speed">
                 <option value="1">1×</option>
                 <option value="5">5×</option>
@@ -138,9 +138,9 @@
                 <option value="100">100×</option>
               </select>
             </label>
-            <button type="button" id="btn-skip-ground" class="chip">Skip ground</button>
-            <button type="button" id="btn-start-here" class="chip">Start here</button>
-            <button type="button" id="btn-end-here" class="chip">End here</button>
+            <button type="button" id="btn-skip-ground" class="chip" data-i18n="globe.skipGround">Skip ground</button>
+            <button type="button" id="btn-start-here" class="chip" data-i18n="globe.startHere">Start here</button>
+            <button type="button" id="btn-end-here" class="chip" data-i18n="globe.endHere">End here</button>
           </div>
           <div id="timeline-scrub" class="timeline-scrub" data-live-timeline-reserved>
             <canvas id="profile" height="100" aria-label="Altitude profile and trim"></canvas>
@@ -154,39 +154,39 @@
 
     <dialog id="rename-dialog">
       <form id="rename-form">
-        <p>Rename saved flight</p>
+        <p data-i18n="globe.renameTitle">Rename saved flight</p>
         <label class="dialog-field">
-          <span>Name</span>
+          <span data-i18n="globe.name">Name</span>
           <input id="rename-name" name="name" type="text" maxlength="80" required />
         </label>
         <label class="dialog-field">
-          <span>Slug</span>
+          <span data-i18n="globe.slug">Slug</span>
           <input id="rename-slug" name="slug" type="text" maxlength="64" spellcheck="false" required />
         </label>
         <p id="rename-warn" class="dialog-warn" hidden></p>
         <div class="dialog-actions">
-          <button type="submit" class="play">Save</button>
-          <button type="button" id="rename-overwrite" class="chip danger" hidden>Overwrite</button>
-          <button type="button" id="rename-cancel" class="chip">Cancel</button>
+          <button type="submit" class="play" data-i18n="common.save">Save</button>
+          <button type="button" id="rename-overwrite" class="chip danger" hidden data-i18n="common.save">Overwrite</button>
+          <button type="button" id="rename-cancel" class="chip" data-i18n="common.cancel">Cancel</button>
         </div>
       </form>
     </dialog>
 
     <dialog id="delete-dialog">
       <form method="dialog" id="delete-form">
-        <p>Delete <strong id="delete-label"></strong>?</p>
-        <p class="dialog-warn">This removes the saved track. The shareable URL will stop working.</p>
+        <p id="delete-title" data-i18n="globe.deleteTitle">Delete?</p>
+        <p class="dialog-warn" data-i18n="globe.deleteWarn">This removes the saved track. The shareable URL will stop working.</p>
         <div class="dialog-actions">
-          <button type="submit" value="ok" class="chip danger">Delete</button>
-          <button type="submit" value="cancel" formnovalidate class="chip">Cancel</button>
+          <button type="submit" value="ok" class="chip danger" data-i18n="common.delete">Delete</button>
+          <button type="submit" value="cancel" formnovalidate class="chip" data-i18n="common.cancel">Cancel</button>
         </div>
       </form>
     </dialog>
 
     <dialog id="live-trim-dialog" class="live-trim-dialog">
       <form id="live-trim-form" method="dialog">
-        <p id="live-trim-title">Trim tail before save</p>
-        <div class="live-trim-presets" role="group" aria-label="Tail trim minutes">
+        <p id="live-trim-title" data-i18n="globe.trimTailTitle">Trim tail before save</p>
+        <div class="live-trim-presets" role="group" data-i18n-aria="globe.tailTrimGroup">
           <button type="button" class="chip" data-tail-min="5">5m</button>
           <button type="button" class="chip" data-tail-min="10">10m</button>
           <button type="button" class="chip" data-tail-min="15">15m</button>
@@ -197,28 +197,28 @@
         <div class="live-trim-manual">
           <p id="live-trim-tz" class="dialog-hint"></p>
           <label class="dialog-field">
-            <span>Start (local)</span>
+            <span data-i18n="globe.startLocal">Start (local)</span>
             <input id="live-trim-start" type="datetime-local" step="1" />
           </label>
           <label class="dialog-field">
-            <span>End (local)</span>
+            <span data-i18n="globe.endLocal">End (local)</span>
             <input id="live-trim-end" type="datetime-local" step="1" />
           </label>
         </div>
         <div class="dialog-actions live-trim-actions">
-          <button type="submit" value="save" class="play">Save</button>
-          <button type="submit" value="cancel" class="chip" formnovalidate>Cancel</button>
+          <button type="submit" value="save" class="play" data-i18n="common.save">Save</button>
+          <button type="submit" value="cancel" class="chip" formnovalidate data-i18n="common.cancel">Cancel</button>
         </div>
       </form>
     </dialog>
 
     <dialog id="tag-dialog">
       <form method="dialog" id="tag-form">
-        <p>Mark an event at the playhead</p>
-        <input id="tag-label" name="label" type="text" maxlength="80" placeholder="Takeoff, ridge, landing…" required />
+        <p data-i18n="globe.tagDialogTitle">Mark an event at the playhead</p>
+        <input id="tag-label" name="label" type="text" maxlength="80" data-i18n-placeholder="globe.tagPlaceholder" placeholder="Takeoff, ridge, landing…" required />
         <div class="dialog-actions">
-          <button type="submit" value="ok" class="play">Add tag</button>
-          <button type="submit" value="cancel" formnovalidate class="chip">Cancel</button>
+          <button type="submit" value="ok" class="play" data-i18n="globe.addTag">Add tag</button>
+          <button type="submit" value="cancel" formnovalidate class="chip" data-i18n="common.cancel">Cancel</button>
         </div>
       </form>
     </dialog>

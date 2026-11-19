@@ -409,7 +409,7 @@ impl ClubDb {
             license_no: String::new(),
             status: "guest".to_string(),
             role: "pilot".to_string(),
-            locale: "es".to_string(),
+            locale: Some("es".to_string()),
         };
         Ok((pilot_session, session_id, pilot))
     }

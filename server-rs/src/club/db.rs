@@ -69,7 +69,7 @@ pub struct PilotRow {
     pub license_no: String,
     pub status: String,
     pub role: String,
-    pub locale: String,
+    pub locale: Option<String>,
 }
 
 #[derive(Clone, Debug)]

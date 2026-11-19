@@ -3,8 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Elige cómo iniciar sesión en flight_vis." />
-    <title data-i18n="entrar.title">flight_vis</title>
+    <meta name="description" content="Inicia sesión en flight_vis con correo y contraseña o enlace mágico." />
+    <title data-i18n="club.login.title">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
       body {
@@ -28,68 +28,71 @@
       }
       .lead {
         color: var(--muted, #9aa6b5);
-        margin: 0 0 1.25rem;
+        margin: 0 0 1rem;
         font-size: 0.95rem;
       }
-      #lang-slot {
-        margin-bottom: 0.75rem;
-        font-size: 0.9rem;
-      }
-      .path-btn {
-        display: block;
+      input,
+      button {
         width: 100%;
+        padding: 0.65rem;
+        margin: 0.35rem 0;
+        font: inherit;
+        box-sizing: border-box;
+      }
+      .row-links {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        margin-top: 1rem;
+      }
+      .row-links a {
         text-align: center;
-        text-decoration: none;
-        margin: 0.5rem 0;
-        padding: 0.85rem 1rem;
+        padding: 0.65rem;
         border-radius: 10px;
-        font: 600 0.95rem inherit;
-        border: 1px solid rgba(255, 255, 255, 0.18);
+        text-decoration: none;
+        font-weight: 600;
+      }
+      .row-links .primary {
         background: #ecebff;
         color: #15132a;
       }
-      .path-btn.secondary {
-        background: transparent;
+      .row-links .secondary {
+        border: 1px solid rgba(255, 255, 255, 0.18);
         color: #67e8f9;
       }
-      .path-btn.secondary:hover {
-        border-color: rgba(103, 232, 249, 0.45);
+      .msg {
+        color: #f87171;
+        min-height: 1.2em;
+        font-size: 0.9rem;
       }
-
-      .club-login-row {
-        margin: 18px 0 0;
-        text-align: center;
-      }
-
-      .club-login-secondary {
-        display: inline-block;
-        width: 100%;
-        padding: 10px 12px;
-        border-radius: 10px;
-        border: 1px solid var(--stroke);
+      .magic {
         background: transparent;
-        color: var(--cyan);
-        font: 600 14px Outfit, sans-serif;
-        text-decoration: none;
-        text-align: center;
-      }
-
-      .club-login-secondary:hover {
-        border-color: rgba(103, 232, 249, 0.45);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        color: #67e8f9;
+        cursor: pointer;
       }
     </style>
   </head>
   <body>
     <main>
       <div id="lang-slot"></div>
-      <h1 data-i18n="entrar.title"></h1>
-      <p class="lead" data-i18n="entrar.lead"></p>
-      <a id="btn-club" class="path-btn" href="/club-login.html" data-i18n="entrar.club"></a>
-      <a id="btn-pilot" class="path-btn secondary" href="/club-login.html" data-i18n="entrar.pilot"></a>
+      <h1 data-i18n="club.login.title"></h1>
+      <p class="lead" data-i18n="entrar.unifiedLead"></p>
+      <form id="login-form">
+        <label for="email" data-i18n="club.login.email"></label>
+        <input id="email" name="email" type="email" autocomplete="username" required />
+        <label for="password" data-i18n="club.login.password"></label>
+        <input id="password" name="password" type="password" autocomplete="current-password" />
+        <input type="hidden" name="next" id="next" value="/" />
+        <button type="submit" data-i18n="club.login.submit"></button>
+        <button type="button" id="magic-btn" class="magic" data-i18n="club.login.sendMagic"></button>
+        <p class="msg" id="msg"></p>
+      </form>
+      <div class="row-links">
+        <a class="primary" href="/club-signup.html" data-i18n="nav.createClub"></a>
+        <a class="secondary" href="/signup.html" data-i18n="account.signup.link"></a>
+      </div>
     </main>
-    <script type="module">
-      import { bootLoginChooser } from "/src/entrar/loginChooser.ts";
-      bootLoginChooser();
-    </script>
+    <script type="module" src="/src/entrar/loginPage.ts"></script>
   </body>
 </html>

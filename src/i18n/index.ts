@@ -190,6 +190,14 @@ export function applyI18nDocument(root: ParentNode = document): void {
     const key = el.dataset.i18nTitle;
     if (key) el.title = t(key);
   });
+  root.querySelectorAll<HTMLElement>("[data-i18n-aria]").forEach((el) => {
+    const key = el.dataset.i18nAria;
+    if (key) el.setAttribute("aria-label", t(key));
+  });
+  const metaI18n = document.querySelector<HTMLMetaElement>('meta[data-i18n-meta]');
+  if (metaI18n?.dataset.i18nMeta) {
+    metaI18n.content = t(metaI18n.dataset.i18nMeta);
+  }
 }
 
 export function mountLangSwitcher(
