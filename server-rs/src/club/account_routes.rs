@@ -193,40 +193,61 @@ fn account_login_redirect(loc: &str) -> impl IntoResponse {
     (StatusCode::SEE_OTHER, [(header::LOCATION, loc.to_string())])
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct AccountMagicBody {
     email: String,
     #[serde(default)]
     locale: Option<String>,
 }
 
-async fn account_magic_link(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    client_ip: crate::ClientIp,
-    Json(body): Json<AccountMagicBody>,
-) -> impl IntoResponse {
-    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
-        return (status, Json(json!({ "error": "csrf" }))).into_response();
+struct AccountMagicFields {
+    email: String,
+    locale: Option<String>,
+    next: String,
+}
+
+fn account_magic_fields(headers: &HeaderMap, body: &[u8]) -> AccountMagicFields {
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if crate::auth::media_type_is_json(content_type) {
+        let body: AccountMagicBody = serde_json::from_slice(body).unwrap_or_default();
+        return AccountMagicFields {
+            email: body.email,
+            locale: body.locale,
+            next: "/".to_string(),
+        };
     }
-    let email = body.email.trim();
+    let parsed: HashMap<String, String> = serde_urlencoded::from_bytes(body).unwrap_or_default();
+    AccountMagicFields {
+        email: parsed.get("email").cloned().unwrap_or_default(),
+        locale: parsed.get("locale").cloned(),
+        next: crate::auth::safe_next(parsed.get("next").map(String::as_str).unwrap_or("/")),
+    }
+}
+
+async fn send_account_magic_link(
+    state: &AppState,
+    headers: &HeaderMap,
+    email: &str,
+    locale: Option<&str>,
+    ip: &str,
+) {
     let now = now_ms();
-    let ip = client_ip.0;
-    let Some(db) = club_db(&state) else {
-        return Json(json!({ "ok": true })).into_response();
+    let Some(db) = club_db(state) else {
+        return;
     };
-    if db.magic_send_allowed(email, &ip, now).await && state.mailer.allow_send(email, &ip) {
+    if db.magic_send_allowed(email, ip, now).await && state.mailer.allow_send(email, ip) {
         if let Ok(Some(token)) = db.issue_account_magic_login(email, now).await {
-            let _ = db.log_magic_send(email, &ip, now).await;
+            let _ = db.log_magic_send(email, ip, now).await;
             let url = format!(
                 "{}/api/account/auth/magic?token={token}",
                 state.mailer.public_url.trim_end_matches('/')
             );
-            let loc = body
-                .locale
-                .as_deref()
+            let loc = locale
                 .map(str::to_string)
-                .or_else(|| auth::parse_display_cookie(&headers))
+                .or_else(|| auth::parse_display_cookie(headers))
                 .unwrap_or_else(|| "es".to_string());
             let _ = state
                 .mailer
@@ -239,7 +260,34 @@ async fn account_magic_link(
                 .await;
         }
     }
-    Json(json!({ "ok": true })).into_response()
+}
+
+async fn account_magic_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    client_ip: crate::ClientIp,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
+    let json = account_wants_json(&headers);
+    let fields = account_magic_fields(&headers, &body);
+    let email = fields.email.trim();
+    send_account_magic_link(
+        &state,
+        &headers,
+        email,
+        fields.locale.as_deref(),
+        &client_ip.0,
+    )
+    .await;
+    if json {
+        Json(json!({ "ok": true })).into_response()
+    } else {
+        let next_q: String = url::form_urlencoded::byte_serialize(fields.next.as_bytes()).collect();
+        account_login_redirect(&format!("/login?magic=1&next={next_q}")).into_response()
+    }
 }
 
 async fn account_login(

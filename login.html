@@ -57,13 +57,13 @@
         text-decoration: none;
         font-weight: 600;
       }
-      .row-links .primary {
-        background: #ecebff;
-        color: #15132a;
-      }
       .row-links .secondary {
         border: 1px solid rgba(255, 255, 255, 0.18);
         color: #67e8f9;
+      }
+      .row-links .primary {
+        background: #ecebff;
+        color: #15132a;
       }
       .msg {
         color: #f87171;
@@ -97,92 +97,75 @@
       <p class="lead" data-i18n="entrar.magicLead">
         Ingresa tu correo y te enviaremos un enlace para iniciar sesión.
       </p>
-      <section id="magic-panel">
-        <label for="email-magic" data-i18n="club.login.email">Correo</label>
+      <form id="login-form" method="post" action="/api/account/magic-link">
+        <label for="email" data-i18n="club.login.email">Correo</label>
         <input
-          id="email-magic"
+          id="email"
           name="email"
           type="email"
           autocomplete="username"
           required
           placeholder="Correo"
         />
-        <button
-          type="button"
-          id="magic-btn"
-          class="primary-btn"
-          data-i18n="entrar.sendLink"
-          hidden
-        >
-          Enviar enlace
-        </button>
-        <a id="use-password" class="muted-link" href="/login?mode=password" data-i18n="entrar.usePassword">
-          Usar contraseña
-        </a>
-        <p class="msg" id="magic-msg"></p>
-      </section>
-      <section id="password-panel" hidden>
-        <p class="lead" data-i18n="entrar.passwordLead">
-          Inicia sesión con tu contraseña.
-        </p>
-        <form id="password-form" method="post" action="/api/account/login">
+        <input type="hidden" name="next" id="next" value="/" />
+        <div id="password-reveal" hidden>
+          <label for="password" data-i18n="club.login.password">Contraseña</label>
           <input
-            name="email"
-            type="email"
-            autocomplete="username"
-            required
-            placeholder="Correo"
-            data-i18n-placeholder="club.login.email"
-          />
-          <input
+            id="password"
             name="password"
             type="password"
             autocomplete="current-password"
-            required
             placeholder="Contraseña"
-            data-i18n-placeholder="club.login.password"
           />
-          <input type="hidden" name="next" id="next" value="/" />
-          <button type="submit" class="primary-btn" data-i18n="club.login.submit">
-            Inicia sesión
-          </button>
-        </form>
-        <p class="msg" id="password-msg"></p>
-        <details class="muted">
+        </div>
+        <button type="submit" id="submit-magic" class="primary-btn" data-i18n="entrar.sendLink">
+          Enviar enlace
+        </button>
+        <button type="submit" id="submit-password" class="primary-btn" hidden data-i18n="club.login.submit">
+          Inicia sesión
+        </button>
+        <a
+          id="use-password"
+          class="muted-link"
+          href="/login?mode=password"
+          data-i18n="entrar.usePassword"
+        >
+          Usar contraseña
+        </a>
+        <a class="muted-link" id="back-magic" href="/login" hidden data-i18n="entrar.backMagic">
+          ← Usar enlace mágico
+        </a>
+        <p class="msg" id="form-msg"></p>
+        <details id="legacy-details" class="muted" hidden>
           <summary data-i18n="club.login.legacyApk">
             App Android 1.0 (sesión directa del club)
           </summary>
-          <form id="legacy-club-form" method="post" action="/api/club/login">
-            <input type="hidden" name="next" id="legacy-next" value="/club-pilot.html" />
-            <input
-              name="email"
-              type="email"
-              required
-              autocomplete="username"
-              placeholder="Correo"
-              data-i18n-placeholder="club.login.email"
-            />
-            <input
-              name="password"
-              type="password"
-              required
-              minlength="8"
-              autocomplete="current-password"
-              placeholder="Contraseña"
-              data-i18n-placeholder="club.login.password"
-            />
-            <button type="submit" data-i18n="club.login.legacySubmit">
-              Ingresar (APK legacy)
-            </button>
-          </form>
+          <button
+            type="submit"
+            formaction="/api/club/login"
+            formmethod="post"
+            id="legacy-submit"
+            data-i18n="club.login.legacySubmit"
+          >
+            Ingresar (APK legacy)
+          </button>
         </details>
-        <a class="muted-link" id="back-magic" href="/login" data-i18n="entrar.backMagic">
-          ← Usar enlace mágico
-        </a>
-      </section>
+      </form>
       <div class="row-links">
-        <a class="secondary" href="/signup.html" data-i18n="entrar.createAccount">Crear cuenta</a>
-        <a class="primary" href="/club-signup.html" data-i18n="nav.registerClub">
+        <a
+          id="register-pilot"
+          class="secondary"
+          href="/signup.html"
+          data-i18n="entrar.registerPilot"
+        >
+          Registrar piloto
+        </a>
+        <a
+          id="register-club"
+          class="primary"
+          href="/club-signup.html"
+          data-i18n="nav.registerClub"
+        >
           Registrar club
         </a>
       </div>

@@ -318,8 +318,35 @@ fn apply_login_mode_html(html: &str, query: &HashMap<String, String>) -> String 
     if query.get("mode") != Some(&"password".to_string()) {
         return html.to_string();
     }
-    html.replace(r#"id="password-panel" hidden"#, r#"id="password-panel""#)
-        .replace(r#"id="magic-panel""#, r#"id="magic-panel" hidden"#)
+    html.replace(
+        r#"id="login-form" method="post" action="/api/account/magic-link""#,
+        r#"id="login-form" method="post" action="/api/account/login""#,
+    )
+    .replace(r#"id="password-reveal" hidden"#, r#"id="password-reveal""#)
+    .replace(
+        r#"id="submit-magic" class="primary-btn" data-i18n="entrar.sendLink""#,
+        r#"id="submit-magic" class="primary-btn" data-i18n="entrar.sendLink" hidden"#,
+    )
+    .replace(
+        r#"id="submit-password" class="primary-btn" hidden data-i18n="club.login.submit""#,
+        r#"id="submit-password" class="primary-btn" data-i18n="club.login.submit""#,
+    )
+    .replace(
+        r#"id="use-password" class="muted-link""#,
+        r#"id="use-password" class="muted-link" hidden"#,
+    )
+    .replace(
+        r#"id="back-magic" class="muted-link" href="/login" hidden"#,
+        r#"id="back-magic" class="muted-link" href="/login""#,
+    )
+    .replace(
+        r#"id="legacy-details" class="muted" hidden"#,
+        r#"id="legacy-details" class="muted""#,
+    )
+    .replace(
+        r#"name="password" type="password" autocomplete="current-password""#,
+        r#"name="password" type="password" autocomplete="current-password" required"#,
+    )
 }
 
 async fn login_page(

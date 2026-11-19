@@ -30,10 +30,10 @@ test("password login honours safe next after sign-in", async ({ page }) => {
   await page.goto("/login?mode=password&next=/club-admin-kiosk-layout.html", {
     waitUntil: "domcontentloaded",
   });
-  await page.locator("#password-form input[name=email]").fill("admin@demo.test");
-  await page.locator("#password-form input[name=password]").fill("password12");
+  await page.locator("#login-form input[name=email]").fill("admin@demo.test");
+  await page.locator("#login-form input[name=password]").fill("password12");
   await Promise.all([
     page.waitForURL(/\/club-admin-kiosk-layout\.html/, { timeout: 25_000 }),
-    page.locator("#password-form button[type=submit]").click(),
+    page.locator("#submit-password").click(),
   ]);
 });

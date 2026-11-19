@@ -4,6 +4,10 @@ import {
   trackPasswordInRequestUrls,
 } from "./club-login-helpers";
 import { HTML_PAGE_CSP } from "./csp-constants";
+import {
+  expectPasswordRevealed,
+  expectSingleFormLayout,
+} from "./login-layout-helpers";
 
 test.describe("unified /login", () => {
   test("club-login.html redirects to /login with next preserved", async ({
@@ -53,7 +57,7 @@ test.describe("unified /login", () => {
     const lang = await page.evaluate(() => document.documentElement.lang);
     expect(lang).toMatch(/^es/i);
     await expect(page.locator("h1")).toContainText(/iniciar sesión/i);
-    await expect(page.locator("#magic-btn")).toContainText(/enlace/i);
+    await expect(page.locator("#submit-magic")).toContainText(/enlace/i);
     await context.close();
   });
 
@@ -69,37 +73,57 @@ test.describe("unified /login", () => {
     expect(inline).toBe(0);
   });
 
-  test("without JS shows Spanish fallbacks and hides magic submit", async ({
+  test("with JS shows one email and login chrome in order", async ({ page }) => {
+    await page.goto("/login", { waitUntil: "domcontentloaded" });
+    await expectSingleFormLayout(page);
+    await expect(page.locator("#submit-magic")).toHaveText(/enviar enlace/i);
+    await expect(page.locator("#use-password")).toHaveText(/usar contraseña/i);
+    await expect(page.locator("#register-pilot")).toHaveText(/registrar piloto/i);
+    await expect(page.locator("#register-club")).toHaveText(/registrar club/i);
+  });
+
+  test("with JS reveals password in the same form", async ({ page }) => {
+    await page.goto("/login", { waitUntil: "domcontentloaded" });
+    await page.locator("#use-password").click();
+    await expectPasswordRevealed(page);
+    const form = page.locator("#login-form");
+    await expect(form).toHaveAttribute("action", "/api/account/login");
+  });
+
+  test("without JS shows Spanish fallbacks and form POST magic", async ({
     browser,
   }) => {
     const context = await browser.newContext({ javaScriptEnabled: false });
     const page = await context.newPage();
     await page.goto("/login", { waitUntil: "domcontentloaded" });
-    await expect(page.locator("#use-password")).toHaveText(/usar contraseña/i);
-    await expect(page.locator('a[href="/signup.html"]')).toHaveText(/crear cuenta/i);
-    await expect(page.locator('a[href="/club-signup.html"]')).toHaveText(
-      /registrar club/i,
+    await expectSingleFormLayout(page);
+    await expect(page.locator("#submit-magic")).toHaveText(/enviar enlace/i);
+    await expect(page.locator("#register-pilot")).toHaveText(/registrar piloto/i);
+    await expect(page.locator("#login-form")).toHaveAttribute(
+      "action",
+      "/api/account/magic-link",
     );
-    await expect(page.locator("#magic-btn")).toBeHidden();
+    await expect(page.locator("#password-reveal")).toBeHidden();
     await context.close();
   });
 
-  test("without JS on mode=password shows labels and submit text", async ({
+  test("without JS on mode=password reveals password in the same form", async ({
     browser,
   }) => {
     const context = await browser.newContext({ javaScriptEnabled: false });
     const page = await context.newPage();
     await page.goto("/login?mode=password", { waitUntil: "domcontentloaded" });
-    await expect(page.locator("#password-form")).toBeVisible();
-    await expect(page.locator('label[for="email-magic"]')).toHaveText(/correo/i);
-    await expect(
-      page.locator('#password-form button[type="submit"]'),
-    ).toHaveText(/inicia sesión/i);
-    await expect(page.locator("#back-magic")).toHaveText(/enlace mágico/i);
+    await expect(page.locator('input[name="email"][type="email"]')).toHaveCount(1);
+    await expectPasswordRevealed(page);
+    await expect(page.locator("#login-form")).toHaveAttribute(
+      "action",
+      "/api/account/login",
+    );
+    await expect(page.locator("#submit-password")).toHaveText(/inicia sesión/i);
     await context.close();
   });
 
-  test("mode=password reveals POST form without password in page URL", async ({
+  test("mode=password POST form without password in page URL", async ({
     page,
   }) => {
     const tracker = trackPasswordInRequestUrls(page);
@@ -107,7 +131,7 @@ test.describe("unified /login", () => {
       waitUntil: "domcontentloaded",
     });
     assertNoPasswordInUrl(page.url());
-    const form = page.locator("#password-form");
+    const form = page.locator("#login-form");
     await expect(form).toBeVisible();
     await expect(form).toHaveAttribute("method", "post");
     await expect(form).toHaveAttribute("action", "/api/account/login");
