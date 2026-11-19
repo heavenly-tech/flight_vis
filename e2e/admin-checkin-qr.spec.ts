@@ -7,8 +7,10 @@ test("admin phone check-in QR is hidden until Mostrar", async ({ page }) => {
   expect(login.ok()).toBeTruthy();
   await page.goto("/club-admin-checkin-qr.html", { waitUntil: "domcontentloaded" });
   await expect(page.locator("#qr-panel")).toBeHidden();
-  await expect(page.locator("#btn-show-qr")).toBeVisible();
-  await page.locator("#btn-show-qr").click();
+  const showBtn = page.locator("#btn-show-qr");
+  await expect(showBtn).toBeVisible();
+  await expect(showBtn).toBeEnabled();
+  await showBtn.click();
   await expect(page.locator("#qr-panel")).toBeVisible();
   await expect(page.locator("#qr-img")).toHaveAttribute("src", /\/api\/admin\/checkin-qr\.svg/);
   await page.locator("#btn-hide-qr").click();

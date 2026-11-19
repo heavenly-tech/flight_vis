@@ -63,6 +63,7 @@ async function watchConsumed(): Promise<void> {
 
 btnShow.addEventListener("click", () => setVisible(true));
 btnHide.addEventListener("click", () => setVisible(false));
+btnShow.disabled = true;
 
 void (async () => {
   void startClubPage({ switcher: "#lang-slot" });
@@ -70,7 +71,7 @@ void (async () => {
   mountAdminNav();
   try {
     await requireAdmin();
-    setVisible(false);
+    btnShow.disabled = false;
   } catch (e) {
     if (!isClubAdminRedirect(e)) status.textContent = t("admin.adminRequired");
   }
