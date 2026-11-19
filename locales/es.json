@@ -27,6 +27,7 @@
     "checkouts": "Habilitaciones",
     "adminMap": "Mapa admin",
     "kioskQr": "QR kiosk",
+    "adminCheckinQr": "QR check-in",
     "login": "Iniciar sesión",
     "clubLogin": "Iniciar sesión del club",
     "clubMap": "Mapa del club",
@@ -208,10 +209,22 @@
     "saved": "Guardado",
     "resetDone": "Restablecido",
     "kioskOpenUrl": "Abrí en el kiosk:",
-    "kioskActivationToken": "Token de activación (pegalo en esa página, no en la URL):"
+    "kioskActivationToken": "Token de activación (pegalo en esa página, no en la URL):",
+    "kioskCheckinQrVisible": "Mostrar QR de check-in en las pantallas del club",
+    "kioskCheckinQrVisibleSave": "Guardar visibilidad del QR",
+    "checkinQrTitle": "QR de check-in (celular)",
+    "checkinQrLead": "Mostrá el QR solo cuando lo necesites; se oculta después de un escaneo o en 60 segundos.",
+    "checkinQrShow": "Mostrar QR",
+    "checkinQrHide": "Ocultar QR",
+    "checkinQrRotateHint": "El QR rota cada {seconds} segundos.",
+    "checkinQrAlreadyUsed": "Este QR ya se usó. Generá uno nuevo cuando lo necesites."
   },
   "kiosk": {
     "screenTitle": "Pantalla de check-in",
+    "globeScreenTitle": "Pantalla club (globo)",
+    "liveAircraft": "Aeronaves en vivo",
+    "starting": "Iniciando pantalla…",
+    "activate": "Activar pantalla",
     "invalidToken": "Token de pantalla inválido.",
     "activated": "Pantalla activada.",
     "pasteToken": "Pegá el token de activación de pantalla desde el mapa admin."

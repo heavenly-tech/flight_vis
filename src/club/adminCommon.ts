@@ -14,6 +14,7 @@ const NAV_KEYS = [
   ["club-admin-checkouts.html", "nav.checkouts"],
   ["club-admin-map.html", "nav.adminMap"],
   ["club-admin-kiosk-layout.html", "nav.kioskQr"],
+  ["club-admin-checkin-qr.html", "nav.adminCheckinQr"],
   ["club-login.html", "nav.login"],
 ] as const;
 

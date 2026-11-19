@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="es-CL">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="kiosk.globeScreenTitle">flight_vis</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      html, body { margin: 0; height: 100%; background: #0b0f14; color: #e8ecf1; }
+      .kiosk-viewport {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+        overflow: hidden;
+        background: linear-gradient(180deg, #0b0f14 0%, #121922 100%);
+      }
+      #map-layer {
+        position: absolute;
+        inset: 0;
+        padding: 1.5rem 2rem 2rem;
+        box-sizing: border-box;
+        opacity: 0.94;
+      }
+      #map-layer h2 { margin: 0 0 0.75rem; font-size: 1.15rem; font-weight: 600; }
+      #map-layer ul { list-style: none; margin: 0; padding: 0; columns: 2; gap: 1rem; }
+      #map-layer li { padding: 0.35rem 0; font-size: 1.08rem; }
+      #map-layer.map-expanded ul { columns: 4; font-size: 1.25rem; }
+      #map-layer.map-expanded { padding: 2rem 2.5rem; }
+      #status-bar {
+        position: absolute;
+        left: 1rem;
+        top: 1rem;
+        font-size: 0.85rem;
+        opacity: 0.75;
+        z-index: 2;
+      }
+      #toolbar-local {
+        position: absolute;
+        right: 1rem;
+        top: 1rem;
+        z-index: 6;
+      }
+      #toolbar-local button { font: inherit; padding: 0.35rem 0.65rem; }
+      #activate {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.75);
+        z-index: 10;
+      }
+      #activate-inner { max-width: 28rem; padding: 1.5rem; }
+      #qr-wrap {
+        position: absolute;
+        z-index: 5;
+        box-sizing: border-box;
+        background: #fff;
+        padding: 12px;
+        border-radius: 12px;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+      }
+      #qr-wrap img {
+        display: block;
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        filter: contrast(1.25);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="kiosk-viewport" id="viewport">
+      <p id="status-bar" data-i18n="kiosk.starting"></p>
+      <div id="toolbar-local">
+        <button type="button" id="btn-local-qr" data-label-show="Mostrar QR" data-label-hide="Ocultar QR" hidden>Ocultar QR</button>
+      </div>
+      <section id="map-layer" aria-label="Live club map">
+        <h2 data-i18n="kiosk.liveAircraft"></h2>
+        <ul id="map"></ul>
+      </section>
+      <div id="qr-wrap" hidden>
+        <img id="qr" alt="Check-in QR" width="256" height="256" />
+      </div>
+      <div id="activate" hidden>
+        <div id="activate-inner">
+          <p class="muted" data-i18n="kiosk.pasteToken"></p>
+          <div class="row" style="display:flex;gap:.5rem;flex-wrap:wrap;margin:.75rem 0">
+            <input id="activate-token" type="password" autocomplete="off" style="flex:1;min-width:12rem;font:inherit" />
+            <button type="button" id="btn-activate" data-i18n="kiosk.activate"></button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/club/clubGlobeScreen.ts"></script>
+  </body>
+</html>

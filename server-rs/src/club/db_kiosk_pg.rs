@@ -12,12 +12,14 @@ pub struct KioskQrLayoutRow {
     pub y: f64,
     pub size: f64,
     pub rev: i64,
+    pub checkin_qr_visible: bool,
 }
 
 impl ClubDb {
     pub async fn kiosk_qr_layout(&self, club_id: &str) -> Result<KioskQrLayoutRow, DbError> {
         let row = sqlx::query(
-            "SELECT kiosk_qr_x, kiosk_qr_y, kiosk_qr_size, kiosk_layout_rev FROM clubs WHERE id = $1",
+            "SELECT kiosk_qr_x, kiosk_qr_y, kiosk_qr_size, kiosk_layout_rev, kiosk_checkin_qr_visible
+             FROM clubs WHERE id = $1",
         )
         .bind(club_id)
         .fetch_one(&self.pool)
@@ -26,6 +28,7 @@ impl ClubDb {
         let y: Option<f64> = row.try_get(1)?;
         let size: Option<f64> = row.try_get(2)?;
         let rev: i64 = row.try_get(3)?;
+        let checkin_qr_visible: bool = row.try_get(4)?;
         let layout = match (x, y, size) {
             (Some(x), Some(y), Some(size)) => {
                 clamp_kiosk_qr_layout(x, y, size, DEFAULT_PREVIEW_ASPECT)
@@ -37,7 +40,36 @@ impl ClubDb {
             y: layout.y,
             size: layout.size,
             rev,
+            checkin_qr_visible,
         })
+    }
+
+    pub async fn set_kiosk_checkin_qr_visible(
+        &self,
+        club_id: &str,
+        visible: bool,
+    ) -> Result<KioskQrLayoutRow, DbError> {
+        sqlx::query(
+            "UPDATE clubs SET kiosk_checkin_qr_visible = $1, kiosk_layout_rev = kiosk_layout_rev + 1
+             WHERE id = $2",
+        )
+        .bind(visible)
+        .bind(club_id)
+        .execute(&self.pool)
+        .await?;
+        self.kiosk_qr_layout(club_id).await
+    }
+
+    pub async fn club_checkin_ok_since(&self, club_id: &str, since_ms: i64) -> Result<bool, DbError> {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM checkins
+             WHERE club_id = $1 AND outcome = 'ok' AND created_at > $2",
+        )
+        .bind(club_id)
+        .bind(since_ms)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n > 0)
     }
 
     pub async fn set_kiosk_qr_layout(

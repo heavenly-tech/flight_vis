@@ -2329,15 +2329,7 @@ fn html_csp_header() -> (header::HeaderName, &'static str) {
 }
 
 async fn club_screen_page(State(state): State<AppState>) -> impl IntoResponse {
-    let path = state.dist_dir.join("club-screen.html");
-    match tokio::fs::read_to_string(&path).await {
-        Ok(html) => ([(html_csp_header())], Html(html)).into_response(),
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            "Club screen page not built (npm run build)",
-        )
-            .into_response(),
-    }
+    serve_dist_html(&state, "club-screen.html").await
 }
 
 async fn club_slug_screen_page(
@@ -2356,6 +2348,35 @@ async fn club_slug_screen_page(
         Err(_) => (
             StatusCode::NOT_FOUND,
             "Club screen page not built (npm run build)",
+        )
+            .into_response(),
+    }
+}
+
+async fn club_globe_screen_page(State(state): State<AppState>) -> impl IntoResponse {
+    serve_dist_html(&state, "club-globe-screen.html").await
+}
+
+async fn club_slug_globe_screen_page(
+    State(state): State<AppState>,
+    Path(slug): Path<String>,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "Club disabled").into_response();
+    };
+    if db.club_id_for_slug(&slug).await.is_none() {
+        return (StatusCode::NOT_FOUND, "Club not found").into_response();
+    }
+    serve_dist_html(&state, "club-globe-screen.html").await
+}
+
+async fn serve_dist_html(state: &AppState, name: &str) -> axum::response::Response {
+    let path = state.dist_dir.join(name);
+    match tokio::fs::read_to_string(&path).await {
+        Ok(html) => ([(html_csp_header())], Html(html)).into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            format!("{name} not built (npm run build)"),
         )
             .into_response(),
     }
@@ -2439,6 +2460,98 @@ async fn admin_patch_kiosk_layout(
         )
             .into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct KioskCheckinQrVisibleBody {
+    visible: bool,
+}
+
+async fn admin_set_kiosk_checkin_qr_visible(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<KioskCheckinQrVisibleBody>,
+) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
+    if let Err(status) = super::csrf::exact_json_content_type(&headers) {
+        return (status, Json(json!({ "error": "unsupported media type" }))).into_response();
+    }
+    let v = viewer(&state, &headers).await;
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    match db
+        .set_kiosk_checkin_qr_visible(&club_id, body.visible)
+        .await
+    {
+        Ok(row) => Json(row).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn admin_checkin_qr_svg(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers).await;
+    let Some(db) = club_db(&state) else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    checkin_qr_svg_for_club(db, &headers, &club_id).await
+}
+
+#[derive(Deserialize)]
+struct CheckinSinceQuery {
+    #[serde(rename = "sinceMs")]
+    since_ms: i64,
+}
+
+async fn admin_checkin_consumed_since(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<CheckinSinceQuery>,
+) -> impl IntoResponse {
+    let v = viewer(&state, &headers).await;
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    let consumed = match db.club_checkin_ok_since(&club_id, q.since_ms).await {
+        Ok(v) => v,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "db error" })),
+            )
+                .into_response();
+        }
+    };
+    Json(json!({ "consumed": consumed })).into_response()
 }
 
 async fn admin_reset_kiosk_layout(
@@ -2548,28 +2661,29 @@ async fn display_kiosk_layout_stream(
         .into_response()
 }
 
-async fn club_screen_qr_svg(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    let Some(db) = club_db(&state) else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+async fn checkin_qr_svg_for_club(
+    db: &ClubDb,
+    headers: &HeaderMap,
+    club_id: &str,
+) -> axum::response::Response {
+    let layout = match db.kiosk_qr_layout(club_id).await {
+        Ok(l) => l,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let (club_id, _admin) = match require_display_club(db, &headers).await {
-        Ok(v) => v,
-        Err(e) => return e.into_response(),
-    };
+    if !layout.checkin_qr_visible {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     let now = now_ms();
-    let token = match db.mint_checkin_qr_token(&club_id, now).await {
+    let token = match db.mint_checkin_qr_token(club_id, now).await {
         Ok(t) => t,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let slug = db
-        .club_slug(&club_id)
+        .club_slug(club_id)
         .await
         .unwrap_or_else(|| "default".to_string());
     let path = crate::club::club_scope::checkin_qr_path(&slug, &token);
-    let payload = crate::club::android_assetlinks::absolute_https_url(&headers, &path);
+    let payload = crate::club::android_assetlinks::absolute_https_url(headers, &path);
     let svg = match crate::club::qr::svg_for_payload(&payload, 280) {
         Ok(s) => s,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -2582,6 +2696,20 @@ async fn club_screen_qr_svg(
         svg,
     )
         .into_response()
+}
+
+async fn club_screen_qr_svg(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let (club_id, _admin) = match require_display_club(db, &headers).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+    checkin_qr_svg_for_club(db, &headers, &club_id).await
 }
 
 async fn device_pair_qr_svg(
@@ -2662,7 +2790,9 @@ pub fn router() -> Router<AppState> {
         .merge(crate::club::auth_routes::router())
         .route("/api/webhooks/postal/bounce", post(postal_bounce_webhook))
         .route("/club/screen", get(club_screen_page))
+        .route("/club/globe-screen", get(club_globe_screen_page))
         .route("/c/{slug}/screen", get(club_slug_screen_page))
+        .route("/c/{slug}/globe-screen", get(club_slug_globe_screen_page))
         .route("/api/checkin", post(post_checkin))
         .route("/api/display/activate", post(display_activate))
         .route("/api/display/checkin-qr", get(display_checkin_qr))
@@ -2681,6 +2811,15 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/admin/kiosk-layout/reset",
             post(admin_reset_kiosk_layout),
+        )
+        .route(
+            "/api/admin/club/kiosk-checkin-qr-visible",
+            post(admin_set_kiosk_checkin_qr_visible),
+        )
+        .route("/api/admin/checkin-qr.svg", get(admin_checkin_qr_svg))
+        .route(
+            "/api/admin/checkin-qr/consumed",
+            get(admin_checkin_consumed_since),
         )
         .route(
             "/api/admin/display-sessions",
