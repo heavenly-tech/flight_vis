@@ -1561,7 +1561,6 @@ async fn legacy_register_verified_account_pilot_has_no_password() {
 #[tokio::test]
 #[serial]
 async fn set_account_password_magic_fresh_session_sets_new_without_current() {
-    use crate::club::db_account::AccountSignupError;
     let db = ClubDb::open_test().await.unwrap();
     let now = now_ms();
     let email = format!("magic-fresh-pw-{}@test", &new_id()[..10]);
@@ -1588,11 +1587,11 @@ async fn set_account_password_magic_fresh_session_sets_new_without_current() {
     db.set_account_password(&id, "newpassword1", now, None, Some(&magic_sess))
         .await
         .unwrap();
-    assert!(matches!(
+    assert!(
         db.account_login_password(&email, "newpassword1", now, "127.0.0.1")
-            .await,
-        Ok(_)
-    ));
+            .await
+            .is_ok()
+    );
 }
 
 #[tokio::test]

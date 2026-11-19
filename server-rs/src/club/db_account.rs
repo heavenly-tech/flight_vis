@@ -493,6 +493,7 @@ impl ClubDb {
         Ok(acct)
     }
 
+    #[allow(dead_code)]
     pub async fn create_account_session(
         &self,
         account_id: &str,
