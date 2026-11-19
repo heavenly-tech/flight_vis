@@ -389,7 +389,9 @@ mod tests {
             "intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;"
         ));
         assert!(intent.contains("package=cl.heavenly.flightvis"));
-        assert!(intent.contains("S.browser_fallback_url=https%3A%2F%2Fflight.heavenly.cl%2Fapp%2Fflightvis.apk"));
+        assert!(intent.contains(
+            "S.browser_fallback_url=https%3A%2F%2Fflight.heavenly.cl%2Fapp%2Fflightvis.apk"
+        ));
         assert!(intent.ends_with(";end"));
     }
 
