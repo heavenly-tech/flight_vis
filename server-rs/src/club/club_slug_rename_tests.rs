@@ -308,7 +308,7 @@ async fn club_slug_rename_authz_matrix() {
         StatusCode::OK
     );
     assert_ne!(db_slug(&fx.db, &fx.club_b).await, slug_b_before);
-    assert_eq!(db_slug(&fx.db, &fx.club_a).await, slug);
+    assert_eq!(db_slug(&fx.db, &fx.club_a).await, club_a_before);
     assert_eq!(
         post_slug(&mut fx, Some(&admin_a_cookie), &format!("{slug}-a")).await,
         StatusCode::OK
