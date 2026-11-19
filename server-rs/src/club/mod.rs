@@ -37,6 +37,7 @@ mod routes;
 mod share_routes;
 mod signup_routes;
 pub(crate) mod slug;
+pub(crate) mod slug_admin;
 pub(crate) mod slug_redirect;
 pub(crate) mod sse_limit;
 pub(crate) mod superadmin;

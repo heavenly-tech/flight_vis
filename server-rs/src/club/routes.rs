@@ -670,19 +670,24 @@ async fn patch_me_locale(
     }
 }
 
-#[derive(Deserialize)]
-struct ClubSlugBody {
-    slug: String,
-}
-
 async fn post_admin_club_slug(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<ClubSlugBody>,
+    body: axum::body::Bytes,
 ) -> impl IntoResponse {
+    if let Err(status) = super::slug_admin::require_exact_json_content_type(&headers) {
+        return (status, Json(json!({ "error": "json required" }))).into_response();
+    }
     if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
         return (status, Json(json!({ "error": "csrf" }))).into_response();
     }
+    let Ok(body) = super::slug_admin::parse_slug_body(&body) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid slug" })),
+        )
+            .into_response();
+    };
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -705,7 +710,6 @@ async fn post_admin_club_slug(
                 .into_response(),
         };
     };
-    let now = now_ms();
     let Viewer::Pilot { id, .. } = v else {
         return (
             StatusCode::FORBIDDEN,
@@ -713,33 +717,7 @@ async fn post_admin_club_slug(
         )
             .into_response();
     };
-    match db
-        .rename_club_slug(&club_id, &body.slug, Some(&id), now)
-        .await
-    {
-        Ok(_old) => {
-            let slug = db.club_slug(&club_id).await.unwrap_or_default();
-            Json(json!({ "ok": true, "slug": slug })).into_response()
-        }
-        Err(crate::club::db_club_slug::ClubSlugRenameError::InvalidSlug) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "invalid slug" })),
-        )
-            .into_response(),
-        Err(crate::club::db_club_slug::ClubSlugRenameError::Taken) => {
-            (StatusCode::CONFLICT, Json(json!({ "error": "slug taken" }))).into_response()
-        }
-        Err(crate::club::db_club_slug::ClubSlugRenameError::Unchanged) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "unchanged" })),
-        )
-            .into_response(),
-        Err(crate::club::db_club_slug::ClubSlugRenameError::Db) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "db error" })),
-        )
-            .into_response(),
-    }
+    super::slug_admin::rename_club_slug_for_id(&state, &club_id, &body, Some(&id)).await
 }
 
 async fn patch_admin_club_locale(

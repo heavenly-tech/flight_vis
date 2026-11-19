@@ -84,9 +84,9 @@ async fn post_club_signup(
                 .await;
             Json(json!({ "ok": true })).into_response()
         }
-        Err(ClubSignupError::InvalidSlug) | Err(ClubSignupError::InvalidEmail) => {
-            Json(json!({ "ok": true })).into_response()
-        }
+        Err(ClubSignupError::InvalidSlug)
+        | Err(ClubSignupError::SlugTaken)
+        | Err(ClubSignupError::InvalidEmail) => Json(json!({ "ok": true })).into_response(),
         Err(ClubSignupError::InvalidIcao) => Json(json!({ "ok": true })).into_response(),
         Err(ClubSignupError::Db) => Json(json!({ "ok": true })).into_response(),
     }

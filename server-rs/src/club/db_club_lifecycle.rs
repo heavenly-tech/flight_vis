@@ -33,6 +33,7 @@ pub enum ClubRegisterGate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClubSignupError {
     InvalidSlug,
+    SlugTaken,
     InvalidIcao,
     InvalidEmail,
     Db,
@@ -233,7 +234,7 @@ impl ClubDb {
             .await
             .map_err(|_| ClubSignupError::Db)?
         {
-            return Err(ClubSignupError::InvalidSlug);
+            return Err(ClubSignupError::SlugTaken);
         }
         if let Some(icao) = aerodrome_icao {
             if !icao.trim().is_empty() && !validate_icao(icao) {
@@ -265,7 +266,7 @@ impl ClubDb {
             if let Some(db_err) = e.as_database_error() {
                 if db_err.code() == Some(std::borrow::Cow::Borrowed("23505")) {
                     let _ = tx.rollback().await;
-                    return Err(ClubSignupError::InvalidSlug);
+                    return Err(ClubSignupError::SlugTaken);
                 }
             }
             let _ = tx.rollback().await;

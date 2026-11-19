@@ -86,7 +86,7 @@
     "invalidLocale": "Idioma no disponible",
     "clubSuspended": "Club suspendido",
     "invalidSlug": "Slug inválido",
-    "slugTaken": "Ese slug ya está en uso",
+    "slugTaken": "Ese identificador ya está en uso",
     "unchanged": "El slug no cambió"
   },
   "club": {
