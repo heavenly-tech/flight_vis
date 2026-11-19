@@ -48,7 +48,7 @@ function setVisible(next: boolean): void {
 function refreshQr(): void {
   if (!visible) return;
   const url = `/api/admin/checkin-qr.svg?t=${Date.now()}`;
-  qrImg.setAttribute("src", url);
+  qrImg.src = url;
 }
 
 async function watchConsumed(): Promise<void> {
