@@ -153,7 +153,7 @@
     </form>
     <script type="module">
       import { applyI18nDocument, bootI18n, t } from "/src/i18n/boot.ts";
-      await bootI18n({ persistUser: false });
+      await bootI18n();
       applyI18nDocument(document);
       const clubBtn = document.getElementById("club-login-btn");
       if (clubBtn) {

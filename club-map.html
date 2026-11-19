@@ -18,7 +18,7 @@
     <script type="module">
       import { startClubPage } from "/src/club/i18nPage.ts";
       import { t } from "/src/i18n/boot.ts";
-      await startClubPage({ persistUser: true });
+      await startClubPage();
       const list = document.getElementById("list");
       const res = await fetch("/api/club/map", { credentials: "same-origin" });
       if (!res.ok) {

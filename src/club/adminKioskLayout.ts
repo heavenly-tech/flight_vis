@@ -1,5 +1,6 @@
 import { ensureClubAdminOrRedirect } from "./adminGate";
 import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
+import { startClubPage } from "./i18nPage";
 import {
   applyLayoutToEl,
   clampKioskQrLayout,
@@ -125,6 +126,7 @@ aspectSel.addEventListener("change", () => {
 paint();
 
 void (async () => {
+  await startClubPage({ switcher: "#lang-slot" });
   if (!(await ensureClubAdminOrRedirect())) return;
   mountAdminNav();
   try {

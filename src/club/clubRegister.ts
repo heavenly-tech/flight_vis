@@ -8,7 +8,7 @@ function slugFromPath(): string | null {
   return q?.trim() || null;
 }
 
-await startClubPage({ persistUser: false });
+await startClubPage();
 
 const form = document.getElementById("form") as HTMLFormElement;
 const msg = document.getElementById("msg")!;

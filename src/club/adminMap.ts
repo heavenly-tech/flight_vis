@@ -1,5 +1,5 @@
 import { ensureClubAdminOrRedirect } from "./adminGate";
-import { api, isClubAdminRedirect, mountAdminLangSwitcher, mountAdminNav, requireAdmin } from "./adminCommon";
+import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 import { startClubPage } from "./i18nPage";
 import { bundledLocaleIds, localeLabel, t } from "../i18n/index";
 
@@ -88,7 +88,6 @@ void (async () => {
   if (!(await ensureClubAdminOrRedirect())) return;
   await startClubPage({ switcher: "#lang-slot" });
   mountAdminNav();
-  mountAdminLangSwitcher();
   try {
     const me = await api<{ clubDefaultLocale?: string }>("/api/club/me");
     mountClubLocalePicker(me.clubDefaultLocale ?? "es");

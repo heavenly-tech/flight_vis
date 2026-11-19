@@ -20,7 +20,7 @@
     </main>
     <script type="module">
       import { startClubPage } from "/src/club/i18nPage.ts";
-      await startClubPage({ persistUser: false });
+      await startClubPage();
       const list = document.getElementById("list");
       const club = new URLSearchParams(location.search).get("club");
       const mapUrl = club
