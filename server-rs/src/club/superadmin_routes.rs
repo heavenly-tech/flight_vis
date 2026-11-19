@@ -72,6 +72,23 @@ async fn suspend_club(
         )
             .into_response();
     };
+    let default_club = match db.default_club_id().await {
+        Ok(id) => id,
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "db error" })),
+            )
+                .into_response();
+        }
+    };
+    if club_id == default_club {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "cannot suspend default club" })),
+        )
+            .into_response();
+    }
     let now = now_ms();
     match db.set_club_suspended(&club_id, now).await {
         Ok(true) => Json(json!({ "ok": true, "suspended": true })).into_response(),
