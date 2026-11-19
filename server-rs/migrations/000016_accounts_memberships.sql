@@ -1,4 +1,5 @@
--- PR1b (#24): lands as 000014 after #19 (000013). #20 → 000015, #22 → 000016 when retargeted.
+-- PR1b (#24): 000016 after #19 (000014 backfill email) and 000015_backfill_club_memberships (main).
+-- Membership rows from pilots here use ON CONFLICT DO NOTHING so 000015 wins when both run.
 -- Global accounts, account sessions, membership authority, backfill from pilots.
 -- Account ids are random (gen_random_uuid); idempotent by lower(email), not by id.
 -- Backfill password rule: per lower(email), non-empty password_hash wins; ties broken by latest created_at.
@@ -97,14 +98,4 @@ SELECT
 FROM pilots p
 WHERE p.status <> 'guest'
   AND p.email NOT LIKE 'guest-%@guest.invalid'
-ON CONFLICT (pilot_id, club_id) DO UPDATE SET
-    role = CASE
-        WHEN EXCLUDED.role IN ('admin', 'staff', 'pilot') THEN EXCLUDED.role
-        ELSE club_memberships.role
-    END,
-    status = CASE
-        WHEN club_memberships.status IN ('active', 'suspended') THEN club_memberships.status
-        ELSE EXCLUDED.status
-    END;
-
-UPDATE club_memberships SET status = 'active' WHERE status = 'approved';
+ON CONFLICT (pilot_id, club_id) DO NOTHING;
