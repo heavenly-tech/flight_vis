@@ -60,17 +60,31 @@ impl ClubDb {
         self.kiosk_qr_layout(club_id).await
     }
 
-    pub async fn club_checkin_ok_since(
+    pub async fn club_checkin_ok_for_qr_window(
         &self,
         club_id: &str,
         since_ms: i64,
+        now_ms: i64,
     ) -> Result<bool, DbError> {
+        use crate::club::checkin;
+        let (secret, _) = self.club_checkin_settings(club_id).await?;
+        let mut step_lo = checkin::current_step(since_ms);
+        if step_lo > 0 {
+            step_lo -= 1;
+        }
+        let step_hi = checkin::current_step(now_ms) + 1;
+        let mut digests: Vec<String> = Vec::new();
+        for step in step_lo..=step_hi {
+            let token = checkin::mint_checkin_token(&secret, club_id, step);
+            digests.push(checkin::token_digest(&token));
+        }
         let n: i64 = sqlx::query_scalar(
             "SELECT COUNT(*)::bigint FROM checkins
-             WHERE club_id = $1 AND outcome = 'ok' AND created_at > $2",
+             WHERE club_id = $1 AND outcome = 'ok' AND created_at > $2 AND token_digest = ANY($3)",
         )
         .bind(club_id)
         .bind(since_ms)
+        .bind(&digests)
         .fetch_one(&self.pool)
         .await?;
         Ok(n > 0)

@@ -9,7 +9,7 @@ use crate::club::{
     map::TailLivePosition,
     visibility::{FlightVisibility, PilotStatus, Viewer},
 };
-use crate::{AppState, ClientIp};
+use crate::{AppState, ClientIp, SHARE_LOOKUP_MAX_ATTEMPTS};
 use axum::{
     body::Bytes,
     extract::{Path, Query, State},
@@ -2568,11 +2568,29 @@ struct KioskCheckinQrVisibleBody {
     visible: bool,
 }
 
+fn admin_checkin_qr_rate_limit(state: &AppState, ip: &ClientIp) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    state
+        .share_lookup_throttle
+        .allow_up_to(&ip.0, now, SHARE_LOOKUP_MAX_ATTEMPTS)
+}
+
 async fn admin_set_kiosk_checkin_qr_visible(
     State(state): State<AppState>,
+    client_ip: ClientIp,
     headers: HeaderMap,
     Json(body): Json<KioskCheckinQrVisibleBody>,
 ) -> impl IntoResponse {
+    if !admin_checkin_qr_rate_limit(&state, &client_ip) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "rate limited" })),
+        )
+            .into_response();
+    }
     if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
         return (status, Json(json!({ "error": "csrf" }))).into_response();
     }
@@ -2606,8 +2624,12 @@ async fn admin_set_kiosk_checkin_qr_visible(
 
 async fn admin_checkin_qr_svg(
     State(state): State<AppState>,
+    client_ip: ClientIp,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    if !admin_checkin_qr_rate_limit(&state, &client_ip) {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
     let v = viewer(&state, &headers).await;
     let Some(db) = club_db(&state) else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -2616,7 +2638,7 @@ async fn admin_checkin_qr_svg(
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
-    checkin_qr_svg_for_club(db, &headers, &club_id, false).await
+    checkin_qr_svg_for_club(&state, db, &headers, &club_id, false).await
 }
 
 #[derive(Deserialize)]
@@ -2627,9 +2649,17 @@ struct CheckinSinceQuery {
 
 async fn admin_checkin_consumed_since(
     State(state): State<AppState>,
+    client_ip: ClientIp,
     headers: HeaderMap,
     Query(q): Query<CheckinSinceQuery>,
 ) -> impl IntoResponse {
+    if !admin_checkin_qr_rate_limit(&state, &client_ip) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({ "error": "rate limited" })),
+        )
+            .into_response();
+    }
     let v = viewer(&state, &headers).await;
     let Some(db) = club_db(&state) else {
         return (
@@ -2642,7 +2672,11 @@ async fn admin_checkin_consumed_since(
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
-    let consumed = match db.club_checkin_ok_since(&club_id, q.since_ms).await {
+    let now = now_ms();
+    let consumed = match db
+        .club_checkin_ok_for_qr_window(&club_id, q.since_ms, now)
+        .await
+    {
         Ok(v) => v,
         Err(_) => {
             return (
@@ -2763,6 +2797,7 @@ async fn display_kiosk_layout_stream(
 }
 
 async fn checkin_qr_svg_for_club(
+    state: &AppState,
     db: &ClubDb,
     headers: &HeaderMap,
     club_id: &str,
@@ -2785,7 +2820,7 @@ async fn checkin_qr_svg_for_club(
         .await
         .unwrap_or_else(|| "default".to_string());
     let path = crate::club::club_scope::checkin_qr_path(&slug, &token);
-    let payload = crate::club::android_assetlinks::checkin_qr_https_payload(headers, &path);
+    let payload = crate::club::android_assetlinks::checkin_qr_https_payload(state, headers, &path);
     let svg = match crate::club::qr::svg_for_payload(&payload, 280) {
         Ok(s) => s,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -2811,7 +2846,7 @@ async fn club_screen_qr_svg(
         Ok(v) => v,
         Err(e) => return e.into_response(),
     };
-    checkin_qr_svg_for_club(db, &headers, &club_id, true).await
+    checkin_qr_svg_for_club(&state, db, &headers, &club_id, true).await
 }
 
 async fn device_pair_qr_svg(

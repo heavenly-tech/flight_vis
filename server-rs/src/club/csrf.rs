@@ -6,7 +6,7 @@ pub fn exact_json_content_type(headers: &HeaderMap) -> Result<(), StatusCode> {
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    if ct == "application/json" || ct.starts_with("application/json;") {
+    if crate::auth::media_type_is_json(ct) {
         Ok(())
     } else {
         Err(StatusCode::UNSUPPORTED_MEDIA_TYPE)
