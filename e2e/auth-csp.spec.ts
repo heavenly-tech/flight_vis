@@ -41,7 +41,7 @@ test.describe("credential pages under prod CSP", () => {
   test("account signup form never puts password in URL", async ({ page }) => {
     const email = `csp-signup-${Date.now()}@example.test`;
     await page.goto("/signup", { waitUntil: "domcontentloaded" });
-    await page.waitForFunction(() => window.__fvAccountSignupReady === true);
+    await page.locator("#form input[name=email]").waitFor({ state: "visible" });
     await page.locator("#form input[name=email]").fill(email);
     await page.locator("#form input[name=password]").fill("password1234");
     await page.locator("#form button[type=submit]").click();
@@ -51,10 +51,11 @@ test.describe("credential pages under prod CSP", () => {
 
   test("club login forms never put password in URL", async ({ page }) => {
     const { consoleErrors } = installCspObservers(page);
-    await page.goto("/club-login.html?mode=club&club=demo", { waitUntil: "domcontentloaded" });
-    await page.locator("#login-form input[name=email]").fill("admin@demo.test");
-    await page.locator("#login-form input[name=password]").fill("password12");
-    const submit = page.locator("#login-form button[type=submit]");
+    await page.goto("/club-login.html?mode=pilot", { waitUntil: "domcontentloaded" });
+    await page.locator("#form input[name=email]").waitFor({ state: "visible" });
+    await page.locator("#form input[name=email]").fill("admin@demo.test");
+    await page.locator("#form input[name=password]").fill("password12");
+    const submit = page.locator("#form button[type=submit]");
     await submit.click();
     await page.waitForTimeout(800);
     await assertNoPasswordInUrl(page);
