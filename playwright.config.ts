@@ -48,7 +48,7 @@ export default defineConfig({
       reuseExistingServer: !process.env.CI,
     },
     {
-      command: "node scripts/e2e-csp-gateway.mjs",
+      command: "npx --yes wait-on dist/index.html && node scripts/e2e-csp-gateway.mjs",
       url: `http://127.0.0.1:${e2eCspPort}/`,
       env: {
         ...process.env,
@@ -60,7 +60,7 @@ export default defineConfig({
     },
     {
       command:
-        "VITE_E2E_SKIP_GLOBE=1 npm run build && npm run preview -- --host 127.0.0.1 --port 5173",
+        "npx --yes wait-on dist/index.html && VITE_E2E_SKIP_GLOBE=1 npm run preview -- --host 127.0.0.1 --port 5173",
       url: "http://127.0.0.1:5173",
       env: {
         ...process.env,
