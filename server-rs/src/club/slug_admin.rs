@@ -99,4 +99,3 @@ pub fn require_exact_json_content_type(headers: &HeaderMap) -> Result<(), Status
 pub fn parse_slug_body(bytes: &[u8]) -> Result<ClubSlugBody, StatusCode> {
     serde_json::from_slice(bytes).map_err(|_| StatusCode::BAD_REQUEST)
 }
-
