@@ -42,11 +42,7 @@ export function mountAdminNav(): void {
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    credentials: "same-origin",
-    signal: AbortSignal.timeout(15_000),
-    ...init,
-  });
+  const res = await fetch(path, { credentials: "same-origin", ...init });
   if (!res.ok) throw new Error(`${res.status}`);
   return (await res.json()) as T;
 }
