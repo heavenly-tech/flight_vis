@@ -117,48 +117,45 @@
         font-family: "IBM Plex Mono", ui-monospace, monospace;
         font-size: 12px;
       }
+
+      .club-login-row {
+        margin: 18px 0 0;
+        text-align: center;
+      }
+
+      .club-login-secondary {
+        display: inline-block;
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid var(--stroke);
+        background: transparent;
+        color: var(--cyan);
+        font: 600 14px Outfit, sans-serif;
+        text-decoration: none;
+        text-align: center;
+      }
+
+      .club-login-secondary:hover {
+        border-color: rgba(103, 232, 249, 0.45);
+      }
     </style>
   </head>
   <body>
-    <form class="sheet" id="login-form" method="post" action="/login" autocomplete="current-password">
+    <form class="sheet" id="login-form" method="post" action="/login">
       <h1>flight_vis</h1>
       <p class="lead">heavenly.cl · password to save and upload tracks</p>
       <div id="body">
         <label for="password">Password</label>
-        <input id="password" name="password" type="password" required autofocus />
+        <input id="password" name="password" type="password" required autofocus autocomplete="current-password" />
         <input type="hidden" name="next" id="next" value="/" />
         <button type="submit">Log in</button>
         <p class="err" id="err"></p>
+        <p class="club-login-row">
+          <a id="club-login-btn" class="club-login-secondary" href="/club-login.html">Club login</a>
+        </p>
       </div>
     </form>
-    <script>
-      (function () {
-        var q = new URLSearchParams(location.search);
-        var err = document.getElementById("err");
-        var next = document.getElementById("next");
-        var dest = q.get("next") || "/";
-        if (!dest.startsWith("/") || dest.startsWith("//") || dest.indexOf("://") !== -1) dest = "/";
-        next.value = dest;
-        if (q.get("e") === "1") err.textContent = "Wrong password.";
-        function showLocked() {
-          document.getElementById("body").innerHTML =
-            '<p class="lock">Upload is locked. Administrator must set <code>FLIGHT_VIS_PASSWORD</code>.</p>';
-        }
-        if (q.get("locked") === "1") showLocked();
-        document.getElementById("login-form").addEventListener("submit", function () {
-          var button = this.querySelector("button");
-          if (button) button.disabled = true;
-        });
-        fetch("/api/auth/me", { credentials: "same-origin" })
-          .then(function (res) {
-            return res.ok ? res.json() : { authenticated: false, configured: true };
-          })
-          .then(function (me) {
-            if (me.authenticated) location.replace(next.value || "/");
-            else if (!me.configured) showLocked();
-          })
-          .catch(function () {});
-      })();
-    </script>
+    <script type="module" src="/src/loginPage.ts"></script>
   </body>
 </html>

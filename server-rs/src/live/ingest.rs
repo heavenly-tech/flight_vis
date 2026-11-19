@@ -45,6 +45,40 @@ pub async fn post_ingest(
         Some(token) => token,
         None => return unauthorized().into_response(),
     };
+    let batch: crate::live::types::IngestBatch = match serde_json::from_slice(&body) {
+        Ok(batch) => batch,
+        Err(_) => return bad_request("invalid json").into_response(),
+    };
+    let fixes: Vec<LiveFix> = batch
+        .fixes
+        .into_iter()
+        .map(LiveEngine::input_to_fix)
+        .collect();
+    if let Some(db) = &state.club {
+        if let Some(device_id) = db.resolve_device_token(token).await {
+            if let Some(flight_id) = db.open_flight_for_device(&device_id).await {
+                if let Some(club_id) = db.club_id_for_flight(&flight_id).await {
+                    if db.club_operational(&club_id).await.is_err() {
+                        return (
+                            StatusCode::FORBIDDEN,
+                            Json(json!({ "error": "club unavailable" })),
+                        )
+                            .into_response();
+                    }
+                }
+                let accepted = db
+                    .append_fixes(&flight_id, &device_id, &fixes)
+                    .await
+                    .unwrap_or(0);
+                return (
+                    StatusCode::OK,
+                    Json(json!({ "ok": true, "accepted": accepted })),
+                )
+                    .into_response();
+            }
+            return bad_request("no active flight").into_response();
+        }
+    }
     let device = match state.device_auth.verify(token) {
         Some(name) => name,
         None => return unauthorized().into_response(),
@@ -56,15 +90,6 @@ pub async fn post_ingest(
         )
             .into_response();
     }
-    let batch: crate::live::types::IngestBatch = match serde_json::from_slice(&body) {
-        Ok(batch) => batch,
-        Err(_) => return bad_request("invalid json").into_response(),
-    };
-    let fixes: Vec<LiveFix> = batch
-        .fixes
-        .into_iter()
-        .map(LiveEngine::input_to_fix)
-        .collect();
     match state.live.ingest_fixes(device, fixes).await {
         Ok(n) => (StatusCode::OK, Json(json!({ "ok": true, "accepted": n }))).into_response(),
         Err(msg) => bad_request(msg).into_response(),
@@ -129,12 +154,26 @@ fn is_form_content_type(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+fn bearer_device_token(headers: &HeaderMap) -> Option<String> {
+    let auth = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())?;
+    auth.strip_prefix("Bearer ")
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
 pub fn parse_osmand_request(
     headers: &HeaderMap,
     query: OsmAndQuery,
     body: &[u8],
 ) -> Result<OsmAndQuery, &'static str> {
     let mut q = query;
+    if q.id.is_none() && q.deviceid.is_none() {
+        if let Some(token) = bearer_device_token(headers) {
+            q.id = Some(token);
+        }
+    }
     if is_form_content_type(headers) || (!body.is_empty() && q.id.is_none() && q.lat.is_none()) {
         let from_body: OsmAndQuery =
             serde_urlencoded::from_bytes(body).map_err(|_| "invalid form body")?;
@@ -211,6 +250,29 @@ pub async fn osmand_ingest(
     };
     if fix.t == 0 {
         fix.t = state.live.now_ms();
+    }
+    if let Some(db) = &state.club {
+        if let Some(device_id) = db.resolve_device_token(&token).await {
+            if let Some(flight_id) = db.open_flight_for_device(&device_id).await {
+                if let Some(club_id) = db.club_id_for_flight(&flight_id).await {
+                    if db.club_operational(&club_id).await.is_err() {
+                        return (
+                            StatusCode::FORBIDDEN,
+                            Json(json!({ "error": "club unavailable" })),
+                        )
+                            .into_response();
+                    }
+                }
+                if db
+                    .append_fixes(&flight_id, &device_id, std::slice::from_ref(&fix))
+                    .await
+                    .is_ok()
+                {
+                    return (StatusCode::OK, "OK").into_response();
+                }
+            }
+            return bad_request("no active flight").into_response();
+        }
     }
     let device = match state.device_auth.verify(&token) {
         Some(name) => name,

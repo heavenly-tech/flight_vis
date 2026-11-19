@@ -3,6 +3,7 @@ import {
   BoundingSphere,
   Cartesian2,
   Cartesian3,
+  Cartographic,
   ClockRange,
   Color,
   ConstantPositionProperty,
@@ -31,7 +32,7 @@ import {
   VerticalOrigin,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
-  Viewer,
+  CesiumWidget,
   createWorldTerrainAsync,
 } from "cesium";
 import type { ColorMode, Flight, FlightTag, Sample, TrackPoint, TrimRange } from "../track/types";
@@ -41,6 +42,7 @@ import { fullRange, pointsInTrim } from "../track/trim";
 import { colorForUnit, normalizeValue, valueForMode } from "./colors";
 import { lerpAngle, wrapAngle, type FollowMode } from "./follow";
 import { QUALITY_LEVELS, resolutionScaleForLevel } from "./resolution";
+import { e2eGlobeHooksEnabled, markGlobePainted } from "../e2eGlobeHooks";
 
 const ESRI_IMAGERY =
   "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
@@ -71,6 +73,7 @@ export type FlightViewer = {
   stepQuality: (fps: number) => void;
   appendLivePoints: (newPoints: TrackPoint[]) => Promise<void>;
   setAccuracyDim: (thresholdM: number) => void;
+  getAircraftPosition: () => { lon: number; lat: number; alt: number } | null;
   destroy: () => void;
 };
 
@@ -88,17 +91,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   const ionToken = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
   if (ionToken) Ion.defaultAccessToken = ionToken;
 
-  const viewer = new Viewer(container, {
-    animation: false,
-    timeline: false,
-    baseLayerPicker: false,
-    geocoder: false,
-    homeButton: false,
-    infoBox: false,
-    sceneModePicker: false,
-    selectionIndicator: false,
-    navigationHelpButton: false,
-    fullscreenButton: false,
+  const viewer = new CesiumWidget(container, {
     creditContainer: document.getElementById("credits") ?? undefined,
     terrainProvider: new EllipsoidTerrainProvider(),
     baseLayer: new ImageryLayer(
@@ -117,10 +110,16 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     useBrowserRecommendedResolution: true,
   });
 
+  if (e2eGlobeHooksEnabled()) {
+    viewer.scene.postRender.addEventListener(() => {
+      markGlobePainted();
+    });
+  }
+
   viewer.scene.globe.enableLighting = true;
   viewer.scene.globe.depthTestAgainstTerrain = false;
   viewer.scene.fog.enabled = true;
-  // The Viewer adds a default Tycho-2 starfield skybox; with the far plane
+  // CesiumWidget adds a default Tycho-2 starfield skybox; with the far plane
   // clipping the atmosphere in follow mode the sky read as night. Drop the
   // stars (keep Sun/Moon/lighting) so the sky is always the haze backdrop.
   const defaultSkyBox = viewer.scene.skyBox;
@@ -804,6 +803,17 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       accuracyThresholdM = thresholdM;
       if (!flight || !trim) return;
       void rebuildTrack(flight, colorMode, trim);
+    },
+    getAircraftPosition: () => {
+      if (!craft?.position) return null;
+      const cart = craft.position.getValue(viewer.clock.currentTime);
+      if (!cart) return null;
+      const carto = Cartographic.fromCartesian(cart);
+      return {
+        lon: CesiumMath.toDegrees(carto.longitude),
+        lat: CesiumMath.toDegrees(carto.latitude),
+        alt: carto.height,
+      };
     },
     destroy: () => {
       removeCameraMoveEnd();

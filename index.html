@@ -10,12 +10,6 @@
     <link rel="icon" href="/favicon.ico" sizes="48x48" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@380;500;650&display=swap"
-      rel="stylesheet"
-    />
   </head>
   <body>
     <div id="cesiumContainer"></div>
@@ -41,6 +35,7 @@
           <p id="flight-name" class="flight-name">Loading…</p>
         </div>
         <div class="top-actions">
+          <a href="/club-signup.html" class="chip" data-i18n="nav.registerClub">Registrar club</a>
           <a id="btn-login" class="chip" href="/login">Log in</a>
           <button type="button" id="btn-logout" class="chip" hidden>Log out</button>
           <button type="button" id="btn-library" class="chip disclosure" aria-expanded="false" aria-controls="library-panel">
@@ -106,7 +101,7 @@
         </button>
       </aside>
 
-      <p id="status" class="status">Preparing 3D globe…</p>
+      <p id="status" class="status" hidden></p>
       <p id="live-status" class="status live-status" hidden></p>
 
       <footer class="transport">
@@ -244,6 +239,7 @@
       </form>
     </dialog>
 
+    <script src="/live-route-boot.js"></script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

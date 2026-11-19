@@ -7,7 +7,7 @@ description: Build and deploy the flight_vis image. Use when changing the Docker
 
 ```bash
 docker build .
-chown -R 10001:10001 ./data
+chown -R 65534:65534 ./data
 docker compose up -d --build
 ```
 
@@ -22,7 +22,7 @@ The image has four stages:
 
 Runtime process:
 
-- User id `10001`, group `10001`, name `app`. The image config uses the numeric `10001:10001`; `/etc/passwd` only exists so tools that resolve the uid work.
+- User id `65534`, group `65534`, name `nobody`. The image uses numeric `65534:65534`; `/etc/passwd` only exists so tools that resolve the uid work.
 - Owns `/data` (`COPY --chown` from the `runtime-deps` stage, plus a `.keep` file so the directory survives the copy).
 - `PORT=8080`, `FLIGHT_DATA=/data`, `FLIGHT_VIS_DIST=/app/dist`, and the Alpine `PATH`.
 - `HEALTHCHECK` runs `/app/flight_vis healthcheck`: the binary makes its own loopback `GET /api/health` (honouring `PORT`) and exits non-zero on a non-200 or non-`{"ok":true}` body. `scratch` has no `wget`, so this replaces the old busybox probe.
@@ -30,6 +30,6 @@ Runtime process:
 
 There is no shell in the runtime image, so `docker exec -it <container> sh` fails. Use `docker exec <container> /app/flight_vis healthcheck` to probe, or `docker inspect --format '{{json .State.Health}}' <container>`.
 
-Compose publishes the container on the external `proxy_network` (`VIRTUAL_HOST` / `LETSENCRYPT_HOST` = `flight.heavenly.cl`) and mounts `./data` on `/data`. A host mount replaces the image's `/data` directory; the mount must be writable by uid 10001. Before `docker compose up -d`, run `chown -R 10001:10001 ./data` on the host. The prod data folders are currently owned by root, so this step is required on the next deploy or the container cannot write the store.
+Compose attaches the container to external `proxy_network` and `db_shared`, resolves `postal-smtp` via `extra_hosts: host-gateway`, and mounts `./data` on `/data`. The mount must be writable by uid `65534` (`chown -R 65534:65534 ./data` on the host). Postgres is the shared heavenly cluster (`DATABASE_URL`); this compose file does not start a local Postgres service.
 
 Do not deploy from a review task unless that task explicitly says to.

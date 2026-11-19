@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>flight_vis · vuelo compartido</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <link rel="stylesheet" href="/node_modules/cesium/Build/Cesium/Widgets/widgets.css" />
+    <style>#cesiumContainer { width: 100%; height: min(70vh, 560px); }</style>
+  </head>
+  <body>
+    <main style="padding:1rem">
+      <h1 id="title">Vuelo compartido</h1>
+      <div id="cesiumContainer"></div>
+      <p id="status" class="muted"></p>
+    </main>
+    <script type="module" src="/src/club/shareFlight.ts"></script>
+  </body>
+</html>
