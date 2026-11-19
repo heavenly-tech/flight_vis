@@ -145,12 +145,6 @@ impl ClubDb {
                 id
             };
             let squat_password = pilot_verified.is_none() && !password_hash.trim().is_empty();
-            if squat_password {
-                sqlx::query("DELETE FROM pilot_sessions WHERE pilot_id = $1")
-                    .bind(&pilot_id)
-                    .execute(&mut *tx)
-                    .await?;
-            }
             if status == "approved"
                 && pilot_verified.is_some()
                 && !password_hash.trim().is_empty()
@@ -166,19 +160,12 @@ impl ClubDb {
                 .execute(&mut *tx)
                 .await;
             }
-            if squat_password {
-                sqlx::query("UPDATE pilots SET account_id = $1, password_hash = '' WHERE id = $2")
-                    .bind(&account_id)
-                    .bind(&pilot_id)
-                    .execute(&mut *tx)
-                    .await?;
-            } else {
-                sqlx::query("UPDATE pilots SET account_id = $1 WHERE id = $2")
-                    .bind(&account_id)
-                    .bind(&pilot_id)
-                    .execute(&mut *tx)
-                    .await?;
-            }
+            sqlx::query("UPDATE pilots SET account_id = $1 WHERE id = $2")
+                .bind(&account_id)
+                .bind(&pilot_id)
+                .execute(&mut *tx)
+                .await?;
+            let _ = squat_password;
             let membership_role = if membership_role_is_admin(&role) {
                 "admin"
             } else if role == "staff" {
@@ -616,6 +603,9 @@ impl ClubDb {
             .as_deref()
             .is_some_and(|hash| current_password.is_some_and(|p| auth::verify_password(p, hash)));
         if has_password {
+            if current_password.is_some_and(|p| !p.is_empty()) && !current_ok {
+                return Err(AccountSignupError::WrongPassword);
+            }
             if !current_ok && !magic_fresh {
                 return if current_password.is_some() {
                     Err(AccountSignupError::WrongPassword)
@@ -640,6 +630,15 @@ impl ClubDb {
             .await
             .map_err(|_| AccountSignupError::Db)?;
         if let Some(keep) = keep_id.as_deref() {
+            sqlx::query(
+                "UPDATE account_sessions SET auth_method = $1 WHERE id = $2 AND account_id = $3",
+            )
+            .bind(ACCOUNT_SESSION_AUTH_PASSWORD)
+            .bind(keep)
+            .bind(account_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AccountSignupError::Db)?;
             sqlx::query("DELETE FROM account_sessions WHERE account_id = $1 AND id <> $2")
                 .bind(account_id)
                 .bind(keep)
@@ -705,6 +704,7 @@ impl ClubDb {
         ip: &str,
     ) -> Result<(String, AccountRow), LoginError> {
         self.login_throttled(ip, now).await?;
+        self.login_throttled_email(email, now).await?;
         let Some(acct) = self.account_by_email(email).await else {
             let _ = auth::verify_password(password, auth::DUMMY_PASSWORD_HASH);
             let _ = self.record_login_attempt(ip, email, now).await;
