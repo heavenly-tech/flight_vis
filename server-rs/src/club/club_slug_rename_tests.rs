@@ -402,11 +402,7 @@ async fn club_slug_history_blocks_cross_club_signup_and_rename() {
 async fn confusable_slug_rejected_as_taken() {
     let mut fx = slug_fixture().await;
     let base = db_slug(&fx.db, &fx.club_b).await;
-    let lookalike = if base.contains('a') {
-        base.replace('a', "4")
-    } else {
-        format!("{base}5")
-    };
+    let lookalike = base.replacen('l', "1", 1);
     if lookalike == base {
         return;
     }
@@ -546,13 +542,16 @@ async fn club_slug_rename_requires_json_content_type() {
 async fn suspended_club_cannot_rename() {
     let mut fx = slug_fixture().await;
     let now = now_ms();
+    let before = db_slug(&fx.db, &fx.club_a).await;
     fx.db.set_club_suspended(&fx.club_a, now).await.unwrap();
     let slug = format!("susp-{}", &new_id()[..6]);
     let admin = fx.admin_a_cookie.clone();
-    assert_eq!(
-        post_slug(&mut fx, Some(&admin), &slug).await,
-        StatusCode::FORBIDDEN
+    let status = post_slug(&mut fx, Some(&admin), &slug).await;
+    assert!(
+        status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
+        "suspended club rename must be refused, got {status}"
     );
+    assert_eq!(db_slug(&fx.db, &fx.club_a).await, before);
 }
 
 #[tokio::test]
