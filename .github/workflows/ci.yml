@@ -94,13 +94,10 @@ jobs:
         run: docker run --rm flight_vis:ci-amd64 /app/flight_vis check-i18n
 
   docker-arm64:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: docker build arm64
         run: docker buildx build --platform linux/arm64 -t flight_vis:ci-arm64 --load .

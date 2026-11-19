@@ -250,6 +250,7 @@ mod tests {
             mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
             webauthn: None,
             sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+            superadmin_emails: Default::default(),
         };
         let router = build_router(state);
         (router, data_dir)

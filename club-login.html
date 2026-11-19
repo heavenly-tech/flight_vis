@@ -17,12 +17,23 @@
         <button type="submit" data-i18n="club.login.submit"></button>
       </form>
       <p id="msg" class="muted"></p>
-      <p class="muted"><a href="/club-register.html" data-i18n="nav.register"></a> · <a href="/club-pilot.html" data-i18n="nav.pilotProfile"></a> · <a href="/app.html" data-i18n="nav.androidApp"></a></p>
+      <p class="muted"><a href="/club-register.html" data-i18n="nav.register"></a> · <a href="/club-signup.html" data-i18n="nav.createClub"></a> · <a href="/club-pilot.html" data-i18n="nav.pilotProfile"></a> · <a href="/app.html" data-i18n="nav.androidApp"></a></p>
     </main>
     <script type="module">
       import { startClubPage } from "/src/club/i18nPage.ts";
       import { t, apiErrorMessage } from "/src/i18n/boot.ts";
+      import { safeNextPath } from "/src/club/safeNext.ts";
       await startClubPage({ persistUser: false });
+      const nextAfterLogin = safeNextPath(
+        new URLSearchParams(location.search).get("next") ?? "/club-pilot.html",
+      );
+      const existing = await fetch("/api/club/me", { credentials: "same-origin" });
+      if (existing.ok) {
+        const me = await existing.json();
+        if (me.pilot) {
+          location.replace(nextAfterLogin);
+        }
+      }
       const form = document.getElementById("form");
       const msg = document.getElementById("msg");
       form.addEventListener("submit", async (e) => {
@@ -36,7 +47,7 @@
         });
         if (res.ok) {
           msg.textContent = t("club.login.success");
-          location.href = "/club-pilot.html";
+          location.href = nextAfterLogin;
         } else {
           const err = (await res.json().catch(() => ({}))).error ?? "unauthorized";
           msg.textContent = apiErrorMessage(String(err));
