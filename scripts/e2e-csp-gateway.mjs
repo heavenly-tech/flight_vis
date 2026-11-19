@@ -62,16 +62,13 @@ function proxyToApi(req, res, body) {
       headers,
     },
     (proxyRes) => {
-      let csp;
+      const outHeaders = { ...proxyRes.headers };
       try {
-        csp = cspForPath(target.pathname);
+        outHeaders["content-security-policy"] = cspForPath(target.pathname);
       } catch {
-        csp = cspForPath("/login");
+        // API JSON and unmapped proxy paths keep upstream headers only.
       }
-      res.writeHead(proxyRes.statusCode ?? 502, {
-        ...proxyRes.headers,
-        "content-security-policy": csp,
-      });
+      res.writeHead(proxyRes.statusCode ?? 502, outHeaders);
       proxyRes.pipe(res);
     },
   );
@@ -112,10 +109,8 @@ const server = http.createServer((req, res) => {
     if (E2E_ONLY.has(baseName)) {
       const e2ePath = path.join(e2eGatewayDir, baseName);
       if (existsSync(e2ePath)) {
-        const pathOnly = urlPath.split("?")[0];
         res.writeHead(200, {
           "content-type": "text/javascript; charset=utf-8",
-          "content-security-policy": cspForPath(pathOnly),
           "cache-control": "no-cache",
         });
         createReadStream(e2ePath).pipe(res);
@@ -129,12 +124,14 @@ const server = http.createServer((req, res) => {
     }
     const ext = path.extname(filePath).slice(1);
     const pathOnly = urlPath.split("?")[0];
-    const csp = cspForPath(pathOnly);
-    res.writeHead(200, {
+    const headers = {
       "content-type": mime(ext),
-      "content-security-policy": csp,
       "cache-control": "no-cache",
-    });
+    };
+    if (ext === "html") {
+      headers["content-security-policy"] = cspForPath(pathOnly);
+    }
+    res.writeHead(200, headers);
     if (ext === "html") {
       let html = readFileSync(filePath, "utf8");
       let hook = '<script src="/e2e-csp-hooks.js"></script>';
