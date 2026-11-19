@@ -201,11 +201,13 @@ async fn http_admin_invite_becomes_admin_only_after_magic_consume() {
     let accept_res = router
         .call(
             Request::builder()
-                .method("GET")
-                .uri(format!(
-                    "/api/account/auth/magic?purpose=admin_invite&token={token}"
-                ))
-                .body(Body::empty())
+                .method("POST")
+                .uri("/api/account/auth/magic")
+                .header(
+                    header::CONTENT_TYPE,
+                    "application/x-www-form-urlencoded",
+                )
+                .body(Body::from(format!("token={token}&purpose=admin_invite")))
                 .unwrap(),
         )
         .await

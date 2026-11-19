@@ -12,7 +12,7 @@ const NAV_KEYS = [
   ["club-admin-checkouts.html", "nav.checkouts"],
   ["club-admin-map.html", "nav.adminMap"],
   ["club-admin-kiosk-layout.html", "nav.kioskQr"],
-  ["club-login.html", "nav.login"],
+  ["/login?mode=club", "nav.login"],
 ] as const;
 
 export function mountAdminNav(): void {

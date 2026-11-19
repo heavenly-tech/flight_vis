@@ -20,7 +20,7 @@ form.addEventListener("submit", async (e) => {
   });
   if (res.ok) {
     msg.textContent = t("account.signup.success");
-    if (pw) location.href = "/club-login.html";
+    if (pw) location.href = "/login";
   } else {
     const err = (await res.json().catch(() => ({}))).error ?? "signup failed";
     msg.textContent = apiErrorMessage(String(err));

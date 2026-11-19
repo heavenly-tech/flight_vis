@@ -45,14 +45,14 @@ export function clubStaffLoginRedirectUrl(next?: string, club?: string): string 
   );
   const qs = new URLSearchParams({ mode: "club", next: dest });
   if (club?.trim()) qs.set("club", club.trim().toLowerCase());
-  return `/club-login.html?${qs}`;
+  return `/login?${qs}`;
 }
 
 export function pilotLoginRedirectUrl(next?: string): string {
   const dest = safeNextPath(
     next ?? `${window.location.pathname}${window.location.search}`,
   );
-  return `/club-login.html?${new URLSearchParams({ mode: "pilot", next: dest })}`;
+  return `/login?${new URLSearchParams({ mode: "pilot", next: dest })}`;
 }
 
 /** @deprecated use {@link clubStaffLoginRedirectUrl} */

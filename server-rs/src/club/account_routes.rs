@@ -8,7 +8,7 @@ use axum::{
     body::Bytes,
     extract::{Path, State},
     http::{header, HeaderMap, StatusCode},
-    response::IntoResponse,
+    response::{Html, IntoResponse},
     routing::{get, post},
     Json, Router,
 };
@@ -479,24 +479,100 @@ async fn join_club(
     }
 }
 
-async fn account_magic(
-    State(state): State<AppState>,
-    headers: HeaderMap,
+fn account_magic_html_escape(raw: &str) -> String {
+    raw.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+async fn get_account_magic(
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let Some(db) = club_db(&state) else {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    };
-    let Some(token) = q.get("token").map(String::as_str) else {
+    let Some(token) = q.get("token") else {
         return (StatusCode::BAD_REQUEST, "missing token").into_response();
     };
-    let now = now_ms();
     let purpose = q
         .get("purpose")
         .map(String::as_str)
         .unwrap_or("account_signup");
+    let token_e = account_magic_html_escape(token);
+    let purpose_e = account_magic_html_escape(purpose);
+    Html(format!(
+        r#"<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Confirm</title></head>
+<body><h1>Continue sign-in</h1>
+<form method="post" action="/api/account/auth/magic">
+<input type="hidden" name="token" value="{token_e}">
+<input type="hidden" name="purpose" value="{purpose_e}">
+<button type="submit">Continue</button>
+</form></body></html>"#
+    ))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct AccountMagicConsumeForm {
+    token: String,
+    #[serde(default)]
+    purpose: Option<String>,
+}
+
+async fn post_account_magic(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    if auth::parse_account_session_cookie(&headers).is_some()
+        || auth::parse_session_cookie(&headers).is_some()
+    {
+        if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+            return (status, Json(json!({ "error": "csrf" }))).into_response();
+        }
+    }
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let (token, purpose) = if content_type.contains("application/json") {
+        let parsed: AccountMagicConsumeJson = serde_json::from_slice(&body).unwrap_or(AccountMagicConsumeJson {
+            token: String::new(),
+            purpose: None,
+        });
+        (parsed.token, parsed.purpose)
+    } else {
+        let parsed: AccountMagicConsumeForm =
+            serde_urlencoded::from_bytes(&body).unwrap_or(AccountMagicConsumeForm {
+                token: String::new(),
+                purpose: None,
+            });
+        (parsed.token, parsed.purpose)
+    };
+    if token.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "missing token").into_response();
+    }
+    let purpose = purpose.as_deref().unwrap_or("account_signup");
+    account_magic_consume(state, headers, token, purpose).await
+}
+
+#[derive(Deserialize, Default)]
+struct AccountMagicConsumeJson {
+    token: String,
+    #[serde(default)]
+    purpose: Option<String>,
+}
+
+async fn account_magic_consume(
+    state: AppState,
+    headers: HeaderMap,
+    token: String,
+    purpose: &str,
+) -> axum::response::Response {
+    let Some(db) = club_db(&state) else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let now = now_ms();
     if purpose == crate::club::db_memberships_admin::ADMIN_INVITE_PURPOSE {
-        match db.accept_admin_invite(token, now).await {
+        match db.accept_admin_invite(&token, now).await {
             Ok(accept) => {
                 let session_id = db
                     .create_account_session(&accept.account_id, Some(&accept.membership_id), now)
@@ -518,7 +594,7 @@ async fn account_magic(
             Err(_) => (StatusCode::BAD_REQUEST, "invalid token").into_response(),
         }
     } else {
-        match db.consume_account_magic(token, purpose, now).await {
+        match db.consume_account_magic(&token, purpose, now).await {
             Ok(account) => {
                 let session_id = db
                     .create_account_session(&account.id, None, now)
@@ -603,7 +679,10 @@ pub fn routes() -> Router<AppState> {
         .route("/api/account/me", get(account_me))
         .route("/api/account/switch-club", post(switch_club))
         .route("/api/account/join", post(join_club))
-        .route("/api/account/auth/magic", get(account_magic))
+        .route(
+            "/api/account/auth/magic",
+            get(get_account_magic).post(post_account_magic),
+        )
         .route(
             "/api/account/memberships/{id}/approve",
             post(approve_membership),

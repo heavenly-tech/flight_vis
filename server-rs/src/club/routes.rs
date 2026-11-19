@@ -118,7 +118,11 @@ async fn admin_may_act_on_pilot(
             Json(json!({ "error": "db error" })),
         )
     })?;
-    if db.require_club_admin(admin_id, &admin_club).await.is_err() {
+    if db
+        .require_club_checkin_approver(admin_id, &admin_club)
+        .await
+        .is_err()
+    {
         return Err((
             StatusCode::FORBIDDEN,
             Json(json!({ "error": "admin only" })),

@@ -117,7 +117,13 @@ impl ClubDb {
                 acct
             } else {
                 let id = new_id();
-                let verified_at = pilot_verified.filter(|_| status == "approved");
+                let verified_at: Option<i64> = sqlx::query_scalar(
+                    "SELECT max(email_verified_at) FROM pilots WHERE lower(trim(email)) = $1",
+                )
+                .bind(&email)
+                .fetch_optional(&mut *tx)
+                .await?
+                .flatten();
                 sqlx::query(
                     "INSERT INTO accounts (id, email, password_hash, created_at, email_verified_at)
                      VALUES ($1, $2, NULL, $3, $4)",
@@ -866,12 +872,29 @@ impl ClubDb {
 
     #[allow(dead_code)]
     pub async fn suspend_membership(&self, membership_id: &str) -> Result<bool, DbError> {
+        let row = sqlx::query("SELECT pilot_id FROM club_memberships WHERE id = $1")
+            .bind(membership_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let pilot_id: String = row.try_get(0)?;
         let r = sqlx::query(
             "UPDATE club_memberships SET status = 'suspended' WHERE id = $1 AND status <> 'suspended'",
         )
         .bind(membership_id)
         .execute(&self.pool)
         .await?;
+        if r.rows_affected() > 0 {
+            let _ = sqlx::query(
+                "UPDATE pilots SET status = 'suspended' WHERE id = $1 AND status = 'approved'",
+            )
+            .bind(&pilot_id)
+            .execute(&self.pool)
+            .await;
+            let _ = self.revoke_pilot_live_sessions(&pilot_id).await;
+        }
         Ok(r.rows_affected() > 0)
     }
 

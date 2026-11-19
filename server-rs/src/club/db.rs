@@ -271,6 +271,29 @@ impl ClubDb {
         Ok(())
     }
 
+    pub async fn revoke_pilot_live_sessions(&self, pilot_id: &str) -> Result<(), DbError> {
+        sqlx::query("DELETE FROM pilot_sessions WHERE pilot_id = $1")
+            .bind(pilot_id)
+            .execute(&self.pool)
+            .await?;
+        if let Some(aid) = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT account_id FROM pilots WHERE id = $1",
+        )
+        .bind(pilot_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten()
+        {
+            sqlx::query(
+                "UPDATE account_sessions SET compat_pilot_session = NULL WHERE account_id = $1",
+            )
+            .bind(&aid)
+            .execute(&self.pool)
+            .await?;
+        }
+        Ok(())
+    }
+
     pub async fn pilot_from_session(&self, session_id: &str, now: i64) -> Option<PilotRow> {
         let session_db_id = auth::digest_token(session_id);
         let row = sqlx::query(

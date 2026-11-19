@@ -8,6 +8,10 @@ declare global {
   }
 }
 
+async function assertNoPasswordInUrl(page: import("@playwright/test").Page) {
+  expect(page.url()).not.toMatch(/password/i);
+}
+
 test.describe("credential pages under prod CSP", () => {
   test.setTimeout(60_000);
 
@@ -21,7 +25,7 @@ test.describe("credential pages under prod CSP", () => {
       page.waitForURL(/account-clubs\.html/, { timeout: 20_000 }),
       page.locator("#login-form button[type=submit]").click(),
     ]);
-    expect(page.url()).not.toMatch(/password/i);
+    await assertNoPasswordInUrl(page);
     expect(consoleErrors.filter((e) => /Content Security Policy/i.test(e))).toEqual([]);
   });
 
@@ -31,7 +35,7 @@ test.describe("credential pages under prod CSP", () => {
     await page.locator("#login-form input[name=email]").fill("admin@demo.test");
     await page.locator("#magic-btn").click();
     await page.waitForTimeout(300);
-    expect(page.url()).not.toMatch(/password/i);
+    await assertNoPasswordInUrl(page);
   });
 
   test("account signup form never puts password in URL", async ({ page }) => {
@@ -42,6 +46,29 @@ test.describe("credential pages under prod CSP", () => {
     await page.locator("#form input[name=password]").fill("password1234");
     await page.locator("#form button[type=submit]").click();
     await page.waitForTimeout(500);
-    expect(page.url()).not.toMatch(/password/i);
+    await assertNoPasswordInUrl(page);
+  });
+
+  test("club login forms never put password in URL", async ({ page }) => {
+    const { consoleErrors } = installCspObservers(page);
+    await page.goto("/club-login.html?mode=club&club=demo", { waitUntil: "domcontentloaded" });
+    await page.locator("#login-form input[name=email]").fill("admin@demo.test");
+    await page.locator("#login-form input[name=password]").fill("password12");
+    const submit = page.locator("#login-form button[type=submit]");
+    await submit.click();
+    await page.waitForTimeout(800);
+    await assertNoPasswordInUrl(page);
+    expect(consoleErrors.filter((e) => /Content Security Policy/i.test(e))).toEqual([]);
+  });
+
+  test("club register form uses POST without password in URL", async ({ page }) => {
+    await page.goto("/club-register.html", { waitUntil: "domcontentloaded" });
+    const email = `reg-${Date.now()}@example.test`;
+    await page.locator('form input[name="email"]').fill(email);
+    await page.locator('form input[name="password"]').fill("password1234");
+    await page.locator('form input[name="name"]').fill("E2E Reg");
+    await page.locator("form button[type=submit]").click();
+    await page.waitForTimeout(800);
+    await assertNoPasswordInUrl(page);
   });
 });

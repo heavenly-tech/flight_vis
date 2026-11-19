@@ -13,7 +13,7 @@ export async function bootLoginChooser(): Promise<void> {
   const club = document.getElementById("btn-club") as HTMLAnchorElement;
   const pilot = document.getElementById("btn-pilot") as HTMLAnchorElement;
   base.set("mode", "club");
-  club.href = `/club-login.html?${base}`;
+  club.href = `/login?${base}`;
   base.set("mode", "pilot");
-  pilot.href = `/club-login.html?${base}`;
+  pilot.href = `/login?${base}`;
 }

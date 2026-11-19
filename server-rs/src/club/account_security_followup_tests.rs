@@ -288,3 +288,348 @@ async fn admin_invite_ignores_pending_lookalike_pilot() {
     .unwrap();
     assert!(attacker_gone);
 }
+
+#[tokio::test]
+#[serial]
+async fn account_magic_get_does_not_consume_token() {
+    use crate::{
+        auth::Auth, build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState,
+    };
+    use axum::{
+        body::to_bytes,
+        http::{header, Request, StatusCode},
+    };
+    use std::{collections::HashSet, sync::Arc};
+    use tower::Service;
+    let data_dir = tempfile::tempdir().unwrap();
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = "scan-safe@test";
+    let raw = db.issue_account_magic_signup(email, now).await.unwrap();
+    let (video_queue, _) = tokio::sync::mpsc::channel(4);
+    let state = AppState {
+        dist_dir: data_dir.path().join("dist"),
+        auth: Auth::with_password("x"),
+        device_auth: DeviceAuth::empty(),
+        live: Arc::new(LiveEngine::new(data_dir.path())),
+        store: Store::new(data_dir.path()),
+        club: Some(db.clone()),
+        video_queue,
+        login_throttle: crate::LoginThrottle::default(),
+        device_register_throttle: crate::LoginThrottle::default(),
+        share_lookup_throttle: crate::LoginThrottle::default(),
+        mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+        webauthn: None,
+        sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+        superadmin_emails: HashSet::new(),
+    };
+    let mut router = build_router(state);
+    let get_res = router
+        .call(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/account/auth/magic?token={raw}"))
+                .header(header::ACCEPT, "text/html")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get_res.status(), StatusCode::OK);
+    let _ = to_bytes(get_res.into_body(), usize::MAX).await;
+    let used: Option<i64> = sqlx::query_scalar(
+        "SELECT used_at FROM magic_login_tokens WHERE token_hash = $1",
+    )
+    .bind(crate::club::auth::digest_token(&raw))
+    .fetch_optional(&db.pool)
+    .await
+    .unwrap()
+    .flatten();
+    assert!(used.is_none());
+}
+
+#[tokio::test]
+#[serial]
+async fn membership_remove_revokes_pilot_sessions() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_id = db.default_club_id().await.unwrap();
+    let inviter = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'Keep', 'keep-sess@test', '', 'approved', 'admin', 'x', $3)",
+    )
+    .bind(&inviter)
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    db.ensure_membership_row(&inviter, &club_id, "admin", "active")
+        .await
+        .unwrap();
+    let victim = new_id();
+    let mid = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'Victim', 'victim-sess@test', '', 'approved', 'admin', 'x', $3)",
+    )
+    .bind(&victim)
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
+         VALUES ($1, $2, $3, 'admin', 'active', $4)",
+    )
+    .bind(&mid)
+    .bind(&victim)
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let sess = db.create_pilot_session(&victim, now).await.unwrap();
+    db.remove_admin_membership(&club_id, &mid).await.unwrap();
+    assert!(db.pilot_from_session(&sess, now).await.is_none());
+}
+
+#[tokio::test]
+#[serial]
+async fn staff_may_approve_checkins_admin_only_for_types() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_id = db.default_club_id().await.unwrap();
+    let staff_id = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'Staff', 'staff-chk@test', '', 'approved', 'staff', 'x', $3)",
+    )
+    .bind(&staff_id)
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    db.ensure_membership_row(&staff_id, &club_id, "staff", "active")
+        .await
+        .unwrap();
+    assert!(db
+        .require_club_checkin_approver(&staff_id, &club_id)
+        .await
+        .is_ok());
+    assert!(db.require_club_admin(&staff_id, &club_id).await.is_err());
+}
+
+#[tokio::test]
+#[serial]
+async fn last_admin_guard_counts_after_018_normalize() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_id = new_id();
+    let admin_id = new_id();
+    sqlx::query(
+        "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at,
+         checkin_window_hours, latitude, longitude)
+         VALUES ($1, 'CAS2', 'cas2', $2, 'live', $2, 12, -33.4489, -70.6693)",
+    )
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'CAS Admin', 'admin@cas2', '', 'approved', 'admin', 'hash', $3)",
+    )
+    .bind(&admin_id)
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/000015_backfill_club_memberships.sql");
+    sqlx::query(&std::fs::read_to_string(path).unwrap())
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let path18 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("migrations/000018_account_email_proof.sql");
+    for stmt in std::fs::read_to_string(path18)
+        .unwrap()
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.starts_with("--"))
+    {
+        sqlx::query(stmt).execute(&db.pool).await.unwrap();
+    }
+    let mid: String =
+        sqlx::query_scalar("SELECT id FROM club_memberships WHERE pilot_id = $1 AND club_id = $2")
+            .bind(&admin_id)
+            .bind(&club_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let status: String = sqlx::query_scalar("SELECT status FROM club_memberships WHERE id = $1")
+        .bind(&mid)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "active");
+    assert_eq!(
+        db.remove_admin_membership(&club_id, &mid).await,
+        Err(crate::club::db_memberships_admin::MembershipAdminError::LastAdmin)
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn csrf_forbidden_cross_origin_on_cookie_posts() {
+    use crate::{
+        auth::Auth,
+    };
+    use crate::club::auth::set_account_session_cookie;
+    use crate::{build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState};
+    use axum::{
+        http::{header, Request, StatusCode},
+    };
+    use std::{collections::HashSet, sync::Arc};
+    use tower::Service;
+    let data_dir = tempfile::tempdir().unwrap();
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let acct = new_id();
+    sqlx::query(
+        "INSERT INTO accounts (id, email, created_at, email_verified_at)
+         VALUES ($1, 'csrf@test', $2, $2)",
+    )
+    .bind(&acct)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let sess = db.create_account_session(&acct, None, now).await.unwrap();
+    let cookie = set_account_session_cookie(&sess, false);
+    let club = db.default_club_id().await.unwrap();
+    let hash = crate::club::auth::hash_password("password12").unwrap();
+    let pid = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'Adm', 'adm-csrf@test', '', 'approved', 'admin', $3, $4)",
+    )
+    .bind(&pid)
+    .bind(&club)
+    .bind(&hash)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    db.ensure_membership_row(&pid, &club, "admin", "active")
+        .await
+        .unwrap();
+    let pilot_sess = db.create_pilot_session(&pid, now).await.unwrap();
+    let pilot_cookie = crate::club::auth::set_session_cookie(&pilot_sess, false);
+    let (video_queue, _) = tokio::sync::mpsc::channel(4);
+    let state = AppState {
+        dist_dir: data_dir.path().join("dist"),
+        auth: Auth::with_password("x"),
+        device_auth: DeviceAuth::empty(),
+        live: Arc::new(LiveEngine::new(data_dir.path())),
+        store: Store::new(data_dir.path()),
+        club: Some(db),
+        video_queue,
+        login_throttle: crate::LoginThrottle::default(),
+        device_register_throttle: crate::LoginThrottle::default(),
+        share_lookup_throttle: crate::LoginThrottle::default(),
+        mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+        webauthn: None,
+        sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+        superadmin_emails: HashSet::new(),
+    };
+    let mut router = build_router(state);
+    let account_res = router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/magic-link")
+                .header(header::COOKIE, &cookie)
+                .header(header::ORIGIN, "https://evil.example")
+                .header(header::HOST, "127.0.0.1:8080")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(r#"{"email":"x@test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(account_res.status(), StatusCode::FORBIDDEN);
+    let invite_res = router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/memberships/invite")
+                .header(header::COOKIE, &pilot_cookie)
+                .header(header::ORIGIN, "https://evil.example")
+                .header(header::HOST, "127.0.0.1:8080")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(r#"{"email":"x@test"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invite_res.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+#[serial]
+async fn suspended_membership_stops_account_compat_session() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_id = db.default_club_id().await.unwrap();
+    let email = "sse-cut@test";
+    let acct = new_id();
+    sqlx::query(
+        "INSERT INTO accounts (id, email, created_at, email_verified_at)
+         VALUES ($1, $2, $3, $3)",
+    )
+    .bind(&acct)
+    .bind(email)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let pilot_id = new_id();
+    let mid = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, account_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, $3, 'S', $4, '', 'approved', 'pilot', '', $5)",
+    )
+    .bind(&pilot_id)
+    .bind(&club_id)
+    .bind(&acct)
+    .bind(email)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
+         VALUES ($1, $2, $3, 'pilot', 'active', $4)",
+    )
+    .bind(&mid)
+    .bind(&pilot_id)
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let acct_sess = db
+        .create_account_session(&acct, Some(&mid), now)
+        .await
+        .unwrap();
+    assert!(db.pilot_session_for_account(&acct_sess, now).await.is_some());
+    db.suspend_membership(&mid).await.unwrap();
+    assert!(db.pilot_session_for_account(&acct_sess, now).await.is_none());
+}

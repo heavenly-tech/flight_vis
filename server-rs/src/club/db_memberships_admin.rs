@@ -466,6 +466,13 @@ impl ClubDb {
             .execute(&mut *tx)
             .await
             .map_err(|_| MembershipAdminError::Db)?;
+        sqlx::query(
+            "UPDATE pilots SET status = 'suspended' WHERE id = $1 AND status = 'approved'",
+        )
+        .bind(&pilot_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| MembershipAdminError::Db)?;
         if membership_role_is_admin(&current_role) {
             sqlx::query("UPDATE pilots SET role = 'pilot' WHERE id = $1")
                 .bind(&pilot_id)
@@ -474,6 +481,7 @@ impl ClubDb {
                 .map_err(|_| MembershipAdminError::Db)?;
         }
         tx.commit().await.map_err(|_| MembershipAdminError::Db)?;
+        let _ = self.revoke_pilot_live_sessions(&pilot_id).await;
         Ok(())
     }
 }

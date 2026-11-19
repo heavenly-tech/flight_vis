@@ -52,7 +52,7 @@
     "register": "Registrarse",
     "pilotProfile": "Perfil piloto",
     "androidApp": "App Android",
-    "createClub": "Crear club"
+    "createClub": "Registrar club"
   },
   "api": {
     "unauthorized": "No autorizado",
@@ -79,8 +79,8 @@
   },
   "club": {
     "login": {
-      "title": "Inicio de sesión del club",
-      "clubTitle": "Inicio de sesión del club",
+      "title": "Iniciar sesión",
+      "clubTitle": "Iniciar sesión",
       "clubLead": "Indica el club y usa tu cuenta con rol de administrador o staff.",
       "pilotTitle": "Inicio de sesión de piloto",
       "email": "Correo",
@@ -376,7 +376,7 @@
       "password": "Contraseña (opcional)",
       "submit": "Crear cuenta",
       "success": "Revisa tu correo si no pusiste contraseña.",
-      "link": "Crea tu cuenta",
+      "link": "Crear cuenta",
       "haveAccount": "¿Ya tienes cuenta? Inicia sesión"
     },
     "join": {
