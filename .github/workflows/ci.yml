@@ -73,6 +73,9 @@ jobs:
       - name: frontend
         run: npm ci && npm run build
 
+      - name: dist has no inline scripts
+        run: node scripts/check-dist-inline.mjs
+
       - name: bundle has no external QR hosts
         run: |
           if rg -q 'qrserver\\.com' dist/; then
@@ -83,6 +86,12 @@ jobs:
 
       - name: frontend lint
         run: npm run lint
+
+      - name: no Argentine voseo in Spanish UI
+        run: node scripts/voseo-check.mjs
+
+      - name: globe CSP has single img-src directive
+        run: node scripts/check-globe-csp.mjs
 
       - name: playwright e2e
         run: npx playwright install --with-deps && npm run test:e2e

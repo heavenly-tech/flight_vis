@@ -479,7 +479,7 @@ impl ClubDb {
             .await?;
         sqlx::query(
             "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
-             VALUES ($1, $2, $3, $4, 'approved', $5)
+             VALUES ($1, $2, $3, $4, 'active', $5)
              ON CONFLICT (pilot_id, club_id) DO UPDATE SET
                role = excluded.role,
                status = excluded.status",

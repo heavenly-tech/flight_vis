@@ -1,161 +1,175 @@
 <!doctype html>
-<html lang="en">
+<html lang="es-CL">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="Log in to upload and save flights." />
+    <meta name="description" content="Inicia sesión en flight_vis con enlace mágico o contraseña." />
     <meta name="theme-color" content="#152B52" />
-    <title>flight_vis · login</title>
+    <title data-i18n="club.login.title">flight_vis</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/favicon.ico" sizes="48x48" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Outfit:wght@380;500;650&display=swap"
-      rel="stylesheet"
-    />
+    <link rel="stylesheet" href="/src/style.css" />
     <style>
-      :root {
-        color-scheme: dark;
-        --bg: #07090d;
-        --panel: #10151d;
-        --stroke: rgba(255, 255, 255, 0.12);
-        --text: #f4f7fb;
-        --muted: #9aa6b5;
-        --cyan: #67e8f9;
-        --bad: #f87171;
-      }
-
-      * {
-        box-sizing: border-box;
-      }
-
       body {
-        margin: 0;
         min-height: 100vh;
         display: flex;
         align-items: center;
         justify-content: center;
-        background: var(--bg);
-        color: var(--text);
-        font: 14px/1.5 Outfit, system-ui, sans-serif;
-      }
-
-      .sheet {
-        width: min(400px, 92vw);
-        padding: 28px 24px;
-        border: 1px solid var(--stroke);
-        border-radius: 16px;
-        background: var(--panel);
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
-      }
-
-      h1 {
         margin: 0;
-        letter-spacing: 0.18em;
-        text-transform: uppercase;
-        font-size: 11px;
-        color: var(--cyan);
+        padding: 1rem;
       }
-
+      main {
+        width: min(400px, 100%);
+        padding: 1.25rem;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 16px;
+        background: #10151d;
+      }
+      h1 {
+        margin: 0 0 0.35rem;
+        font-size: 1.1rem;
+      }
       .lead {
-        color: var(--muted);
-        margin: 10px 0 18px;
+        color: var(--muted, #9aa6b5);
+        margin: 0 0 1rem;
+        font-size: 0.95rem;
       }
-
-      label {
-        display: block;
-        font-size: 12px;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--muted);
-        margin-bottom: 6px;
-      }
-
-      input {
-        width: 100%;
-        background: #0b0f16;
-        color: var(--text);
-        border: 1px solid var(--stroke);
-        border-radius: 10px;
-        padding: 10px 12px;
-        font: 500 14px Outfit, sans-serif;
-      }
-
+      input,
       button {
-        margin-top: 14px;
         width: 100%;
-        cursor: pointer;
+        padding: 0.65rem;
+        margin: 0.35rem 0;
+        font: inherit;
+        box-sizing: border-box;
+      }
+      .row-links {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        margin-top: 1.25rem;
+      }
+      .row-links a {
+        text-align: center;
+        padding: 0.65rem;
+        border-radius: 10px;
+        text-decoration: none;
+        font-weight: 600;
+      }
+      .row-links .secondary {
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        color: #67e8f9;
+      }
+      .row-links .primary {
+        background: #ecebff;
+        color: #15132a;
+      }
+      .msg {
+        color: #f87171;
+        min-height: 1.2em;
+        font-size: 0.9rem;
+      }
+      .muted-link {
+        display: inline-block;
+        margin-top: 0.75rem;
+        font-size: 0.9rem;
+        color: #67e8f9;
+      }
+      .primary-btn {
         background: #ecebff;
         color: #15132a;
         border: 0;
         border-radius: 10px;
-        padding: 10px 12px;
-        font: 650 14px Outfit, sans-serif;
+        font-weight: 650;
+        cursor: pointer;
       }
-
-      button:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-      }
-
-      .err {
-        color: var(--bad);
-        font-size: 13px;
-        margin: 10px 0 0;
-        min-height: 1.2em;
-      }
-
-      .lock {
-        color: var(--muted);
-        margin: 0;
-      }
-
-      code {
-        font-family: "IBM Plex Mono", ui-monospace, monospace;
-        font-size: 12px;
-      }
-
-      .club-login-row {
-        margin: 18px 0 0;
-        text-align: center;
-      }
-
-      .club-login-secondary {
-        display: inline-block;
-        width: 100%;
-        padding: 10px 12px;
-        border-radius: 10px;
-        border: 1px solid var(--stroke);
-        background: transparent;
-        color: var(--cyan);
-        font: 600 14px Outfit, sans-serif;
-        text-decoration: none;
-        text-align: center;
-      }
-
-      .club-login-secondary:hover {
-        border-color: rgba(103, 232, 249, 0.45);
+      details.muted {
+        margin-top: 1rem;
+        font-size: 0.9rem;
       }
     </style>
   </head>
   <body>
-    <form class="sheet" id="login-form" method="post" action="/login">
-      <h1>flight_vis</h1>
-      <p class="lead">heavenly.cl · password to save and upload tracks</p>
-      <div id="body">
-        <label for="password">Password</label>
-        <input id="password" name="password" type="password" required autofocus autocomplete="current-password" />
+    <main>
+      <div id="lang-slot"></div>
+      <h1 data-i18n="club.login.title">Iniciar sesión</h1>
+      <p class="lead" data-i18n="entrar.magicLead">
+        Ingresa tu correo y te enviaremos un enlace para iniciar sesión.
+      </p>
+      <form id="login-form" method="post" action="/api/account/magic-link">
+        <label for="email" data-i18n="club.login.email">Correo</label>
+        <input
+          id="email"
+          name="email"
+          type="email"
+          autocomplete="username"
+          required
+          placeholder="Correo"
+        />
         <input type="hidden" name="next" id="next" value="/" />
-        <button type="submit">Log in</button>
-        <p class="err" id="err"></p>
-        <p class="club-login-row">
-          <a id="club-login-btn" class="club-login-secondary" href="/club-login.html">Club login</a>
-        </p>
+        <div id="password-reveal" hidden>
+          <label for="password" data-i18n="club.login.password">Contraseña</label>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            placeholder="Contraseña"
+          />
+        </div>
+        <button type="submit" id="submit-magic" class="primary-btn" data-i18n="entrar.sendLink">
+          Enviar enlace
+        </button>
+        <button type="submit" id="submit-password" class="primary-btn" hidden data-i18n="club.login.submit">
+          Inicia sesión
+        </button>
+        <a
+          id="use-password"
+          class="muted-link"
+          href="/login?mode=password"
+          data-i18n="entrar.usePassword"
+        >
+          Usar contraseña
+        </a>
+        <a class="muted-link" id="back-magic" href="/login" hidden data-i18n="entrar.backMagic">
+          ← Usar enlace mágico
+        </a>
+        <p class="msg" id="form-msg"></p>
+        <details id="legacy-details" class="muted" hidden>
+          <summary data-i18n="club.login.legacyApk">
+            App Android 1.0 (sesión directa del club)
+          </summary>
+          <button
+            type="submit"
+            formaction="/api/club/login"
+            formmethod="post"
+            id="legacy-submit"
+            data-i18n="club.login.legacySubmit"
+          >
+            Ingresar (APK legacy)
+          </button>
+        </details>
+      </form>
+      <div class="row-links">
+        <a
+          id="register-pilot"
+          class="secondary"
+          href="/signup.html"
+          data-i18n="entrar.registerPilot"
+        >
+          Registrar piloto
+        </a>
+        <a
+          id="register-club"
+          class="primary"
+          href="/club-signup.html"
+          data-i18n="nav.registerClub"
+        >
+          Registrar club
+        </a>
       </div>
-    </form>
-    <script type="module" src="/src/loginPage.ts"></script>
+    </main>
+    <script type="module" src="/src/entrar/loginPage.ts"></script>
   </body>
 </html>

@@ -56,8 +56,6 @@ export function resolveLocale(opts: {
     pick(opts.stored) ??
     pick(opts.userLocale) ??
     pick(opts.clubDefaultLocale) ??
-    parseAcceptLanguage(opts.acceptLanguage ?? null) ??
-    (opts.navigatorLang?.toLowerCase().startsWith("es") ? "es" : null) ??
     pick(CANONICAL_LOCALE) ??
     CANONICAL_LOCALE
   );
@@ -72,7 +70,6 @@ export function initI18n(opts?: {
     userLocale: opts?.userLocale,
     clubDefaultLocale: opts?.clubDefaultLocale,
     stored,
-    navigatorLang: navigator.language,
   });
   state = {
     locale,
@@ -119,14 +116,18 @@ export function formatNumber(n: number, opts?: Intl.NumberFormatOptions): string
 }
 
 /** When a signed-in club user picks a locale, persist it to the account (shared-browser case). */
-export async function setLocale(locale: string): Promise<void> {
+export async function setLocale(
+  locale: string,
+  opts?: { persistUser?: boolean },
+): Promise<void> {
   if (!bundledLocaleIds().includes(locale)) return;
   state.locale = locale;
   state.messages = flattenCatalog(locale);
   document.documentElement.lang = localeBcp47(locale);
   localStorage.setItem(STORAGE, locale);
   writeCookie(COOKIE, locale);
-  if (state.userLocale !== null) {
+  const persist = opts?.persistUser ?? state.userLocale !== null;
+  if (persist) {
     try {
       await fetch("/api/club/me/locale", {
         method: "PATCH",
@@ -137,7 +138,9 @@ export async function setLocale(locale: string): Promise<void> {
     } catch {
       /* best-effort */
     }
-    state.userLocale = locale;
+    if (state.userLocale !== null) {
+      state.userLocale = locale;
+    }
   }
   applyI18nDocument();
   window.dispatchEvent(new CustomEvent("fv-locale-change"));
@@ -194,6 +197,14 @@ export function applyI18nDocument(root: ParentNode = document): void {
     const key = el.dataset.i18nTitle;
     if (key) el.title = t(key);
   });
+  root.querySelectorAll<HTMLElement>("[data-i18n-aria]").forEach((el) => {
+    const key = el.dataset.i18nAria;
+    if (key) el.setAttribute("aria-label", t(key));
+  });
+  const metaI18n = document.querySelector<HTMLMetaElement>('meta[data-i18n-meta]');
+  if (metaI18n?.dataset.i18nMeta) {
+    metaI18n.content = t(metaI18n.dataset.i18nMeta);
+  }
 }
 
 function paintLangSwitcher(slot: HTMLElement, select: HTMLSelectElement): void {
@@ -212,13 +223,16 @@ function paintLangSwitcher(slot: HTMLElement, select: HTMLSelectElement): void {
   if (!slot.querySelector("label")) slot.replaceChildren(label, select);
 }
 
-export function mountLangSwitcher(slot: HTMLElement): void {
+export function mountLangSwitcher(
+  slot: HTMLElement,
+  opts?: { persistUser?: boolean },
+): void {
   slot.classList.add("lang-switcher");
   let select = slot.querySelector<HTMLSelectElement>("select");
   if (!select) {
     select = document.createElement("select");
     select.addEventListener("change", () => {
-      void setLocale(select!.value).then(() => {
+      void setLocale(select!.value, opts).then(() => {
         location.reload();
       });
     });
@@ -236,6 +250,7 @@ export function mountLangSwitcher(slot: HTMLElement): void {
 export async function bootI18n(opts?: {
   userLocale?: string | null;
   clubDefaultLocale?: string | null;
+  persistUser?: boolean;
   switcher?: string | HTMLElement;
 }): Promise<void> {
   let userLocale = opts?.userLocale;
@@ -268,7 +283,11 @@ export async function bootI18n(opts?: {
     typeof opts?.switcher === "string"
       ? document.querySelector<HTMLElement>(opts.switcher)
       : opts?.switcher;
-  if (slot) mountLangSwitcher(slot);
+  if (slot) {
+    mountLangSwitcher(slot, {
+      persistUser: opts?.persistUser ?? dbUserLocale !== null,
+    });
+  }
   window.dispatchEvent(new CustomEvent("fv-i18n-ready"));
 }
 

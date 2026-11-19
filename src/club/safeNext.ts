@@ -32,15 +32,27 @@ export function safeNextPath(input: string): string {
   if (!value.startsWith("/") || value.startsWith("//")) return "/";
   if (value.includes("://")) return "/";
   if (value === "/login" || value.startsWith("/login?")) return "/";
+  if (value === "/login.html" || value.startsWith("/login.html?")) return "/";
+  if (value === "/login/legacy" || value.startsWith("/login/legacy?")) return "/";
+  if (value === "/login-legacy.html" || value.startsWith("/login-legacy.html?")) return "/";
   if (value === "/club-login.html" || value.startsWith("/club-login.html?")) return "/";
   return value;
 }
 
-export function clubLoginRedirectUrl(next?: string): string {
+export function clubStaffLoginRedirectUrl(next?: string): string {
   const dest = safeNextPath(
     next ?? `${window.location.pathname}${window.location.search}`,
   );
-  return `/club-login.html?${new URLSearchParams({ next: dest })}`;
+  return `/login?${new URLSearchParams({ next: dest })}`;
+}
+
+export function pilotLoginRedirectUrl(next?: string): string {
+  return clubStaffLoginRedirectUrl(next);
+}
+
+/** @deprecated use {@link clubStaffLoginRedirectUrl} */
+export function clubLoginRedirectUrl(next?: string): string {
+  return clubStaffLoginRedirectUrl(next);
 }
 
 /** Club admin pages: unauthenticated users land on club login with return URL. */

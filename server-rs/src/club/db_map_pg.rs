@@ -29,7 +29,7 @@ impl ClubDb {
     pub async fn pilot_is_approved_member(&self, pilot_id: &str, club_id: &str) -> bool {
         let n: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM club_memberships
-             WHERE pilot_id = $1 AND club_id = $2 AND status = 'approved'",
+             WHERE pilot_id = $1 AND club_id = $2 AND status IN ('active', 'approved')",
         )
         .bind(pilot_id)
         .bind(club_id)

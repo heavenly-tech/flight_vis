@@ -1,40 +1,39 @@
 import { test, expect } from "@playwright/test";
-import {
-  assertNoPasswordInUrl,
-  trackPasswordInRequestUrls,
-} from "./club-login-helpers";
+import { assertNoPasswordInUrl } from "./club-login-helpers";
 
-async function loginViaClubForm(page: import("@playwright/test").Page): Promise<void> {
-  const leak = trackPasswordInRequestUrls(page);
-  await page.goto("/club-login.html", { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => window.__fvClubLoginReady === true);
-  await page.fill('input[name="email"]', "admin@demo.test");
-  await page.fill('input[name="password"]', "password12");
-  await Promise.all([
-    page.waitForURL(/club-pilot\.html/),
-    page.locator("#form button[type=submit]").click(),
-  ]);
-  assertNoPasswordInUrl(page.url());
-  leak.assertClean();
+async function loginPilotViaClubApi(
+  page: import("@playwright/test").Page,
+): Promise<void> {
+  const res = await page.request.post("/api/club/login", {
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "sec-fetch-site": "same-origin",
+    },
+    form: {
+      email: "admin@demo.test",
+      password: "password12",
+      next: "/club-pilot.html",
+    },
+    maxRedirects: 0,
+    failOnStatusCode: false,
+  });
+  expect(res.status()).toBe(303);
+  const loc = res.headers().location ?? "";
+  assertNoPasswordInUrl(loc);
+  await page.goto("/club-pilot.html", { waitUntil: "domcontentloaded" });
 }
 
-declare global {
-  interface Window {
-    __fvClubLoginReady?: boolean;
-  }
-}
-
-test("club login form redirects to pilot profile", async ({ page }) => {
-  await loginViaClubForm(page);
+test("club pilot session loads profile after API login", async ({ page }) => {
+  await loginPilotViaClubApi(page);
   await expect(page).toHaveURL(/club-pilot\.html/);
   const me = await page.request.get("/api/club/i18n/context");
   expect(me.ok()).toBeTruthy();
-  const json = (await me.json()) as { userLocale?: string | null };
-  expect(json.userLocale).toBeTruthy();
+  const json = (await me.json()) as { resolvedLocale?: string };
+  expect(json.resolvedLocale).toBe("es");
 });
 
 test("logged-in pilot locale persists across reload", async ({ page }) => {
-  await loginViaClubForm(page);
+  await loginPilotViaClubApi(page);
   const patch = await page.request.patch("/api/club/me/locale", {
     data: { locale: "en" },
   });

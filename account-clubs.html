@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="es-CL">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title data-i18n="club.login.misClubs">flight_vis</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      body {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0;
+        padding: 1rem;
+      }
+      main {
+        width: min(420px, 100%);
+        padding: 1.25rem;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 16px;
+        background: #10151d;
+      }
+      ul {
+        list-style: none;
+        padding: 0;
+        margin: 0.75rem 0;
+      }
+      li button {
+        width: 100%;
+        margin: 0.35rem 0;
+        padding: 0.65rem;
+        font: inherit;
+      }
+      .actions {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        margin-top: 1rem;
+      }
+      .actions a,
+      .actions button {
+        text-align: center;
+        padding: 0.65rem;
+        border-radius: 10px;
+        text-decoration: none;
+        font-weight: 600;
+        width: 100%;
+        box-sizing: border-box;
+        cursor: pointer;
+        font: inherit;
+      }
+      .chip-link {
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        color: #67e8f9;
+        background: transparent;
+      }
+      section[hidden] {
+        display: none !important;
+      }
+      input {
+        width: 100%;
+        padding: 0.65rem;
+        margin: 0.35rem 0;
+        box-sizing: border-box;
+        font: inherit;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div id="lang-slot"></div>
+      <section id="pick-panel">
+        <h1 data-i18n="club.login.misClubs"></h1>
+        <ul id="club-list"></ul>
+        <div class="actions">
+          <button type="button" id="continue-globe" class="chip-link" data-i18n="club.login.continue"></button>
+          <button type="button" id="join-open" class="chip-link" data-i18n="account.join.open"></button>
+          <button type="button" id="admin-open" class="chip-link" data-i18n="entrar.clubAdmin"></button>
+          <a href="/club-signup.html" data-i18n="nav.createClub"></a>
+          <a href="/" data-i18n="nav.globe"></a>
+        </div>
+      </section>
+      <section id="join-panel" hidden>
+        <h2 data-i18n="account.join.title"></h2>
+        <form id="join-form" method="post" action="/api/account/join">
+          <label data-i18n="account.join.slug"></label>
+          <input name="slug" required />
+          <label data-i18n="account.join.name"></label>
+          <input name="name" />
+          <button type="submit" data-i18n="account.join.submit"></button>
+          <p id="join-msg"></p>
+        </form>
+        <button type="button" id="join-back" class="chip-link" data-i18n="common.cancel"></button>
+      </section>
+      <section id="admin-panel" hidden>
+        <h2 data-i18n="club.login.clubTitle"></h2>
+        <p data-i18n="club.login.clubLead"></p>
+        <form id="admin-form">
+          <label data-i18n="club.register.pickClubLabel"></label>
+          <input name="slug" required />
+          <button type="submit" data-i18n="club.login.submit"></button>
+          <p id="admin-msg"></p>
+        </form>
+        <a class="chip-link" href="/club-admin-map.html" data-i18n="nav.adminMap"></a>
+        <button type="button" id="admin-back" class="chip-link" data-i18n="common.cancel"></button>
+      </section>
+    </main>
+    <script type="module" src="/src/entrar/misClubsPage.ts"></script>
+  </body>
+</html>

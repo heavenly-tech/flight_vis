@@ -137,8 +137,10 @@ fn sidecar_path(base: &Path, encoding: &str) -> PathBuf {
     PathBuf::from(format!("{}{}", base.to_string_lossy(), suffix))
 }
 
-/// Keep in sync with `server-rs/csp/html-page.csp` (single source for e2e CSP gateway).
+/// Keep in sync with `server-rs/csp/html-page.csp` (e2e CSP gateway reads the same file).
 pub const HTML_CSP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/csp/html-page.csp"));
+
+pub const HTML_REFERRER_POLICY: &str = "strict-origin-when-cross-origin";
 
 fn cache_for(relative: &str) -> &'static str {
     if is_geoid_asset(relative) {
@@ -214,7 +216,9 @@ async fn file_response(opts: FileResponseOpts<'_>) -> Result<axum::response::Res
         .header(header::CACHE_CONTROL, opts.cache)
         .header(header::ETAG, opts.etag);
     if opts.content_type.starts_with("text/html") {
-        builder = builder.header(header::CONTENT_SECURITY_POLICY, HTML_CSP);
+        builder = builder
+            .header(header::CONTENT_SECURITY_POLICY, HTML_CSP)
+            .header(header::REFERRER_POLICY, HTML_REFERRER_POLICY);
     }
     if let Some(len) = content_length {
         builder = builder.header(header::CONTENT_LENGTH, len.to_string());
