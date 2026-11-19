@@ -688,14 +688,24 @@ pub async fn post_club_flight_start(
                 .into_response();
         }
     };
-    if let Some(club_id) = db.club_id_for_aircraft_tail(parsed.tail.trim()).await {
-        if db.club_operational(&club_id).await.is_err() {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "club unavailable" })),
-            )
-                .into_response();
-        }
+    let Ok(pilot_club_id) = db.pilot_club_id(&pilot_id).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    };
+    if db
+        .club_id_for_aircraft_tail(&pilot_club_id, parsed.tail.trim())
+        .await
+        .is_some()
+        && db.club_operational(&pilot_club_id).await.is_err()
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "club unavailable" })),
+        )
+            .into_response();
     }
     let visibility = match parse_visibility(parsed.visibility.as_deref()) {
         Ok(v) => v,
@@ -1132,6 +1142,9 @@ async fn club_flight_stream(
     let db = state.club.clone().unwrap();
     let viewer = v;
     let flight_id_capture = flight_id.clone();
+    let flight_club_id = db.club_id_for_flight(&flight_id).await;
+    let pilot_sess = parse_session_cookie(&headers);
+    let acct_sess = auth::parse_account_session_cookie(&headers);
     let backfill: Vec<_> = db.fixes_for_flight(&flight_id).await;
     let idle_ms = super::sse_limit::SSE_IDLE_MS;
     let stream = stream::iter(backfill.into_iter().enumerate().map(move |(i, fix)| {
@@ -1145,10 +1158,39 @@ async fn club_flight_stream(
             0_i64,
             tokio::time::Instant::now(),
             sse_guard,
+            flight_club_id,
+            pilot_sess,
+            acct_sess,
+            0_u32,
         ),
         #[allow(clippy::question_mark)]
-        move |(db, fid, viewer, mut last_t, mut idle_since, _sse_guard)| async move {
+        move |(db, fid, viewer, mut last_t, mut idle_since, _sse_guard, flight_club, pilot_sess, acct_sess, mut ticks)| async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
+            ticks = ticks.wrapping_add(1);
+            if ticks.is_multiple_of(10) {
+                let now = now_ms();
+                if let Some(ref cid) = flight_club {
+                    if db.club_operational(cid).await.is_err() {
+                        return None;
+                    }
+                }
+                if let Some(ref acct) = acct_sess {
+                    if db.account_from_session(acct, now).await.is_none() {
+                        return None;
+                    }
+                    if let Some((ps, _)) = db.pilot_session_for_account(acct, now).await {
+                        if db.pilot_from_session(&ps, now).await.is_none() {
+                            return None;
+                        }
+                    } else if pilot_sess.is_some() {
+                        return None;
+                    }
+                } else if let Some(ref ps) = pilot_sess {
+                    if db.pilot_from_session(ps, now).await.is_none() {
+                        return None;
+                    }
+                }
+            }
             if db.flight_visible_to(&viewer, &fid).await.is_none() {
                 return None;
             }
@@ -1170,7 +1212,21 @@ async fn club_flight_stream(
                     .json_data(json!({ "fixes": fresh }))
                     .unwrap()
             };
-            Some((Ok(event), (db, fid, viewer, last_t, idle_since, _sse_guard)))
+            Some((
+                Ok(event),
+                (
+                    db,
+                    fid,
+                    viewer,
+                    last_t,
+                    idle_since,
+                    _sse_guard,
+                    flight_club,
+                    pilot_sess,
+                    acct_sess,
+                    ticks,
+                ),
+            ))
         },
     ));
     Sse::new(stream)

@@ -263,6 +263,23 @@ async fn switch_club(
         )
             .into_response();
     };
+    let club_id = match db.membership_club_id(&body.membership_id).await {
+        Ok(Some(cid)) => cid,
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "forbidden" })),
+            )
+                .into_response();
+        }
+    };
+    if db.club_operational(&club_id).await.is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "club unavailable" })),
+        )
+            .into_response();
+    }
     match db
         .set_active_membership(&sess, &body.membership_id, now)
         .await
@@ -455,6 +472,13 @@ async fn approve_membership(
     };
     if db.require_club_admin(&pilot.id, &club_id).await.is_err() {
         return (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response();
+    }
+    if db.club_operational(&club_id).await.is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "club unavailable" })),
+        )
+            .into_response();
     }
     let _ = db.approve_membership(&id, now).await;
     (

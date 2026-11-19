@@ -201,3 +201,73 @@ async fn suspended_account_cannot_login() {
         .await
         .is_err());
 }
+
+#[serial]
+#[tokio::test]
+async fn account_switch_rejects_suspended_club() {
+    let db = open_db().await;
+    let now = now_ms();
+    let slug = format!("sus-sw-{}", &crate::club::auth::new_id()[..8]);
+    let (club_id, token) = db
+        .signup_club("Sus Switch", &slug, "sus-sw@test", None, now)
+        .await
+        .unwrap();
+    db.try_consume_magic_club_verify(&token, now).await.unwrap();
+    let acct = db
+        .create_account("sus-sw@test", Some("password12"), now)
+        .await
+        .unwrap();
+    let mid: String = sqlx::query_scalar(
+        "SELECT m.id FROM club_memberships m
+         JOIN pilots p ON p.id = m.pilot_id
+         WHERE p.account_id = $1 AND m.club_id = $2",
+    )
+    .bind(&acct)
+    .bind(&club_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    let (sess, _) = db
+        .account_login_password("sus-sw@test", "password12", now, "127.0.0.1")
+        .await
+        .unwrap();
+    db.set_club_suspended(&club_id, now).await.unwrap();
+    assert!(db.set_active_membership(&sess, &mid, now).await.is_err());
+}
+
+#[serial]
+#[tokio::test]
+async fn aircraft_tail_lookup_scoped_by_club() {
+    let db = open_db().await;
+    let now = now_ms();
+    let club_a = db.default_club_id().await.unwrap();
+    let slug = format!("tail-b-{}", &crate::club::auth::new_id()[..8]);
+    let (club_b, tok) = db
+        .signup_club("Tail B", &slug, "tail-b@test", None, now)
+        .await
+        .unwrap();
+    db.try_consume_magic_club_verify(&tok, now).await.unwrap();
+    let tail = "DUP-123";
+    sqlx::query(
+        "INSERT INTO aircraft (id, club_id, tail, type_code, active, created_at)
+         VALUES ($1, $2, $3, 'GLID', true, $4), ($5, $6, $3, 'GLID', true, $4)",
+    )
+    .bind(crate::club::auth::new_id())
+    .bind(&club_a)
+    .bind(tail)
+    .bind(now)
+    .bind(crate::club::auth::new_id())
+    .bind(&club_b)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        db.club_id_for_aircraft_tail(&club_a, tail).await.as_deref(),
+        Some(club_a.as_str())
+    );
+    assert_eq!(
+        db.club_id_for_aircraft_tail(&club_b, tail).await.as_deref(),
+        Some(club_b.as_str())
+    );
+    assert!(db.club_id_for_aircraft_tail(&club_a, "NOPE").await.is_none());
+}

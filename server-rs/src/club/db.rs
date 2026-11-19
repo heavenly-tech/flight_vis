@@ -703,10 +703,11 @@ impl ClubDb {
             .flatten()
     }
 
-    pub async fn club_id_for_aircraft_tail(&self, tail: &str) -> Option<String> {
+    pub async fn club_id_for_aircraft_tail(&self, club_id: &str, tail: &str) -> Option<String> {
         sqlx::query_scalar(
-            "SELECT club_id FROM aircraft WHERE tail = $1 AND active = true ORDER BY id LIMIT 1",
+            "SELECT club_id FROM aircraft WHERE club_id = $1 AND tail = $2 AND active = true LIMIT 1",
         )
+        .bind(club_id)
         .bind(tail.trim())
         .fetch_optional(&self.pool)
         .await

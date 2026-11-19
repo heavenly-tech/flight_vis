@@ -1,7 +1,7 @@
 //! Superadmin club moderation (`FLIGHT_SUPERADMIN_EMAILS`).
 
 use crate::club::{
-    auth::parse_session_cookie,
+    auth::{parse_account_session_cookie, parse_session_cookie},
     db::now_ms,
     routes::{club_db, viewer},
 };
@@ -19,15 +19,23 @@ async fn require_superadmin(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
-    let v = viewer(state, headers).await;
-    let crate::club::visibility::Viewer::Pilot { id, .. } = v else {
-        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))));
-    };
     let Some(db) = club_db(state) else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "club disabled" })),
         ));
+    };
+    let now = now_ms();
+    if let Some(acct_sess) = parse_account_session_cookie(headers) {
+        if let Some((account, _)) = db.account_from_session(&acct_sess, now).await {
+            if db.account_is_platform_superadmin(&account.id).await {
+                return Ok(account.id);
+            }
+        }
+    }
+    let v = viewer(state, headers).await;
+    let crate::club::visibility::Viewer::Pilot { id, .. } = v else {
+        return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))));
     };
     if !db
         .is_platform_superadmin(&id, &state.superadmin_emails)

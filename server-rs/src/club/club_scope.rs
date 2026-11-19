@@ -63,7 +63,17 @@ impl ClubDb {
             .unwrap_or(false)
     }
 
-    /// `pilots.global_role = superadmin` OR allowlisted email on an approved, verified pilot.
+    pub async fn account_is_platform_superadmin(&self, account_id: &str) -> bool {
+        sqlx::query_scalar::<_, String>("SELECT global_role FROM accounts WHERE id = $1")
+            .bind(account_id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|r| r == "superadmin")
+    }
+
+    /// Account `global_role`, pilot `global_role`, or legacy env allowlist on verified approved pilot.
     pub async fn is_platform_superadmin(
         &self,
         pilot_id: &str,
@@ -71,6 +81,20 @@ impl ClubDb {
     ) -> bool {
         if self.is_superadmin(pilot_id).await {
             return true;
+        }
+        if let Some(aid) = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT account_id FROM pilots WHERE id = $1",
+        )
+        .bind(pilot_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+        {
+            if self.account_is_platform_superadmin(&aid).await {
+                return true;
+            }
         }
         let row = sqlx::query("SELECT email, email_verified_at, status FROM pilots WHERE id = $1")
             .bind(pilot_id)

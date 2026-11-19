@@ -502,6 +502,10 @@ impl ClubDb {
         if !MembershipStatus::parse(&status).allows_club_api() {
             return Err(DbError::protocol("membership not active"));
         }
+        let club_id: String = row.try_get(2)?;
+        if self.club_operational(&club_id).await.is_err() {
+            return Err(DbError::protocol("club unavailable"));
+        }
         sqlx::query("UPDATE account_sessions SET active_membership_id = $1 WHERE id = $2")
             .bind(membership_id)
             .bind(&session_db_id)
