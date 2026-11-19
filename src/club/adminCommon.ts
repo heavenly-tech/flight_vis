@@ -35,6 +35,7 @@ export function mountAdminNav(): void {
   if (!adminNavLocaleBound) {
     adminNavLocaleBound = true;
     window.addEventListener("fv-locale-change", () => mountAdminNavInner());
+    window.addEventListener("fv-i18n-ready", () => mountAdminNavInner());
   }
   mountAdminNavInner();
 }

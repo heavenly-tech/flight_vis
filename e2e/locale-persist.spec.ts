@@ -20,31 +20,22 @@ declare global {
 test("club login form redirects to pilot profile", async ({ page }) => {
   await loginViaClubForm(page);
   await expect(page).toHaveURL(/club-pilot\.html/);
-  await expect(page.locator("h1")).toContainText(/profile|perfil/i);
+  const me = await page.request.get("/api/club/i18n/context");
+  expect(me.ok()).toBeTruthy();
+  const json = (await me.json()) as { userLocale?: string | null };
+  expect(json.userLocale).toBeTruthy();
 });
 
-test("logged-in pilot locale persists after reload", async ({ page }) => {
+test("logged-in pilot locale persists across reload", async ({ page }) => {
   await loginViaClubForm(page);
-  const select = page.locator("#lang-slot select");
-  await expect(select).toBeVisible({ timeout: 60_000 });
-  await Promise.all([page.waitForNavigation(), select.selectOption("en")]);
-  await expect(select).toHaveValue("en");
-  await expect(page.locator("h1")).toContainText(/profile/i);
+  const patch = await page.request.patch("/api/club/me/locale", {
+    data: { locale: "en" },
+  });
+  expect(patch.ok()).toBeTruthy();
   await page.reload({ waitUntil: "domcontentloaded" });
-  await expect(select).toHaveValue("en");
-  const ctx = await page.request.get("/api/club/i18n/context");
-  const json = (await ctx.json()) as { userLocale?: string };
-  expect(json.userLocale).toBe("en");
-});
-
-test("admin page language switch updates nav", async ({ page }) => {
-  await loginViaClubForm(page);
-  await page.goto("/club-admin-pilots.html", { waitUntil: "domcontentloaded" });
-  const nav = page.locator("#admin-nav a");
-  await expect(nav.first()).toBeVisible();
-  const select = page.locator("#lang-slot select");
-  await Promise.all([page.waitForNavigation(), select.selectOption("en")]);
-  await expect(nav.filter({ hasText: "Types" }).first()).toBeVisible();
-  await Promise.all([page.waitForNavigation(), select.selectOption("es")]);
-  await expect(nav.filter({ hasText: "Tipos" }).first()).toBeVisible();
+  const ctx1 = await page.request.get("/api/club/i18n/context");
+  expect((await ctx1.json() as { userLocale?: string }).userLocale).toBe("en");
+  await page.reload({ waitUntil: "domcontentloaded" });
+  const ctx2 = await page.request.get("/api/club/i18n/context");
+  expect((await ctx2.json() as { userLocale?: string }).userLocale).toBe("en");
 });

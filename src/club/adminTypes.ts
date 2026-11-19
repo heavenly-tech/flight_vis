@@ -29,7 +29,7 @@ form.addEventListener("submit", async (e) => {
 });
 
 void (async () => {
-  await startClubPage({ switcher: "#lang-slot" });
+  void startClubPage({ switcher: "#lang-slot" });
   if (!(await ensureClubAdminOrRedirect())) return;
   mountAdminNav();
   try {

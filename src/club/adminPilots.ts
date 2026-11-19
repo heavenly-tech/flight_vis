@@ -35,7 +35,7 @@ async function refresh(): Promise<void> {
 }
 
 void (async () => {
-  await startClubPage({ switcher: "#lang-slot" });
+  void startClubPage({ switcher: "#lang-slot" });
   if (!(await ensureClubAdminOrRedirect())) return;
   mountAdminNav();
   try {

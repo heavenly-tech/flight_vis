@@ -241,7 +241,10 @@ export async function bootI18n(opts?: {
   let clubDefault = opts?.clubDefaultLocale;
   let dbUserLocale: string | null = null;
   try {
-    const res = await fetch("/api/club/i18n/context", { credentials: "same-origin" });
+    const res = await fetch("/api/club/i18n/context", {
+      credentials: "same-origin",
+      signal: AbortSignal.timeout(10_000),
+    });
     if (res.ok) {
       const ctx = (await res.json()) as {
         userLocale?: string | null;
@@ -257,13 +260,14 @@ export async function bootI18n(opts?: {
   initI18n({ userLocale: dbUserLocale, clubDefaultLocale: clubDefault });
   applyI18nDocument();
   if (dbUserLocale !== null && state.locale !== dbUserLocale) {
-    await setLocale(state.locale);
+    void setLocale(state.locale);
   }
   const slot =
     typeof opts?.switcher === "string"
       ? document.querySelector<HTMLElement>(opts.switcher)
       : opts?.switcher;
   if (slot) mountLangSwitcher(slot);
+  window.dispatchEvent(new CustomEvent("fv-i18n-ready"));
 }
 
 export { localeLabel, localeBcp47, bundledLocaleIds, CANONICAL_LOCALE, type LocaleId };

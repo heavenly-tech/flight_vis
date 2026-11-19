@@ -86,7 +86,7 @@ clubLocaleSave?.addEventListener("click", async () => {
 
 void (async () => {
   if (!(await ensureClubAdminOrRedirect())) return;
-  await startClubPage({ switcher: "#lang-slot" });
+  void startClubPage({ switcher: "#lang-slot" });
   mountAdminNav();
   try {
     const me = await api<{ clubDefaultLocale?: string }>("/api/club/me");
