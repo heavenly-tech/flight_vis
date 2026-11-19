@@ -16,6 +16,7 @@ mod db_access_pg;
 mod db_account;
 mod db_auth_pg;
 pub(crate) mod db_club_lifecycle;
+pub(crate) mod db_club_slug;
 mod db_devices_pg;
 mod db_kiosk_pg;
 mod db_locale;
@@ -36,6 +37,7 @@ mod routes;
 mod share_routes;
 mod signup_routes;
 pub(crate) mod slug;
+pub(crate) mod slug_redirect;
 pub(crate) mod sse_limit;
 pub(crate) mod superadmin;
 mod superadmin_routes;
@@ -58,6 +60,8 @@ mod api_tests;
 mod club_security_tests;
 #[cfg(test)]
 mod club_signup_tests;
+#[cfg(test)]
+mod club_slug_rename_tests;
 #[cfg(test)]
 mod cross_site_csrf_tests;
 #[cfg(test)]

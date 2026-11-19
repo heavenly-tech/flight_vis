@@ -228,6 +228,13 @@ impl ClubDb {
         if validate_slug(&slug).is_err() {
             return Err(ClubSignupError::InvalidSlug);
         }
+        if self
+            .club_slug_globally_taken(&slug, None)
+            .await
+            .map_err(|_| ClubSignupError::Db)?
+        {
+            return Err(ClubSignupError::InvalidSlug);
+        }
         if let Some(icao) = aerodrome_icao {
             if !icao.trim().is_empty() && !validate_icao(icao) {
                 return Err(ClubSignupError::InvalidIcao);

@@ -11,6 +11,9 @@ const kioskOut = document.querySelector<HTMLParagraphElement>("#kiosk-url")!;
 const clubLocaleSelect = document.querySelector<HTMLSelectElement>("#club-locale-select");
 const clubLocaleSave = document.querySelector<HTMLButtonElement>("#club-locale-save");
 const clubLocaleMsg = document.querySelector<HTMLParagraphElement>("#club-locale-msg");
+const clubSlugInput = document.querySelector<HTMLInputElement>("#club-slug-input");
+const clubSlugSave = document.querySelector<HTMLButtonElement>("#club-slug-save");
+const clubSlugMsg = document.querySelector<HTMLParagraphElement>("#club-slug-msg");
 
 async function refresh(): Promise<void> {
   const aircraft = await api<{ aircraft: { tail: string }[] }>("/api/admin/aircraft");
@@ -71,6 +74,29 @@ save.addEventListener("click", async () => {
   await refresh();
 });
 
+function slugApiMessage(res: Response, payload: { error?: string }): string {
+  if (res.ok) return t("admin.clubSlugSaved");
+  const err = payload.error ?? "";
+  if (err === "invalid slug") return t("api.invalidSlug");
+  if (err === "slug taken") return t("api.slugTaken");
+  if (err === "unchanged") return t("api.unchanged");
+  return t("api.dbError");
+}
+
+clubSlugSave?.addEventListener("click", async () => {
+  if (!clubSlugInput) return;
+  const slug = clubSlugInput.value.trim().toLowerCase();
+  const res = await fetch("/api/admin/club/slug", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ slug }),
+  });
+  const payload = (await res.json().catch(() => ({}))) as { error?: string; slug?: string };
+  if (res.ok && payload.slug) clubSlugInput.value = payload.slug;
+  if (clubSlugMsg) clubSlugMsg.textContent = slugApiMessage(res, payload);
+});
+
 clubLocaleSave?.addEventListener("click", async () => {
   if (!clubLocaleSelect) return;
   const res = await fetch("/api/admin/club/locale", {
@@ -89,8 +115,9 @@ void (async () => {
   void startClubPage({ switcher: "#lang-slot" });
   mountAdminNav();
   try {
-    const me = await api<{ clubDefaultLocale?: string }>("/api/club/me");
+    const me = await api<{ clubDefaultLocale?: string; clubSlug?: string }>("/api/club/me");
     mountClubLocalePicker(me.clubDefaultLocale ?? "es");
+    if (clubSlugInput) clubSlugInput.value = me.clubSlug ?? "";
     await requireAdmin();
     await refresh();
     setInterval(() => void refresh(), 5000);

@@ -557,6 +557,7 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
                 .club_default_locale(&p.club_id)
                 .await
                 .unwrap_or_else(|_| "es".to_string());
+            let club_slug = db.club_slug(&p.club_id).await.unwrap_or_default();
             Json(json!({
                 "pilot": {
                     "id": p.id,
@@ -568,6 +569,7 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
                     "locale": p.locale,
                 },
                 "clubDefaultLocale": club_default,
+                "clubSlug": club_slug,
             }))
         }
         .into_response(),
@@ -663,6 +665,78 @@ async fn patch_me_locale(
         Err(_) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "invalid locale" })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ClubSlugBody {
+    slug: String,
+}
+
+async fn post_admin_club_slug(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<ClubSlugBody>,
+) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let v = viewer(&state, &headers).await;
+    let Ok(club_id) = require_club_admin_scope(db, &v).await else {
+        return match v {
+            Viewer::Anonymous => (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            )
+                .into_response(),
+            _ => (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "admin only" })),
+            )
+                .into_response(),
+        };
+    };
+    let now = now_ms();
+    let Viewer::Pilot { id, .. } = v else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    };
+    match db
+        .rename_club_slug(&club_id, &body.slug, Some(&id), now)
+        .await
+    {
+        Ok(_old) => {
+            let slug = db.club_slug(&club_id).await.unwrap_or_default();
+            Json(json!({ "ok": true, "slug": slug })).into_response()
+        }
+        Err(crate::club::db_club_slug::ClubSlugRenameError::InvalidSlug) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid slug" })),
+        )
+            .into_response(),
+        Err(crate::club::db_club_slug::ClubSlugRenameError::Taken) => {
+            (StatusCode::CONFLICT, Json(json!({ "error": "slug taken" }))).into_response()
+        }
+        Err(crate::club::db_club_slug::ClubSlugRenameError::Unchanged) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "unchanged" })),
+        )
+            .into_response(),
+        Err(crate::club::db_club_slug::ClubSlugRenameError::Db) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
         )
             .into_response(),
     }
@@ -1001,7 +1075,10 @@ async fn resolve_public_map_club(
     slug: Option<&str>,
 ) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
     let club_id = if let Some(slug) = slug.filter(|s| !s.is_empty()) {
-        let Some(row) = db.club_public_row_by_slug(slug).await else {
+        let Some(club_id) = db.club_id_for_slug_any(slug).await else {
+            return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))));
+        };
+        let Some(row) = db.club_public_row(&club_id).await else {
             return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))));
         };
         if row.suspended_at.is_some() {
@@ -1032,11 +1109,23 @@ async fn resolve_public_map_club(
 
 async fn public_map(
     State(state): State<AppState>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
     axum::extract::Query(q): axum::extract::Query<PublicMapQuery>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
         return Json(json!({ "aircraft": [] })).into_response();
     };
+    if let Some(resp) = crate::club::slug_redirect::maybe_club_slug_redirect(
+        db,
+        method.as_str(),
+        uri.path(),
+        uri.query(),
+    )
+    .await
+    {
+        return resp;
+    }
     let club_id = match resolve_public_map_club(db, q.club.as_deref()).await {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -2443,12 +2532,24 @@ async fn club_screen_page(State(state): State<AppState>) -> impl IntoResponse {
 
 async fn club_slug_screen_page(
     State(state): State<AppState>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
     Path(slug): Path<String>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
         return (StatusCode::SERVICE_UNAVAILABLE, "Club disabled").into_response();
     };
-    if db.club_id_for_slug(&slug).await.is_none() {
+    if let Some(resp) = crate::club::slug_redirect::redirect_if_historical_slug(
+        db,
+        method.as_str(),
+        uri.path(),
+        uri.query(),
+    )
+    .await
+    {
+        return resp;
+    }
+    if db.club_id_for_slug_any(&slug).await.is_none() {
         return (StatusCode::NOT_FOUND, "Club not found").into_response();
     }
     let path = state.dist_dir.join("club-screen.html");
@@ -2803,6 +2904,7 @@ pub fn router() -> Router<AppState> {
             "/api/admin/club/locale",
             axum::routing::patch(patch_admin_club_locale),
         )
+        .route("/api/admin/club/slug", post(post_admin_club_slug))
         .route("/api/me/tails", get(me_tails))
         .route("/api/me/flights", get(my_flights))
         .route(
