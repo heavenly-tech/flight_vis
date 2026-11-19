@@ -1706,6 +1706,7 @@ impl ClubDb {
             .bind(t)
             .execute(&self.pool)
             .await?;
+            self.ensure_e2e_join_club(t).await?;
             return Ok(());
         }
         let admin_id = new_id();
@@ -1788,6 +1789,31 @@ impl ClubDb {
             .await?;
         self.append_fix(&club_f, &dev_admin, &fix(250, -33.37))
             .await?;
+        self.ensure_e2e_join_club(t).await?;
+        Ok(())
+    }
+
+    /// Extra live club for Playwright account-join (admin@demo is not a member).
+    async fn ensure_e2e_join_club(&self, now: i64) -> Result<(), DbError> {
+        let slug = "e2e-join";
+        let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM clubs WHERE slug = $1")
+            .bind(slug)
+            .fetch_one(&self.pool)
+            .await?;
+        if exists > 0 {
+            return Ok(());
+        }
+        let id = new_id();
+        sqlx::query(
+            "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at,
+             checkin_window_hours, latitude, longitude, show_public_tracks)
+             VALUES ($1, 'E2E Join Club', $2, $3, 'live', $3, 12, -33.4489, -70.6693, TRUE)",
+        )
+        .bind(&id)
+        .bind(slug)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 }

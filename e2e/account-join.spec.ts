@@ -1,6 +1,8 @@
 import { expect, test } from "@playwright/test";
 import { installCspObservers } from "./globe-csp-helpers";
 
+const JOIN_SLUG = "e2e-join";
+
 test.describe("account join club", () => {
   test.setTimeout(90_000);
 
@@ -10,6 +12,10 @@ test.describe("account join club", () => {
       data: { email: "admin@demo.test", password: "password12" },
     });
     expect(login.ok()).toBeTruthy();
+    const joinApi = await page.request.post("/api/account/join", {
+      data: { slug: JOIN_SLUG, name: "E2E Joiner" },
+    });
+    expect(joinApi.status()).toBe(201);
     await page.goto("/account-clubs.html", { waitUntil: "domcontentloaded" });
     await page.waitForFunction(
       async () => {
@@ -23,16 +29,11 @@ test.describe("account join club", () => {
     );
     await page.locator("#join-open").click();
     const joinForm = page.locator("#join-form");
-    if (await joinForm.isHidden()) {
-      const join = await page.request.post("/api/account/join", {
-        data: { slug: "demo", name: "E2E Joiner" },
-      });
-      expect(join.ok()).toBeTruthy();
-    } else {
-      await joinForm.locator('input[name="slug"]').fill("demo");
+    if (!(await joinForm.isHidden())) {
+      await joinForm.locator('input[name="slug"]').fill(JOIN_SLUG);
       await joinForm.locator("button[type=submit]").click();
+      await page.waitForTimeout(500);
     }
-    await page.waitForTimeout(800);
     expect(page.url()).not.toMatch(/password/i);
     expect(consoleErrors.filter((e) => /Content Security Policy/i.test(e))).toEqual([]);
   });
