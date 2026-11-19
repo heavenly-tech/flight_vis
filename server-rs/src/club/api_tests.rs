@@ -537,6 +537,10 @@ async fn kiosk_layout_admin_clamps_and_display_sse_rev() {
         .execute(&fx.club.pool)
         .await
         .unwrap();
+    fx.club
+        .ensure_membership_row(&fx.pilot_a, &club_id, "admin", "approved")
+        .await
+        .unwrap();
     let cookie = login_cookie(&mut fx.router, "a@test").await;
     let patch = fx
         .router

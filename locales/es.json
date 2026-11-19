@@ -64,7 +64,7 @@
       "title": "Inicio de sesión del club",
       "email": "Correo",
       "password": "Contraseña",
-      "submit": "Iniciá sesión",
+      "submit": "Iniciar sesión",
       "success": "Sesión iniciada.",
       "failed": "No se pudo iniciar sesión.",
       "links": "Registrarse · Perfil piloto · App Android"

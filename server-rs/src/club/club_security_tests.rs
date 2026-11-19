@@ -36,6 +36,73 @@ async fn live_club_null_email_verified_backfill_is_public() {
 
 #[tokio::test]
 #[serial]
+async fn migration_014_backfill_prod_cas_shape() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let club_id = new_id();
+    let approved_id = new_id();
+    let pending_id = new_id();
+    sqlx::query(
+        "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at,
+         checkin_window_hours, latitude, longitude)
+         VALUES ($1, 'CAS', 'cas', $2, 'live', NULL, 12, 0, 0)",
+    )
+    .bind(&club_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'Admin', 'admin@cas', '', 'approved', 'admin', 'hash', $3),
+                ($4, $2, 'Pending', 'pending@cas', '', 'pending', 'pilot', 'hash', $3)",
+    )
+    .bind(&approved_id)
+    .bind(&club_id)
+    .bind(now)
+    .bind(&pending_id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE clubs SET email_verified_at = created_at
+         WHERE status = 'live' AND email_verified_at IS NULL",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE pilots SET email_verified_at = created_at
+         WHERE status = 'approved' AND email_verified_at IS NULL",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let approved_ver: Option<i64> =
+        sqlx::query_scalar("SELECT email_verified_at FROM pilots WHERE id = $1")
+            .bind(&approved_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let pending_ver: Option<i64> =
+        sqlx::query_scalar("SELECT email_verified_at FROM pilots WHERE id = $1")
+            .bind(&pending_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    let club_ver: Option<i64> =
+        sqlx::query_scalar("SELECT email_verified_at FROM clubs WHERE id = $1")
+            .bind(&club_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(approved_ver, Some(now));
+    assert!(pending_ver.is_none());
+    assert_eq!(club_ver, Some(now));
+}
+
+#[tokio::test]
+#[serial]
 async fn magic_post_club_verify_browser_flow() {
     use crate::{
         auth::Auth, build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState,
@@ -324,28 +391,303 @@ async fn suspended_and_pending_clubs_forbidden_on_operational_routes() {
         .await
         .unwrap();
     db.set_club_suspended(&club_id, now).await.unwrap();
+    let checkin_token = db.mint_checkin_qr_token(&club_id, now).await.unwrap();
     let suspended_cookie = format!(
         "fv_club_session={}",
         db.create_pilot_session(&admin, now).await.unwrap()
     );
     let mut router = router_for_club(db).await;
+    let checkin_body = format!(r#"{{"token":"{checkin_token}"}}"#);
     for (method, uri, body) in [
-        ("GET", "/api/club/me", None),
+        ("GET", "/api/club/me", None::<String>),
         ("GET", "/api/club/map", None),
-        ("POST", "/api/checkin", Some(r#"{"token":"x"}"#)),
+        ("POST", "/api/checkin", Some(checkin_body)),
     ] {
         let mut req = Request::builder().method(method).uri(uri);
         if method == "POST" {
             req = req.header(header::CONTENT_TYPE, "application/json");
         }
+        let payload = body.unwrap_or_default();
         let res = router
             .call(
                 req.header(header::COOKIE, &suspended_cookie)
-                    .body(Body::from(body.unwrap_or("")))
+                    .body(Body::from(payload))
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN, "{method} {uri}");
     }
+}
+
+#[tokio::test]
+#[serial]
+async fn prod_style_null_verified_pilot_club_login_http() {
+    use crate::club::auth::hash_password;
+    use crate::{
+        auth::Auth, build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState,
+    };
+    use axum::{
+        body::Body,
+        http::{header, Request, StatusCode},
+    };
+    use std::sync::Arc;
+    use tower::Service;
+    let db = ClubDb::open_test().await.unwrap();
+    let club_id = db.default_club_id().await.unwrap();
+    let hash = hash_password("password12").unwrap();
+    let now = now_ms();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $2, 'Cas Admin', 'cas-legacy@test', '', 'approved', 'admin', $3, $4)",
+    )
+    .bind(new_id())
+    .bind(&club_id)
+    .bind(&hash)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let data_dir = tempfile::tempdir().unwrap();
+    let (video_queue, _) = tokio::sync::mpsc::channel(4);
+    let state = AppState {
+        dist_dir: data_dir.path().join("dist"),
+        auth: Auth::with_password("x"),
+        device_auth: DeviceAuth::empty(),
+        live: Arc::new(LiveEngine::new(data_dir.path())),
+        store: Store::new(data_dir.path()),
+        club: Some(db),
+        video_queue,
+        login_throttle: crate::LoginThrottle::default(),
+        device_register_throttle: crate::LoginThrottle::default(),
+        share_lookup_throttle: crate::LoginThrottle::default(),
+        mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+        webauthn: None,
+        sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+        superadmin_emails: Default::default(),
+    };
+    let mut router = build_router(state);
+    let res = router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"email":"cas-legacy@test","password":"password12"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(res.headers().get(header::SET_COOKIE).is_some());
+}
+
+#[tokio::test]
+#[serial]
+async fn verified_allowlisted_superadmin_lists_clubs() {
+    use crate::{
+        auth::Auth, build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState,
+    };
+    use axum::{
+        body::Body,
+        http::{header, Request, StatusCode},
+    };
+    use std::{collections::HashSet, sync::Arc};
+    use tower::Service;
+    let db = ClubDb::open_test().await.unwrap();
+    let club_id = db.default_club_id().await.unwrap();
+    let now = now_ms();
+    let email = "super-ok@test".to_string();
+    let pid = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, email_verified_at, created_at)
+         VALUES ($1, $2, 'Super OK', $3, '', 'approved', 'pilot', '', $4, $4)",
+    )
+    .bind(&pid)
+    .bind(&club_id)
+    .bind(&email)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let cookie = format!(
+        "fv_club_session={}",
+        db.create_pilot_session(&pid, now).await.unwrap()
+    );
+    let mut emails = HashSet::new();
+    emails.insert(email);
+    let data_dir = tempfile::tempdir().unwrap();
+    let (video_queue, _) = tokio::sync::mpsc::channel(4);
+    let state = AppState {
+        dist_dir: data_dir.path().join("dist"),
+        auth: Auth::with_password("x"),
+        device_auth: DeviceAuth::empty(),
+        live: Arc::new(LiveEngine::new(data_dir.path())),
+        store: Store::new(data_dir.path()),
+        club: Some(db),
+        video_queue,
+        login_throttle: crate::LoginThrottle::default(),
+        device_register_throttle: crate::LoginThrottle::default(),
+        share_lookup_throttle: crate::LoginThrottle::default(),
+        mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+        webauthn: None,
+        sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+        superadmin_emails: emails,
+    };
+    let mut router = build_router(state);
+    let res = router
+        .call(
+            Request::builder()
+                .method("GET")
+                .uri("/api/superadmin/clubs")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+#[serial]
+async fn superadmin_cannot_suspend_default_club() {
+    use crate::{
+        auth::Auth, build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState,
+    };
+    use axum::{
+        body::Body,
+        http::{header, Request, StatusCode},
+    };
+    use std::{collections::HashSet, sync::Arc};
+    use tower::Service;
+    let db = ClubDb::open_test().await.unwrap();
+    let default_id = db.default_club_id().await.unwrap();
+    let now = now_ms();
+    let pid = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, email_verified_at, created_at)
+         VALUES ($1, $2, 'Super', 'super-def@test', '', 'approved', 'pilot', '', $3, $3)",
+    )
+    .bind(&pid)
+    .bind(&default_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let cookie = format!(
+        "fv_club_session={}",
+        db.create_pilot_session(&pid, now).await.unwrap()
+    );
+    let mut emails = HashSet::new();
+    emails.insert("super-def@test".to_string());
+    let data_dir = tempfile::tempdir().unwrap();
+    let (video_queue, _) = tokio::sync::mpsc::channel(4);
+    let state = AppState {
+        dist_dir: data_dir.path().join("dist"),
+        auth: Auth::with_password("x"),
+        device_auth: DeviceAuth::empty(),
+        live: Arc::new(LiveEngine::new(data_dir.path())),
+        store: Store::new(data_dir.path()),
+        club: Some(db),
+        video_queue,
+        login_throttle: crate::LoginThrottle::default(),
+        device_register_throttle: crate::LoginThrottle::default(),
+        share_lookup_throttle: crate::LoginThrottle::default(),
+        mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+        webauthn: None,
+        sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+        superadmin_emails: emails,
+    };
+    let mut router = build_router(state);
+    let res = router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/superadmin/clubs/{default_id}/suspend"))
+                .header(header::COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[serial]
+async fn checkin_gates_on_target_club_not_home_when_home_operational() {
+    use crate::club::auth::hash_password;
+    use crate::{
+        auth::Auth, build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState,
+    };
+    use axum::{
+        body::Body,
+        http::{header, Request, StatusCode},
+    };
+    use std::sync::Arc;
+    use tower::Service;
+    let db = ClubDb::open_test().await.unwrap();
+    let home = db.default_club_id().await.unwrap();
+    let now = now_ms();
+    let slug = format!("suspend-chk-{}", &new_id()[..8]);
+    let (other, tok) = db
+        .signup_club("Chk Suspend", &slug, "chk-sus@test", None, now)
+        .await
+        .unwrap();
+    db.try_consume_magic_club_verify(&tok, now).await.unwrap();
+    let pid = new_id();
+    let hash = hash_password("password12").unwrap();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+         VALUES ($1, $3, 'Visitor', 'visitor@test', '', 'approved', 'pilot', $2, $4)",
+    )
+    .bind(&pid)
+    .bind(&hash)
+    .bind(&other)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let qr = db.mint_checkin_qr_token(&other, now).await.unwrap();
+    db.set_club_suspended(&other, now).await.unwrap();
+    let cookie = format!(
+        "fv_club_session={}",
+        db.create_pilot_session(&pid, now).await.unwrap()
+    );
+    let _ = home;
+    let data_dir = tempfile::tempdir().unwrap();
+    let (video_queue, _) = tokio::sync::mpsc::channel(4);
+    let state = AppState {
+        dist_dir: data_dir.path().join("dist"),
+        auth: Auth::with_password("x"),
+        device_auth: DeviceAuth::empty(),
+        live: Arc::new(LiveEngine::new(data_dir.path())),
+        store: Store::new(data_dir.path()),
+        club: Some(db),
+        video_queue,
+        login_throttle: crate::LoginThrottle::default(),
+        device_register_throttle: crate::LoginThrottle::default(),
+        share_lookup_throttle: crate::LoginThrottle::default(),
+        mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+        webauthn: None,
+        sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
+        superadmin_emails: Default::default(),
+    };
+    let mut router = build_router(state);
+    let res = router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/checkin")
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(r#"{{"token":"{qr}"}}"#)))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
 }
