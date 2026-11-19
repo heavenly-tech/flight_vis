@@ -1,8 +1,8 @@
 import { expect, test } from "@playwright/test";
 
-test("unauthenticated club admin redirects to club login with next", async ({ page }) => {
+test("unauthenticated club admin redirects to unified login with next", async ({ page }) => {
   await page.goto("/club-admin-types.html", { waitUntil: "load" });
-  await expect(page).toHaveURL(/\/club-login\.html.*mode=club/);
+  await expect(page).toHaveURL(/\/login\?/);
   expect(new URL(page.url()).searchParams.get("next")).toBe("/club-admin-types.html");
 });
 

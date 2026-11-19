@@ -3,6 +3,10 @@ import { apiErrorMessage } from "../i18n/index";
 import { safeNextPath } from "../club/safeNext";
 
 export async function bootUnifiedLogin(): Promise<void> {
+  const form = document.getElementById("login-form") as HTMLFormElement;
+  const msg = document.getElementById("msg") as HTMLParagraphElement;
+  form.addEventListener("submit", (e) => e.preventDefault(), { capture: true });
+
   await bootI18n({ switcher: "#lang-slot", persistUser: false });
   applyI18nDocument(document);
 
@@ -17,9 +21,6 @@ export async function bootUnifiedLogin(): Promise<void> {
 
   const nextEl = document.getElementById("next") as HTMLInputElement | null;
   nextEl?.setAttribute("value", next);
-
-  const form = document.getElementById("login-form") as HTMLFormElement;
-  const msg = document.getElementById("msg") as HTMLParagraphElement;
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();

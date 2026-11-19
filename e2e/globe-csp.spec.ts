@@ -40,7 +40,9 @@ test.describe("production CSP globe", () => {
 
     const { consoleErrors, pageErrors } = installCspObservers(page);
     await page.goto(hooksUrl("/live/sess-csp"));
-    await expect(page.locator("#flight-name")).toHaveText("Live session", { timeout: 15_000 });
+    await expect(page.locator("#flight-name")).toHaveText(/Live session|Sesión en vivo/, {
+      timeout: 15_000,
+    });
     await assertGlobeRenders(page, consoleErrors, pageErrors);
   });
 
