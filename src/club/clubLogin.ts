@@ -1,5 +1,3 @@
-import { startClubPage } from "./i18nPage";
-import { apiErrorMessage } from "../i18n/boot";
 import { safeNextPath } from "./safeNext";
 
 const nextAfterLogin = safeNextPath(
@@ -33,6 +31,7 @@ if (form && msg) {
     const err =
       ((await res.json().catch(() => ({}))) as { error?: string }).error ??
       "unauthorized";
+    const { apiErrorMessage } = await import("../i18n/boot");
     msg.textContent = apiErrorMessage(err);
   });
 }
@@ -46,6 +45,8 @@ declare global {
 window.__fvClubLoginReady = true;
 
 void (async () => {
+  const { startClubPage } = await import("./i18nPage");
+  const { apiErrorMessage } = await import("../i18n/boot");
   await startClubPage();
   const q = new URLSearchParams(location.search);
   if (q.get("e") === "1" && msg) {
