@@ -1050,10 +1050,7 @@ async fn club_login_form_post_redirects_without_password_in_location() {
             Request::builder()
                 .method("POST")
                 .uri("/api/club/login")
-                .header(
-                    header::CONTENT_TYPE,
-                    "application/x-www-form-urlencoded",
-                )
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -1081,10 +1078,7 @@ async fn club_login_form_post_rejects_open_redirect_next() {
             Request::builder()
                 .method("POST")
                 .uri("/api/club/login")
-                .header(
-                    header::CONTENT_TYPE,
-                    "application/x-www-form-urlencoded",
-                )
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .body(Body::from(body))
                 .unwrap(),
         )
