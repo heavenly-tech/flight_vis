@@ -8,10 +8,7 @@ import { redirectToClubLogin } from "./safeNext";
 export async function ensureClubAdminOrRedirect(): Promise<boolean> {
   let me: { pilot?: { role?: string } | null };
   try {
-    const res = await fetch("/api/club/me", {
-      credentials: "same-origin",
-      signal: AbortSignal.timeout(15_000),
-    });
+    const res = await fetch("/api/club/me", { credentials: "same-origin" });
     if (!res.ok) {
       redirectToClubLogin();
       return false;
