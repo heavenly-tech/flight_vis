@@ -235,7 +235,9 @@ async fn checkin_not_found_page(state: &AppState, headers: &HeaderMap) -> axum::
     let accept = headers
         .get(axum::http::header::ACCEPT_LANGUAGE)
         .and_then(|v| v.to_str().ok());
-    let locale = crate::i18n::require_global().resolve_locale(None, Some("es"), accept);
+    let stored = crate::club::auth::parse_fv_locale_cookie(headers);
+    let locale =
+        crate::i18n::require_global().resolve_locale(None, Some("es"), accept, stored.as_deref());
     let path = state.dist_dir.join("club-checkin-expired.html");
     match tokio::fs::read_to_string(&path).await {
         Ok(html) => (
@@ -268,7 +270,15 @@ async fn build_landing_json(
         .get(axum::http::header::ACCEPT_LANGUAGE)
         .and_then(|v| v.to_str().ok());
     let resolved_locale = crate::i18n::global()
-        .map(|c| c.resolve_locale(None, Some(club_default_locale.as_str()), accept))
+        .map(|c| {
+            let stored = crate::club::auth::parse_fv_locale_cookie(headers);
+            c.resolve_locale(
+                None,
+                Some(club_default_locale.as_str()),
+                accept,
+                stored.as_deref(),
+            )
+        })
         .unwrap_or(club_default_locale.clone());
     let release = read_app_release(&state.dist_dir).await;
     let logo_url = optional_club_logo_url(&state.dist_dir, slug);

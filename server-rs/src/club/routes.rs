@@ -333,8 +333,8 @@ fn club_wants_json(headers: &HeaderMap) -> bool {
 }
 
 fn club_login_is_form_content(content_type: &str) -> bool {
-    content_type.contains("application/x-www-form-urlencoded")
-        || content_type.contains("text/plain")
+    crate::auth::media_type_is_form_urlencoded(content_type)
+        || crate::auth::media_type_is_text_plain(content_type)
 }
 
 fn club_login_fail_location(next: &str) -> String {
@@ -594,7 +594,8 @@ async fn club_i18n_context(State(state): State<AppState>, headers: HeaderMap) ->
         .map(|(id, label, bcp47)| json!({ "id": id, "label": label, "bcp47": bcp47 }))
         .collect();
     let Some(db) = club_db(&state) else {
-        let resolved = cat.resolve_locale(None, None, accept);
+        let stored = auth::parse_fv_locale_cookie(&headers);
+        let resolved = cat.resolve_locale(None, None, accept, stored.as_deref());
         return Json(json!({
             "userLocale": null,
             "clubDefaultLocale": null,
@@ -605,7 +606,13 @@ async fn club_i18n_context(State(state): State<AppState>, headers: HeaderMap) ->
     };
     let now = now_ms();
     let (user_locale, club_default) = db.user_club_locale_context(&headers, now).await;
-    let resolved = cat.resolve_locale(user_locale.as_deref(), club_default.as_deref(), accept);
+    let stored = auth::parse_fv_locale_cookie(&headers);
+    let resolved = cat.resolve_locale(
+        user_locale.as_deref(),
+        club_default.as_deref(),
+        accept,
+        stored.as_deref(),
+    );
     Json(json!({
         "userLocale": user_locale,
         "clubDefaultLocale": club_default,
