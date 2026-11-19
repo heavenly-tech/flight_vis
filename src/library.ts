@@ -8,6 +8,7 @@ import {
   type AuthStatus,
   type FlightListItem,
 } from "./api";
+import { t } from "./i18n/index";
 import { deleteLocalFlight, isLocalSlug, listLocalFlights, type LocalFlightMeta } from "./live/localFlights";
 import { isValidSlug, nameFromFileName, normalizeSlug } from "./track/slug";
 
@@ -90,17 +91,19 @@ export function mountLibrary(opts: {
     loginLink.hidden = auth.authenticated;
     tools.hidden = !auth.authenticated;
     if (!auth.configured) {
-      hint.textContent = "Upload is locked until FLIGHT_VIS_PASSWORD is set.";
+      hint.textContent = t("globe.uploadLocked");
     } else if (!auth.authenticated) {
-      hint.textContent = "Log in to list, upload, rename, or delete saved tracks.";
+      hint.textContent = t("globe.libraryLoginHint");
     } else {
-      hint.textContent = items.length ? `${items.length} saved track${items.length === 1 ? "" : "s"}` : "No saved tracks yet.";
+      hint.textContent = items.length
+        ? t("globe.librarySavedCount", { count: items.length })
+        : t("globe.libraryNoSaved");
     }
 
     listEl.innerHTML = "";
     const visible = auth.authenticated ? items : items.filter((item) => item.local);
     if (!auth.authenticated && visible.length) {
-      hint.textContent = `${visible.length} recording${visible.length === 1 ? "" : "s"} on this device. Log in for server tracks.`;
+      hint.textContent = t("globe.libraryLocalCount", { count: visible.length });
     }
 
     for (const item of visible) {
@@ -116,11 +119,11 @@ export function mountLibrary(opts: {
       if (item.local) {
         const badge = document.createElement("span");
         badge.className = "library-local-badge";
-        badge.textContent = "local";
+        badge.textContent = t("globe.libraryLocalBadge");
         title.append(" ", badge);
       }
       const meta = document.createElement("span");
-      const slugLabel = item.local ? "device" : item.slug;
+      const slugLabel = item.local ? t("globe.libraryDeviceSlug") : item.slug;
       meta.textContent = [slugLabel, formatSize(item.size), formatWhen(item.updatedAt)].filter(Boolean).join(" · ");
       open.append(title, meta);
       open.addEventListener("click", () => {
@@ -133,14 +136,14 @@ export function mountLibrary(opts: {
         const renameBtn = document.createElement("button");
         renameBtn.type = "button";
         renameBtn.className = "chip";
-        renameBtn.textContent = "Rename";
+        renameBtn.textContent = t("globe.libraryRename");
         renameBtn.addEventListener("click", () => openRename(item));
         actions.append(renameBtn);
       }
       const deleteBtn = document.createElement("button");
       deleteBtn.type = "button";
       deleteBtn.className = "chip danger";
-      deleteBtn.textContent = "Delete";
+      deleteBtn.textContent = t("globe.libraryDelete");
       deleteBtn.addEventListener("click", () => openDelete(item));
       actions.append(deleteBtn);
 
@@ -175,7 +178,7 @@ export function mountLibrary(opts: {
       items = [...remote, ...localItems];
     } catch (error) {
       items = localItems;
-      flash(error instanceof Error ? error.message : "Could not list flights");
+      flash(error instanceof Error ? error.message : t("globe.libraryCouldNotList"));
     }
     render();
   }
@@ -205,12 +208,12 @@ export function mountLibrary(opts: {
     const slug = normalizeSlug(renameSlug.value);
     if (!name) {
       renameWarn.hidden = false;
-      renameWarn.textContent = "Name is required.";
+      renameWarn.textContent = t("globe.libraryNameRequired");
       return;
     }
     if (!isValidSlug(slug)) {
       renameWarn.hidden = false;
-      renameWarn.textContent = "Slug must be lowercase letters, numbers, and dashes.";
+      renameWarn.textContent = t("globe.librarySlugInvalid");
       return;
     }
     try {
@@ -223,12 +226,12 @@ export function mountLibrary(opts: {
     } catch (error) {
       if (error instanceof SlugConflictError) {
         renameWarn.hidden = false;
-        renameWarn.textContent = `/${error.slug} already exists. Overwrite that flight?`;
+        renameWarn.textContent = t("globe.librarySlugConflict", { slug: error.slug });
         renameOverwrite.hidden = false;
         return;
       }
       renameWarn.hidden = false;
-      renameWarn.textContent = error instanceof Error ? error.message : "Could not rename";
+      renameWarn.textContent = error instanceof Error ? error.message : t("globe.libraryCouldNotRename");
     }
   }
 
@@ -252,7 +255,7 @@ export function mountLibrary(opts: {
       });
     }
     if (!tracks.length) {
-      flash(skipped.length ? "Drop .igc or .gpx tracks." : "No files to upload.");
+      flash(skipped.length ? t("globe.libraryDropTracksOnly") : t("globe.libraryNoFilesToUpload"));
       return [];
     }
     try {
@@ -260,11 +263,15 @@ export function mountLibrary(opts: {
       await refresh();
       const last = result.items.at(-1);
       if (last) await opts.onOpenFlight(last.slug);
-      const extra = skipped.length ? ` Skipped ${skipped.length} non-track file${skipped.length === 1 ? "" : "s"}.` : "";
-      flash(`Saved ${result.items.length} track${result.items.length === 1 ? "" : "s"}.${extra}`);
+      const extra = skipped.length
+        ? t(skipped.length === 1 ? "globe.librarySkippedFile" : "globe.librarySkippedFiles", {
+            count: skipped.length,
+          })
+        : "";
+      flash(`${t("globe.librarySavedTracks", { count: result.items.length })}${extra}`);
       return result.items;
     } catch (error) {
-      flash(error instanceof Error ? error.message : "Could not upload");
+      flash(error instanceof Error ? error.message : t("globe.libraryCouldNotUpload"));
       return [];
     }
   }
@@ -323,9 +330,9 @@ export function mountLibrary(opts: {
         }
         opts.onDeleted(target.slug);
         await refresh();
-        flash(`Deleted ${target.slug.replace(/^local:/, "local ")}`);
+        flash(t("common.delete") + ` ${target.slug.replace(/^local:/, "local ")}`);
       } catch (error) {
-        flash(error instanceof Error ? error.message : "Could not delete");
+        flash(error instanceof Error ? error.message : t("globe.libraryCouldNotDelete"));
       }
     })();
   });

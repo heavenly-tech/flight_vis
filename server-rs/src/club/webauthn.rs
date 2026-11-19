@@ -244,25 +244,24 @@ impl WebauthnState {
                 .try_get(9)
                 .map_err(|_| WebauthnRouteError::Verification)?,
             locale: row
-                .try_get(10)
+                .try_get::<Option<String>, _>(10)
                 .map_err(|_| WebauthnRouteError::Verification)?,
         };
+        let session_id = Self::complete_passkey_login(db, &pilot).await?;
+        Ok((session_id, pilot))
+    }
+
+    /// Shared tail of passkey verify: operational club check + pilot session (no email_verified mutation).
+    pub async fn complete_passkey_login(
+        db: &ClubDb,
+        pilot: &PilotRow,
+    ) -> Result<String, WebauthnRouteError> {
         if db.club_operational(&pilot.club_id).await.is_err() {
             return Err(WebauthnRouteError::ClubUnavailable);
         }
-        let now = now_ms();
-        let _ = sqlx::query(
-            "UPDATE pilots SET email_verified_at = COALESCE(email_verified_at, $1) WHERE id = $2",
-        )
-        .bind(now)
-        .bind(&pilot.id)
-        .execute(&db.pool)
-        .await;
-        let session_id = db
-            .create_pilot_session(&pilot.id, now)
+        db.create_pilot_session(&pilot.id, now_ms())
             .await
-            .map_err(|_| WebauthnRouteError::Verification)?;
-        Ok((session_id, pilot))
+            .map_err(|_| WebauthnRouteError::Verification)
     }
 }
 

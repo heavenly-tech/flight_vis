@@ -689,24 +689,18 @@ pub async fn post_club_flight_start(
                 .into_response();
         }
     };
-    let Ok(pilot_club_id) = db.pilot_club_id(&pilot_id).await else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
-        )
-            .into_response();
-    };
-    if db
-        .club_id_for_aircraft_tail(&pilot_club_id, parsed.tail.trim())
+    let now = now_ms();
+    if let Some(club_id) = db
+        .club_id_for_start_flight(&pilot_id, &device_id, parsed.tail.trim(), now)
         .await
-        .is_some()
-        && db.club_operational(&pilot_club_id).await.is_err()
     {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "club unavailable" })),
-        )
-            .into_response();
+        if db.club_operational(&club_id).await.is_err() {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "club unavailable" })),
+            )
+                .into_response();
+        }
     }
     let visibility = match parse_visibility(parsed.visibility.as_deref()) {
         Ok(v) => v,
@@ -722,7 +716,7 @@ pub async fn post_club_flight_start(
             parsed.tail.trim(),
             visibility,
             show_name,
-            now_ms(),
+            now,
         )
         .await
     {

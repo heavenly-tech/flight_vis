@@ -928,6 +928,83 @@ mod tests {
 
     #[serial]
     #[tokio::test]
+    async fn migration_015_file_then_rerun_016_017() {
+        let db = ClubDb::open_test().await.unwrap();
+        let pilot_id = new_id();
+        let club_id = db.default_club_id().await.unwrap();
+        let now = now_ms();
+        sqlx::query(
+            "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+             VALUES ($1, $2, 'P', 'mig-015@test', '', 'approved', 'pilot', '', $3)",
+        )
+        .bind(&pilot_id)
+        .bind(&club_id)
+        .bind(now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM club_memberships")
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("migrations/000015_backfill_club_memberships.sql");
+        let sql = std::fs::read_to_string(&path).unwrap();
+        sqlx::query(&sql).execute(&db.pool).await.unwrap();
+        let n: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM club_memberships WHERE pilot_id = $1")
+                .bind(&pilot_id)
+                .fetch_one(&db.pool)
+                .await
+                .unwrap();
+        assert_eq!(n, 1);
+        crate::club::database::run_migrations(&db.pool)
+            .await
+            .expect("016/017 after 015");
+        let locale_nullable: bool = sqlx::query_scalar(
+            "SELECT is_nullable = 'YES' FROM information_schema.columns
+             WHERE table_name = 'pilots' AND column_name = 'locale'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert!(locale_nullable);
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn migrations_015_through_017_fresh_and_idempotent() {
+        let db = ClubDb::open_test().await.unwrap();
+        let memberships: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM club_memberships")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert!(memberships >= 0);
+        let accounts: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'accounts' AND column_name = 'locale'
+            )",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert!(accounts);
+        let pilot_locale_nullable: bool = sqlx::query_scalar(
+            "SELECT is_nullable = 'YES' FROM information_schema.columns
+             WHERE table_name = 'pilots' AND column_name = 'locale'",
+        )
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert!(pilot_locale_nullable);
+        crate::club::database::run_migrations(&db.pool)
+            .await
+            .expect("re-run migrations");
+    }
+
+    #[serial]
+    #[tokio::test]
     async fn migration_accounts_idempotent_twice() {
         let db = ClubDb::open_test().await.unwrap();
         let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts")

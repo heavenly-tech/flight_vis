@@ -206,13 +206,7 @@ async fn club_admin_login_redirect(
         _ => normalized.clone(),
     };
     let next = auth::safe_next(&raw_next);
-    Some(
-        redirect_found(&format!(
-            "/login?next={}",
-            url_encode(&next)
-        ))
-        .into_response(),
-    )
+    Some(redirect_found(&format!("/login?next={}", url_encode(&next))).into_response())
 }
 
 async fn fallback(
