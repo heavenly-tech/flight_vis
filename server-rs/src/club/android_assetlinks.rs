@@ -1,41 +1,79 @@
 //! Android App Links: `/.well-known/assetlinks.json` (cacheable, no auth).
 #![allow(dead_code)]
 use axum::{
-    http::{header, HeaderMap},
+    extract::State,
+    http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Json},
     routing::get,
     Router,
 };
 use serde_json::{json, Value};
+use std::path::Path;
 
-pub const ANDROID_PACKAGE: &str = "cl.heavenly.flightvis";
+pub const DEFAULT_ANDROID_PACKAGE: &str = "cl.heavenly.flightvis";
 
-/// SHA-256 cert fingerprints for App Links (`ANDROID_CERT_SHA256` or `ANDROID_CERT_SHA256_FILE`).
+/// `FLIGHT_ANDROID_APP_PACKAGE` (no default for App Links verification).
+pub fn android_package_name() -> Option<String> {
+    package_from_env("FLIGHT_ANDROID_APP_PACKAGE").or_else(|| package_from_env("ANDROID_PACKAGE"))
+}
+
+fn package_from_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// SHA-256 cert fingerprints (`FLIGHT_ANDROID_CERT_SHA256` / file, or legacy `ANDROID_*`).
 pub fn android_cert_sha256_list() -> Vec<String> {
-    if let Ok(raw) = std::env::var("ANDROID_CERT_SHA256") {
-        let list: Vec<String> = raw
-            .split(',')
-            .map(|s| normalize_sha256(s.trim()))
-            .filter(|s| !s.is_empty())
-            .collect();
-        if !list.is_empty() {
-            return list;
+    if let Some(list) = certs_from_env("FLIGHT_ANDROID_CERT_SHA256") {
+        return list;
+    }
+    if let Some(path) = std::env::var("FLIGHT_ANDROID_CERT_SHA256_FILE")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+    {
+        if let Ok(list) = certs_from_file(&path) {
+            if !list.is_empty() {
+                return list;
+            }
         }
     }
+    if let Some(list) = certs_from_env("ANDROID_CERT_SHA256") {
+        return list;
+    }
     if let Ok(path) = std::env::var("ANDROID_CERT_SHA256_FILE") {
-        if let Ok(body) = std::fs::read_to_string(&path) {
-            let list: Vec<String> = body
-                .lines()
-                .map(|l| l.split('#').next().unwrap_or("").trim())
-                .map(normalize_sha256)
-                .filter(|s| !s.is_empty())
-                .collect();
+        if let Ok(list) = certs_from_file(&path) {
             if !list.is_empty() {
                 return list;
             }
         }
     }
     Vec::new()
+}
+
+fn certs_from_env(key: &str) -> Option<Vec<String>> {
+    let raw = std::env::var(key).ok()?;
+    let list: Vec<String> = raw
+        .split(',')
+        .map(|s| normalize_sha256(s.trim()))
+        .filter(|s| !s.is_empty())
+        .collect();
+    if list.is_empty() {
+        None
+    } else {
+        Some(list)
+    }
+}
+
+fn certs_from_file(path: &str) -> std::io::Result<Vec<String>> {
+    let body = std::fs::read_to_string(path)?;
+    Ok(body
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or("").trim())
+        .map(normalize_sha256)
+        .filter(|s| !s.is_empty())
+        .collect())
 }
 
 fn normalize_sha256(s: &str) -> String {
@@ -45,15 +83,16 @@ fn normalize_sha256(s: &str) -> String {
         .to_uppercase()
 }
 
-pub fn assetlinks_json(certs: &[String]) -> Value {
-    if certs.is_empty() {
-        return json!([]);
-    }
+pub fn android_deep_link_configured() -> bool {
+    android_package_name().is_some() && !android_cert_sha256_list().is_empty()
+}
+
+pub fn assetlinks_json(package: &str, certs: &[String]) -> Value {
     json!([{
         "relation": ["delegate_permission/common.handle_all_urls"],
         "target": {
             "namespace": "android_app",
-            "package_name": ANDROID_PACKAGE,
+            "package_name": package,
             "sha256_cert_fingerprints": certs
         }
     }])
@@ -71,15 +110,22 @@ pub fn apple_app_site_association_placeholder() -> Value {
 }
 
 async fn assetlinks_handler() -> impl IntoResponse {
+    let Some(package) = android_package_name() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
     let certs = android_cert_sha256_list();
+    if certs.is_empty() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, "application/json"),
             (header::CACHE_CONTROL, "public, max-age=3600"),
         ],
-        Json(assetlinks_json(&certs)),
+        Json(assetlinks_json(&package, &certs)),
     )
+        .into_response()
 }
 
 async fn aasa_placeholder() -> impl IntoResponse {
@@ -93,7 +139,46 @@ async fn aasa_placeholder() -> impl IntoResponse {
     )
 }
 
-use axum::http::StatusCode;
+async fn app_install_link(
+    State(state): State<crate::AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let release = read_apk_path(&state.dist_dir).await;
+    let apk_abs = absolute_https_url(&headers, &release.apk_path);
+    let https_app = absolute_https_url(&headers, "/app.html");
+    let intent_url = android_package_name().and_then(|pkg| {
+        if !android_deep_link_configured() {
+            return None;
+        }
+        Some(intent_url_for_https(&https_app, &pkg, &apk_abs))
+    });
+    Json(json!({
+        "httpsUrl": https_app,
+        "apkUrl": apk_abs,
+        "intentUrl": intent_url,
+    }))
+}
+
+struct ApkPath {
+    apk_path: String,
+}
+
+async fn read_apk_path(dist: &Path) -> ApkPath {
+    let path = dist.join("app/app-release.json");
+    let default_apk = "/app/flightvis.apk".to_string();
+    let Ok(body) = tokio::fs::read_to_string(&path).await else {
+        return ApkPath {
+            apk_path: default_apk,
+        };
+    };
+    let v: Value = serde_json::from_str(&body).unwrap_or(json!({}));
+    let apk_url = v
+        .get("apkUrl")
+        .and_then(|s| s.as_str())
+        .unwrap_or("/app/flightvis.apk")
+        .to_string();
+    ApkPath { apk_path: apk_url }
+}
 
 pub fn well_known_routes() -> Router<crate::AppState> {
     Router::new()
@@ -102,6 +187,7 @@ pub fn well_known_routes() -> Router<crate::AppState> {
             "/.well-known/apple-app-site-association",
             get(aasa_placeholder),
         )
+        .route("/api/app/install-link", get(app_install_link))
 }
 
 pub fn absolute_https_url(headers: &HeaderMap, path: &str) -> String {
@@ -139,8 +225,9 @@ fn pct_encode(s: &str) -> String {
     out
 }
 
-pub fn intent_url_for_https(https_url: &str, package: &str) -> String {
-    let fallback = pct_encode(https_url);
+/// Chrome custom-tab intent: open `https_url` in the app, else download/install via `browser_fallback_url`.
+pub fn intent_url_for_https(https_url: &str, package: &str, browser_fallback_url: &str) -> String {
+    let fallback = pct_encode(browser_fallback_url);
     format!(
         "intent://{host_path}#Intent;scheme=https;package={package};S.browser_fallback_url={fallback};end",
         host_path = https_url
@@ -151,37 +238,109 @@ pub fn intent_url_for_https(https_url: &str, package: &str) -> String {
     )
 }
 
+/// QR / deep link: intent when App Links are configured, else bare HTTPS.
+pub fn deep_link_qr_payload(headers: &HeaderMap, https_path: &str) -> String {
+    let https = absolute_https_url(headers, https_path);
+    if let Some(pkg) = android_package_name() {
+        if android_deep_link_configured() {
+            return intent_url_for_https(&https, &pkg, &https);
+        }
+    }
+    https
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use std::sync::{Mutex, MutexGuard};
+    use tower::ServiceExt;
 
     #[test]
     fn assetlinks_shape_with_fingerprint() {
-        let j = assetlinks_json(&["AA:BB:CC".into()]);
+        let j = assetlinks_json(DEFAULT_ANDROID_PACKAGE, &["AA:BB:CC".into()]);
         let arr = j.as_array().unwrap();
         assert_eq!(arr.len(), 1);
         let target = &arr[0]["target"];
-        assert_eq!(target["package_name"], ANDROID_PACKAGE);
+        assert_eq!(target["package_name"], DEFAULT_ANDROID_PACKAGE);
         let fps = target["sha256_cert_fingerprints"].as_array().unwrap();
         assert_eq!(fps[0], "AA:BB:CC");
     }
 
     #[test]
-    fn assetlinks_empty_when_no_certs() {
-        assert_eq!(assetlinks_json(&[]), json!([]));
+    fn intent_includes_apk_fallback() {
+        let intent = intent_url_for_https(
+            "https://flight.heavenly.cl/app.html",
+            "cl.heavenly.flightvis",
+            "https://flight.heavenly.cl/app/flightvis.apk",
+        );
+        assert!(intent.contains("S.browser_fallback_url="));
+        assert!(intent.contains("%3A%2F%2F"));
+        assert!(intent.contains("package=cl.heavenly.flightvis"));
     }
 
     #[test]
-    fn reads_android_cert_from_env() {
+    fn reads_flight_android_cert_from_env() {
         let _guard = env_lock();
-        std::env::set_var("ANDROID_CERT_SHA256", "aa:bb:cc, dd:ee:ff");
+        std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
+        std::env::remove_var("ANDROID_CERT_SHA256");
+        std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", "aa:bb:cc, dd:ee:ff");
         let list = android_cert_sha256_list();
         assert_eq!(list, vec!["AA:BB:CC".to_string(), "DD:EE:FF".to_string()]);
-        std::env::remove_var("ANDROID_CERT_SHA256");
+        std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
     }
 
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+  fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
         LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[tokio::test]
+    async fn assetlinks_http_404_when_unconfigured() {
+        let _guard = env_lock();
+        std::env::remove_var("FLIGHT_ANDROID_APP_PACKAGE");
+        std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
+        std::env::remove_var("ANDROID_CERT_SHA256");
+        let app = well_known_routes();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/assetlinks.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn assetlinks_http_json_when_configured() {
+        let _guard = env_lock();
+        std::env::set_var("FLIGHT_ANDROID_APP_PACKAGE", "cl.heavenly.flightvis");
+        std::env::set_var("FLIGHT_ANDROID_CERT_SHA256", "AA:BB:CC");
+        let app = well_known_routes();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/.well-known/assetlinks.json")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json")
+        );
+        let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let j: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(j[0]["target"]["package_name"], "cl.heavenly.flightvis");
+        std::env::remove_var("FLIGHT_ANDROID_APP_PACKAGE");
+        std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
     }
 }

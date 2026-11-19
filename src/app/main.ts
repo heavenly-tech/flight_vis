@@ -13,6 +13,7 @@ const versionEl = document.querySelector<HTMLParagraphElement>("#version")!;
 const shaWrap = document.querySelector<HTMLParagraphElement>("#sha")!;
 const shaVal = document.querySelector<HTMLElement>("#sha-val")!;
 const download = document.querySelector<HTMLAnchorElement>("#download")!;
+const openInApp = document.querySelector<HTMLAnchorElement>("#open-in-app")!;
 const sideloadSteps = document.querySelector<HTMLOListElement>("#sideload-steps")!;
 
 async function loadRelease(): Promise<void> {
@@ -40,6 +41,18 @@ async function loadRelease(): Promise<void> {
     }
     download.href = data.apkUrl;
     download.hidden = false;
+    try {
+      const linkRes = await fetch("/api/app/install-link", { credentials: "same-origin" });
+      if (linkRes.ok) {
+        const link = (await linkRes.json()) as { intentUrl?: string | null; apkUrl?: string };
+        if (link.intentUrl?.includes("S.browser_fallback_url=")) {
+          openInApp.href = link.intentUrl;
+          openInApp.hidden = false;
+        }
+      }
+    } catch {
+      openInApp.hidden = true;
+    }
   } catch {
     status.textContent = t("app.releaseSoon");
     download.hidden = true;

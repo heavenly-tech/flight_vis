@@ -170,6 +170,7 @@
     "subtitle": "Install the heavenly.cl flight tracker on your phone. No Play Store required.",
     "loadingRelease": "Loading release info…",
     "downloadApk": "Download APK",
+    "openInApp": "Open in the app",
     "sideloadTitle": "Sideloading steps",
     "sideloadStep1": "On Android, open Settings → Apps → Special access → Install unknown apps and allow your browser to install packages.",
     "sideloadStep2": "Download the APK using the button above (when available) and open it to install.",

@@ -173,6 +173,7 @@
     "subtitle": "Instalá el rastreador de vuelos heavenly.cl en tu teléfono. No hace falta Play Store.",
     "loadingRelease": "Cargando información de la versión…",
     "downloadApk": "Descargar APK",
+    "openInApp": "Abrir en la app",
     "sideloadTitle": "Pasos para instalar",
     "sideloadStep1": "En Android, abrí **Ajustes → Aplicaciones → Acceso especial → Instalar apps desconocidas** y permití que el navegador instale paquetes.",
     "sideloadStep2": "Descargá el APK con el botón de arriba (cuando esté disponible) y abrilo para instalar.",

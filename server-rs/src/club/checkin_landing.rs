@@ -1,6 +1,9 @@
 //! Browser fallback for `/c/{slug}` and `/c/{slug}/q/{token}` when the Android app is not verified.
 use crate::club::{
-    android_assetlinks::{absolute_https_url, intent_url_for_https, ANDROID_PACKAGE},
+    android_assetlinks::{
+        absolute_https_url, android_deep_link_configured, android_package_name,
+        intent_url_for_https,
+    },
     checkin,
     club_scope::{checkin_qr_path, ClubScopeError},
     db::{now_ms, ClubDb},
@@ -305,7 +308,9 @@ async fn checkin_landing_config(
     }
     let https_path = checkin_qr_path(&slug, &token);
     let https_url = absolute_https_url(&headers, &https_path);
-    let intent = intent_url_for_https(&https_url, ANDROID_PACKAGE);
+    let intent = android_package_name()
+        .filter(|_| android_deep_link_configured())
+        .map(|pkg| intent_url_for_https(&https_url, &pkg, &https_url));
     match build_landing_json(&state, db, &headers, &slug, Some(intent)).await {
         Ok(body) => Json(body).into_response(),
         Err(LandingError::NotFound) => {
