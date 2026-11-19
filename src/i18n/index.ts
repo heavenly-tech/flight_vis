@@ -55,6 +55,7 @@ export function resolveLocale(opts: {
   return (
     pick(opts.stored) ??
     pick(opts.userLocale) ??
+    pick(parseAcceptLanguage(opts.acceptLanguage ?? null)) ??
     pick(opts.clubDefaultLocale) ??
     pick(CANONICAL_LOCALE) ??
     CANONICAL_LOCALE
@@ -64,11 +65,18 @@ export function resolveLocale(opts: {
 export function initI18n(opts?: {
   userLocale?: string | null;
   clubDefaultLocale?: string | null;
+  acceptLanguage?: string | null;
+  stored?: string | null;
 }): I18nState {
-  const stored = localStorage.getItem(STORAGE) ?? readCookie(COOKIE);
+  const stored =
+    opts?.stored ?? localStorage.getItem(STORAGE) ?? readCookie(COOKIE);
+  const browserLang =
+    opts?.acceptLanguage ??
+    (typeof navigator !== "undefined" ? navigator.language : null);
   const locale = resolveLocale({
     userLocale: opts?.userLocale,
     clubDefaultLocale: opts?.clubDefaultLocale,
+    acceptLanguage: browserLang,
     stored,
   });
   state = {
@@ -256,6 +264,10 @@ export async function bootI18n(opts?: {
   let userLocale = opts?.userLocale;
   let clubDefault = opts?.clubDefaultLocale;
   let dbUserLocale: string | null = null;
+  let serverResolved: string | null = null;
+  const browserLang =
+    typeof navigator !== "undefined" ? navigator.language : null;
+  const stored = localStorage.getItem(STORAGE) ?? readCookie(COOKIE);
   try {
     const res = await fetch("/api/club/i18n/context", {
       credentials: "same-origin",
@@ -265,15 +277,31 @@ export async function bootI18n(opts?: {
       const ctx = (await res.json()) as {
         userLocale?: string | null;
         clubDefaultLocale?: string | null;
+        resolvedLocale?: string | null;
       };
       dbUserLocale = ctx.userLocale ?? null;
       userLocale ??= dbUserLocale;
       clubDefault ??= ctx.clubDefaultLocale ?? null;
+      serverResolved = ctx.resolvedLocale ?? null;
     }
   } catch {
     /* anonymous pages */
   }
-  initI18n({ userLocale: dbUserLocale, clubDefaultLocale: clubDefault });
+  initI18n({
+    userLocale: dbUserLocale,
+    clubDefaultLocale: clubDefault,
+    acceptLanguage: browserLang,
+    stored,
+  });
+  if (
+    serverResolved &&
+    bundledLocaleIds().includes(serverResolved) &&
+    state.locale !== serverResolved
+  ) {
+    state.locale = serverResolved;
+    state.messages = flattenCatalog(serverResolved);
+    document.documentElement.lang = localeBcp47(serverResolved);
+  }
   applyI18nDocument();
   // Browser-stored locale overrides DB on boot; sync back when the viewer has a club session.
   if (dbUserLocale !== null && state.locale !== dbUserLocale) {

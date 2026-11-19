@@ -12,8 +12,10 @@ describe("i18n catalogs", () => {
   });
 
   it("defaults to Spanish", () => {
+    vi.stubGlobal("navigator", { language: "es-CL" });
     initI18n();
-    expect(t("club.login.title")).toContain("sesión");
+    expect(t("entrar.title")).toMatch(/iniciar sesión/i);
+    vi.unstubAllGlobals();
   });
 
   it("resolves stored locale over pilot default", () => {
@@ -28,7 +30,10 @@ describe("i18n catalogs", () => {
 
   it("defaults to Spanish without stored locale, account, or browser", () => {
     expect(resolveLocale({})).toBe("es");
-    expect(resolveLocale({ acceptLanguage: "en-US,en;q=0.9" })).toBe("es");
+  });
+
+  it("resolves Accept-Language when nothing stored or on account", () => {
+    expect(resolveLocale({ acceptLanguage: "en-US,en;q=0.9" })).toBe("en");
   });
 
   it("PATCHes pilot locale when session exists", async () => {

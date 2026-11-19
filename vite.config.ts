@@ -170,6 +170,7 @@ export default defineConfig({
         login: path.resolve(root, "login.html"),
         loginLegacy: path.resolve(root, "login-legacy.html"),
         accountClubs: path.resolve(root, "account-clubs.html"),
+        account: path.resolve(root, "account.html"),
         app: path.resolve(root, "app.html"),
         clubPilot: path.resolve(root, "club-pilot.html"),
         clubFlight: path.resolve(root, "club-flight.html"),
