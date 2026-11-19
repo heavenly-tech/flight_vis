@@ -118,6 +118,7 @@ export function formatNumber(n: number, opts?: Intl.NumberFormatOptions): string
   return new Intl.NumberFormat(localeBcp47(state.locale), opts).format(n);
 }
 
+/** When a signed-in club user picks a locale, persist it to the account (shared-browser case). */
 export async function setLocale(locale: string): Promise<void> {
   if (!bundledLocaleIds().includes(locale)) return;
   state.locale = locale;
@@ -259,6 +260,7 @@ export async function bootI18n(opts?: {
   }
   initI18n({ userLocale: dbUserLocale, clubDefaultLocale: clubDefault });
   applyI18nDocument();
+  // Browser-stored locale overrides DB on boot; sync back when the viewer has a club session.
   if (dbUserLocale !== null && state.locale !== dbUserLocale) {
     void setLocale(state.locale);
   }

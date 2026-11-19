@@ -1038,3 +1038,63 @@ async fn patch_me_locale_persists_for_pilot() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json.get("userLocale").and_then(|v| v.as_str()), Some("en"));
 }
+
+#[tokio::test]
+#[serial]
+async fn club_login_form_post_redirects_without_password_in_location() {
+    let mut fx = setup().await;
+    let body = "email=a%40test&password=password12&next=%2Fclub-pilot.html";
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/login")
+                .header(
+                    header::CONTENT_TYPE,
+                    "application/x-www-form-urlencoded",
+                )
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let location = res
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(location, "/club-pilot.html");
+    assert!(!location.to_lowercase().contains("password"));
+    assert!(res.headers().get(header::SET_COOKIE).is_some());
+}
+
+#[tokio::test]
+#[serial]
+async fn club_login_form_post_rejects_open_redirect_next() {
+    let mut fx = setup().await;
+    let body = "email=a%40test&password=password12&next=%2F%5Cevil.com";
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/club/login")
+                .header(
+                    header::CONTENT_TYPE,
+                    "application/x-www-form-urlencoded",
+                )
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::SEE_OTHER);
+    let location = res
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(location, "/");
+}

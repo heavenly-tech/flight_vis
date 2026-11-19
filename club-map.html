@@ -15,22 +15,6 @@
       <ul id="list"></ul>
       <p class="muted"><a href="/public-map.html" data-i18n="club.map.publicLink"></a></p>
     </main>
-    <script type="module">
-      import { startClubPage } from "/src/club/i18nPage.ts";
-      import { t } from "/src/i18n/boot.ts";
-      await startClubPage();
-      const list = document.getElementById("list");
-      const res = await fetch("/api/club/map", { credentials: "same-origin" });
-      if (!res.ok) {
-        list.innerHTML = `<li>${t("club.map.signInApproved")}</li>`;
-      } else {
-        const data = await res.json();
-        for (const row of data.aircraft ?? []) {
-          const li = document.createElement("li");
-          li.textContent = `${row.tail} · ${row.pilotName ?? "—"}`;
-          list.appendChild(li);
-        }
-      }
-    </script>
+    <script type="module" src="/src/club/clubMapPage.ts"></script>
   </body>
 </html>

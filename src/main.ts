@@ -333,7 +333,7 @@ function hitHandle(x: number, width: number): "start" | "end" | null {
 }
 
 async function boot(): Promise<void> {
-  await bootI18n();
+  void bootI18n();
   const liveRouteEarly = parseLivePath(window.location.pathname);
   if (liveRouteEarly.sessionId) {
     nameEl.textContent = "Live session";

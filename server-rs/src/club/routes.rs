@@ -24,7 +24,7 @@ use axum::{
 use futures_util::stream;
 use serde::Deserialize;
 use serde_json::json;
-use std::{convert::Infallible, time::Duration};
+use std::{collections::HashMap, convert::Infallible, time::Duration};
 
 #[allow(unused_imports)]
 use axum::routing::patch;
@@ -282,10 +282,12 @@ async fn register(
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct LoginBody {
     email: String,
     password: String,
+    #[serde(default)]
+    next: Option<String>,
     #[serde(rename = "installId", default)]
     install_id: Option<String>,
     #[serde(default)]
@@ -294,34 +296,99 @@ struct LoginBody {
     model: Option<String>,
 }
 
+struct ClubLoginFields {
+    email: String,
+    password: String,
+    next: String,
+    install_id: Option<String>,
+    label: Option<String>,
+    model: Option<String>,
+}
+
+fn club_wants_json(headers: &HeaderMap) -> bool {
+    let accept = headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    crate::auth::wants_json(accept, content_type)
+}
+
+fn club_login_fields(headers: &HeaderMap, body: &[u8]) -> ClubLoginFields {
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if content_type.contains("application/json") {
+        let body: LoginBody = serde_json::from_slice(body).unwrap_or_default();
+        return ClubLoginFields {
+            email: body.email,
+            password: body.password,
+            next: crate::auth::safe_next(body.next.as_deref().unwrap_or("/club-pilot.html")),
+            install_id: body.install_id,
+            label: body.label,
+            model: body.model,
+        };
+    }
+    let parsed: HashMap<String, String> = serde_urlencoded::from_bytes(body).unwrap_or_default();
+    ClubLoginFields {
+        email: parsed.get("email").cloned().unwrap_or_default(),
+        password: parsed.get("password").cloned().unwrap_or_default(),
+        next: crate::auth::safe_next(
+            parsed
+                .get("next")
+                .map(String::as_str)
+                .unwrap_or("/club-pilot.html"),
+        ),
+        install_id: None,
+        label: None,
+        model: None,
+    }
+}
+
+fn club_login_redirect(location: &str) -> impl IntoResponse {
+    (
+        StatusCode::SEE_OTHER,
+        [(header::LOCATION, location.to_string())],
+    )
+}
+
 async fn club_login(
     State(state): State<AppState>,
     headers: HeaderMap,
     client_ip: ClientIp,
-    Json(body): Json<LoginBody>,
+    body: Bytes,
 ) -> impl IntoResponse {
+    let json = club_wants_json(&headers);
+    let fields = club_login_fields(&headers, &body);
     let Some(db) = club_db(&state) else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "club disabled" })),
-        )
-            .into_response();
+        if json {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "club disabled" })),
+            )
+                .into_response();
+        }
+        return club_login_redirect("/club-login.html?e=1").into_response();
     };
     let club_id = db.default_club_id().await.unwrap_or_default();
     let now = now_ms();
     match db
         .login_password(
             &club_id,
-            body.email.trim(),
-            &body.password,
+            fields.email.trim(),
+            &fields.password,
             now,
             &client_ip.0,
         )
         .await
     {
         Ok((session_id, pilot)) => {
-            if let Some(install_id) = body.install_id.as_deref().filter(|s| !s.is_empty()) {
-                let label = body
+            if let Some(install_id) = fields.install_id.as_deref().filter(|s| !s.is_empty()) {
+                let label = fields
                     .label
                     .as_deref()
                     .filter(|s| !s.is_empty())
@@ -330,43 +397,69 @@ async fn club_login(
                     .register_device_for_install(
                         &pilot.id,
                         label,
-                        body.model.as_deref(),
+                        fields.model.as_deref(),
                         install_id,
                     )
                     .await;
             }
             let cookie = auth::set_session_cookie(&session_id, is_secure(&headers));
-            (
-                StatusCode::OK,
-                [(header::SET_COOKIE, cookie)],
-                Json(json!({
-                    "ok": true,
-                    "pilot": {
-                        "id": pilot.id,
-                        "name": pilot.name,
-                        "email": pilot.email,
-                        "status": pilot.status,
-                        "role": pilot.role,
-                    }
-                })),
-            )
-                .into_response()
+            if json {
+                (
+                    StatusCode::OK,
+                    [(header::SET_COOKIE, cookie)],
+                    Json(json!({
+                        "ok": true,
+                        "pilot": {
+                            "id": pilot.id,
+                            "name": pilot.name,
+                            "email": pilot.email,
+                            "status": pilot.status,
+                            "role": pilot.role,
+                        }
+                    })),
+                )
+                    .into_response()
+            } else {
+                (
+                    StatusCode::SEE_OTHER,
+                    [
+                        (header::SET_COOKIE, cookie),
+                        (header::LOCATION, fields.next.clone()),
+                    ],
+                )
+                    .into_response()
+            }
         }
-        Err(crate::club::db::LoginError::Throttled) => (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({ "error": "too many attempts" })),
-        )
-            .into_response(),
-        Err(crate::club::db::LoginError::ClubUnavailable) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "club unavailable" })),
-        )
-            .into_response(),
-        Err(_) => (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
-        )
-            .into_response(),
+        Err(crate::club::db::LoginError::Throttled) => {
+            if json {
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(json!({ "error": "too many attempts" })),
+                )
+                    .into_response();
+            }
+            club_login_redirect("/club-login.html?e=1").into_response()
+        }
+        Err(crate::club::db::LoginError::ClubUnavailable) => {
+            if json {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({ "error": "club unavailable" })),
+                )
+                    .into_response();
+            }
+            club_login_redirect("/club-login.html?e=1").into_response()
+        }
+        Err(_) => {
+            if json {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": "unauthorized" })),
+                )
+                    .into_response();
+            }
+            club_login_redirect("/club-login.html?e=1").into_response()
+        }
     }
 }
 
@@ -498,6 +591,9 @@ async fn patch_me_locale(
     headers: HeaderMap,
     Json(body): Json<LocaleBody>,
 ) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,

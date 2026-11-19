@@ -9,6 +9,7 @@ async function loginViaClubForm(page: import("@playwright/test").Page): Promise<
     page.waitForURL(/club-pilot\.html/),
     page.locator("#form button[type=submit]").click(),
   ]);
+  expect(page.url()).not.toMatch(/password/i);
 }
 
 declare global {
