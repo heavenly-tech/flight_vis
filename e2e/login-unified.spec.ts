@@ -50,14 +50,10 @@ test.describe("unified /login", () => {
     });
     const page = await context.newPage();
     await page.goto("/login", { waitUntil: "domcontentloaded" });
-    await page.waitForFunction(() => {
-      const h = document.querySelector("h1");
-      return (h?.textContent?.trim().length ?? 0) > 2;
-    });
     const lang = await page.evaluate(() => document.documentElement.lang);
     expect(lang).toMatch(/^es/i);
-    const title = await page.locator("h1").innerText();
-    expect(title.toLowerCase()).toMatch(/sesión|iniciar/);
+    await expect(page.locator("h1")).toContainText(/iniciar sesión/i);
+    await expect(page.locator("#magic-btn")).toContainText(/enlace/i);
     await context.close();
   });
 

@@ -88,13 +88,19 @@
   <body>
     <main>
       <div id="lang-slot"></div>
-      <h1 data-i18n="club.login.title"></h1>
-      <p class="lead" data-i18n="entrar.magicLead"></p>
+      <h1 data-i18n="club.login.title">Iniciar sesión</h1>
+      <p class="lead" data-i18n="entrar.magicLead">
+        Ingresa tu correo y te enviaremos un enlace para iniciar sesión.
+      </p>
       <section id="magic-panel">
         <label for="email-magic" data-i18n="club.login.email"></label>
         <input id="email-magic" name="email" type="email" autocomplete="username" required />
-        <button type="button" id="magic-btn" class="primary-btn" data-i18n="entrar.sendLink"></button>
-        <a id="use-password" class="muted-link" href="/login?mode=password" data-i18n="entrar.usePassword"></a>
+        <button type="button" id="magic-btn" class="primary-btn" data-i18n="entrar.sendLink">
+          Enviar enlace
+        </button>
+        <a id="use-password" class="muted-link" href="/login?mode=password" data-i18n="entrar.usePassword">
+          Usar contraseña
+        </a>
         <p class="msg" id="magic-msg"></p>
       </section>
       <section id="password-panel" hidden>
