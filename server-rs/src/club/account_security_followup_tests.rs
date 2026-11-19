@@ -1587,11 +1587,10 @@ async fn set_account_password_magic_fresh_session_sets_new_without_current() {
     db.set_account_password(&id, "newpassword1", now, None, Some(&magic_sess))
         .await
         .unwrap();
-    assert!(
-        db.account_login_password(&email, "newpassword1", now, "127.0.0.1")
-            .await
-            .is_ok()
-    );
+    assert!(db
+        .account_login_password(&email, "newpassword1", now, "127.0.0.1")
+        .await
+        .is_ok());
 }
 
 #[tokio::test]
