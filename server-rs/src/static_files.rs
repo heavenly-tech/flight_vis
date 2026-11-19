@@ -137,9 +137,9 @@ fn sidecar_path(base: &Path, encoding: &str) -> PathBuf {
     PathBuf::from(format!("{}{}", base.to_string_lossy(), suffix))
 }
 
-/// Keep in sync with `csp/html-page.csp` (single source for e2e CSP gateway).
+/// Keep in sync with `server-rs/csp/html-page.csp` (single source for e2e CSP gateway).
 pub const HTML_CSP: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../csp/html-page.csp"));
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/csp/html-page.csp"));
 
 fn cache_for(relative: &str) -> &'static str {
     if is_geoid_asset(relative) {

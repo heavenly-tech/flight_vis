@@ -6,7 +6,10 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 
 /** Same string as `static_files::HTML_CSP` in the Rust API. */
 export function readHtmlPageCsp() {
-  return readFileSync(path.resolve(root, "..", "csp", "html-page.csp"), "utf8").trim();
+  return readFileSync(
+    path.resolve(root, "..", "server-rs", "csp", "html-page.csp"),
+    "utf8",
+  ).trim();
 }
 
 /** Cesium globe e2e: prod HTML CSP plus wasm/ArcGIS allowances. */
