@@ -8,11 +8,12 @@ use crate::club::{
     club_scope::ClubScopeError,
     db::{now_ms, ClubDb},
     routes::club_db,
+    slug_redirect,
 };
 use crate::AppState;
 use axum::{
     extract::{Path, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{header, HeaderMap, Method, StatusCode, Uri},
     response::{Html, IntoResponse, Json},
     routing::get,
     Router,
@@ -163,11 +164,19 @@ async fn serve_landing_html(state: &AppState) -> axum::response::Response {
 async fn checkin_landing_page(
     State(state): State<AppState>,
     headers: HeaderMap,
+    method: Method,
+    uri: Uri,
     Path((slug, token)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
         return checkin_not_found_page(&state, &headers, &slug).await;
     };
+    if let Some(resp) =
+        slug_redirect::redirect_if_historical_slug(db, method.as_str(), uri.path(), uri.query())
+            .await
+    {
+        return resp;
+    }
     match validate_checkin_peek(db, &slug, &token, now_ms()).await {
         Ok(_) => serve_landing_html(&state).await,
         Err(LandingError::NotFound) => checkin_not_found_page(&state, &headers, &slug).await,
@@ -177,11 +186,19 @@ async fn checkin_landing_page(
 
 async fn club_slug_register_page(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     Path(slug): Path<String>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
+    if let Some(resp) =
+        slug_redirect::redirect_if_historical_slug(db, method.as_str(), uri.path(), uri.query())
+            .await
+    {
+        return resp;
+    }
     let Some(row) = db.club_public_row_by_slug(&slug).await else {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
@@ -218,12 +235,20 @@ async fn serve_suspended_html(state: &AppState) -> axum::response::Response {
 
 async fn club_slug_landing_page(
     State(state): State<AppState>,
+    method: Method,
+    uri: Uri,
     Path(slug): Path<String>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     };
-    if db.resolve_club_context(&slug).await.is_err() {
+    if let Some(resp) =
+        slug_redirect::redirect_if_historical_slug(db, method.as_str(), uri.path(), uri.query())
+            .await
+    {
+        return resp;
+    }
+    if db.club_id_for_slug_any(&slug).await.is_none() {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
     if let Some(row) = db.club_public_row_by_slug(&slug).await {
@@ -303,16 +328,16 @@ async fn build_landing_json(
         })
         .unwrap_or(club_default_locale.clone());
     let release = read_app_release(&state.dist_dir).await;
-    let logo_url = optional_club_logo_url(&state.dist_dir, slug);
+    let logo_url = optional_club_logo_url(&state.dist_dir, &ctx.slug);
     let mut body = json!({
-        "slug": slug,
+        "slug": ctx.slug,
         "clubName": club_name,
         "logoUrl": logo_url,
         "clubDefaultLocale": club_default_locale,
         "resolvedLocale": resolved_locale,
         "releaseAvailable": release.release_available,
         "apkUrl": release.apk_url,
-        "publicMapPath": format!("/public-map.html?club={slug}"),
+        "publicMapPath": format!("/public-map.html?club={}", ctx.slug),
         "appPath": "/app.html",
     });
     if let Some(intent) = intent_url {
@@ -324,11 +349,19 @@ async fn build_landing_json(
 async fn checkin_landing_config(
     State(state): State<AppState>,
     headers: HeaderMap,
+    method: Method,
+    uri: Uri,
     Path((slug, token)): Path<(String, String)>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     };
+    if let Some(resp) =
+        slug_redirect::redirect_if_historical_slug(db, method.as_str(), uri.path(), uri.query())
+            .await
+    {
+        return resp;
+    }
     if validate_checkin_peek(db, &slug, &token, now_ms())
         .await
         .is_err()
@@ -351,11 +384,19 @@ async fn checkin_landing_config(
 async fn club_slug_landing_config(
     State(state): State<AppState>,
     headers: HeaderMap,
+    method: Method,
+    uri: Uri,
     Path(slug): Path<String>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     };
+    if let Some(resp) =
+        slug_redirect::redirect_if_historical_slug(db, method.as_str(), uri.path(), uri.query())
+            .await
+    {
+        return resp;
+    }
     match build_landing_json(&state, db, &headers, &slug, None).await {
         Ok(body) => Json(body).into_response(),
         Err(LandingError::NotFound) => {

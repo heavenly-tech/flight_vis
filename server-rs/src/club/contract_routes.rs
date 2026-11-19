@@ -86,6 +86,8 @@ async fn api_magic_complete(
 async fn api_club_by_slug(
     State(state): State<AppState>,
     headers: HeaderMap,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
     Path(slug): Path<String>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
@@ -95,6 +97,16 @@ async fn api_club_by_slug(
         )
             .into_response();
     };
+    if let Some(resp) = crate::club::slug_redirect::redirect_if_historical_slug(
+        db,
+        method.as_str(),
+        uri.path(),
+        uri.query(),
+    )
+    .await
+    {
+        return resp;
+    }
     let Some(club_id) = db.club_id_for_slug(slug.trim()).await else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     };
