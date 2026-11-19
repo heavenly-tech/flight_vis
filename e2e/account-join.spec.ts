@@ -6,14 +6,10 @@ test.describe("account join club", () => {
 
   test("pending join via slug field does not leak secrets in URL", async ({ page }) => {
     const { consoleErrors } = installCspObservers(page);
-    await page.goto("/login", { waitUntil: "domcontentloaded" });
-    await page.waitForFunction(() => window.__fvUnifiedLoginReady === true);
-    await page.locator("#login-form input[name=email]").fill("admin@demo.test");
-    await page.locator("#login-form input[name=password]").fill("password12");
-    await Promise.all([
-      page.waitForURL(/account-clubs\.html/, { timeout: 20_000 }),
-      page.locator("#login-form button[type=submit]").click(),
-    ]);
+    const login = await page.request.post("/api/account/login", {
+      data: { email: "admin@demo.test", password: "password12" },
+    });
+    expect(login.ok()).toBeTruthy();
     await page.goto("/account-clubs.html", { waitUntil: "domcontentloaded" });
     const joinForm = page.locator("#join-form");
     await joinForm.locator('input[name="slug"]').fill("demo");

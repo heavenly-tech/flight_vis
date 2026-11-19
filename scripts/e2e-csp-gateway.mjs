@@ -86,7 +86,9 @@ function proxyToApi(req, res, body) {
 }
 
 function shouldProxy(urlPath) {
+  const pathOnly = urlPath.split("?")[0];
   return (
+    pathOnly === "/signup" ||
     urlPath.startsWith("/api") ||
     urlPath.startsWith("/login") ||
     urlPath.startsWith("/logout") ||
