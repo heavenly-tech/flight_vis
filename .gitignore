@@ -11,3 +11,4 @@ data
 server-rs/target/
 server-rs/.cargo-home/
 test-results/
+scripts/data/*.geojson

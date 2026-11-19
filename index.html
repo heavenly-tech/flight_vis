@@ -4,7 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="description" content="3D flight visualization for IGC and GPX tracks." />
+    <meta name="theme-color" content="#152B52" />
     <title>flight_vis</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.ico" sizes="48x48" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />
   </head>
   <body>
     <div id="cesiumContainer"></div>
@@ -16,7 +21,17 @@
     <div id="ui">
       <header class="topbar">
         <div class="brand-block">
-          <p class="brand">flight_vis</p>
+          <a class="brand-lockup" href="/" aria-label="flight_vis home">
+            <img
+              class="brand-logo"
+              src="/assets/brand/flightvis-logo.svg"
+              width="40"
+              height="40"
+              alt=""
+              decoding="async"
+            />
+            <span class="brand">flight_vis</span>
+          </a>
           <p id="flight-name" class="flight-name">Loading…</p>
         </div>
         <div class="top-actions">
