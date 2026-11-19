@@ -11,7 +11,10 @@ test.describe("account join club", () => {
     });
     expect(login.ok()).toBeTruthy();
     await page.goto("/account-clubs.html", { waitUntil: "domcontentloaded" });
+    await page.locator("#pick-panel").waitFor({ state: "visible" });
+    await page.locator("#join-open").click();
     const joinForm = page.locator("#join-form");
+    await joinForm.locator('input[name="slug"]').waitFor({ state: "visible" });
     await joinForm.locator('input[name="slug"]').fill("demo");
     await joinForm.locator("button[type=submit]").click();
     await page.waitForTimeout(800);
