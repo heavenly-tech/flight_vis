@@ -127,6 +127,11 @@ pub fn parse_cookie(header: Option<&str>) -> Option<String> {
     None
 }
 
+/// Decode `%`-escapes in a query parameter or path segment (UTF-8 lossy).
+pub(crate) fn percent_decode_query_value(s: &str) -> String {
+    percent_decode_path(s)
+}
+
 fn percent_decode_path(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
