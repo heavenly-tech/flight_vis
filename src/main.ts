@@ -87,8 +87,8 @@ function syncAuthUi(): void {
   loginLink.href = entrarUrl();
   const showAccount = session.loggedIn || auth.authenticated;
   loginLink.hidden = showAccount;
-  logoutButton.hidden = !showAccount;
-  
+  logoutButton.hidden = !auth.authenticated;
+
   // Update account link based on session state
   if (session.clubAdmin) {
     accountLink.href = "/club-admin-map.html";
@@ -98,12 +98,12 @@ function syncAuthUi(): void {
     accountLink.dataset.i18n = "nav.myAccount";
   }
   accountLink.hidden = !showAccount;
-  
+
   // Apply i18n to the account link to update its text based on the new dataset.i18n
   if (showAccount) {
     accountLink.textContent = t(accountLink.dataset.i18n as string);
   }
-  
+
   library?.setAuth(auth);
   if (!auth.configured) {
     authHint.hidden = false;
@@ -924,13 +924,12 @@ async function boot(): Promise<void> {
       fetch("/api/account/me", { credentials: "same-origin" }),
       fetch("/api/club/me", { credentials: "same-origin" }),
     ]);
-    session.loggedIn = accountRes.ok;
+    let clubPilot: { role: string } | null = null;
     if (clubRes.ok) {
       const clubMe = (await clubRes.json()) as { pilot: { role: string } | null };
-      session.clubAdmin = clubMe.pilot?.role === "admin";
-    } else {
-      session.clubAdmin = false;
+      clubPilot = clubMe.pilot;
     }
+    session = { loggedIn: accountRes.ok || clubPilot !== null, clubAdmin: clubPilot?.role === "admin" };
   } catch {
     // Network errors are fine - user is not logged in
     session = { loggedIn: false, clubAdmin: false };

@@ -7,8 +7,8 @@ test("globe header shows correct auth state when logged out", async ({ page }) =
   await expect(page.locator('a[href="/club-signup.html"]')).toHaveCount(0);
 });
 
-test("globe header shows account link when logged in", async ({ page, request }) => {
-  const login = await request.post("/api/club/login", {
+test("globe header shows account link when logged in", async ({ page }) => {
+  const login = await page.request.post("/api/club/login", {
     data: { email: "admin@demo.test", password: "password12" },
   });
   expect(login.ok()).toBeTruthy();
