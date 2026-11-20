@@ -5,6 +5,10 @@ use subtle::ConstantTimeEq;
 type HmacSha256 = Hmac<Sha256>;
 
 pub const CHECKIN_STEP_SEC: i64 = 30;
+pub const HANDOFF_TOKEN_TTL_SEC: i64 = 600; // 10 minutes
+
+/// Prefix for handoff tokens to distinguish from QR tokens
+pub const HANDOFF_TOKEN_PREFIX: &str = "h1.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckinTokenError {
@@ -32,6 +36,25 @@ fn sign_step(secret: &str, club_id: &str, step: i64) -> String {
 
 pub fn token_digest(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
+}
+
+/// Check if a token is a handoff token (starts with h1.)
+pub fn is_handoff_token(token: &str) -> bool {
+    token.trim().starts_with(HANDOFF_TOKEN_PREFIX)
+}
+
+/// Parse the club_id from a handoff token (format: h1.{club_id}.{random_id})
+pub fn parse_handoff_token_club_id(token: &str) -> Option<String> {
+    let token = token.trim();
+    if !token.starts_with(HANDOFF_TOKEN_PREFIX) {
+        return None;
+    }
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() >= 3 && parts[0] == "h1" {
+        Some(parts[1].to_string())
+    } else {
+        None
+    }
 }
 
 /// Club id embedded in a `v1.{club}.{step}.{sig}` token (no HMAC verify).

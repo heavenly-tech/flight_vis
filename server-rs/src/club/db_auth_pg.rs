@@ -487,6 +487,29 @@ impl ClubDb {
         .flatten()
     }
 
+    /// Create a guest pilot for handoff without creating a session
+    /// This is used when a QR token is scanned in the browser and we need to create
+    /// a guest pilot that will be re-scoped to the club when the app submits the checkin
+    pub async fn create_guest_for_handoff(&self, club_id: &str, now: i64) -> Result<String, DbError> {
+        let guest_pilot_id = new_id();
+        let guest_email = format!("guest-{guest_pilot_id}@guest.invalid");
+        let display_name = "Guest";
+        
+        sqlx::query(
+            "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
+             VALUES ($1, $2, $3, $4, '', 'guest', 'pilot', '', $5)",
+        )
+        .bind(&guest_pilot_id)
+        .bind(club_id)
+        .bind(display_name)
+        .bind(&guest_email)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        
+        Ok(guest_pilot_id)
+    }
+
     pub async fn claim_guest(
         &self,
         guest_session_id: &str,
