@@ -817,39 +817,20 @@ async fn patch_admin_club_base(
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
-
-    // Validate inputs using the pure validation function
-    match crate::club::db_kiosk_pg::validate_base_aerodrome(
+    let (icao, lat, lon) = match crate::club::db_kiosk_pg::validate_base_aerodrome(
         Some(&body.icao),
         Some(body.lat),
         Some(body.lon),
     ) {
-        Ok((icao, lat, lon)) => {
-            match db
-                .set_club_base_aerodrome(&club_id, &icao, lat, lon)
-                .await
-            {
-                Ok(base) => {
-                    return Json(json!({ "icao": base.icao, "lat": base.lat, "lon": base.lon }))
-                        .into_response()
-                }
-                Err(_) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({ "error": "db error" })),
-                    )
-                        .into_response()
-                }
-            }
-        }
+        Ok(v) => v,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": e })),
-            )
-                .into_response();
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response();
         }
-    }
+    };
+    match db.set_club_base_aerodrome(&club_id, &icao, lat, lon).await {
+        Ok(base) => {
+            Json(json!({ "icao": base.icao, "lat": base.lat, "lon": base.lon })).into_response()
+        }
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "db error" })),
