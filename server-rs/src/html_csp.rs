@@ -28,6 +28,7 @@ pub const HTML_CSP_ROUTE_TABLE: &[(&str, HtmlCspKind)] = &[
     // Globe: Cesium viewer (main SPA, shared flight view)
     ("/index.html", HtmlCspKind::Globe),
     ("/__spa_index__", HtmlCspKind::Globe),
+    ("/club-globe-screen.html", HtmlCspKind::Globe),
     ("/share-flight.html", HtmlCspKind::Globe),
     // Strict: auth, account, admin, lists, club registration, QR / check-in, e2e fixtures
     ("/login", HtmlCspKind::Strict),
@@ -36,6 +37,7 @@ pub const HTML_CSP_ROUTE_TABLE: &[(&str, HtmlCspKind)] = &[
     ("/signup", HtmlCspKind::Strict),
     ("/signup.html", HtmlCspKind::Strict),
     ("/account-clubs.html", HtmlCspKind::Strict),
+    ("/account.html", HtmlCspKind::Strict),
     ("/api/account/auth/magic", HtmlCspKind::Strict),
     ("/api/club/auth/magic", HtmlCspKind::Strict),
     ("/app.html", HtmlCspKind::Strict),
@@ -51,6 +53,7 @@ pub const HTML_CSP_ROUTE_TABLE: &[(&str, HtmlCspKind)] = &[
     ("/club-admin-map.html", HtmlCspKind::Strict),
     ("/club-admin-kiosk-layout.html", HtmlCspKind::Strict),
     ("/club-admin-requests.html", HtmlCspKind::Strict),
+    ("/club-admin-checkin-qr.html", HtmlCspKind::Strict),
     ("/club-map.html", HtmlCspKind::Strict),
     ("/public-map.html", HtmlCspKind::Strict),
     ("/club-screen.html", HtmlCspKind::Strict),
@@ -66,7 +69,9 @@ pub const DIST_HTML_FILES: &[&str] = &[
     "login.html",
     "login-legacy.html",
     "account-clubs.html",
+    "account.html",
     "app.html",
+    "club-globe-screen.html",
     "club-pilot.html",
     "club-flight.html",
     "signup.html",
@@ -75,14 +80,15 @@ pub const DIST_HTML_FILES: &[&str] = &[
     "club-register.html",
     "club-signup.html",
     "club-suspended.html",
+    "club-screen.html",
     "club-admin-types.html",
     "club-admin-tails.html",
     "club-admin-pilots.html",
     "club-admin-checkouts.html",
+    "club-admin-checkin-qr.html",
     "club-admin-map.html",
     "club-admin-kiosk-layout.html",
     "club-admin-requests.html",
-    "club-screen.html",
     "club-checkin-landing.html",
     "club-checkin-expired.html",
     "share-flight.html",
@@ -215,6 +221,34 @@ mod tests {
         let vite = std::fs::read_to_string("../vite.config.ts").expect("vite.config.ts");
         for file in DIST_HTML_FILES {
             assert!(vite.contains(file), "{file} missing from vite build inputs");
+        }
+    }
+
+    #[test]
+    fn every_web_source_html_file_has_route_entry() {
+        let web_source_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut html_files: Vec<String> = std::fs::read_dir(&web_source_dir)
+            .expect("read web source dir")
+            .filter_map(Result::ok)
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".html"))
+            .collect();
+        html_files.sort();
+        assert!(
+            !html_files.is_empty(),
+            "no HTML files found in web source dir"
+        );
+        for name in &html_files {
+            let route = format!("/{name}");
+            assert!(
+                policy_for_route(&route).is_some(),
+                "missing CSP route table entry for {route}"
+            );
+            assert!(
+                DIST_HTML_FILES.contains(&name.as_str()),
+                "{name} missing from DIST_HTML_FILES"
+            );
         }
     }
 }
