@@ -206,7 +206,11 @@ export function initGlobeAdminQr(
     if (isDragging) {
       isDragging = false;
       if (overlay && dragStart) {
-        overlay.releasePointerCapture?.(dragStart.pointerId);
+        try {
+          overlay.releasePointerCapture?.(dragStart.pointerId);
+        } catch {
+          /* synthetic or stale pointer id */
+        }
       }
       dragStart = null;
       saveOverlayRect(currentRect);
@@ -214,7 +218,11 @@ export function initGlobeAdminQr(
     if (isResizing) {
       isResizing = false;
       if (resizeHandle && resizeStart) {
-        resizeHandle.releasePointerCapture?.(resizeStart.pointerId);
+        try {
+          resizeHandle.releasePointerCapture?.(resizeStart.pointerId);
+        } catch {
+          /* synthetic or stale pointer id */
+        }
       }
       resizeStart = null;
       saveOverlayRect(currentRect);
@@ -442,7 +450,11 @@ function startDrag(e: PointerEvent): void {
     pointerId: e.pointerId,
   };
   
-  overlay.setPointerCapture(e.pointerId);
+  try {
+    overlay.setPointerCapture(e.pointerId);
+  } catch {
+    /* synthetic or stale pointer id */
+  }
   e.preventDefault();
 }
 
@@ -477,7 +489,11 @@ function startResize(e: PointerEvent): void {
     pointerId: e.pointerId,
   };
   
-  resizeHandle.setPointerCapture(e.pointerId);
+  try {
+    resizeHandle.setPointerCapture(e.pointerId);
+  } catch {
+    /* synthetic or stale pointer id */
+  }
   e.preventDefault();
 }
 
