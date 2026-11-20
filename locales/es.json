@@ -219,6 +219,7 @@
     "landingLead": "Instala la app de flight_vis para volar con el club.",
     "downloadApp": "Descargar app",
     "comingSoon": "Próximamente",
+    "versionLabel": "Versión {version}",
     "androidInstallTitle": "Android",
     "androidStep1": "En Android, permite instalar apps desde esta fuente (navegador) en Ajustes.",
     "androidStep2": "Descarga el APK con el botón de arriba y ábrelo para instalar.",

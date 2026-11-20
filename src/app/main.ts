@@ -1,13 +1,5 @@
 import { bootI18n, t } from "../i18n/boot";
-import { releaseNoteText } from "./releaseNote";
-
-type AppRelease = {
-  available: boolean;
-  version: string | null;
-  sha256: string | null;
-  apkUrl: string;
-  message?: string;
-};
+import { fetchAppRelease, renderReleaseInfo } from "./releaseInfo";
 
 const status = document.querySelector<HTMLParagraphElement>("#status")!;
 const releaseNote = document.querySelector<HTMLParagraphElement>("#release-note")!;
@@ -20,16 +12,15 @@ const sideloadSteps = document.querySelector<HTMLOListElement>("#sideload-steps"
 
 async function loadRelease(): Promise<void> {
   try {
-    const res = await fetch(`${import.meta.env.BASE_URL}app/app-release.json`, { cache: "no-store" });
-    if (!res.ok) {
+    const data = await fetchAppRelease();
+    if (!data) {
       throw new Error("missing metadata");
     }
-    const data = (await res.json()) as AppRelease;
-    const note = releaseNoteText(data);
-    if (note !== null) {
-      releaseNote.textContent = note;
-      releaseNote.hidden = false;
-    }
+    renderReleaseInfo(
+      { version: versionEl, note: releaseNote },
+      data,
+      (v: string) => t("app.versionLabel", { version: v }),
+    );
     const apkProbe = await fetch(data.apkUrl, { method: "HEAD" });
     const hasApk = apkProbe.ok && data.available;
     if (!hasApk) {
@@ -38,10 +29,6 @@ async function loadRelease(): Promise<void> {
       return;
     }
     status.textContent = t("app.releaseReady");
-    if (data.version) {
-      versionEl.hidden = false;
-      versionEl.textContent = t("app.versionLabel", { version: data.version });
-    }
     if (data.sha256) {
       shaWrap.hidden = false;
       shaVal.textContent = data.sha256;

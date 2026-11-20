@@ -216,6 +216,7 @@
     "landingLead": "Install the flight_vis app to fly with the club.",
     "downloadApp": "Download app",
     "comingSoon": "Coming soon",
+    "versionLabel": "Version {version}",
     "androidInstallTitle": "Android",
     "androidStep1": "On Android, allow installs from this source (your browser) in Settings.",
     "androidStep2": "Download the APK with the button above and open it to install.",
