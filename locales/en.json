@@ -63,14 +63,6 @@
     "myAccount": "My account",
     "clubAdmin": "Club admin"
   },
-  "globe": {
-    "adminQr": "QR check-in",
-    "adminQrTitle": "Check-in QR",
-    "adminQrStatus": "Show this QR to the pilot",
-    "adminQrMinimize": "Minimize",
-    "adminQrRestore": "Show QR",
-    "adminQrError": "Session expired. Please refresh."
-  },
   "api": {
     "unauthorized": "Unauthorized",
     "adminOnly": "Admin only",
@@ -390,7 +382,13 @@
     "librarySingularFile": "non-track file",
     "libraryPluralFiles": "non-track files",
     "librarySingularTrackSaved": "track",
-    "libraryPluralTracksSaved": "tracks"
+    "libraryPluralTracksSaved": "tracks",
+    "adminQr": "QR check-in",
+    "adminQrTitle": "Check-in QR",
+    "adminQrStatus": "Show this QR to the pilot",
+    "adminQrMinimize": "Minimize",
+    "adminQrRestore": "Show QR",
+    "adminQrError": "Session expired. Please refresh."
   },
   "viewer": {
     "connecting": "Connecting to live stream…",
