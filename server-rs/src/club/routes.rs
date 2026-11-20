@@ -817,7 +817,7 @@ async fn patch_admin_club_base(
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
-    
+
     // Validate inputs using the pure validation function
     match crate::club::db_kiosk_pg::validate_base_aerodrome(
         Some(&body.icao),

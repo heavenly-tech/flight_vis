@@ -58,10 +58,10 @@ describe("kioskMapView", () => {
     });
 
     it("zoom is clamped to min", () => {
-      // Very far apart points should still be clamped
+      // Very far apart points (spanning almost the entire world) should be clamped to MIN_ZOOM
       const aircraft = [
-        { lat: -33.5, lon: -70.6 },
-        { lat: 33.5, lon: 70.6 }, // Opposite side of world
+        { lat: 0, lon: -179 },
+        { lat: 0, lon: 179 }, // Almost opposite sides of the world (358 degree span)
       ];
       const result = computeKioskView(TOBALABA, aircraft, VIEWPORT);
       expect(result.zoom).toBe(3);

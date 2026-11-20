@@ -3,8 +3,6 @@ import { applyLayoutToEl, type KioskQrLayout } from "./kioskQrLayout";
 import { startClubPage } from "./i18nPage";
 import {
   computeKioskView,
-  getFallbackBase,
-  getFallbackViewKm,
   latToTileY,
   lonToTileX,
 } from "./kioskMapView";
