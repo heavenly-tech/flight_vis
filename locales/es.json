@@ -63,6 +63,14 @@
     "myAccount": "Mi cuenta",
     "clubAdmin": "Administrar club"
   },
+  "globe": {
+    "adminQr": "QR check-in",
+    "adminQrTitle": "QR de check-in",
+    "adminQrStatus": "Muestra este QR al piloto",
+    "adminQrMinimize": "Minimizar",
+    "adminQrRestore": "Mostrar QR",
+    "adminQrError": "Sesión expirada. Actualiza la página."
+  },
   "auth": {
     "wrongPassword": "Contraseña incorrecta."
   },

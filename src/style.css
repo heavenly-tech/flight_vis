@@ -1195,3 +1195,120 @@ dialog input {
   font: 500 12px "IBM Plex Mono", monospace;
   pointer-events: none;
 }
+
+/* Admin QR Check-in Overlay */
+#btn-admin-qr,
+#admin-qr-pill {
+  pointer-events: auto;
+}
+
+.admin-qr-overlay {
+  position: fixed;
+  z-index: 15;
+  border: 1px solid var(--stroke);
+  border-radius: 16px;
+  background: var(--panel);
+  backdrop-filter: blur(18px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.admin-qr-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--stroke);
+  cursor: grab;
+  touch-action: none;
+}
+
+.admin-qr-header:active {
+  cursor: grabbing;
+}
+
+.admin-qr-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.admin-qr-minimize {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.admin-qr-body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.admin-qr-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.admin-qr-status {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.admin-qr-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 20px;
+  height: 20px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background: linear-gradient(-45deg, transparent 50%, var(--stroke) 50%);
+}
+
+.admin-qr-resize::before {
+  content: "";
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--text);
+  border-bottom: 2px solid var(--text);
+  opacity: 0.6;
+}
+
+.admin-qr-pill {
+  position: fixed;
+  z-index: 15;
+  bottom: 16px;
+  right: 16px;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid var(--stroke);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  font: 500 12px Outfit, sans-serif;
+  backdrop-filter: blur(16px);
+  cursor: pointer;
+  touch-action: none;
+}
+
+/* Ensure overlay elements are pointer-events: auto */
+.admin-qr-overlay,
+.admin-qr-overlay *,
+.admin-qr-pill {
+  pointer-events: auto;
+}

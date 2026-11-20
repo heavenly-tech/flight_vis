@@ -37,6 +37,7 @@
         <div class="top-actions">
           <a id="btn-login" class="chip" href="/login" data-i18n="globe.logIn">Log in</a>
           <a id="btn-account" class="chip" href="/account-clubs.html" hidden data-i18n="nav.myAccount">Mi cuenta</a>
+          <button type="button" id="btn-admin-qr" class="chip" hidden aria-pressed="false" aria-controls="admin-qr-overlay" data-i18n="globe.adminQr">QR check-in</button>
           <button type="button" id="btn-logout" class="chip" hidden data-i18n="globe.logOut">Log out</button>
           <button type="button" id="btn-library" class="chip disclosure" aria-expanded="false" aria-controls="library-panel">
             <span data-i18n="globe.library">Library</span> <span class="caret" aria-hidden="true">^</span>
@@ -238,6 +239,20 @@
         </div>
       </form>
     </dialog>
+
+    <!-- Admin QR Check-in Overlay -->
+    <div id="admin-qr-overlay" class="admin-qr-overlay" hidden>
+      <div class="admin-qr-header">
+        <h3 class="admin-qr-title" data-i18n="globe.adminQrTitle">Check-in QR</h3>
+        <button type="button" id="admin-qr-minimize" class="chip admin-qr-minimize" data-i18n="globe.adminQrMinimize">Minimize</button>
+      </div>
+      <div class="admin-qr-body">
+        <img id="admin-qr-img" class="admin-qr-img" alt="" />
+        <p id="admin-qr-status" class="admin-qr-status" data-i18n="globe.adminQrStatus">Show this QR to the pilot</p>
+      </div>
+      <div id="admin-qr-resize" class="admin-qr-resize"></div>
+    </div>
+    <button type="button" id="admin-qr-pill" class="admin-qr-pill chip" hidden data-i18n="globe.adminQrRestore">Show QR</button>
 
     <script src="/live-route-boot.js"></script>
     <script type="module" src="/src/main.ts"></script>

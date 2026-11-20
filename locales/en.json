@@ -63,6 +63,14 @@
     "myAccount": "My account",
     "clubAdmin": "Club admin"
   },
+  "globe": {
+    "adminQr": "QR check-in",
+    "adminQrTitle": "Check-in QR",
+    "adminQrStatus": "Show this QR to the pilot",
+    "adminQrMinimize": "Minimize",
+    "adminQrRestore": "Show QR",
+    "adminQrError": "Session expired. Please refresh."
+  },
   "api": {
     "unauthorized": "Unauthorized",
     "adminOnly": "Admin only",
