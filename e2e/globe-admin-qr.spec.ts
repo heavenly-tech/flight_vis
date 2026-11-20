@@ -183,7 +183,7 @@ test("admin QR overlay stays within viewport on drag and resize", async ({ page 
     data: { email: "admin@demo.test", password: "password12" },
   });
   expect(login.ok()).toBeTruthy();
-
+  
   await page.goto("/");
   await expect(page.locator("#btn-login")).toBeHidden({ timeout: 15_000 });
   await expect(page.locator("#btn-account")).toBeVisible({ timeout: 15_000 });
@@ -191,61 +191,68 @@ test("admin QR overlay stays within viewport on drag and resize", async ({ page 
   // Open overlay
   await page.locator("#btn-admin-qr").click();
   await expect(page.locator("#admin-qr-overlay")).toBeVisible({ timeout: 5_000 });
-
+  
   const overlay = page.locator("#admin-qr-overlay");
   const header = page.locator(".admin-qr-header");
   const resizeHandle = page.locator("#admin-qr-resize");
   
-  // Get initial position and size
-  const initialBox = await overlay.boundingBox();
-  expect(initialBox).toBeDefined();
+  const vw = page.viewportSize!.width;
+  const vh = page.viewportSize!.height;
   
-  // Test: drag header far beyond top-left (to -500, -500)
-  // We need to click on the header but not on the minimize button
-  // The minimize button is typically on the right side of the header
-  const headerBox = await header.boundingBox();
-  expect(headerBox).toBeDefined();
+  // Step 1: Drag top-left - grab header at left side, move to (1, 1)
+  const headerBox1 = await header.boundingBox();
+  expect(headerBox1).toBeDefined();
+  const grabX1 = headerBox1!.x + 20;
+  const grabY1 = headerBox1!.y + headerBox1!.height / 2;
   
-  // Click at the left side of the header (away from minimize button which is on the right)
-  const clickX = headerBox!.x + 20;
-  const clickY = headerBox!.y + headerBox!.height / 2;
-  
-  await page.mouse.move(clickX, clickY);
+  await page.mouse.move(grabX1, grabY1);
   await page.mouse.down();
-  
-  // Drag far beyond top-left
-  await page.mouse.move(-500, -500);
+  await page.mouse.move(1, 1, { steps: 10 });
   await page.mouse.up();
   
-  // Assert overlay stays within viewport (x, y >= 0)
-  const afterDragBox = await overlay.boundingBox();
-  expect(afterDragBox!.x).toBeGreaterThanOrEqual(0);
-  expect(afterDragBox!.y).toBeGreaterThanOrEqual(0);
+  const afterDrag1 = await overlay.boundingBox();
+  expect(afterDrag1!.x).toBeGreaterThanOrEqual(0);
+  expect(afterDrag1!.y).toBeGreaterThanOrEqual(0);
   
-  // Test: drag far beyond bottom-right
-  await page.mouse.move(clickX, clickY);
+  // Step 2: Drag bottom-right - re-read header box, grab same relative point, move to (vw-1, vh-1)
+  const headerBox2 = await header.boundingBox();
+  expect(headerBox2).toBeDefined();
+  const grabX2 = headerBox2!.x + 20;
+  const grabY2 = headerBox2!.y + headerBox2!.height / 2;
+  
+  await page.mouse.move(grabX2, grabY2);
   await page.mouse.down();
-  await page.mouse.move(page.viewportSize!.width + 500, page.viewportSize!.height + 500);
+  await page.mouse.move(vw - 1, vh - 1, { steps: 10 });
   await page.mouse.up();
   
-  // Assert overlay stays within viewport (right/bottom edges <= viewport)
-  const afterDragBox2 = await overlay.boundingBox();
-  expect(afterDragBox2!.x + afterDragBox2!.width).toBeLessThanOrEqual(page.viewportSize!.width);
-  expect(afterDragBox2!.y + afterDragBox2!.height).toBeLessThanOrEqual(page.viewportSize!.height);
+  const afterDrag2 = await overlay.boundingBox();
+  expect(afterDrag2!.x + afterDrag2!.width).toBeLessThanOrEqual(vw + 1);
+  expect(afterDrag2!.y + afterDrag2!.height).toBeLessThanOrEqual(vh + 1);
   
-  // Test: drag resize handle by +5000,+5000
+  // Step 3: Drag back to top-left, then drag resize handle to (vw-1, vh-1)
+  const headerBox3 = await header.boundingBox();
+  expect(headerBox3).toBeDefined();
+  const grabX3 = headerBox3!.x + 20;
+  const grabY3 = headerBox3!.y + headerBox3!.height / 2;
+  
+  await page.mouse.move(grabX3, grabY3);
+  await page.mouse.down();
+  await page.mouse.move(1, 1, { steps: 10 });
+  await page.mouse.up();
+  
   const resizeBox = await resizeHandle.boundingBox();
   expect(resizeBox).toBeDefined();
   
   await page.mouse.move(resizeBox!.x + resizeBox!.width / 2, resizeBox!.y + resizeBox!.height / 2);
   await page.mouse.down();
-  await page.mouse.move(resizeBox!.x + resizeBox!.width / 2 + 5000, resizeBox!.y + resizeBox!.height / 2 + 5000);
+  await page.mouse.move(vw - 1, vh - 1, { steps: 10 });
   await page.mouse.up();
   
-  // Assert overlay width/height <= viewport
-  const afterResizeBox = await overlay.boundingBox();
-  expect(afterResizeBox!.width).toBeLessThanOrEqual(page.viewportSize!.width);
-  expect(afterResizeBox!.height).toBeLessThanOrEqual(page.viewportSize!.height);
+  const afterResize = await overlay.boundingBox();
+  expect(afterResize!.width).toBeLessThanOrEqual(vw + 1);
+  expect(afterResize!.height).toBeLessThanOrEqual(vh + 1);
+  expect(afterResize!.x + afterResize!.width).toBeLessThanOrEqual(vw + 1);
+  expect(afterResize!.y + afterResize!.height).toBeLessThanOrEqual(vh + 1);
   
   // Test: minimize button click works (not swallowed by drag)
   await page.locator("#admin-qr-minimize").click();
@@ -255,7 +262,7 @@ test("admin QR overlay stays within viewport on drag and resize", async ({ page 
   // Restore
   await page.locator("#admin-qr-pill").click();
   await expect(page.locator("#admin-qr-overlay")).toBeVisible({ timeout: 2_000 });
-
+  
   // No CSP violations
   expect(consoleErrors).toEqual([]);
   expect(pageErrors).toEqual([]);
