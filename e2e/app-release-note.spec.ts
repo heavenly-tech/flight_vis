@@ -75,5 +75,5 @@ test("app-release.json message with HTML is rendered literally", async ({ page, 
   expect(content).toBe("<b>x</b>");
   
   // Check that there's no <b> element inside
-  await expect(page.locator("#release-note b")).not.toExist();
+  await expect(page.locator("#release-note b")).toHaveCount(0);
 });
