@@ -7,6 +7,7 @@
 export const HTML_CSP_ROUTE_TABLE = Object.freeze({
   "/index.html": "globe",
   "/__spa_index__": "globe",
+  "/club-globe-screen.html": "globe",
   "/share-flight.html": "globe",
   "/login": "strict",
   "/login.html": "strict",
@@ -14,6 +15,7 @@ export const HTML_CSP_ROUTE_TABLE = Object.freeze({
   "/signup": "strict",
   "/signup.html": "strict",
   "/account-clubs.html": "strict",
+  "/account.html": "strict",
   "/api/account/auth/magic": "strict",
   "/api/club/auth/magic": "strict",
   "/app.html": "strict",
@@ -29,6 +31,7 @@ export const HTML_CSP_ROUTE_TABLE = Object.freeze({
   "/club-admin-map.html": "strict",
   "/club-admin-kiosk-layout.html": "strict",
   "/club-admin-requests.html": "strict",
+  "/club-admin-checkin-qr.html": "strict",
   "/club-map.html": "strict",
   "/public-map.html": "strict",
   "/club-screen.html": "strict",
