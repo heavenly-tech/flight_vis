@@ -59,7 +59,9 @@
     "createClub": "Create club",
     "registerClub": "Register club",
     "pilotProfile": "Pilot profile",
-    "androidApp": "Android app"
+    "androidApp": "Android app",
+    "myAccount": "My account",
+    "clubAdmin": "Club admin"
   },
   "api": {
     "unauthorized": "Unauthorized",

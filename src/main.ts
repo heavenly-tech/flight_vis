@@ -62,9 +62,13 @@ let shareButtonLabel = "";
 const authHint = document.querySelector<HTMLParagraphElement>("#auth-hint")!;
 const loginLink = document.querySelector<HTMLAnchorElement>("#btn-login")!;
 const logoutButton = document.querySelector<HTMLButtonElement>("#btn-logout")!;
+const accountLink = document.querySelector<HTMLAnchorElement>("#btn-account")!;
 
 let auth: AuthStatus = { authenticated: false, configured: true };
 let library: LibraryHandle | null = null;
+
+// Session state for account/club login
+let session: { loggedIn: boolean; clubAdmin: boolean } = { loggedIn: false, clubAdmin: false };
 
 function syncPlayLabel(): void {
   playButton.textContent = playing ? t("globe.pause") : t("globe.play");
@@ -81,8 +85,25 @@ function refreshGlobeChrome(): void {
 
 function syncAuthUi(): void {
   loginLink.href = entrarUrl();
-  loginLink.hidden = auth.authenticated;
-  logoutButton.hidden = !auth.authenticated;
+  const showAccount = session.loggedIn || auth.authenticated;
+  loginLink.hidden = showAccount;
+  logoutButton.hidden = !showAccount;
+  
+  // Update account link based on session state
+  if (session.clubAdmin) {
+    accountLink.href = "/club-admin-map.html";
+    accountLink.dataset.i18n = "nav.clubAdmin";
+  } else {
+    accountLink.href = "/account-clubs.html";
+    accountLink.dataset.i18n = "nav.myAccount";
+  }
+  accountLink.hidden = !showAccount;
+  
+  // Apply i18n to the account link to update its text based on the new dataset.i18n
+  if (showAccount) {
+    accountLink.textContent = t(accountLink.dataset.i18n as string);
+  }
+  
   library?.setAuth(auth);
   if (!auth.configured) {
     authHint.hidden = false;
@@ -896,6 +917,25 @@ async function boot(): Promise<void> {
   } catch {
     auth = { authenticated: false, configured: true };
   }
+
+  // Check session state for account/club login
+  try {
+    const [accountRes, clubRes] = await Promise.all([
+      fetch("/api/account/me", { credentials: "same-origin" }),
+      fetch("/api/club/me", { credentials: "same-origin" }),
+    ]);
+    session.loggedIn = accountRes.ok;
+    if (clubRes.ok) {
+      const clubMe = (await clubRes.json()) as { pilot: { role: string } | null };
+      session.clubAdmin = clubMe.pilot?.role === "admin";
+    } else {
+      session.clubAdmin = false;
+    }
+  } catch {
+    // Network errors are fine - user is not logged in
+    session = { loggedIn: false, clubAdmin: false };
+  }
+  syncAuthUi();
 
   liveRuntime = createLiveRuntime({
     viewer,
