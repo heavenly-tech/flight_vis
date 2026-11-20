@@ -208,8 +208,9 @@ test("admin QR overlay stays within viewport on drag and resize", async ({ page 
   const header = page.locator(".admin-qr-header");
   const resizeHandle = page.locator("#admin-qr-resize");
 
-  const vw = page.viewportSize!.width;
-  const vh = page.viewportSize!.height;
+  const { vw, vh } = await page.evaluate(() => ({ vw: window.innerWidth, vh: window.innerHeight }));
+  expect(vw).toBeGreaterThan(0);
+  expect(vh).toBeGreaterThan(0);
 
   // Get initial header box
   const headerBox1 = await header.boundingBox();
