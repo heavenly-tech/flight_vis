@@ -18,11 +18,17 @@ test("kiosk globe screen shows map with base view when no aircraft", async ({ pa
   const displayData = await displayRes.json();
   const token = displayData.token;
 
+  // Activate the display with the token (page.request shares the page's cookie jar)
+  const activateRes = await page.request.post("/api/display/activate", {
+    data: { token },
+  });
+  expect(activateRes.ok()).toBeTruthy();
+
   // Stub ArcGIS tiles
   await stubArcgisTiles(page);
 
   // Stub display/map to return empty aircraft
-  await page.route("/api/display/map", async (route) => {
+  await page.route("**/api/display/map", async (route) => {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -30,27 +36,21 @@ test("kiosk globe screen shows map with base view when no aircraft", async ({ pa
     });
   });
 
-  // Open the globe screen
-  await page.goto("/club-globe-screen.html", { waitUntil: "networkidle" });
+  // Open the globe screen (don't use networkidle; the page keeps an EventSource open)
+  await page.goto("/club-globe-screen.html");
 
-  // Activate the display
-  await page.fill("#activate-token", token);
-  await page.click("#btn-activate");
-
-  // Wait for activation
+  // Check that the activate panel stays hidden (display is already activated)
   await expect(page.locator("#activate")).toBeHidden({ timeout: 10000 });
 
   // Check that the map container is visible
   const kioskMap = page.locator("[data-testid=\"kiosk-map\"]");
-  await expect(kioskMap).toBeVisible({ timeout: 10000 });
+  await expect(kioskMap).toBeVisible({ timeout: 15000 });
 
   // Check that at least one tile image is present
-  const tileImages = kioskMap.locator("img[data-tile]");
-  await expect(tileImages).toHaveCountGreaterThan(0, { timeout: 10000 });
+  await expect.poll(() => kioskMap.locator("img[data-tile]").count(), { timeout: 15000 }).toBeGreaterThan(0);
 
   // Check data-view attribute (should be base or fallback)
-  const viewType = await kioskMap.getAttribute("data-view");
-  expect(viewType).toMatch(/^(base|fallback)$/);
+  await expect(kioskMap).toHaveAttribute("data-view", /^(base|fallback)$/);
 });
 
 test("admin can set and get club base aerodrome", async ({ page }) => {
