@@ -765,6 +765,80 @@ async fn patch_admin_club_locale(
     }
 }
 
+#[derive(Deserialize)]
+struct BaseAerodromeBody {
+    icao: String,
+    lat: f64,
+    lon: f64,
+}
+
+async fn get_admin_club_base(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let v = viewer(&state, &headers).await;
+    let club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    match db.club_base_aerodrome(&club_id).await {
+        Ok(base) => {
+            Json(json!({ "icao": base.icao, "lat": base.lat, "lon": base.lon })).into_response()
+        }
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn patch_admin_club_base(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<BaseAerodromeBody>,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let v = viewer(&state, &headers).await;
+    let club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    let (icao, lat, lon) = match crate::club::db_kiosk_pg::validate_base_aerodrome(
+        Some(&body.icao),
+        Some(body.lat),
+        Some(body.lon),
+    ) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response();
+        }
+    };
+    match db.set_club_base_aerodrome(&club_id, &icao, lat, lon).await {
+        Ok(base) => {
+            Json(json!({ "icao": base.icao, "lat": base.lat, "lon": base.lon })).into_response()
+        }
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
 async fn me_tails(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
@@ -2390,6 +2464,22 @@ async fn display_map(State(state): State<AppState>, headers: HeaderMap) -> impl 
     Json(json!({ "aircraft": rows })).into_response()
 }
 
+async fn display_base(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "icao": null, "lat": null, "lon": null })).into_response();
+    };
+    let (club_id, _admin_id) = match require_display_club(db, &headers).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+    match db.club_base_aerodrome(&club_id).await {
+        Ok(base) => {
+            Json(json!({ "icao": base.icao, "lat": base.lat, "lon": base.lon })).into_response()
+        }
+        Err(_) => Json(json!({ "icao": null, "lat": null, "lon": null })).into_response(),
+    }
+}
+
 #[derive(Deserialize, Default)]
 struct DisplaySessionBody {
     label: String,
@@ -3053,6 +3143,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/club/screen/qr.svg", get(club_screen_qr_svg))
         .route("/api/devices/pair/{id}/qr.svg", get(device_pair_qr_svg))
         .route("/api/display/map", get(display_map))
+        .route("/api/display/base", get(display_base))
         .route("/api/display/kiosk-layout", get(display_kiosk_layout))
         .route(
             "/api/display/kiosk-layout/stream",
@@ -3092,6 +3183,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/admin/club/locale",
             axum::routing::patch(patch_admin_club_locale),
+        )
+        .route(
+            "/api/admin/club/base",
+            axum::routing::get(get_admin_club_base).patch(patch_admin_club_base),
         )
         .route("/api/admin/club/slug", post(post_admin_club_slug))
         .route("/api/me/tails", get(me_tails))
