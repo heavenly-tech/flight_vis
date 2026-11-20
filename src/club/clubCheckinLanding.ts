@@ -2,6 +2,7 @@ import { initI18n, applyI18nDocument, t } from "../i18n/index";
 
 type LandingConfig = {
   intentUrl?: string;
+  claimToken?: string;
   clubName?: string;
   logoUrl?: string | null;
   slug?: string;
@@ -89,6 +90,13 @@ async function loadConfig(): Promise<void> {
   if (cfg.intentUrl) {
     intentBtn.href = cfg.intentUrl;
     intentBtn.textContent = t("checkin.openApp");
+    
+    // If we have a claimToken, update the URL to use it
+    if (cfg.claimToken && paths?.token) {
+      // Replace the token in the URL with the claimToken for future page loads
+      const newUrl = `/c/${encodeURIComponent(paths.slug)}/q/${encodeURIComponent(cfg.claimToken)}`;
+      window.history.replaceState({}, "", newUrl);
+    }
   } else if (!paths.token) {
     intentBtn.hidden = true;
   }

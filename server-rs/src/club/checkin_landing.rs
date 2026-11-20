@@ -4,6 +4,7 @@ use crate::club::{
         android_deep_link_configured, android_package_name, club_public_https_url,
         launcher_intent_url,
     },
+    auth::new_device_token,
     checkin,
     club_scope::ClubScopeError,
     db::{now_ms, ClubDb},
@@ -298,6 +299,58 @@ async fn checkin_not_found_page(
     }
 }
 
+async fn build_landing_json_with_handoff(
+    state: &AppState,
+    db: &ClubDb,
+    headers: &HeaderMap,
+    slug: &str,
+    intent_url: Option<String>,
+    handoff_token: &str,
+    now: i64,
+) -> Result<Value, LandingError> {
+    let ctx = db.resolve_club_context(slug).await.map_err(|e| match e {
+        ClubScopeError::NotFound => LandingError::NotFound,
+        ClubScopeError::Forbidden => LandingError::NotFound,
+    })?;
+    let club_name = club_display_name(db, &ctx.club_id).await?;
+    let club_default_locale = db
+        .club_default_locale(&ctx.club_id)
+        .await
+        .unwrap_or_else(|_| "es".to_string());
+    let accept = headers
+        .get(axum::http::header::ACCEPT_LANGUAGE)
+        .and_then(|v| v.to_str().ok());
+    let resolved_locale = crate::i18n::global()
+        .map(|c| {
+            let stored = crate::club::auth::parse_fv_locale_cookie(headers);
+            c.resolve_locale(
+                None,
+                Some(club_default_locale.as_str()),
+                accept,
+                stored.as_deref(),
+            )
+        })
+        .unwrap_or(club_default_locale.clone());
+    let release = read_app_release(&state.dist_dir).await;
+    let logo_url = optional_club_logo_url(&state.dist_dir, &ctx.slug);
+    let mut body = json!({
+        "slug": ctx.slug,
+        "clubName": club_name,
+        "logoUrl": logo_url,
+        "clubDefaultLocale": club_default_locale,
+        "resolvedLocale": resolved_locale,
+        "releaseAvailable": release.release_available,
+        "apkUrl": release.apk_url,
+        "publicMapPath": format!("/public-map.html?club={}", ctx.slug),
+        "appPath": "/app.html",
+        "claimToken": handoff_token,
+    });
+    if let Some(intent) = intent_url {
+        body["intentUrl"] = json!(intent);
+    }
+    Ok(body)
+}
+
 async fn build_landing_json(
     state: &AppState,
     db: &ClubDb,
@@ -363,17 +416,101 @@ async fn checkin_landing_config(
     {
         return resp;
     }
-    if validate_checkin_peek(db, &slug, &token, now_ms())
+    
+    let token = token.trim();
+    
+    // Check if this is already a handoff token - if so, just validate and return config
+    if checkin::is_handoff_token(token) {
+        let now = now_ms();
+        match db.validate_handoff_token(token, now).await {
+            Ok((club_id, pilot_id, _)) => {
+                // Get the slug for this club
+                let ctx = match db.resolve_club_context(&slug).await {
+                    Ok(ctx) if ctx.club_id == club_id => ctx,
+                    _ => return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
+                };
+                
+                let release = read_app_release(&state.dist_dir).await;
+                let apk_abs = club_public_https_url(&state, &headers, &release.apk_url);
+                
+                // For handoff tokens, use a VIEW intent with the handoff token
+                let public_host = state.mailer.public_url.trim_end_matches('/');
+                let handoff_url = format!("{}/c/{}/q/{}", public_host, ctx.slug, token);
+                let intent = Some(handoff_url);
+                
+                match build_landing_json(&state, db, &headers, &ctx.slug, intent).await {
+                    Ok(body) => (qr_landing_api_headers(), Json(body)).into_response(),
+                    Err(LandingError::NotFound) => {
+                        (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+                    }
+                    Err(LandingError::Db) => (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response(),
+                }
+            }
+            Err(_) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
+        }
+    }
+    
+    // Validate the QR token
+    if validate_checkin_peek(db, &slug, token, now_ms())
         .await
         .is_err()
     {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     }
+    
+    let now = now_ms();
+    let ctx = match db.resolve_club_context(&slug).await {
+        Ok(ctx) => ctx,
+        Err(_) => return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
+    };
+    
+    // Consume the QR token by creating a checkin record
+    // This marks it as used so it rotates
+    let (secret, valid_min) = match db.club_checkin_settings(&ctx.club_id).await {
+        Ok(settings) => settings,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response(),
+    };
+    
+    let digest = checkin::token_digest(token);
+    let step = checkin::current_step(now);
+    
+    // Create a guest pilot for the handoff (if one doesn't exist)
+    // We'll create a temporary guest that will be re-scoped to the club when checkin is submitted
+    let guest_pilot_id = match db.create_guest_for_handoff(&ctx.club_id, now).await {
+        Ok(id) => id,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response(),
+    };
+    
+    // Insert a checkin row to consume the QR token
+    let _ = db.insert_checkin_row(
+        &ctx.club_id,
+        Some(&guest_pilot_id),
+        None,
+        step,
+        &digest,
+        now,
+        Some(now + valid_min * 60_000),
+        "ok",
+        None,
+    )
+    .await;
+    
+    // Mint a handoff token
+    let handoff_token = match db.mint_handoff_token(&ctx.club_id, &guest_pilot_id, None, now).await {
+        Ok(token) => token,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response(),
+    };
+    
     let release = read_app_release(&state.dist_dir).await;
     let apk_abs = club_public_https_url(&state, &headers, &release.apk_url);
-    let intent = android_deep_link_configured()
-        .then(|| launcher_intent_url(&android_package_name(), &apk_abs));
-    match build_landing_json(&state, db, &headers, &slug, intent).await {
+    
+    // Use a VIEW intent with the handoff token
+    let public_host = state.mailer.public_url.trim_end_matches('/');
+    let handoff_url = format!("{}/c/{}/q/{}", public_host, ctx.slug, handoff_token);
+    let intent = Some(handoff_url);
+    
+    // Build response with claimToken
+    match build_landing_json_with_handoff(&state, db, &headers, &slug, intent, &handoff_token, now).await {
         Ok(body) => (qr_landing_api_headers(), Json(body)).into_response(),
         Err(LandingError::NotFound) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
@@ -575,7 +712,7 @@ mod tests {
 
     #[serial]
     #[tokio::test]
-    async fn landing_renders_for_valid_token_without_consuming() {
+    async fn landing_renders_for_valid_token_and_consumes_qr() {
         let (_dir, router, db) = fixture(false, false).await;
         let club_id = db.default_club_id().await.unwrap();
         let now = now_ms();
@@ -602,7 +739,15 @@ mod tests {
             .fetch_one(&db.pool)
             .await
             .unwrap();
-        assert_eq!(before, after);
+        // Now the QR token is consumed (checkin row created)
+        assert_eq!(after, before + 1);
+        
+        // Check that a handoff token was created
+        let handoff_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM checkin_handoff_tokens")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert!(handoff_count >= 1);
     }
 
     #[serial]
@@ -732,5 +877,48 @@ mod tests {
             .unwrap();
         assert_eq!(susp.status(), StatusCode::FORBIDDEN);
         assert_qr_page_headers(&susp);
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn landing_api_returns_claim_token() {
+        let (_dir, router, db) = fixture(false, false).await;
+        let club_id = db.default_club_id().await.unwrap();
+        let now = now_ms();
+        let token = db.mint_checkin_qr_token(&club_id, now).await.unwrap();
+        let body = get_landing_api(&router, &format!("/api/c/demo/q/{token}/landing")).await;
+        
+        // Check that claimToken is present
+        assert!(body.get("claimToken").is_some());
+        let claim_token = body["claimToken"].as_str().unwrap();
+        assert!(claim_token.starts_with("h1."));
+        
+        // Check that intentUrl uses the claim token
+        assert!(body.get("intentUrl").is_some());
+        let intent_url = body["intentUrl"].as_str().unwrap();
+        assert!(intent_url.contains(claim_token));
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn handoff_token_landing_returns_same_config() {
+        let (_dir, router, db) = fixture(false, false).await;
+        let club_id = db.default_club_id().await.unwrap();
+        let now = now_ms();
+        let token = db.mint_checkin_qr_token(&club_id, now).await.unwrap();
+        
+        // First request consumes QR and creates handoff token
+        let body1 = get_landing_api(&router, &format!("/api/c/demo/q/{token}/landing")).await;
+        let claim_token = body1["claimToken"].as_str().unwrap();
+        
+        // Second request with handoff token should also work
+        let body2 = get_landing_api(&router, &format!("/api/c/demo/q/{claim_token}/landing")).await;
+        
+        // Both should have the same club info
+        assert_eq!(body1["clubName"], body2["clubName"]);
+        assert_eq!(body1["slug"], body2["slug"]);
+        
+        // The handoff token request should also return the claimToken
+        assert_eq!(body2["claimToken"], claim_token);
     }
 }

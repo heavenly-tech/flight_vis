@@ -732,6 +732,21 @@ impl ClubDb {
         .flatten()
     }
 
+    pub async fn pilot_status(&self, pilot_id: &str) -> Result<String, DbError> {
+        sqlx::query_scalar("SELECT status FROM pilots WHERE id = $1")
+            .bind(pilot_id)
+            .fetch_one(&self.pool)
+            .await
+    }
+
+    pub async fn get_device_token(&self, device_id: &str) -> Option<String> {
+        // Get the token from the device row by matching the hash
+        // We need to get the actual token value, but we only store the hash
+        // So we'll return None here - the token should be generated when creating the device
+        // For existing devices, we can't retrieve the original token
+        None
+    }
+
     pub async fn club_id_for_flight(&self, flight_id: &str) -> Option<String> {
         sqlx::query_scalar("SELECT club_id FROM flights WHERE id = $1")
             .bind(flight_id)
@@ -1480,6 +1495,73 @@ impl ClubDb {
         token: &str,
         now: i64,
     ) -> Result<CheckinRecord, CheckinReject> {
+        let token = token.trim();
+        
+        // Check if this is a handoff token
+        if checkin::is_handoff_token(token) {
+            let (club_id, handoff_pilot_id, _) = self.consume_handoff_token(token, now).await?;
+            
+            // Verify the handoff token's pilot matches the caller's pilot
+            // For guests, we allow re-scoping to the QR club
+            let pilot_club = self
+                .pilot_club_id(pilot_id)
+                .await
+                .map_err(|_| CheckinReject::WrongClub)?;
+            
+            // If the pilot is a guest and the handoff token is for a different club,
+            // we need to reattach the guest to the token's club
+            if pilot_club != club_id {
+                // Update the guest's club_id to match the token's club
+                sqlx::query(
+                    "UPDATE pilots SET club_id = $1 WHERE id = $2 AND status = 'guest'",
+                )
+                .bind(&club_id)
+                .bind(pilot_id)
+                .execute(&self.pool)
+                .await
+                .map_err(|_| CheckinReject::WrongClub)?;
+                
+                // Also update guest_sessions if they exist
+                let _ = sqlx::query(
+                    "UPDATE guest_sessions SET club_id = $1 WHERE guest_pilot_id = $2",
+                )
+                .bind(&club_id)
+                .bind(pilot_id)
+                .execute(&self.pool)
+                .await;
+            }
+            
+            // Get the checkin settings for the token's club
+            let (_, valid_min) = self
+                .club_checkin_settings(&club_id)
+                .await
+                .map_err(|_| CheckinReject::ForgedHmac)?;
+            
+            let digest = checkin::token_digest(token);
+            let expires = now + valid_min * 60_000;
+            let id = self
+                .insert_checkin_row(
+                    &club_id,
+                    Some(pilot_id),
+                    device_id,
+                    0,
+                    &digest,
+                    now,
+                    Some(expires),
+                    "ok",
+                    None,
+                )
+                .await
+                .map_err(|_| CheckinReject::ForgedHmac)?;
+            
+            return Ok(CheckinRecord {
+                id,
+                created_at: now,
+                expires_at: expires,
+            });
+        }
+        
+        // Regular QR token flow
         let pilot_club = self
             .pilot_club_id(pilot_id)
             .await
@@ -1515,9 +1597,42 @@ impl ClubDb {
             }
             Err(CheckinTokenError::OldStep) => fail_checkin!("old_step", CheckinReject::OldStep),
         };
+        
+        // For guests, allow re-scoping to the QR club
         if club_id != pilot_club {
-            fail_checkin!("wrong_club", CheckinReject::WrongClub);
+            // Check if pilot is a guest - if so, update their club
+            let pilot_status: String = sqlx::query_scalar(
+                "SELECT status FROM pilots WHERE id = $1",
+            )
+            .bind(pilot_id)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| CheckinReject::WrongClub)?;
+            
+            if pilot_status == "guest" {
+                // Update the guest's club_id to match the token's club
+                sqlx::query(
+                    "UPDATE pilots SET club_id = $1 WHERE id = $2",
+                )
+                .bind(&club_id)
+                .bind(pilot_id)
+                .execute(&self.pool)
+                .await
+                .map_err(|_| CheckinReject::WrongClub)?;
+                
+                // Update guest_sessions if they exist
+                let _ = sqlx::query(
+                    "UPDATE guest_sessions SET club_id = $1 WHERE guest_pilot_id = $2",
+                )
+                .bind(&club_id)
+                .bind(pilot_id)
+                .execute(&self.pool)
+                .await;
+            } else {
+                fail_checkin!("wrong_club", CheckinReject::WrongClub);
+            }
         }
+        
         if self
             .checkin_replay(pilot_id, device_id, &digest)
             .await
@@ -1528,7 +1643,7 @@ impl ClubDb {
         let expires = now + valid_min * 60_000;
         let id = self
             .insert_checkin_row(
-                &pilot_club,
+                &club_id,
                 Some(pilot_id),
                 device_id,
                 step,
@@ -1603,6 +1718,157 @@ impl ClubDb {
             )
             .await?;
         Ok(())
+    }
+
+    /// Mint a new handoff token for browser-to-app check-in handoff
+    pub async fn mint_handoff_token(
+        &self,
+        club_id: &str,
+        pilot_id: &str,
+        device_id: Option<&str>,
+        now: i64,
+    ) -> Result<String, DbError> {
+        use crate::club::auth::new_device_token;
+        
+        let token = format!(
+            "{}.{}.{}",
+            checkin::HANDOFF_TOKEN_PREFIX.trim_end_matches('.'),
+            club_id,
+            new_device_token()
+        );
+        let hash = digest_token(&token);
+        let expires_at = now + checkin::HANDOFF_TOKEN_TTL_SEC * 1000;
+        
+        sqlx::query(
+            "INSERT INTO checkin_handoff_tokens 
+             (id, token_hash, club_id, pilot_id, device_id, created_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(new_id())
+        .bind(&hash)
+        .bind(club_id)
+        .bind(pilot_id)
+        .bind(device_id)
+        .bind(now)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await?;
+        
+        Ok(token)
+    }
+
+    /// Validate and consume a handoff token
+    pub async fn consume_handoff_token(
+        &self,
+        token: &str,
+        now: i64,
+    ) -> Result<(String, String, Option<String>), CheckinReject> {
+        // Parse token to get club_id
+        let Some(token_club_id) = checkin::parse_handoff_token_club_id(token) else {
+            return Err(CheckinReject::Format);
+        };
+        
+        let hash = digest_token(token);
+        
+        // Find unused, unexpired token
+        let row = sqlx::query(
+            "SELECT club_id, pilot_id, device_id, expires_at, consumed_at 
+             FROM checkin_handoff_tokens 
+             WHERE token_hash = $1 
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(&hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| CheckinReject::ForgedHmac)?;
+        
+        let Some(row) = row else {
+            return Err(CheckinReject::Format);
+        };
+        
+        let club_id: String = row.try_get(0).map_err(|_| CheckinReject::ForgedHmac)?;
+        let pilot_id: String = row.try_get(1).map_err(|_| CheckinReject::ForgedHmac)?;
+        let device_id: Option<String> = row.try_get(2).ok().flatten();
+        let expires_at: i64 = row.try_get(3).map_err(|_| CheckinReject::ForgedHmac)?;
+        let consumed_at: Option<i64> = row.try_get(4).ok().flatten();
+        
+        // Check if already consumed
+        if consumed_at.is_some() {
+            return Err(CheckinReject::UsedClaim);
+        }
+        
+        // Check if expired
+        if now > expires_at {
+            return Err(CheckinReject::ExpiredClaim);
+        }
+        
+        // Check club mismatch
+        if club_id != token_club_id {
+            return Err(CheckinReject::ClubMismatch);
+        }
+        
+        // Mark as consumed
+        sqlx::query(
+            "UPDATE checkin_handoff_tokens 
+             SET consumed_at = $1, consumed_by_device_id = $2 
+             WHERE token_hash = $3",
+        )
+        .bind(now)
+        .bind(device_id.as_deref().unwrap_or(""))
+        .bind(&hash)
+        .execute(&self.pool)
+        .await
+        .map_err(|_| CheckinReject::ForgedHmac)?;
+        
+        Ok((club_id, pilot_id, device_id))
+    }
+
+    /// Check if a handoff token exists and is valid (without consuming)
+    pub async fn validate_handoff_token(
+        &self,
+        token: &str,
+        now: i64,
+    ) -> Result<(String, String, Option<String>), CheckinReject> {
+        let Some(token_club_id) = checkin::parse_handoff_token_club_id(token) else {
+            return Err(CheckinReject::Format);
+        };
+        
+        let hash = digest_token(token);
+        
+        let row = sqlx::query(
+            "SELECT club_id, pilot_id, device_id, expires_at, consumed_at 
+             FROM checkin_handoff_tokens 
+             WHERE token_hash = $1 
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(&hash)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| CheckinReject::ForgedHmac)?;
+        
+        let Some(row) = row else {
+            return Err(CheckinReject::Format);
+        };
+        
+        let club_id: String = row.try_get(0).map_err(|_| CheckinReject::ForgedHmac)?;
+        let pilot_id: String = row.try_get(1).map_err(|_| CheckinReject::ForgedHmac)?;
+        let device_id: Option<String> = row.try_get(2).ok().flatten();
+        let expires_at: i64 = row.try_get(3).map_err(|_| CheckinReject::ForgedHmac)?;
+        let consumed_at: Option<i64> = row.try_get(4).ok().flatten();
+        
+        if consumed_at.is_some() {
+            return Err(CheckinReject::UsedClaim);
+        }
+        
+        if now > expires_at {
+            return Err(CheckinReject::ExpiredClaim);
+        }
+        
+        if club_id != token_club_id {
+            return Err(CheckinReject::ClubMismatch);
+        }
+        
+        Ok((club_id, pilot_id, device_id))
     }
 
     pub async fn create_display_session(
@@ -1889,6 +2155,12 @@ pub enum CheckinReject {
     OldStep,
     WrongClub,
     Replay,
+    ExpiredClaim,
+    UsedClaim,
+    ClubMismatch,
+    NoDevice,
+    InvalidDevice,
+    NotCleared,
 }
 
 #[derive(Debug, Serialize)]
