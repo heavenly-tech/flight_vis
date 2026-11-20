@@ -63,14 +63,6 @@
     "myAccount": "Mi cuenta",
     "clubAdmin": "Administrar club"
   },
-  "globe": {
-    "adminQr": "QR check-in",
-    "adminQrTitle": "QR de check-in",
-    "adminQrStatus": "Muestra este QR al piloto",
-    "adminQrMinimize": "Minimizar",
-    "adminQrRestore": "Mostrar QR",
-    "adminQrError": "Sesión expirada. Actualiza la página."
-  },
   "auth": {
     "wrongPassword": "Contraseña incorrecta."
   },
@@ -393,7 +385,13 @@
     "librarySingularFile": "archivo que no es track",
     "libraryPluralFiles": "archivos que no son track",
     "librarySingularTrackSaved": "track",
-    "libraryPluralTracksSaved": "tracks"
+    "libraryPluralTracksSaved": "tracks",
+    "adminQr": "QR check-in",
+    "adminQrTitle": "QR de check-in",
+    "adminQrStatus": "Muestra este QR al piloto",
+    "adminQrMinimize": "Minimizar",
+    "adminQrRestore": "Mostrar QR",
+    "adminQrError": "Sesión expirada. Actualiza la página."
   },
   "viewer": {
     "connecting": "Conectando a la transmisión en vivo…",
