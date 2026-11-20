@@ -15,6 +15,7 @@ import { ACC_DIM_M, createLiveRuntime, parseLivePath } from "./live/runtime";
 import { createE2eFlightViewer } from "./viz/e2eViewerStub";
 import type { FlightViewer, PathMode } from "./viz/viewer";
 import { e2eGlobeHooksEnabled, type FvE2eSurface } from "./e2eGlobeHooks";
+import { initGlobeAdminQr, hideAdminQrOverlay } from "./club/globeAdminQr";
 import {
   applyI18nDocument,
   bootI18n,
@@ -63,6 +64,7 @@ const authHint = document.querySelector<HTMLParagraphElement>("#auth-hint")!;
 const loginLink = document.querySelector<HTMLAnchorElement>("#btn-login")!;
 const logoutButton = document.querySelector<HTMLButtonElement>("#btn-logout")!;
 const accountLink = document.querySelector<HTMLAnchorElement>("#btn-account")!;
+const adminQrButton = document.querySelector<HTMLButtonElement>("#btn-admin-qr");
 
 let auth: AuthStatus = { authenticated: false, configured: true };
 let library: LibraryHandle | null = null;
@@ -98,6 +100,14 @@ function syncAuthUi(): void {
     accountLink.dataset.i18n = "nav.myAccount";
   }
   accountLink.hidden = !showAccount;
+
+  // Show/hide admin QR button based on club admin status
+  if (adminQrButton) {
+    adminQrButton.hidden = !session.clubAdmin;
+    if (!session.clubAdmin) {
+      hideAdminQrOverlay();
+    }
+  }
 
   // Apply i18n to the account link to update its text based on the new dataset.i18n
   if (showAccount) {
@@ -1024,6 +1034,20 @@ async function boot(): Promise<void> {
   const liveRoute = parseLivePath(window.location.pathname);
   if (auth.authenticated && !liveRoute.sessionId && !liveRoute.listOnly) {
     library.setOpen(true);
+  }
+
+  // Initialize admin QR overlay (only if elements exist)
+  if (adminQrButton) {
+    initGlobeAdminQr({
+      btnAdminQrSelector: "#btn-admin-qr",
+      overlaySelector: "#admin-qr-overlay",
+      qrImgSelector: "#admin-qr-img",
+      statusSelector: "#admin-qr-status",
+      minimizeBtnSelector: "#admin-qr-minimize",
+      resizeHandleSelector: "#admin-qr-resize",
+      pillSelector: "#admin-qr-pill",
+      cesiumContainerSelector: "#cesiumContainer",
+    });
   }
 
   if (liveRoute.sessionId) {
