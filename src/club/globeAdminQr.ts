@@ -171,6 +171,8 @@ export function initGlobeAdminQr(
     header.style.touchAction = "none";
     header.addEventListener("pointerdown", (e: PointerEvent) => {
       if (e.button !== 0 && e.button !== undefined) return; // Only left button for mouse
+      // Don't start drag if clicking on a button (e.g., minimize button)
+      if ((e.target as Element).closest("button")) return;
       startDrag(e);
     });
   }
