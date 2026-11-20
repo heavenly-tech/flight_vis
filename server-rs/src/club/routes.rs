@@ -2473,7 +2473,9 @@ async fn display_base(State(state): State<AppState>, headers: HeaderMap) -> impl
         Err(e) => return e.into_response(),
     };
     match db.club_base_aerodrome(&club_id).await {
-        Ok(base) => Json(json!({ "icao": base.icao, "lat": base.lat, "lon": base.lon })).into_response(),
+        Ok(base) => {
+            Json(json!({ "icao": base.icao, "lat": base.lat, "lon": base.lon })).into_response()
+        }
         Err(_) => Json(json!({ "icao": null, "lat": null, "lon": null })).into_response(),
     }
 }

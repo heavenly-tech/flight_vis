@@ -1729,7 +1729,9 @@ impl ClubDb {
                     Some(-70.548),
                 )
                 .unwrap();
-                let _ = self.set_club_base_aerodrome(&club_id, &icao, lat, lon).await;
+                let _ = self
+                    .set_club_base_aerodrome(&club_id, &icao, lat, lon)
+                    .await;
             }
             return Ok(());
         }

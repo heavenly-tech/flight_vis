@@ -199,16 +199,12 @@ impl ClubDb {
 
     /// Get the club's base aerodrome (icao, lat, lon).
     /// Returns null values when missing or out of range.
-    pub async fn club_base_aerodrome(
-        &self,
-        club_id: &str,
-    ) -> Result<ClubBaseAerodrome, DbError> {
-        let row = sqlx::query(
-            "SELECT aerodrome_icao, latitude, longitude FROM clubs WHERE id = $1",
-        )
-        .bind(club_id)
-        .fetch_one(&self.pool)
-        .await?;
+    pub async fn club_base_aerodrome(&self, club_id: &str) -> Result<ClubBaseAerodrome, DbError> {
+        let row =
+            sqlx::query("SELECT aerodrome_icao, latitude, longitude FROM clubs WHERE id = $1")
+                .bind(club_id)
+                .fetch_one(&self.pool)
+                .await?;
 
         let icao: Option<String> = row.try_get(0).ok().flatten();
         let lat: Option<f64> = row.try_get(1).ok().flatten();
@@ -242,8 +238,7 @@ impl ClubDb {
     ) -> Result<ClubBaseAerodrome, DbError> {
         // Validate inputs
         let (icao_upper, lat_upper, lon_upper) =
-            validate_base_aerodrome(Some(icao), Some(lat), Some(lon))
-                .map_err(|e| DbError::protocol(e))?;
+            validate_base_aerodrome(Some(icao), Some(lat), Some(lon)).map_err(DbError::protocol)?;
 
         sqlx::query(
             "UPDATE clubs SET aerodrome_icao = $1, latitude = $2, longitude = $3 WHERE id = $4",
