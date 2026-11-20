@@ -3,7 +3,6 @@ pub use crate::club::db_auth_pg::{GuestClaimError, MagicConsumeError};
 use crate::club::{
     auth::{self, digest_token, new_device_token, new_id},
     checkin::{self, CheckinTokenError},
-    db_kiosk_pg::ClubBaseAerodrome,
     database::{self, DbConnectError},
     map::{filter_admin_tails, DeviceFix, TailLivePosition},
     visibility::{FlightVisibility, PilotRole, PilotStatus, Viewer},
@@ -1724,7 +1723,13 @@ impl ClubDb {
             // Ensure demo club has a base aerodrome
             let base = self.club_base_aerodrome(&club_id).await?;
             if base.icao.is_none() || base.lat.is_none() || base.lon.is_none() {
-                let _ = self.set_club_base_aerodrome(&club_id, "SCTB", -33.456, -70.548).await;
+                let (icao, lat, lon) = crate::club::db_kiosk_pg::validate_base_aerodrome(
+                    Some("SCTB"),
+                    Some(-33.456),
+                    Some(-70.548),
+                )
+                .unwrap();
+                let _ = self.set_club_base_aerodrome(&club_id, &icao, lat, lon).await;
             }
             return Ok(());
         }

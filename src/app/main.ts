@@ -1,4 +1,5 @@
 import { bootI18n, t } from "../i18n/boot";
+import { releaseNoteText } from "./releaseNote";
 
 type AppRelease = {
   available: boolean;
@@ -9,6 +10,7 @@ type AppRelease = {
 };
 
 const status = document.querySelector<HTMLParagraphElement>("#status")!;
+const releaseNote = document.querySelector<HTMLParagraphElement>("#release-note")!;
 const versionEl = document.querySelector<HTMLParagraphElement>("#version")!;
 const shaWrap = document.querySelector<HTMLParagraphElement>("#sha")!;
 const shaVal = document.querySelector<HTMLElement>("#sha-val")!;
@@ -23,10 +25,15 @@ async function loadRelease(): Promise<void> {
       throw new Error("missing metadata");
     }
     const data = (await res.json()) as AppRelease;
+    const note = releaseNoteText(data);
+    if (note !== null) {
+      releaseNote.textContent = note;
+      releaseNote.hidden = false;
+    }
     const apkProbe = await fetch(data.apkUrl, { method: "HEAD" });
     const hasApk = apkProbe.ok && data.available;
     if (!hasApk) {
-      status.textContent = data.message ?? t("app.releaseSoon");
+      status.textContent = t("app.releaseSoon");
       download.hidden = true;
       return;
     }

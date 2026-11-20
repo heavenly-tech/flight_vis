@@ -133,6 +133,9 @@ describe("kioskMapView", () => {
       expect(lonToTileX(-180, 1)).toBe(0);
       expect(lonToTileX(0, 1)).toBe(1);
       expect(lonToTileX(180, 1)).toBe(2);
+      
+      // Known tile: lon 0, lat 0, z 1 -> x 1, y 1
+      expect(lonToTileX(0, 1)).toBe(1);
     });
 
     it("latToTileY converts correctly", () => {
@@ -147,6 +150,9 @@ describe("kioskMapView", () => {
       // Latitude -85.0511 should be near 1
       const yBottom = latToTileY(-85.0511, 0);
       expect(yBottom).toBeCloseTo(1, 5);
+      
+      // Known tile: lon 0, lat 0, z 1 -> x 1, y 1
+      expect(latToTileY(0, 1)).toBeCloseTo(1, 5);
     });
 
     it("metersPerPixel computes correctly", () => {

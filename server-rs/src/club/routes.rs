@@ -6,7 +6,6 @@ use crate::club::{
         DeleteError, DeviceRegisterError, EndError, PatchError, RegisterError, StartFlightError,
         MAX_DEVICES_PER_PILOT,
     },
-    db_kiosk_pg::ClubBaseAerodrome,
     map::TailLivePosition,
     visibility::{FlightVisibility, PilotStatus, Viewer},
 };
@@ -790,7 +789,9 @@ async fn get_admin_club_base(
         Err(e) => return e.into_response(),
     };
     match db.club_base_aerodrome(&club_id).await {
-        Ok(base) => Json(json!({ "icao": base.icao, "lat": base.lat, "lon": base.lon })).into_response(),
+        Ok(base) => {
+            Json(json!({ "icao": base.icao, "lat": base.lat, "lon": base.lon })).into_response()
+        }
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "db error" })),
@@ -823,7 +824,24 @@ async fn patch_admin_club_base(
         Some(body.lat),
         Some(body.lon),
     ) {
-        Ok(_) => {},
+        Ok((icao, lat, lon)) => {
+            match db
+                .set_club_base_aerodrome(&club_id, &icao, lat, lon)
+                .await
+            {
+                Ok(base) => {
+                    return Json(json!({ "icao": base.icao, "lat": base.lat, "lon": base.lon }))
+                        .into_response()
+                }
+                Err(_) => {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "db error" })),
+                    )
+                        .into_response()
+                }
+            }
+        }
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -832,9 +850,6 @@ async fn patch_admin_club_base(
                 .into_response();
         }
     }
-    
-    match db.set_club_base_aerodrome(&club_id, &body.icao, body.lat, body.lon).await {
-        Ok(base) => Json(json!({ "icao": base.icao, "lat": base.lat, "lon": base.lon })).into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "db error" })),

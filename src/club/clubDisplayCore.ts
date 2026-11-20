@@ -1,7 +1,13 @@
 import { CHECKIN_STEP_SEC } from "./checkinStep";
 import { applyLayoutToEl, type KioskQrLayout } from "./kioskQrLayout";
 import { startClubPage } from "./i18nPage";
-import { computeKioskView, getFallbackBase, getFallbackViewKm } from "./kioskMapView";
+import {
+  computeKioskView,
+  getFallbackBase,
+  getFallbackViewKm,
+  latToTileY,
+  lonToTileX,
+} from "./kioskMapView";
 import { t } from "../i18n/index";
 
 export type ClubDisplayOpts = {
@@ -217,33 +223,44 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     const zoom = Math.round(view.zoom);
     const tileSize = 256;
     
+    // Remove previous tiles containers
+    const existingContainers = mapContainer?.querySelectorAll("[data-tiles]");
+    existingContainers?.forEach((c) => c.remove());
+    
     // Calculate tile range
     const centerX = lonToTileX(view.centerLon, zoom);
     const centerY = latToTileY(view.centerLat, zoom);
     
     const scale = Math.pow(2, view.zoom - zoom);
-    const halfWidthTiles = (viewportPx.w / tileSize) * scale / 2;
-    const halfHeightTiles = (viewportPx.h / tileSize) * scale / 2;
+    const halfWidthTiles = (viewportPx.w / tileSize) / scale / 2;
+    const halfHeightTiles = (viewportPx.h / tileSize) / scale / 2;
     
     const minX = Math.floor(centerX - halfWidthTiles);
     const maxX = Math.ceil(centerX + halfWidthTiles);
     const minY = Math.floor(centerY - halfHeightTiles);
     const maxY = Math.ceil(centerY + halfHeightTiles);
-
+    
     // Create a container for tiles
     const tilesContainer = document.createElement("div");
+    tilesContainer.setAttribute("data-tiles", "");
     tilesContainer.style.cssText = `
       position: absolute;
       inset: 0;
       transform-origin: 0 0;
-      transform: translate(${-centerX * tileSize + viewportPx.w / 2}px, ${-centerY * tileSize + viewportPx.h / 2}px) scale(${scale});
+      transform: translate(${viewportPx.w / 2 - scale * centerX * tileSize}px, ${viewportPx.h / 2 - scale * centerY * tileSize}px) scale(${scale});
     `;
 
+    const worldSize = Math.pow(2, zoom);
+    
     for (let x = minX; x <= maxX; x++) {
       for (let y = minY; y <= maxY; y++) {
+        // Wrap x modulo world size, clamp y to valid range
+        const wrappedX = ((x % worldSize) + worldSize) % worldSize;
+        const clampedY = Math.max(0, Math.min(y, worldSize - 1));
+        
         const tile = document.createElement("img");
         tile.setAttribute("data-tile", "");
-        tile.src = `https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${zoom}/${y}/${x}`;
+        tile.src = `https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${zoom}/${clampedY}/${wrappedX}`;
         tile.style.cssText = `
           position: absolute;
           left: ${x * tileSize}px;
@@ -260,23 +277,13 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     mapContainer?.appendChild(tilesContainer);
   }
 
-  function lonToTileX(lon: number, zoom: number): number {
-    return ((lon + 180) / 360) * Math.pow(2, zoom);
-  }
-
-  function latToTileY(lat: number, zoom: number): number {
-    const latRad = (lat * Math.PI) / 180;
-    const mercator = Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI;
-    return ((1 - mercator) / 2) * Math.pow(2, zoom);
-  }
-
   function renderAircraftMarker(ac: { lat: number; lon: number; tail: string }, view: ReturnType<typeof computeKioskView>): void {
     const zoom = view.zoom;
     const tileSize = 256;
-    
+
     const x = lonToTileX(ac.lon, zoom);
     const y = latToTileY(ac.lat, zoom);
-    
+
     const centerX = lonToTileX(view.centerLon, zoom);
     const centerY = latToTileY(view.centerLat, zoom);
     
@@ -305,10 +312,10 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
   function renderBaseMarker(base: { lat: number; lon: number; icao: string }, view: ReturnType<typeof computeKioskView>): void {
     const zoom = view.zoom;
     const tileSize = 256;
-    
+
     const x = lonToTileX(base.lon, zoom);
     const y = latToTileY(base.lat, zoom);
-    
+
     const centerX = lonToTileX(view.centerLon, zoom);
     const centerY = latToTileY(view.centerLat, zoom);
     

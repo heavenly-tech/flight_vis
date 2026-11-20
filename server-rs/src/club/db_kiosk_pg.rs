@@ -14,7 +14,7 @@ pub fn validate_base_aerodrome(
     lon: Option<f64>,
 ) -> Result<(String, f64, f64), &'static str> {
     let icao = icao.map(|s| s.trim().to_ascii_uppercase());
-    
+
     // Validate ICAO
     let icao_str = match icao {
         Some(ref s) if !s.is_empty() => {
@@ -26,19 +26,19 @@ pub fn validate_base_aerodrome(
         Some(_) => return Err("invalid icao"),
         None => return Err("invalid icao"),
     };
-    
+
     // Validate lat
     let lat_val = match lat {
-        Some(l) if l.is_finite() && l >= -90.0 && l <= 90.0 => l,
+        Some(l) if l.is_finite() && (-90.0..=90.0).contains(&l) => l,
         _ => return Err("invalid lat"),
     };
-    
+
     // Validate lon
     let lon_val = match lon {
-        Some(l) if l.is_finite() && l >= -180.0 && l <= 180.0 => l,
+        Some(l) if l.is_finite() && (-180.0..=180.0).contains(&l) => l,
         _ => return Err("invalid lon"),
     };
-    
+
     Ok((icao_str, lat_val, lon_val))
 }
 
@@ -199,28 +199,31 @@ impl ClubDb {
 
     /// Get the club's base aerodrome (icao, lat, lon).
     /// Returns null values when missing or out of range.
-    pub async fn club_base_aerodrome(&self, club_id: &str) -> Result<ClubBaseAerodrome, DbError> {
+    pub async fn club_base_aerodrome(
+        &self,
+        club_id: &str,
+    ) -> Result<ClubBaseAerodrome, DbError> {
         let row = sqlx::query(
             "SELECT aerodrome_icao, latitude, longitude FROM clubs WHERE id = $1",
         )
         .bind(club_id)
         .fetch_one(&self.pool)
         .await?;
-        
+
         let icao: Option<String> = row.try_get(0).ok().flatten();
         let lat: Option<f64> = row.try_get(1).ok().flatten();
         let lon: Option<f64> = row.try_get(2).ok().flatten();
-        
+
         // Return null if coords are out of range
-        let lat_valid = lat.map(|l| l.is_finite() && l >= -90.0 && l <= 90.0).unwrap_or(false);
-        let lon_valid = lon.map(|l| l.is_finite() && l >= -180.0 && l <= 180.0).unwrap_or(false);
-        
+        let lat_valid = lat.is_some_and(|l| l.is_finite() && (-90.0..=90.0).contains(&l));
+        let lon_valid = lon.is_some_and(|l| l.is_finite() && (-180.0..=180.0).contains(&l));
+
         let (icao_out, lat_out, lon_out) = if lat_valid && lon_valid {
             (icao, lat, lon)
         } else {
             (None, None, None)
         };
-        
+
         Ok(ClubBaseAerodrome {
             icao: icao_out,
             lat: lat_out,
@@ -238,27 +241,20 @@ impl ClubDb {
         lon: f64,
     ) -> Result<ClubBaseAerodrome, DbError> {
         // Validate inputs
-        let icao_upper = icao.trim().to_ascii_uppercase();
-        if !validate_icao(&icao_upper) {
-            return Err(DbError::protocol("invalid icao"));
-        }
-        if !lat.is_finite() || lat < -90.0 || lat > 90.0 {
-            return Err(DbError::protocol("invalid lat"));
-        }
-        if !lon.is_finite() || lon < -180.0 || lon > 180.0 {
-            return Err(DbError::protocol("invalid lon"));
-        }
-        
+        let (icao_upper, lat_upper, lon_upper) =
+            validate_base_aerodrome(Some(icao), Some(lat), Some(lon))
+                .map_err(|e| DbError::protocol(e))?;
+
         sqlx::query(
             "UPDATE clubs SET aerodrome_icao = $1, latitude = $2, longitude = $3 WHERE id = $4",
         )
         .bind(&icao_upper)
-        .bind(lat)
-        .bind(lon)
+        .bind(lat_upper)
+        .bind(lon_upper)
         .bind(club_id)
         .execute(&self.pool)
         .await?;
-        
+
         self.club_base_aerodrome(club_id).await
     }
 }
