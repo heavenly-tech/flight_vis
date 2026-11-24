@@ -1,4 +1,5 @@
 import { initI18n, applyI18nDocument, t } from "../i18n/index";
+import { fetchAppRelease, renderReleaseInfo } from "../app/releaseInfo";
 
 type LandingConfig = {
   intentUrl?: string;
@@ -35,6 +36,8 @@ const clubNameEl = document.querySelector<HTMLHeadingElement>("#club-name")!;
 const logoEl = document.querySelector<HTMLImageElement>("#club-logo")!;
 const downloadSlot = document.querySelector<HTMLDivElement>("#download-primary")!;
 const androidSteps = document.querySelector<HTMLOListElement>("#android-steps")!;
+const appVersionEl = document.querySelector<HTMLParagraphElement>("#app-version")!;
+const appReleaseNoteEl = document.querySelector<HTMLParagraphElement>("#app-release-note")!;
 
 function renderDownload(available: boolean, apkUrl: string): void {
   downloadSlot.replaceChildren();
@@ -103,9 +106,31 @@ async function loadConfig(): Promise<void> {
         : "/app.html";
     appLink.href = safeAppPath;
   }
-  const releaseAvailable =
-    cfg.releaseAvailable === true && typeof cfg.apkUrl === "string" && cfg.apkUrl.length > 0;
-  renderDownload(releaseAvailable, cfg.apkUrl ?? "/app/flightvis.apk");
+
+  // Try to fetch app release info
+  const appRelease = await fetchAppRelease();
+
+  // Determine which release info to use
+  let releaseAvailable = false;
+  let apkUrl = "/app/flightvis.apk";
+
+  if (appRelease) {
+    // Use app release info if available
+    renderReleaseInfo(
+      { version: appVersionEl, note: appReleaseNoteEl },
+      appRelease,
+      (v: string) => t("checkin.versionLabel", { version: v }),
+    );
+    releaseAvailable = appRelease.available && appRelease.apkUrl.length > 0;
+    apkUrl = appRelease.apkUrl;
+  } else {
+    // Fall back to landing config
+    releaseAvailable =
+      cfg.releaseAvailable === true && typeof cfg.apkUrl === "string" && cfg.apkUrl.length > 0;
+    apkUrl = cfg.apkUrl ?? "/app/flightvis.apk";
+  }
+
+  renderDownload(releaseAvailable, apkUrl);
   renderAndroidSteps();
   const reg = document.querySelector<HTMLAnchorElement>("#link-register");
   if (reg && paths.slug) {

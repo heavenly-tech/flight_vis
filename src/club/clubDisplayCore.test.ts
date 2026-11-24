@@ -71,6 +71,7 @@ describe("mountClubDisplayScreen activation loop", () => {
     const dom = buildKioskDom();
     let activated = false;
     let mapPollCount = 0;
+    let baseFetchCount = 0;
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -80,6 +81,18 @@ describe("mountClubDisplayScreen activation loop", () => {
       if (url === "/api/display/activate") {
         activated = true;
         return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url === "/api/display/base") {
+        if (!activated) {
+          return new Response(JSON.stringify({ error: "display session required" }), {
+            status: 401,
+          });
+        }
+        baseFetchCount += 1;
+        return new Response(
+          JSON.stringify({ icao: "SCTB", lat: -33.456, lon: -70.548 }),
+          { status: 200 },
+        );
       }
       if (url === "/api/display/map") {
         if (!activated) {
@@ -93,7 +106,11 @@ describe("mountClubDisplayScreen activation loop", () => {
             ? [{ tail: "CC-AAA", pilotName: "Piloto Uno" }]
             : [
                 { tail: "CC-AAA", pilotName: "Piloto Uno" },
-                { tail: "CC-BBB", pilotName: "Piloto Dos" },
+                {
+                  tail: "CC-BBB",
+                  pilotName: "Piloto Dos",
+                  fix: { lat: -33.5, lon: -70.6 },
+                },
               ];
         return new Response(JSON.stringify({ aircraft }), { status: 200 });
       }
@@ -125,6 +142,12 @@ describe("mountClubDisplayScreen activation loop", () => {
     expect(dom.statusEl.textContent).toBe(
       t("kiosk.qrRotateHint", { seconds: String(CHECKIN_STEP_SEC) }),
     );
+    expect(baseFetchCount).toBe(1);
+    const kioskMap = dom.mapLayer.querySelector<HTMLElement>('[data-testid="kiosk-map"]');
+    expect(kioskMap).not.toBeNull();
+    expect(kioskMap?.getAttribute("data-view")).toBe("base");
+    expect(kioskMap?.querySelectorAll("img[data-tile]").length).toBeGreaterThan(0);
+    expect(kioskMap?.querySelector('[data-marker="base"]')?.textContent).toBe("SCTB");
     expect(dom.map.querySelectorAll("li")).toHaveLength(1);
     expect(dom.map.textContent).toContain("CC-AAA · Piloto Uno");
     expect(StubEventSource.instances).toHaveLength(1);
@@ -133,5 +156,7 @@ describe("mountClubDisplayScreen activation loop", () => {
     expect(mapPollCount).toBeGreaterThanOrEqual(2);
     expect(dom.map.querySelectorAll("li")).toHaveLength(2);
     expect(dom.map.textContent).toContain("CC-BBB · Piloto Dos");
+    expect(kioskMap?.getAttribute("data-view")).toBe("flights");
+    expect(kioskMap?.querySelector('[data-marker="aircraft"][data-tail="CC-BBB"]')).not.toBeNull();
   });
 });

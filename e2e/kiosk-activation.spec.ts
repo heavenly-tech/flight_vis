@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { stubArcgisTiles } from "./globe-csp-helpers";
 
 test.use({
   locale: "es-CL",
@@ -20,6 +21,8 @@ test("kiosk activation starts polling and reveals QR toggle with no reload", asy
   expect(created.ok()).toBeTruthy();
   const { token } = (await created.json()) as { token: string };
   expect(token).toBeTruthy();
+
+  await stubArcgisTiles(page);
 
   let mapPolls = 0;
   await page.route("**/api/display/map", async (route) => {
@@ -79,6 +82,11 @@ test("kiosk activation starts polling and reveals QR toggle with no reload", asy
   await expect(page.locator("#btn-local-qr")).toBeVisible({ timeout: 10_000 });
   await expect(page.locator("#status-bar")).toContainText(/rota cada \d+ segundos/i);
   await expect(page.locator("#map")).toContainText("CC-AAA · Piloto Uno");
+  const kioskMap = page.locator('[data-testid="kiosk-map"]');
+  await expect(kioskMap).toBeVisible({ timeout: 10_000 });
+  await expect
+    .poll(() => kioskMap.locator("img[data-tile]").count(), { timeout: 10_000 })
+    .toBeGreaterThan(0);
 
   await expect(page.locator("#map")).toContainText("CC-BBB · Piloto Dos", { timeout: 12_000 });
   expect(mapPolls).toBeGreaterThanOrEqual(2);
