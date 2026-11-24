@@ -1089,7 +1089,7 @@ mod tests {
 
         // 5) The guest device may share location with that club (no flight, not cleared).
         let q = format!(
-            "id={device_id}&lat=-33.4&lon=-70.6&timestamp={}",
+            "id={device_token}&lat=-33.4&lon=-70.6&timestamp={}",
             now / 1000
         );
         let res = router
@@ -1227,5 +1227,121 @@ mod tests {
         let (status, again, _) = get_json(&router, &format!("/api/c/demo/q/{claim}/landing")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(again["claimToken"], claim);
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn historical_slug_landing_api_redirects_without_consuming_qr() {
+        let (_dir, router, db) = fixture(false, false).await;
+        let club_id = make_club_live(&db).await;
+        let now = now_ms();
+        let qr = db.mint_checkin_qr_token(&club_id, now).await.unwrap();
+        db.rename_club_slug(&club_id, "demo-renamed", None, now)
+            .await
+            .unwrap();
+
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/c/demo/q/{qr}/landing"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FOUND);
+        assert_eq!(
+            res.headers()
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok()),
+            Some(format!("/api/c/demo-renamed/q/{qr}/landing").as_str())
+        );
+        assert!(
+            !db.qr_token_landing_consumed(&checkin::token_digest(&qr))
+                .await
+        );
+
+        let (status, landing, _) =
+            get_json(&router, &format!("/api/c/demo-renamed/q/{qr}/landing")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(landing["slug"], "demo-renamed");
+        assert!(landing["claimToken"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("h1.")));
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn guest_osmand_rejects_raw_device_id_and_requires_token() {
+        let (_dir, router, db) = fixture(false, false).await;
+        let club_id = make_club_live(&db).await;
+        let now = now_ms();
+
+        let (status, _, set_cookie) =
+            post_json(&router, "/api/devices/anonymous", "{}", None, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let guest_cookie = cookie_pair(&set_cookie.expect("guest session cookie"));
+
+        let (status, body, _) = post_json(
+            &router,
+            "/api/me/devices",
+            r#"{"label":"Pixel","installId":"install-first-scan-02"}"#,
+            Some(&guest_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let device_id = body["id"].as_str().expect("device id").to_string();
+        let device_token = body["token"].as_str().expect("device token").to_string();
+
+        let qr = db.mint_checkin_qr_token(&club_id, now).await.unwrap();
+        let (status, landing, _) = get_json(&router, &format!("/api/c/demo/q/{qr}/landing")).await;
+        assert_eq!(status, StatusCode::OK);
+        let claim = landing["claimToken"].as_str().expect("claimToken");
+
+        let (status, _, _) = post_json(
+            &router,
+            "/api/checkin",
+            &format!(r#"{{"token":"{claim}"}}"#),
+            Some(&guest_cookie),
+            Some(&device_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let bad_q = format!(
+            "id={device_id}&lat=-33.4&lon=-70.6&timestamp={}",
+            now / 1000
+        );
+        let bad = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/osmand?{bad_q}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), StatusCode::UNAUTHORIZED);
+
+        let ok_q = format!(
+            "id={device_token}&lat=-33.4&lon=-70.6&timestamp={}",
+            now / 1000
+        );
+        let ok = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/osmand?{ok_q}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
     }
 }

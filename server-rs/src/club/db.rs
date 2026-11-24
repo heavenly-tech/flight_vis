@@ -751,7 +751,15 @@ impl ClubDb {
             .await
             .ok()?
             .rows_affected();
-        (changed > 0).then_some(token)
+        if changed > 0 {
+            let _ = sqlx::query("DELETE FROM device_pair_tokens WHERE device_id = $1")
+                .bind(device_id)
+                .execute(&self.pool)
+                .await;
+            Some(token)
+        } else {
+            None
+        }
     }
 
     /// Club where this device's pilot has a live (unexpired) check-in.
@@ -1600,8 +1608,18 @@ impl ClubDb {
             .pilot_club_id(pilot_id)
             .await
             .map_err(|_| CheckinReject::WrongClub)?;
+        let pilot_status = self
+            .pilot_status(pilot_id)
+            .await
+            .map_err(|_| CheckinReject::WrongClub)?;
+        let token_club = checkin::parse_checkin_token_club_id(token);
+        let verify_club = if pilot_status == "guest" {
+            token_club.as_deref().unwrap_or(&pilot_club)
+        } else {
+            &pilot_club
+        };
         let (secret, valid_min) = self
-            .club_checkin_settings(&pilot_club)
+            .club_checkin_settings(verify_club)
             .await
             .map_err(|_| CheckinReject::ForgedHmac)?;
         let digest = checkin::token_digest(token);
@@ -1648,14 +1666,6 @@ impl ClubDb {
 
         // For guests, allow re-scoping to the QR club
         if club_id != pilot_club {
-            // Check if pilot is a guest - if so, update their club
-            let pilot_status: String =
-                sqlx::query_scalar("SELECT status FROM pilots WHERE id = $1")
-                    .bind(pilot_id)
-                    .fetch_one(&self.pool)
-                    .await
-                    .map_err(|_| CheckinReject::WrongClub)?;
-
             if pilot_status == "guest" {
                 // Update the guest's club_id to match the token's club
                 sqlx::query("UPDATE pilots SET club_id = $1 WHERE id = $2 AND status = 'guest'")
@@ -1851,11 +1861,11 @@ impl ClubDb {
             return Err(CheckinReject::ClubMismatch);
         }
 
-        // Mark as consumed
-        sqlx::query(
+        // Mark as consumed atomically
+        let updated = sqlx::query(
             "UPDATE checkin_handoff_tokens
              SET consumed_at = $1, consumed_by_device_id = $2
-             WHERE token_hash = $3",
+             WHERE token_hash = $3 AND consumed_at IS NULL",
         )
         .bind(now)
         .bind(device_id.as_deref().unwrap_or(""))
@@ -1863,6 +1873,9 @@ impl ClubDb {
         .execute(&self.pool)
         .await
         .map_err(|_| CheckinReject::ForgedHmac)?;
+        if updated.rows_affected() == 0 {
+            return Err(CheckinReject::UsedClaim);
+        }
 
         Ok((club_id, pilot_id, device_id))
     }
@@ -2202,9 +2215,6 @@ pub enum CheckinReject {
     ExpiredClaim,
     UsedClaim,
     ClubMismatch,
-    NoDevice,
-    InvalidDevice,
-    NotCleared,
 }
 
 #[derive(Debug, Serialize)]

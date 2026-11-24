@@ -2367,11 +2367,6 @@ async fn post_checkin(
         Err(CheckinReject::ExpiredClaim) => checkin_reason(StatusCode::FORBIDDEN, "expired_claim"),
         Err(CheckinReject::UsedClaim) => checkin_reason(StatusCode::CONFLICT, "used_claim"),
         Err(CheckinReject::ClubMismatch) => checkin_reason(StatusCode::FORBIDDEN, "club_mismatch"),
-        Err(CheckinReject::NoDevice) => checkin_reason(StatusCode::UNAUTHORIZED, "no_device"),
-        Err(CheckinReject::InvalidDevice) => {
-            checkin_reason(StatusCode::UNAUTHORIZED, "invalid_device")
-        }
-        Err(CheckinReject::NotCleared) => checkin_reason(StatusCode::FORBIDDEN, "not_cleared"),
     }
 }
 

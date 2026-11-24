@@ -555,6 +555,7 @@ dependencies = [
  "hmac",
  "http-body-util",
  "lettre",
+ "log",
  "qrcode-generator",
  "rand 0.8.8",
  "rsa",
