@@ -97,8 +97,9 @@ pub async fn post_ingest(
                         .into_response();
                 }
                 return match state.live.ingest_fixes(&guest_key, fixes).await {
-                    Ok(n) => (StatusCode::OK, Json(json!({ "ok": true, "accepted": n })))
-                        .into_response(),
+                    Ok(n) => {
+                        (StatusCode::OK, Json(json!({ "ok": true, "accepted": n }))).into_response()
+                    }
                     Err(msg) => bad_request(msg).into_response(),
                 };
             }

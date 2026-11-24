@@ -834,8 +834,7 @@ pub async fn post_club_flight_start(
         }
     };
     let v = viewer(&state, &headers).await;
-    let Viewer::Pilot { id: pilot_id, .. } = v
-    else {
+    let Viewer::Pilot { id: pilot_id, .. } = v else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "unauthorized", "reason": "no_device" })),
@@ -2024,15 +2023,10 @@ async fn create_device(
     Json(body): Json<DeviceBody>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    let Viewer::Pilot { id, .. } = v
-    else {
+    let Viewer::Pilot { id, .. } = v else {
         // If no session, return a no-op response (app swallows errors in _restore)
         crate::club::checkin::log_reason("api/me/devices", "no_session");
-        return (
-            StatusCode::OK,
-            Json(json!({ "ok": true, "ignored": true })),
-        )
-            .into_response();
+        return (StatusCode::OK, Json(json!({ "ok": true, "ignored": true }))).into_response();
     };
     let Some(db) = club_db(&state) else {
         return (

@@ -16,7 +16,9 @@ pub fn reason_message(reason: &str) -> &'static str {
         "used_claim" => "Este enlace de check-in ya se usó. Escanea el QR otra vez.",
         "no_device" => "No encontramos tu sesión. Inicia sesión o escanea el QR de nuevo.",
         "invalid_device" => "Este dispositivo no está autorizado. Vuelve a iniciar sesión.",
-        "not_cleared" => "El club aún no te habilita. Pídele al administrador que apruebe tu cuenta.",
+        "not_cleared" => {
+            "El club aún no te habilita. Pídele al administrador que apruebe tu cuenta."
+        }
         "club_mismatch" => "Este código pertenece a otro club.",
         "club_unavailable" => "El club no está disponible en este momento.",
         "format" | "forged_hmac" => "El código no es válido. Escanea el QR de nuevo.",

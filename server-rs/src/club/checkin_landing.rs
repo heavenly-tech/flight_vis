@@ -445,25 +445,13 @@ async fn checkin_landing_config(
     if checkin::is_handoff_token(token) {
         let now = now_ms();
         let Ok((club_id, _, _)) = db.validate_handoff_token(token, now).await else {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({ "error": "not found" })),
-            )
-                .into_response();
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
         };
         let Ok(ctx) = db.resolve_club_context(&slug).await else {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({ "error": "not found" })),
-            )
-                .into_response();
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
         };
         if ctx.club_id != club_id {
-            return (
-                StatusCode::NOT_FOUND,
-                Json(json!({ "error": "not found" })),
-            )
-                .into_response();
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
         }
         let public_host = state.mailer.public_url.trim_end_matches('/');
         let intent = Some(format!("{}/c/{}/q/{}", public_host, ctx.slug, token));
@@ -476,9 +464,7 @@ async fn checkin_landing_config(
             Err(LandingError::NotFound) => {
                 (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
             }
-            Err(LandingError::Db) => {
-                (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response()
-            }
+            Err(LandingError::Db) => (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response(),
         };
     }
 
@@ -539,7 +525,10 @@ async fn checkin_landing_config(
     };
 
     let public_host = state.mailer.public_url.trim_end_matches('/');
-    let intent = Some(format!("{}/c/{}/q/{}", public_host, ctx.slug, handoff_token));
+    let intent = Some(format!(
+        "{}/c/{}/q/{}",
+        public_host, ctx.slug, handoff_token
+    ));
 
     let body = match build_landing_json_with_handoff(
         &state,
@@ -1075,10 +1064,12 @@ mod tests {
 
         // 3) Landing consumes the q-token and returns a single-use claim token.
         let qr = db.mint_checkin_qr_token(&club_id, now).await.unwrap();
-        let (status, landing, _) =
-            get_json(&router, &format!("/api/c/demo/q/{qr}/landing")).await;
+        let (status, landing, _) = get_json(&router, &format!("/api/c/demo/q/{qr}/landing")).await;
         assert_eq!(status, StatusCode::OK);
-        let claim = landing["claimToken"].as_str().expect("claimToken").to_string();
+        let claim = landing["claimToken"]
+            .as_str()
+            .expect("claimToken")
+            .to_string();
         assert!(claim.starts_with("h1."));
 
         // 4) Check-in with the handoff succeeds for a guest device; still not cleared.
@@ -1130,10 +1121,12 @@ mod tests {
             .await
             .unwrap();
         let qr = db.mint_checkin_qr_token(&club_id, now).await.unwrap();
-        let (status, landing, _) =
-            get_json(&router, &format!("/api/c/demo/q/{qr}/landing")).await;
+        let (status, landing, _) = get_json(&router, &format!("/api/c/demo/q/{qr}/landing")).await;
         assert_eq!(status, StatusCode::OK);
-        let claim = landing["claimToken"].as_str().expect("claimToken").to_string();
+        let claim = landing["claimToken"]
+            .as_str()
+            .expect("claimToken")
+            .to_string();
 
         // The HMAC QR step is long gone, but the handoff (10 min TTL) still checks in.
         let record = db
@@ -1200,10 +1193,12 @@ mod tests {
         let cookie = format!("{}={session}", crate::club::auth::COOKIE);
         let qr = db.mint_checkin_qr_token(&club_id, now).await.unwrap();
 
-        let (status, landing, _) =
-            get_json(&router, &format!("/api/c/demo/q/{qr}/landing")).await;
+        let (status, landing, _) = get_json(&router, &format!("/api/c/demo/q/{qr}/landing")).await;
         assert_eq!(status, StatusCode::OK);
-        let claim = landing["claimToken"].as_str().expect("claimToken").to_string();
+        let claim = landing["claimToken"]
+            .as_str()
+            .expect("claimToken")
+            .to_string();
 
         // Kiosk rotation sees the landing consume.
         assert!(db
@@ -1229,8 +1224,7 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
 
         // The still-valid unused handoff returns the same config and claim token.
-        let (status, again, _) =
-            get_json(&router, &format!("/api/c/demo/q/{claim}/landing")).await;
+        let (status, again, _) = get_json(&router, &format!("/api/c/demo/q/{claim}/landing")).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(again["claimToken"], claim);
     }

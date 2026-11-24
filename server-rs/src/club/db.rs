@@ -1549,23 +1549,20 @@ impl ClubDb {
             // we need to reattach the guest to the token's club
             if pilot_club != club_id {
                 // Update the guest's club_id to match the token's club
-                sqlx::query(
-                    "UPDATE pilots SET club_id = $1 WHERE id = $2 AND status = 'guest'",
-                )
-                .bind(&club_id)
-                .bind(pilot_id)
-                .execute(&self.pool)
-                .await
-                .map_err(|_| CheckinReject::WrongClub)?;
+                sqlx::query("UPDATE pilots SET club_id = $1 WHERE id = $2 AND status = 'guest'")
+                    .bind(&club_id)
+                    .bind(pilot_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|_| CheckinReject::WrongClub)?;
 
                 // Also update guest_sessions if they exist
-                let _ = sqlx::query(
-                    "UPDATE guest_sessions SET club_id = $1 WHERE guest_pilot_id = $2",
-                )
-                .bind(&club_id)
-                .bind(pilot_id)
-                .execute(&self.pool)
-                .await;
+                let _ =
+                    sqlx::query("UPDATE guest_sessions SET club_id = $1 WHERE guest_pilot_id = $2")
+                        .bind(&club_id)
+                        .bind(pilot_id)
+                        .execute(&self.pool)
+                        .await;
             }
 
             // Get the checkin settings for the token's club
@@ -1652,33 +1649,29 @@ impl ClubDb {
         // For guests, allow re-scoping to the QR club
         if club_id != pilot_club {
             // Check if pilot is a guest - if so, update their club
-            let pilot_status: String = sqlx::query_scalar(
-                "SELECT status FROM pilots WHERE id = $1",
-            )
-            .bind(pilot_id)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|_| CheckinReject::WrongClub)?;
+            let pilot_status: String =
+                sqlx::query_scalar("SELECT status FROM pilots WHERE id = $1")
+                    .bind(pilot_id)
+                    .fetch_one(&self.pool)
+                    .await
+                    .map_err(|_| CheckinReject::WrongClub)?;
 
             if pilot_status == "guest" {
                 // Update the guest's club_id to match the token's club
-                sqlx::query(
-                    "UPDATE pilots SET club_id = $1 WHERE id = $2 AND status = 'guest'",
-                )
-                .bind(&club_id)
-                .bind(pilot_id)
-                .execute(&self.pool)
-                .await
-                .map_err(|_| CheckinReject::WrongClub)?;
+                sqlx::query("UPDATE pilots SET club_id = $1 WHERE id = $2 AND status = 'guest'")
+                    .bind(&club_id)
+                    .bind(pilot_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|_| CheckinReject::WrongClub)?;
 
                 // Update guest_sessions if they exist
-                let _ = sqlx::query(
-                    "UPDATE guest_sessions SET club_id = $1 WHERE guest_pilot_id = $2",
-                )
-                .bind(&club_id)
-                .bind(pilot_id)
-                .execute(&self.pool)
-                .await;
+                let _ =
+                    sqlx::query("UPDATE guest_sessions SET club_id = $1 WHERE guest_pilot_id = $2")
+                        .bind(&club_id)
+                        .bind(pilot_id)
+                        .execute(&self.pool)
+                        .await;
             } else {
                 fail_checkin!("wrong_club", CheckinReject::WrongClub);
             }
