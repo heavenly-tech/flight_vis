@@ -891,7 +891,6 @@ async fn approve_membership(
 
 pub fn routes() -> Router<AppState> {
     Router::new()
-        .route("/signup", get(serve_signup_page))
         .route("/api/account/signup-available", get(signup_available))
         .route("/api/account/signup", post(account_signup))
         .route("/api/account/login", post(account_login))
@@ -908,31 +907,4 @@ pub fn routes() -> Router<AppState> {
             "/api/account/memberships/{id}/approve",
             post(approve_membership),
         )
-}
-
-async fn serve_signup_page(State(state): State<AppState>) -> impl IntoResponse {
-    let path = state.dist_dir.join("signup.html");
-    match tokio::fs::read_to_string(&path).await {
-        Ok(html) => (
-            StatusCode::OK,
-            [
-                (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
-                (
-                    axum::http::header::CONTENT_SECURITY_POLICY,
-                    crate::html_csp::HTML_STRICT_CSP,
-                ),
-                (
-                    axum::http::header::REFERRER_POLICY,
-                    crate::static_files::HTML_REFERRER_POLICY,
-                ),
-            ],
-            html,
-        )
-            .into_response(),
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            "Signup page not built (npm run build)",
-        )
-            .into_response(),
-    }
 }

@@ -1,9 +1,14 @@
 import { test, expect } from "@playwright/test";
 
-test("signup page is available", async ({ page }) => {
-  const res = await page.goto("/signup");
-  expect(res?.status()).toBeLessThan(400);
-  await expect(page.getByRole("heading", { name: /crea tu cuenta|create your account/i })).toBeVisible();
+test("signup routes redirect to the unified pilot registration flow", async ({ page }) => {
+  for (const legacyPath of ["/signup", "/signup.html"]) {
+    const res = await page.goto(legacyPath);
+    expect(res?.status()).toBeLessThan(400);
+    await expect(page).toHaveURL(/\/(club-register\.html|c\/[^/]+\/registro)/);
+    await expect(
+      page.getByRole("heading", { name: /registro|pilot registration|register/i }),
+    ).toBeVisible();
+  }
 });
 
 test("signup capability endpoint", async ({ request }) => {

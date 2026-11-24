@@ -96,17 +96,23 @@ test.describe("credential pages under prod CSP", () => {
     expect(leaks).toEqual([]);
   });
 
-  test("account signup form never puts password in URL", async ({ page }) => {
+  test("legacy /signup route redirects to pilot register without password in URL", async ({
+    page,
+  }) => {
     const leaks = installPasswordUrlGuard(page);
+    const { consoleErrors } = installCspObservers(page);
     const email = `csp-signup-${Date.now()}@example.test`;
     await page.goto("/signup", { waitUntil: "domcontentloaded" });
-    await page.locator("#form input[name=email]").waitFor({ state: "visible" });
+    await expect(page).toHaveURL(/\/(club-register\.html|c\/[^/]+\/registro)/);
+    await page.locator("#form input[name=name]").waitFor({ state: "visible" });
+    await page.locator("#form input[name=name]").fill("E2E Signup");
     await page.locator("#form input[name=email]").fill(email);
     await page.locator("#form input[name=password]").fill("password1234");
     await page.locator("#form button[type=submit]").click();
     await page.waitForTimeout(500);
     await assertNoPasswordInUrl(page);
     expect(leaks).toEqual([]);
+    expect(consoleErrors.filter((e) => /Content Security Policy/i.test(e))).toEqual([]);
   });
 
   test("club login forms never put password in URL", async ({ page }) => {

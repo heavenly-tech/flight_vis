@@ -13,7 +13,6 @@ export const HTML_CSP_ROUTE_TABLE = Object.freeze({
   "/login.html": "strict",
   "/login-legacy.html": "strict",
   "/signup": "strict",
-  "/signup.html": "strict",
   "/account-clubs.html": "strict",
   "/account.html": "strict",
   "/api/account/auth/magic": "strict",
