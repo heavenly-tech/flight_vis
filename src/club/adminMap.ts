@@ -14,6 +14,11 @@ const clubLocaleMsg = document.querySelector<HTMLParagraphElement>("#club-locale
 const clubSlugInput = document.querySelector<HTMLInputElement>("#club-slug-input");
 const clubSlugSave = document.querySelector<HTMLButtonElement>("#club-slug-save");
 const clubSlugMsg = document.querySelector<HTMLParagraphElement>("#club-slug-msg");
+const clubBaseIcaoInput = document.querySelector<HTMLInputElement>("#club-base-icao-input");
+const clubBaseLatInput = document.querySelector<HTMLInputElement>("#club-base-lat-input");
+const clubBaseLonInput = document.querySelector<HTMLInputElement>("#club-base-lon-input");
+const clubBaseSave = document.querySelector<HTMLButtonElement>("#club-base-save");
+const clubBaseMsg = document.querySelector<HTMLParagraphElement>("#club-base-msg");
 
 async function refresh(): Promise<void> {
   const aircraft = await api<{ aircraft: { tail: string }[] }>("/api/admin/aircraft");
@@ -110,6 +115,37 @@ clubLocaleSave?.addEventListener("click", async () => {
   }
 });
 
+clubBaseSave?.addEventListener("click", async () => {
+  if (!clubBaseIcaoInput || !clubBaseLatInput || !clubBaseLonInput) return;
+  
+  const icao = clubBaseIcaoInput.value.trim();
+  const lat = parseFloat(clubBaseLatInput.value.trim());
+  const lon = parseFloat(clubBaseLonInput.value.trim());
+  
+  const res = await fetch("/api/admin/club/base", {
+    method: "PATCH",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ icao, lat, lon }),
+  });
+  
+  if (res.ok) {
+    const data = (await res.json()) as { icao: string | null; lat: number | null; lon: number | null };
+    if (clubBaseMsg) {
+      clubBaseMsg.textContent = t("admin.baseSaved");
+    }
+    // Update inputs with normalized values
+    if (data.icao) clubBaseIcaoInput.value = data.icao;
+    if (data.lat !== null) clubBaseLatInput.value = String(data.lat);
+    if (data.lon !== null) clubBaseLonInput.value = String(data.lon);
+  } else {
+    const payload = (await res.json().catch(() => ({}))) as { error?: string };
+    if (clubBaseMsg) {
+      clubBaseMsg.textContent = payload.error ? t("admin.invalidBase") : t("api.dbError");
+    }
+  }
+});
+
 void (async () => {
   if (!(await ensureClubAdminOrRedirect())) return;
   void startClubPage({ switcher: "#lang-slot" });
@@ -118,6 +154,13 @@ void (async () => {
     const me = await api<{ clubDefaultLocale?: string; clubSlug?: string }>("/api/club/me");
     mountClubLocalePicker(me.clubDefaultLocale ?? "es");
     if (clubSlugInput) clubSlugInput.value = me.clubSlug ?? "";
+    
+    // Load base aerodrome
+    const baseRes = await api<{ icao: string | null; lat: number | null; lon: number | null }>("/api/admin/club/base");
+    if (clubBaseIcaoInput) clubBaseIcaoInput.value = baseRes.icao ?? "";
+    if (clubBaseLatInput) clubBaseLatInput.value = baseRes.lat !== null ? String(baseRes.lat) : "";
+    if (clubBaseLonInput) clubBaseLonInput.value = baseRes.lon !== null ? String(baseRes.lon) : "";
+    
     await requireAdmin();
     await refresh();
     setInterval(() => void refresh(), 5000);

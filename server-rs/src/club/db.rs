@@ -1720,6 +1720,19 @@ impl ClubDb {
             .execute(&self.pool)
             .await?;
             self.ensure_e2e_join_club(t).await?;
+            // Ensure demo club has a base aerodrome
+            let base = self.club_base_aerodrome(&club_id).await?;
+            if base.icao.is_none() || base.lat.is_none() || base.lon.is_none() {
+                let (icao, lat, lon) = crate::club::db_kiosk_pg::validate_base_aerodrome(
+                    Some("SCTB"),
+                    Some(-33.456),
+                    Some(-70.548),
+                )
+                .unwrap();
+                let _ = self
+                    .set_club_base_aerodrome(&club_id, &icao, lat, lon)
+                    .await;
+            }
             return Ok(());
         }
         let admin_id = new_id();

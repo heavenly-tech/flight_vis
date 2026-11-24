@@ -38,6 +38,23 @@
         <button type="button" id="club-slug-save" data-i18n="admin.clubSlugSave"></button>
         <p id="club-slug-msg" class="muted"></p>
       </section>
+      <section id="club-base">
+        <h2 style="font-size:1rem" data-i18n="admin.aerodromeBase"></h2>
+        <label>
+          <span data-i18n="admin.icaoCode"></span>
+          <input id="club-base-icao-input" type="text" maxlength="4" spellcheck="false" style="text-transform:uppercase" />
+        </label>
+        <label>
+          <span data-i18n="admin.latitude"></span>
+          <input id="club-base-lat-input" type="number" step="0.0001" min="-90" max="90" />
+        </label>
+        <label>
+          <span data-i18n="admin.longitude"></span>
+          <input id="club-base-lon-input" type="number" step="0.0001" min="-180" max="180" />
+        </label>
+        <button type="button" id="club-base-save" data-i18n="admin.saveBase"></button>
+        <p id="club-base-msg" class="muted"></p>
+      </section>
       <section>
         <h2 style="font-size:1rem" data-i18n="admin.showTails"></h2>
         <div id="ticks"></div>

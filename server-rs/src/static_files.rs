@@ -157,7 +157,10 @@ fn sidecar_path(base: &Path, encoding: &str) -> PathBuf {
 pub const HTML_REFERRER_POLICY: &str = "strict-origin-when-cross-origin";
 
 fn cache_for(relative: &str) -> &'static str {
-    if is_geoid_asset(relative) {
+    let trimmed = relative.trim_start_matches('/');
+    if trimmed == "app/app-release.json" {
+        "no-cache"
+    } else if is_geoid_asset(relative) {
         "public, max-age=31536000"
     } else if is_hashed_asset(relative) {
         "public, max-age=31536000, immutable"
@@ -556,6 +559,44 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some(etag.as_str())
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn app_release_json_no_cache() {
+        let dir = temp_dist();
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        std::fs::write(
+            dir.join("app/app-release.json"),
+            r#"{"available":true,"version":"1.0.0","sha256":null,"apkUrl":"/app/flightvis.apk"}"#,
+        )
+        .unwrap();
+
+        let res = serve(&dir, "/app/app-release.json", &HeaderMap::new())
+            .await
+            .expect("app-release.json");
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("no-cache")
+        );
+
+        // Also verify hashed assets still get immutable caching
+        std::fs::create_dir_all(dir.join("assets")).unwrap();
+        std::fs::write(dir.join("assets/index-AbCdEf12.js"), "console.log('hi');").unwrap();
+        let res2 = serve(&dir, "/assets/index-AbCdEf12.js", &HeaderMap::new())
+            .await
+            .expect("hashed asset");
+        assert_eq!(res2.status(), StatusCode::OK);
+        assert_eq!(
+            res2.headers()
+                .get(header::CACHE_CONTROL)
+                .and_then(|v| v.to_str().ok()),
+            Some("public, max-age=31536000, immutable")
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
