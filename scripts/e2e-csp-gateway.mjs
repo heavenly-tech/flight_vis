@@ -78,7 +78,6 @@ function shouldProxy(urlPath) {
   const pathOnly = urlPath.split("?")[0];
   return (
     pathOnly === "/signup" ||
-    pathOnly === "/signup.html" ||
     pathOnly === "/club-login.html" ||
     urlPath.startsWith("/api") ||
     urlPath.startsWith("/login") ||

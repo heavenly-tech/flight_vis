@@ -28,8 +28,14 @@ const authProxy: Record<string, string | ProxyOptions> = {
   "/c/": api,
   "/s/": api,
   "/api": api,
-  "/signup": api,
-  "/signup.html": api,
+  "/signup": {
+    target: api,
+    bypass(req) {
+      if (req.method === "GET" || req.method === "HEAD") {
+        return "/signup.html";
+      }
+    },
+  },
   "/logout": api,
   "/login": api,
   "/login/legacy": api,
@@ -187,6 +193,7 @@ export default defineConfig({
         app: path.resolve(root, "app.html"),
         clubPilot: path.resolve(root, "club-pilot.html"),
         clubFlight: path.resolve(root, "club-flight.html"),
+        signup: path.resolve(root, "signup.html"),
         clubMap: path.resolve(root, "club-map.html"),
         publicMap: path.resolve(root, "public-map.html"),
         clubRegister: path.resolve(root, "club-register.html"),

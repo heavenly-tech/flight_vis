@@ -17,7 +17,7 @@ describe("login and pilot signup hierarchy", () => {
     document.body.innerHTML = "";
   });
 
-  it("keeps magic link as default login method and promotes Registrar piloto over Registrar club", () => {
+  it("keeps magic link as default login method and puts Registrar piloto primary over Registrar club", () => {
     document.body.innerHTML = loadHtmlBody("login.html");
     initI18n({ stored: "es" });
     applyI18nDocument(document);
@@ -36,7 +36,8 @@ describe("login and pilot signup hierarchy", () => {
     expect(usePassword.hidden).toBe(false);
     expect(submitMagic.compareDocumentPosition(usePassword) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-    // Signup CTA hierarchy: Registrar piloto is primary and first; Registrar club is secondary and second.
+    // Signup CTA hierarchy: Registrar piloto is primary/first -> /signup.html;
+    // Registrar club is secondary/second -> /club-signup.html.
     const registerPilot = document.querySelector<HTMLAnchorElement>("#register-pilot")!;
     const registerClub = document.querySelector<HTMLAnchorElement>("#register-club")!;
     expect(registerPilot).not.toBeNull();
@@ -50,7 +51,7 @@ describe("login and pilot signup hierarchy", () => {
     expect(
       registerPilot.compareDocumentPosition(registerClub) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    expect(registerPilot.getAttribute("href")).toBe("/club-register.html");
+    expect(registerPilot.getAttribute("href")).toBe("/signup.html");
     expect(registerClub.getAttribute("href")).toBe("/club-signup.html");
 
     const ordered = [...document.querySelectorAll("#submit-magic, #use-password, #register-pilot, #register-club")].map(
@@ -66,22 +67,36 @@ describe("login and pilot signup hierarchy", () => {
     expect(registerClub.textContent?.trim()).toBe("Register club");
   });
 
-  it("unifies all pilot signup entry points onto /club-register.html with no duplicate signup.html", () => {
-    expect(fs.existsSync(path.join(root, "signup.html"))).toBe(false);
+  it("restores signup.html and keeps signup links exclusively on login.html", () => {
+    expect(fs.existsSync(path.join(root, "signup.html"))).toBe(true);
 
-    const htmlFiles = fs.readdirSync(root).filter((f) => f.endsWith(".html"));
+    const htmlFiles = fs
+      .readdirSync(root)
+      .filter((f) => f.endsWith(".html"))
+      .sort();
+    expect(htmlFiles.length).toBeGreaterThan(10);
+
+    const forbiddenHref =
+      /href=["']\/(?:signup(?:\.html)?|club-register\.html|club-signup(?:\.html)?)(?:\?[^"']*)?["']/i;
+
     for (const file of htmlFiles) {
+      if (file === "login.html") continue;
       const content = fs.readFileSync(path.join(root, file), "utf8");
-      expect(content, `${file} must not link to removed /signup.html`).not.toMatch(
-        /href=["']\/signup(?:\.html)?(?:\?[^"']*)?["']/,
-      );
+      expect(
+        content,
+        `${file} must not link to signup.html, club-register.html, or club-signup.html`,
+      ).not.toMatch(forbiddenHref);
     }
 
-    for (const file of ["login.html", "club-signup.html", "club-checkin-landing.html"]) {
-      const content = fs.readFileSync(path.join(root, file), "utf8");
-      expect(content, `${file} should link to /club-register.html`).toContain(
-        'href="/club-register.html"',
-      );
-    }
+    // Main site (index.html) shows only Iniciar sesión (#btn-login), no signup CTAs.
+    document.body.innerHTML = loadHtmlBody("index.html");
+    initI18n({ stored: "es" });
+    applyI18nDocument(document);
+    const loginBtn = document.querySelector<HTMLAnchorElement>("#btn-login");
+    expect(loginBtn).not.toBeNull();
+    expect(loginBtn?.getAttribute("href")).toBe("/login");
+    expect(loginBtn?.textContent?.trim()).toBe("Iniciar sesión");
+    expect(document.querySelector("#register-pilot")).toBeNull();
+    expect(document.querySelector("#register-club")).toBeNull();
   });
 });

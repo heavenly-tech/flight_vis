@@ -96,16 +96,16 @@ test.describe("credential pages under prod CSP", () => {
     expect(leaks).toEqual([]);
   });
 
-  test("legacy /signup route redirects to pilot register without password in URL", async ({
+  test("account signup form serves /signup under strict CSP and never puts password in URL", async ({
     page,
   }) => {
     const leaks = installPasswordUrlGuard(page);
     const { consoleErrors } = installCspObservers(page);
     const email = `csp-signup-${Date.now()}@example.test`;
-    await page.goto("/signup", { waitUntil: "domcontentloaded" });
-    await expect(page).toHaveURL(/\/(club-register\.html|c\/[^/]+\/registro)/);
-    await page.locator("#form input[name=name]").waitFor({ state: "visible" });
-    await page.locator("#form input[name=name]").fill("E2E Signup");
+    const res = await page.goto("/signup", { waitUntil: "domcontentloaded" });
+    expect(res?.status()).toBe(200);
+    await expect(page).toHaveURL(/\/signup$/);
+    await page.locator("#form input[name=email]").waitFor({ state: "visible" });
     await page.locator("#form input[name=email]").fill(email);
     await page.locator("#form input[name=password]").fill("password1234");
     await page.locator("#form button[type=submit]").click();

@@ -90,11 +90,16 @@ describe("admin consoles (requests, pilots, tails, types)", () => {
 
     const pageBadge = document.querySelector<HTMLSpanElement>("#badge")!;
     const navBadge = document.querySelector<HTMLSpanElement>("#admin-nav-requests-badge")!;
+    const pilotsBadge = document.querySelector<HTMLSpanElement>("#admin-nav-pilots-badge")!;
     expect(document.querySelectorAll("#list article")).toHaveLength(2);
     expect(pageBadge.hidden).toBe(false);
     expect(pageBadge.textContent).toBe("2");
     expect(navBadge.hidden).toBe(false);
     expect(navBadge.textContent).toBe("2");
+    await vi.waitFor(() => {
+      expect(pilotsBadge.hidden).toBe(false);
+      expect(pilotsBadge.textContent).toBe("4");
+    });
     expect(document.querySelector("#list")?.textContent).toContain("Matrícula CC-AAA · tipo C152");
 
     // Open reject dialog -> cancel does not reject or call window.prompt

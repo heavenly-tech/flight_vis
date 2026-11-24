@@ -11,6 +11,7 @@ export interface PendingCounts {
 
 let adminNavLocaleBound = false;
 let cachedRequestsCount = 0;
+let cachedPilotsCount = 0;
 
 const NAV_KEYS = [
   ["club-admin-types.html", "nav.types"],
@@ -30,10 +31,25 @@ export function pendingAccessRequestsCount(counts: PendingCounts): number {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
+/** Pending pilot / membership join requests count shown in the Pilotos nav badge. */
+export function pendingPilotsCount(counts: PendingCounts): number {
+  const n = Number(counts.pilots);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
 export function setNavRequestsBadge(count: number): void {
   const safe = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
   cachedRequestsCount = safe;
   const badge = document.querySelector<HTMLSpanElement>("#admin-nav-requests-badge");
+  if (!badge) return;
+  badge.hidden = safe === 0;
+  badge.textContent = String(safe);
+}
+
+export function setNavPilotsBadge(count: number): void {
+  const safe = Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+  cachedPilotsCount = safe;
+  const badge = document.querySelector<HTMLSpanElement>("#admin-nav-pilots-badge");
   if (!badge) return;
   badge.hidden = safe === 0;
   badge.textContent = String(safe);
@@ -46,8 +62,10 @@ export async function fetchPendingAccessRequestsCount(): Promise<number> {
 
 export async function refreshNavRequestsBadge(): Promise<number | null> {
   try {
-    const count = await fetchPendingAccessRequestsCount();
+    const counts = await api<PendingCounts>("/api/admin/pending-counts");
+    const count = pendingAccessRequestsCount(counts);
     setNavRequestsBadge(count);
+    setNavPilotsBadge(pendingPilotsCount(counts));
     return count;
   } catch {
     return null;
@@ -56,6 +74,7 @@ export async function refreshNavRequestsBadge(): Promise<number | null> {
 
 export function resetAdminNavStateForTests(): void {
   cachedRequestsCount = 0;
+  cachedPilotsCount = 0;
 }
 
 function mountAdminNavInner(): void {
@@ -67,6 +86,14 @@ function mountAdminNavInner(): void {
     const a = document.createElement("a");
     a.href = `/${href}`;
     a.textContent = t(key);
+    if (href === "club-admin-pilots.html") {
+      const badge = document.createElement("span");
+      badge.id = "admin-nav-pilots-badge";
+      badge.className = "badge";
+      badge.hidden = cachedPilotsCount === 0;
+      badge.textContent = String(cachedPilotsCount);
+      a.append(" ", badge);
+    }
     if (href === "club-admin-requests.html") {
       const badge = document.createElement("span");
       badge.id = "admin-nav-requests-badge";

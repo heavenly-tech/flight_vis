@@ -16,7 +16,7 @@ export async function expectSingleFormLayout(page: Page): Promise<void> {
   await expect(clubCta).toBeVisible();
   await expect(pilotCta).toHaveClass(/\bprimary\b/);
   await expect(pilotCta).not.toHaveClass(/\bsecondary\b/);
-  await expect(pilotCta).toHaveAttribute("href", "/club-register.html");
+  await expect(pilotCta).toHaveAttribute("href", "/signup.html");
   await expect(clubCta).toHaveClass(/\bsecondary\b/);
   await expect(clubCta).not.toHaveClass(/\bprimary\b/);
   await expect(clubCta).toHaveAttribute("href", "/club-signup.html");

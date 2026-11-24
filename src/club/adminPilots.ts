@@ -8,6 +8,7 @@ import {
   mountAdminNav,
   openDialog,
   requireAdmin,
+  setNavPilotsBadge,
 } from "./adminCommon";
 import { startClubPage } from "./i18nPage";
 
@@ -144,6 +145,7 @@ export function mountAdminPilots(): AdminPilotsController {
 
   async function refresh(): Promise<void> {
     const pend = await api<{ pilots: PendingPilotItem[] }>("/api/admin/pilots/pending");
+    setNavPilotsBadge(pend.pilots.length);
     if (pend.pilots.length === 0) {
       const empty = document.createElement("li");
       empty.className = "muted";

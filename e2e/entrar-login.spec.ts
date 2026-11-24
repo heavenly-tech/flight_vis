@@ -13,13 +13,13 @@ test("unified login keeps magic link default and puts pilot signup primary over 
     "/api/account/magic-link",
   );
 
-  const pilotLink = page.locator('a#register-pilot[href="/club-register.html"]');
+  const pilotLink = page.locator('a#register-pilot[href="/signup.html"]');
   const clubLink = page.locator('a#register-club[href="/club-signup.html"]');
   await expect(pilotLink).toBeVisible();
   await expect(clubLink).toBeVisible();
   await expect(pilotLink).toHaveClass(/\bprimary\b/);
   await expect(clubLink).toHaveClass(/\bsecondary\b/);
-  await expect(page.locator('a[href="/signup.html"], a[href="/signup"]')).toHaveCount(0);
+  await expect(page.locator('a[href="/club-register.html"]')).toHaveCount(0);
 
   const order = await page
     .locator("#register-pilot, #register-club")

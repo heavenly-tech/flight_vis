@@ -398,27 +398,6 @@ async fn club_login_html_redirect(
     redirect_found(&login_redirect_query(&query, false))
 }
 
-fn signup_redirect_location(query: &HashMap<String, String>) -> String {
-    match query.get("club").map(|s| club::slug::normalize_slug(s)) {
-        Some(slug)
-            if (2..=64).contains(&slug.len())
-                && slug
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-                && !slug.starts_with('-')
-                && !slug.ends_with('-')
-                && !slug.contains("--") =>
-        {
-            format!("/club-register.html?club={slug}")
-        }
-        _ => "/club-register.html".to_string(),
-    }
-}
-
-async fn signup_redirect(Query(query): Query<HashMap<String, String>>) -> impl IntoResponse {
-    redirect_found(&signup_redirect_location(&query))
-}
-
 async fn login_legacy_redirect(Query(query): Query<HashMap<String, String>>) -> impl IntoResponse {
     redirect_found(&login_redirect_query(&query, true))
 }
@@ -890,8 +869,6 @@ fn build_router(state: AppState) -> Router {
         .route("/login.html", get(login_html_redirect))
         .route("/login/legacy", get(login_legacy_redirect))
         .route("/club-login.html", get(club_login_html_redirect))
-        .route("/signup", get(signup_redirect))
-        .route("/signup.html", get(signup_redirect))
         .route("/logout", get(logout).post(logout));
     if state.club.is_some() {
         app = app.merge(club::router()).merge(club::contract_router());
@@ -1348,82 +1325,5 @@ mod tests {
         let gone_addr = gone.local_addr().expect("addr");
         drop(gone);
         assert!(!healthcheck_at(gone_addr));
-    }
-
-    #[test]
-    fn signup_redirect_targets_pilot_register_and_validates_club_slug() {
-        let empty = HashMap::new();
-        assert_eq!(signup_redirect_location(&empty), "/club-register.html");
-
-        let valid = HashMap::from([("club".to_string(), "CAS-Test".to_string())]);
-        assert_eq!(
-            signup_redirect_location(&valid),
-            "/club-register.html?club=cas-test"
-        );
-
-        let demo = HashMap::from([("club".to_string(), "demo".to_string())]);
-        assert_eq!(
-            signup_redirect_location(&demo),
-            "/club-register.html?club=demo"
-        );
-
-        for bad in ["//evil.example", "../etc", "a", "bad--slug", "foo/bar"] {
-            let q = HashMap::from([("club".to_string(), bad.to_string())]);
-            assert_eq!(
-                signup_redirect_location(&q),
-                "/club-register.html",
-                "bad club slug must be ignored: {bad}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn signup_routes_redirect_to_club_register() {
-        use axum::body::Body;
-        use axum::http::Request;
-        use tower::ServiceExt;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let (video_queue, _) = tokio::sync::mpsc::channel(4);
-        let state = AppState {
-            dist_dir: dir.path().join("dist"),
-            auth: Auth::with_password("x"),
-            device_auth: DeviceAuth::empty(),
-            live: Arc::new(LiveEngine::new(dir.path())),
-            store: Store::new(dir.path()),
-            club: None,
-            video_queue,
-            login_throttle: LoginThrottle::default(),
-            device_register_throttle: LoginThrottle::default(),
-            share_lookup_throttle: LoginThrottle::default(),
-            account_password_throttle: LoginThrottle::default(),
-            account_password_account_throttle: LoginThrottle::default(),
-            mailer: club::mail::Mailer::from_env(club::mail::MailOutbox::default()),
-            webauthn: None,
-            sse_limiter: Arc::new(club::sse_limit::SseLimiter::default()),
-            superadmin_emails: std::collections::HashSet::new(),
-        };
-        let app = build_router(state);
-
-        for (uri, expected_loc) in [
-            ("/signup", "/club-register.html"),
-            ("/signup.html", "/club-register.html"),
-            ("/signup?club=cas-test", "/club-register.html?club=cas-test"),
-            ("/signup.html?club=//evil.example", "/club-register.html"),
-        ] {
-            let res = app
-                .clone()
-                .oneshot(Request::get(uri).body(Body::empty()).unwrap())
-                .await
-                .unwrap();
-            assert_eq!(res.status(), StatusCode::FOUND, "uri {uri}");
-            assert_eq!(
-                res.headers()
-                    .get(header::LOCATION)
-                    .and_then(|v| v.to_str().ok()),
-                Some(expected_loc),
-                "uri {uri}"
-            );
-        }
     }
 }

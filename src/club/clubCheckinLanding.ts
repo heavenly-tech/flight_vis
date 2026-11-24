@@ -194,10 +194,6 @@ async function loadConfig(): Promise<void> {
   renderDownload(releaseAvailable, apkUrl);
   renderAndroidSteps();
   setupClaimForm(typeof cfg.claimToken === "string" && cfg.claimToken.length > 0);
-  const reg = document.querySelector<HTMLAnchorElement>("#link-register");
-  if (reg && paths.slug) {
-    reg.href = `/c/${encodeURIComponent(paths.slug)}/registro`;
-  }
 }
 
 void loadConfig();

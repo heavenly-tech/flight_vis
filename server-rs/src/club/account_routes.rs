@@ -36,6 +36,8 @@ struct AccountSignupBody {
     email: String,
     #[serde(default)]
     password: Option<String>,
+    #[serde(default, rename = "clubSlug", alias = "club_slug")]
+    club_slug: Option<String>,
 }
 
 async fn account_signup(
@@ -88,16 +90,62 @@ async fn account_signup(
         )
             .into_response();
     }
+    let requested_club_id = match body.club_slug.as_deref() {
+        None => None,
+        Some(raw) => {
+            let trimmed = raw.trim();
+            let normalized = crate::club::slug::normalize_slug(trimmed);
+            let valid_chars = !normalized.is_empty()
+                && normalized.len() <= 64
+                && normalized
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                && !normalized.starts_with('-')
+                && !normalized.ends_with('-')
+                && !normalized.contains("--");
+            if !valid_chars {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "club not found" })),
+                )
+                    .into_response();
+            }
+            let Some(row) = db.club_public_row_by_slug(&normalized).await else {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "club not found" })),
+                )
+                    .into_response();
+            };
+            // Never leak unverified/pending clubs even if suspended.
+            if row.status != "live" || row.email_verified_at.is_none() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "club not found" })),
+                )
+                    .into_response();
+            }
+            if row.suspended_at.is_some() {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({ "error": "club suspended" })),
+                )
+                    .into_response();
+            }
+            Some(row.id)
+        }
+    };
     let signup_nonce = auth::new_session_id();
     match db.ensure_account_for_email(email, None, now).await {
         Ok(_) => {
             if db.magic_send_allowed(email, &client_ip.0, now).await {
                 let _ = db.log_magic_send(email, &client_ip.0, now).await;
                 let token = db
-                    .issue_account_magic_signup(
+                    .issue_account_magic_signup_with_club(
                         email,
                         body.password.as_deref(),
                         Some(&signup_nonce),
+                        requested_club_id.as_deref(),
                         now,
                     )
                     .await
@@ -891,6 +939,7 @@ async fn approve_membership(
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/signup", get(serve_signup_page))
         .route("/api/account/signup-available", get(signup_available))
         .route("/api/account/signup", post(account_signup))
         .route("/api/account/login", post(account_login))
@@ -907,4 +956,31 @@ pub fn routes() -> Router<AppState> {
             "/api/account/memberships/{id}/approve",
             post(approve_membership),
         )
+}
+
+async fn serve_signup_page(State(state): State<AppState>) -> impl IntoResponse {
+    let path = state.dist_dir.join("signup.html");
+    match tokio::fs::read_to_string(&path).await {
+        Ok(html) => (
+            StatusCode::OK,
+            [
+                (axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (
+                    axum::http::header::CONTENT_SECURITY_POLICY,
+                    crate::html_csp::HTML_STRICT_CSP,
+                ),
+                (
+                    axum::http::header::REFERRER_POLICY,
+                    crate::static_files::HTML_REFERRER_POLICY,
+                ),
+            ],
+            html,
+        )
+            .into_response(),
+        Err(_) => (
+            StatusCode::NOT_FOUND,
+            "Signup page not built (npm run build)",
+        )
+            .into_response(),
+    }
 }
