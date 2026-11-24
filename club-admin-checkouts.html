@@ -3,28 +3,52 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title data-i18n="nav.checkouts">flight_vis</title>
+    <title data-i18n="nav.checkouts">Habilitaciones</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
       main { max-width: 46rem; margin: 1rem auto; padding: 0 1rem 2rem; }
       .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
-      input, button, select { font: inherit; padding: .45rem .6rem; margin: .2rem 0; display: block; width: 100%; max-width: 20rem; }
+      #form input, #form button, #form select { font: inherit; padding: .45rem .6rem; display: block; width: 100%; max-width: 22rem; }
+      #list { list-style: none; padding: 0; margin: 1.25rem 0 0; }
+      .checkout-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; padding: .55rem 0; border-bottom: 1px solid var(--stroke, rgba(255,255,255,.12)); }
+      .btn-revoke { font: inherit; padding: .3rem .65rem; }
     </style>
   </head>
-  <body>
-    <main>
+  <body class="admin-page">
+    <main data-page="admin-checkouts">
       <div id="lang-slot"></div>
-      <h1>Checkouts</h1>
+      <h1 data-i18n="nav.checkouts">Habilitaciones</h1>
       <div id="admin-nav"></div>
       <form id="form">
-        <select id="pilot" required></select>
-        <input name="type" placeholder="Type code (C152)" required />
-        <input name="tail" placeholder="Optional tail override" />
-        <input name="expires_at" type="datetime-local" placeholder="Expiry (optional)" />
-        <button type="submit">Add checkout</button>
+        <label class="admin-field" for="pilot">
+          <span data-i18n="admin.checkouts.pilotLabel">Piloto</span>
+          <select id="pilot" name="pilot_id" required></select>
+        </label>
+        <label class="admin-field" for="type">
+          <span data-i18n="admin.checkouts.typeLabel">Tipo de aeronave</span>
+          <select id="type" name="type" required></select>
+        </label>
+        <label class="admin-field" for="tail">
+          <span data-i18n="admin.checkouts.tailLabel">Matrícula específica (opcional)</span>
+          <select id="tail" name="tail"></select>
+        </label>
+        <label class="admin-field" for="expires_at">
+          <span data-i18n="admin.checkouts.expiresLabel">Vence (opcional)</span>
+          <input id="expires_at" name="expires_at" type="date" />
+        </label>
+        <button type="submit" data-i18n="admin.checkouts.add">Agregar habilitación</button>
       </form>
+      <p id="checkouts-status" aria-live="polite" hidden></p>
       <ul id="list"></ul>
     </main>
+    <dialog id="revoke-dialog" aria-labelledby="revoke-dialog-title">
+      <h2 id="revoke-dialog-title" data-i18n="admin.checkouts.revokeTitle">Revocar habilitación</h2>
+      <p id="revoke-dialog-body"></p>
+      <div class="dialog-actions">
+        <button type="button" id="revoke-cancel" class="chip" data-i18n="common.cancel">Cancelar</button>
+        <button type="button" id="revoke-confirm" class="chip danger" data-i18n="admin.checkouts.revoke">Revocar</button>
+      </div>
+    </dialog>
     <script type="module" src="/src/club/adminCheckouts.ts"></script>
   </body>
 </html>

@@ -1984,3 +1984,147 @@ async fn anonymous_invalid_and_device_credentials_are_not_signed_in() {
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
+
+#[tokio::test]
+#[serial]
+async fn admin_delete_checkout_enforces_scope_csrf_and_audit() {
+    let mut fx = setup().await;
+    let club_a = fx.club.default_club_id().await.expect("club_a");
+    let now = now_ms();
+
+    // Promote pilot_a to active admin of club_a.
+    sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
+        .bind(&fx.pilot_a)
+        .execute(&fx.club.pool)
+        .await
+        .expect("role admin");
+    fx.club
+        .ensure_membership_row(&fx.pilot_a, &club_a, "admin", "active")
+        .await
+        .expect("membership admin");
+
+    let admin_a_cookie = login_cookie(&mut fx.router, "a@test").await;
+    let pilot_b_cookie = login_cookie(&mut fx.router, "b@test").await;
+
+    // Create club_b and an active admin in club_b to test cross-club isolation.
+    let club_b = crate::club::auth::new_id();
+    sqlx::query(
+        "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at, checkin_window_hours, latitude, longitude)
+         VALUES ($1, 'Club B', 'club-b', $2, 'live', $2, 12, -33.4489, -70.6693)",
+    )
+    .bind(&club_b)
+    .bind(now)
+    .execute(&fx.club.pool)
+    .await
+    .expect("club_b");
+    let admin_b = fx
+        .club
+        .register(&club_b, "Admin B", "adminb@test", "", "password12")
+        .await
+        .expect("register admin_b");
+    fx.club
+        .mark_email_verified(&admin_b, now)
+        .await
+        .expect("verify admin_b");
+    fx.club
+        .approve_pilot(&admin_b)
+        .await
+        .expect("approve admin_b");
+    sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
+        .bind(&admin_b)
+        .execute(&fx.club.pool)
+        .await
+        .expect("admin_b role");
+    fx.club
+        .ensure_membership_row(&admin_b, &club_b, "admin", "active")
+        .await
+        .expect("admin_b membership");
+    let admin_b_sess = fx
+        .club
+        .create_pilot_session(&admin_b, now)
+        .await
+        .expect("admin_b session");
+    let admin_b_cookie = crate::club::auth::set_session_cookie(&admin_b_sess, false);
+
+    // Fetch club_a checkouts and pick pilot_b's checkout.
+    let (status, list) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/admin/checkouts",
+        Some(&admin_a_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let target_id = list["checkouts"]
+        .as_array()
+        .expect("checkouts array")
+        .iter()
+        .find(|c| c["pilot_email"] == "b@test")
+        .and_then(|c| c["id"].as_str())
+        .expect("pilot_b checkout id")
+        .to_string();
+    let uri = format!("/api/admin/checkouts/{target_id}");
+
+    // Anonymous -> 401.
+    let (status, _) = call_json(&mut fx.router, "DELETE", &uri, None, "").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Non-admin pilot -> 403.
+    let (status, _) = call_json(&mut fx.router, "DELETE", &uri, Some(&pilot_b_cookie), "").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Cross-site CSRF -> 403.
+    let csrf_res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("DELETE")
+                .uri(&uri)
+                .header(header::COOKIE, &admin_a_cookie)
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(csrf_res.status(), StatusCode::FORBIDDEN);
+
+    // Cross-club admin -> 404 and checkout remains in club_a.
+    let (status, _) = call_json(&mut fx.router, "DELETE", &uri, Some(&admin_b_cookie), "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(fx
+        .club
+        .list_checkouts(&club_a)
+        .await
+        .iter()
+        .any(|c| c.id == target_id));
+
+    // Same-club admin -> 200 and checkout removed + audited.
+    let (status, body) = call_json(&mut fx.router, "DELETE", &uri, Some(&admin_a_cookie), "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ok"], true);
+    assert!(!fx
+        .club
+        .list_checkouts(&club_a)
+        .await
+        .iter()
+        .any(|c| c.id == target_id));
+
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_log
+         WHERE club_id = $1 AND actor_pilot_id = $2
+           AND action = 'revoke' AND entity_type = 'checkout' AND entity_id = $3",
+    )
+    .bind(&club_a)
+    .bind(&fx.pilot_a)
+    .bind(&target_id)
+    .fetch_one(&fx.club.pool)
+    .await
+    .expect("audit query");
+    assert_eq!(audit_count, 1);
+
+    // Deleting again -> 404.
+    let (status, _) = call_json(&mut fx.router, "DELETE", &uri, Some(&admin_a_cookie), "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

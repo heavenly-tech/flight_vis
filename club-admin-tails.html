@@ -3,25 +3,46 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title data-i18n="nav.tails">flight_vis</title>
+    <title data-i18n="nav.tails">Matrículas</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
       main { max-width: 44rem; margin: 1rem auto; padding: 0 1rem 2rem; }
       .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
-      input, button, select { font: inherit; padding: .45rem .6rem; }
-      li { margin: .35rem 0; }
+      #form { display: flex; gap: .65rem; flex-wrap: wrap; align-items: flex-end; margin-bottom: 1rem; }
+      #form input, #form button, #form select { font: inherit; padding: .45rem .6rem; }
+      #list li { margin: .45rem 0; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+      #list button { font: inherit; padding: .3rem .6rem; }
     </style>
   </head>
-  <body>
-    <main>
+  <body class="admin-page">
+    <main data-page="admin-tails">
       <div id="lang-slot"></div>
-      <h1>Tails</h1>
+      <h1 data-i18n="nav.tails">Matrículas</h1>
       <div id="admin-nav"></div>
-      <form id="form" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem">
-        <input name="tail" placeholder="N123AB" required />
-        <input name="type" placeholder="C152" required />
-        <button type="submit">Upsert tail</button>
+      <form id="form">
+        <label class="admin-field" for="tail-input">
+          <span data-i18n="admin.tails.tailLabel">Matrícula</span>
+          <input
+            id="tail-input"
+            name="tail"
+            data-i18n-placeholder="admin.tails.tailPlaceholder"
+            placeholder="ej. CC-ABC"
+            required
+          />
+        </label>
+        <label class="admin-field" for="type-input">
+          <span data-i18n="admin.tails.typeLabel">Tipo de aeronave</span>
+          <input
+            id="type-input"
+            name="type"
+            data-i18n-placeholder="admin.tails.typePlaceholder"
+            placeholder="ej. C152"
+            required
+          />
+        </label>
+        <button type="submit" data-i18n="admin.tails.save">Guardar matrícula</button>
       </form>
+      <p id="tails-status" aria-live="polite" hidden></p>
       <ul id="list"></ul>
     </main>
     <script type="module" src="/src/club/adminTails.ts"></script>

@@ -143,17 +143,27 @@
     "admin": {
       "addAdmin": "Add administrator",
       "inviteSent": "If the email is valid, we sent an invitation.",
+      "inviteFailed": "Could not send the invitation. Please try again.",
       "inviteAcceptTitle": "Administrator invitation",
       "inviteLead": "Confirm the link to manage this club.",
+      "inviteSendLead": "Send an email invitation to add another administrator to this club.",
       "promote": "Promote to administrator",
       "demote": "Remove administrator role",
       "remove": "Remove access",
+      "removeConfirmTitle": "Remove access",
+      "removeConfirmBody": "Are you sure you want to remove access for {name} ({email}) from this club?",
       "lastAdmin": "At least one active administrator must remain.",
       "membershipsHeading": "Memberships",
       "pendingHeading": "Pending pilots",
+      "noPendingPilots": "No pending pilots.",
+      "noMemberships": "No memberships found.",
+      "actionFailed": "Could not complete the action. Please try again.",
       "roleAdmin": "Administrator",
       "roleStaff": "Staff",
-      "rolePilot": "Pilot"
+      "rolePilot": "Pilot",
+      "statusActive": "Active",
+      "statusPending": "Pending",
+      "statusSuspended": "Suspended"
     },
     "map": {
       "title": "Club map",
@@ -279,7 +289,54 @@
     "checkinQrHide": "Hide QR",
     "checkinQrRotateHint": "QR rotates every {seconds} seconds.",
     "checkinQrAlreadyUsed": "This QR was already used. Generate a new one when you need it.",
-    "checkinQrHidden": "QR hidden."
+    "checkinQrHidden": "QR hidden.",
+    "checkouts": {
+      "pilotLabel": "Pilot",
+      "pilotPlaceholder": "Select a pilot",
+      "typeLabel": "Aircraft type",
+      "typePlaceholder": "Select a type (e.g. C152)",
+      "tailLabel": "Specific tail (optional)",
+      "allTails": "All tails of type",
+      "expiresLabel": "Expires (optional)",
+      "add": "Add checkout",
+      "noExpiry": "No expiry",
+      "revoke": "Revoke",
+      "revokeTitle": "Revoke checkout",
+      "revokeBody": "Revoke {pilot}'s checkout for {type} ({tail})?",
+      "empty": "No checkouts recorded yet.",
+      "saveFailed": "Could not save checkout.",
+      "revokeFailed": "Could not revoke checkout.",
+      "inactiveTailTag": "inactive"
+    },
+    "requests": {
+      "title": "Access requests",
+      "detail": "Tail {tail} · type {type}",
+      "empty": "No pending access requests.",
+      "rejectTitle": "Reject request",
+      "rejectSummary": "Request from {pilot} for {tail}.",
+      "rejectPlaceholder": "Enter a reason (optional)",
+      "actionFailed": "Could not update request."
+    },
+    "tails": {
+      "tailLabel": "Tail",
+      "tailPlaceholder": "e.g. CC-ABC",
+      "typeLabel": "Aircraft type",
+      "typePlaceholder": "e.g. C152",
+      "save": "Save tail",
+      "statusActive": "Active",
+      "statusInactive": "Inactive",
+      "empty": "No tails registered yet.",
+      "saveFailed": "Could not save tail."
+    },
+    "types": {
+      "title": "Aircraft types",
+      "codeLabel": "Type code",
+      "codePlaceholder": "e.g. C152",
+      "save": "Save type",
+      "signedInAs": "Admin: {name}",
+      "empty": "No aircraft types registered yet.",
+      "saveFailed": "Could not save aircraft type."
+    }
   },
   "kiosk": {
     "screenTitle": "Club check-in screen",

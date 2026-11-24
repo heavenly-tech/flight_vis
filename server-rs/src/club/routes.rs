@@ -1770,6 +1770,47 @@ async fn admin_checkout(
     }
 }
 
+async fn admin_delete_checkout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(checkout_id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
+    let v = viewer(&state, &headers).await;
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    let Viewer::Pilot { id: admin_id, .. } = v else {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    };
+    match db
+        .revoke_checkout(&club_id, &admin_id, &checkout_id, now_ms())
+        .await
+    {
+        Ok(true) => Json(json!({ "ok": true })).into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
 #[derive(Deserialize)]
 struct AccessRequestBody {
     tail: String,
@@ -3126,6 +3167,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/admin/checkouts",
             get(list_checkouts_admin).post(admin_checkout),
+        )
+        .route(
+            "/api/admin/checkouts/{id}",
+            axum::routing::delete(admin_delete_checkout),
         )
         .route("/api/admin/pilots/{id}/approve", post(admin_approve))
         .route(
