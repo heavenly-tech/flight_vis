@@ -138,7 +138,10 @@ pub async fn maybe_club_slug_redirect(
     let segments: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
     let (slug_idx, old_slug) = if segments.len() >= 2 && segments[0] == "c" {
         (1, segments[1])
-    } else if segments.len() >= 3 && segments[0] == "api" && segments[1] == "clubs" {
+    } else if segments.len() >= 3
+        && segments[0] == "api"
+        && (segments[1] == "clubs" || segments[1] == "c")
+    {
         (2, segments[2])
     } else {
         return None;

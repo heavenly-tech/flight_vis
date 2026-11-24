@@ -404,9 +404,14 @@ pub async fn post_guest(
         .device_register_throttle
         .allow_up_to(&client_ip.0, now_secs, 30)
     {
+        crate::club::checkin::log_reason("api/devices/anonymous", "rate_limited");
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({ "error": "rate limited" })),
+            Json(json!({
+                "error": "rate_limited",
+                "reason": "rate_limited",
+                "message": "Hiciste demasiados intentos. Espera un momento y vuelve a intentarlo.",
+            })),
         )
             .into_response();
     }
@@ -424,11 +429,18 @@ pub async fn post_guest(
             let cookie = set_session_cookie(&session_id, is_secure(&headers));
             pilot_ok_response(&cookie, &pilot)
         }
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "guest failed" })),
-        )
-            .into_response(),
+        Err(_) => {
+            crate::club::checkin::log_reason("api/devices/anonymous", "guest_failed");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "guest_failed",
+                    "reason": "guest_failed",
+                    "message": "No pudimos iniciar tu sesión de invitado. Inténtalo de nuevo.",
+                })),
+            )
+                .into_response()
+        }
     }
 }
 
