@@ -21,8 +21,15 @@ test("globe library panel opens for a signed-in club session", async ({ page }) 
   await page.goto("/");
   // Auth is resolved during boot before the library panel is interactive.
   await expect(page.locator("#btn-login")).toBeHidden({ timeout: 15_000 });
-  await page.click("#btn-library");
-  await expect(page.locator("#library-panel")).toBeVisible({ timeout: 15_000 });
+  // Boot auto-opens the library for a signed-in pilot, and #btn-library toggles,
+  // so wait for the auto-open and only click when the panel stayed closed.
+  const panel = page.locator("#library-panel");
+  try {
+    await panel.waitFor({ state: "visible", timeout: 5_000 });
+  } catch {
+    await page.click("#btn-library");
+  }
+  await expect(panel).toBeVisible({ timeout: 15_000 });
   await expect(page.locator("#library-login")).toBeHidden({ timeout: 5_000 });
 
   const hint = await page.locator("#library-hint").textContent();

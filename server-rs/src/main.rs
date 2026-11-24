@@ -207,7 +207,9 @@ async fn can_manage_library(state: &AppState, headers: &HeaderMap) -> bool {
             let now = club::now_ms();
             let (_viewer, pilot) = db.viewer_with_pilot(Some(sess.as_str()), now).await;
             if let Some(pilot) = pilot {
-                return db.is_platform_superadmin(&pilot.id, &state.superadmin_emails).await;
+                return db
+                    .is_platform_superadmin(&pilot.id, &state.superadmin_emails)
+                    .await;
             }
         }
     }
