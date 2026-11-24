@@ -1,14 +1,10 @@
 //! Browser fallback for `/c/{slug}` and `/c/{slug}/q/{token}` when the Android app is not verified.
 use crate::club::{
-    android_assetlinks::{
-        android_deep_link_configured, android_package_name, club_public_https_url,
-        launcher_intent_url,
-    },
-    auth::new_device_token,
+    auth::set_session_cookie,
     checkin,
     club_scope::ClubScopeError,
     db::{now_ms, ClubDb},
-    routes::club_db,
+    routes::{club_db, is_secure},
     slug_redirect,
 };
 use crate::html_csp::{HTML_STRICT_CSP, SENSITIVE_REFERRER_POLICY};
@@ -104,6 +100,12 @@ async fn validate_checkin_peek(
     if token_club != ctx.club_id {
         return Err(LandingError::NotFound);
     }
+    if db
+        .qr_token_landing_consumed(&checkin::token_digest(token))
+        .await
+    {
+        return Err(LandingError::NotFound);
+    }
     Ok(ctx.slug)
 }
 
@@ -189,7 +191,27 @@ async fn checkin_landing_page(
     {
         return resp;
     }
-    match validate_checkin_peek(db, &slug, &token, now_ms()).await {
+    let token = token.trim();
+    if checkin::is_handoff_token(token) {
+        let now = now_ms();
+        let Ok((club_id, _, _)) = db.validate_handoff_token(token, now).await else {
+            return checkin_not_found_page(&state, &headers, &slug).await;
+        };
+        let slug_matches = matches!(
+            db.resolve_club_context(&slug).await,
+            Ok(ctx) if ctx.club_id == club_id
+        );
+        let suspended = db
+            .club_public_row(&club_id)
+            .await
+            .and_then(|row| row.suspended_at)
+            .is_some();
+        if !slug_matches || suspended {
+            return checkin_not_found_page(&state, &headers, &slug).await;
+        }
+        return serve_landing_html(&state).await;
+    }
+    match validate_checkin_peek(db, &slug, token, now_ms()).await {
         Ok(_) => serve_landing_html(&state).await,
         Err(LandingError::NotFound) => checkin_not_found_page(&state, &headers, &slug).await,
         Err(LandingError::Db) => (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response(),
@@ -306,7 +328,7 @@ async fn build_landing_json_with_handoff(
     slug: &str,
     intent_url: Option<String>,
     handoff_token: &str,
-    now: i64,
+    _now: i64,
 ) -> Result<Value, LandingError> {
     let ctx = db.resolve_club_context(slug).await.map_err(|e| match e {
         ClubScopeError::NotFound => LandingError::NotFound,
@@ -416,107 +438,139 @@ async fn checkin_landing_config(
     {
         return resp;
     }
-    
+
     let token = token.trim();
-    
-    // Check if this is already a handoff token - if so, just validate and return config
+
+    // A handoff token is already the single-use claim: return the same config, never remint.
     if checkin::is_handoff_token(token) {
         let now = now_ms();
-        match db.validate_handoff_token(token, now).await {
-            Ok((club_id, pilot_id, _)) => {
-                // Get the slug for this club
-                let ctx = match db.resolve_club_context(&slug).await {
-                    Ok(ctx) if ctx.club_id == club_id => ctx,
-                    _ => return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
-                };
-                
-                let release = read_app_release(&state.dist_dir).await;
-                let apk_abs = club_public_https_url(&state, &headers, &release.apk_url);
-                
-                // For handoff tokens, use a VIEW intent with the handoff token
-                let public_host = state.mailer.public_url.trim_end_matches('/');
-                let handoff_url = format!("{}/c/{}/q/{}", public_host, ctx.slug, token);
-                let intent = Some(handoff_url);
-                
-                match build_landing_json(&state, db, &headers, &ctx.slug, intent).await {
-                    Ok(body) => (qr_landing_api_headers(), Json(body)).into_response(),
-                    Err(LandingError::NotFound) => {
-                        (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
-                    }
-                    Err(LandingError::Db) => (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response(),
-                }
-            }
-            Err(_) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
+        let Ok((club_id, _, _)) = db.validate_handoff_token(token, now).await else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "not found" })),
+            )
+                .into_response();
+        };
+        let Ok(ctx) = db.resolve_club_context(&slug).await else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "not found" })),
+            )
+                .into_response();
+        };
+        if ctx.club_id != club_id {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "not found" })),
+            )
+                .into_response();
         }
+        let public_host = state.mailer.public_url.trim_end_matches('/');
+        let intent = Some(format!("{}/c/{}/q/{}", public_host, ctx.slug, token));
+        return match build_landing_json_with_handoff(
+            &state, db, &headers, &ctx.slug, intent, token, now,
+        )
+        .await
+        {
+            Ok(body) => (qr_landing_api_headers(), Json(body)).into_response(),
+            Err(LandingError::NotFound) => {
+                (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+            }
+            Err(LandingError::Db) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response()
+            }
+        };
     }
-    
-    // Validate the QR token
+
+    // Validate the QR token (also rejects tokens already consumed by a landing).
     if validate_checkin_peek(db, &slug, token, now_ms())
         .await
         .is_err()
     {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     }
-    
+
     let now = now_ms();
-    let ctx = match db.resolve_club_context(&slug).await {
-        Ok(ctx) => ctx,
-        Err(_) => return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
+    let Ok(ctx) = db.resolve_club_context(&slug).await else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     };
-    
-    // Consume the QR token by creating a checkin record
-    // This marks it as used so it rotates
-    let (secret, valid_min) = match db.club_checkin_settings(&ctx.club_id).await {
-        Ok(settings) => settings,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response(),
+    let Ok((_, valid_min)) = db.club_checkin_settings(&ctx.club_id).await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response();
     };
-    
+
     let digest = checkin::token_digest(token);
     let step = checkin::current_step(now);
-    
-    // Create a guest pilot for the handoff (if one doesn't exist)
-    // We'll create a temporary guest that will be re-scoped to the club when checkin is submitted
-    let guest_pilot_id = match db.create_guest_for_handoff(&ctx.club_id, now).await {
-        Ok(id) => id,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response(),
+
+    // The browser gets a guest pilot plus a session cookie so the signup form can claim it.
+    let Ok(guest_pilot_id) = db.create_guest_for_handoff(&ctx.club_id, now).await else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response();
     };
-    
-    // Insert a checkin row to consume the QR token
-    let _ = db.insert_checkin_row(
-        &ctx.club_id,
-        Some(&guest_pilot_id),
-        None,
-        step,
-        &digest,
-        now,
-        Some(now + valid_min * 60_000),
-        "ok",
-        None,
-    )
-    .await;
-    
-    // Mint a handoff token
-    let handoff_token = match db.mint_handoff_token(&ctx.club_id, &guest_pilot_id, None, now).await {
-        Ok(token) => token,
-        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response(),
+    let Ok(guest_session) = db
+        .create_guest_session_for_pilot(&ctx.club_id, &guest_pilot_id, now)
+        .await
+    else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response();
     };
-    
-    let release = read_app_release(&state.dist_dir).await;
-    let apk_abs = club_public_https_url(&state, &headers, &release.apk_url);
-    
-    // Use a VIEW intent with the handoff token
-    let public_host = state.mailer.public_url.trim_end_matches('/');
-    let handoff_url = format!("{}/c/{}/q/{}", public_host, ctx.slug, handoff_token);
-    let intent = Some(handoff_url);
-    
-    // Build response with claimToken
-    match build_landing_json_with_handoff(&state, db, &headers, &slug, intent, &handoff_token, now).await {
-        Ok(body) => (qr_landing_api_headers(), Json(body)).into_response(),
-        Err(LandingError::NotFound) => {
-            (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
-        }
-        Err(LandingError::Db) => (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response(),
+
+    // Consume the QR token globally: kiosk rotation and a later POST /api/checkin both see it.
+    if db
+        .insert_checkin_row(
+            &ctx.club_id,
+            Some(&guest_pilot_id),
+            None,
+            step,
+            &digest,
+            now,
+            Some(now + valid_min * 60_000),
+            "ok",
+            Some("landing_claim"),
+        )
+        .await
+        .is_err()
+    {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response();
     }
+
+    let Ok(handoff_token) = db
+        .mint_handoff_token(&ctx.club_id, &guest_pilot_id, None, now)
+        .await
+    else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response();
+    };
+
+    let public_host = state.mailer.public_url.trim_end_matches('/');
+    let intent = Some(format!("{}/c/{}/q/{}", public_host, ctx.slug, handoff_token));
+
+    let body = match build_landing_json_with_handoff(
+        &state,
+        db,
+        &headers,
+        &ctx.slug,
+        intent,
+        &handoff_token,
+        now,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(LandingError::NotFound) => {
+            return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+        }
+        Err(LandingError::Db) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "error").into_response()
+        }
+    };
+    let cookie = set_session_cookie(&guest_session, is_secure(&headers));
+    let [(csp, csp_value), (referrer, referrer_value)] = qr_landing_api_headers();
+    (
+        [
+            (csp, csp_value),
+            (referrer, referrer_value),
+            (header::SET_COOKIE, cookie.as_str()),
+        ],
+        Json(body),
+    )
+        .into_response()
 }
 
 async fn club_slug_landing_config(
@@ -651,6 +705,83 @@ mod tests {
         serde_json::from_slice(&body).unwrap()
     }
 
+    async fn get_json(router: &axum::Router, uri: &str) -> (StatusCode, Value, Option<String>) {
+        let res = router
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let set_cookie = res
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            set_cookie,
+        )
+    }
+
+    async fn post_json(
+        router: &axum::Router,
+        uri: &str,
+        body: &str,
+        cookie: Option<&str>,
+        bearer: Option<&str>,
+    ) -> (StatusCode, Value, Option<String>) {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/json");
+        if let Some(value) = cookie {
+            req = req.header(header::COOKIE, value);
+        }
+        if let Some(value) = bearer {
+            req = req.header(header::AUTHORIZATION, format!("Bearer {value}"));
+        }
+        let res = router
+            .clone()
+            .oneshot(req.body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let set_cookie = res
+            .headers()
+            .get(header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            set_cookie,
+        )
+    }
+
+    fn cookie_pair(set_cookie: &str) -> String {
+        set_cookie
+            .split(';')
+            .next()
+            .unwrap_or(set_cookie)
+            .to_string()
+    }
+
+    async fn make_club_live(db: &ClubDb) -> String {
+        let club_id = db.default_club_id().await.unwrap();
+        sqlx::query(
+            "UPDATE clubs SET status = 'live', email_verified_at = COALESCE(email_verified_at, $1) WHERE id = $2",
+        )
+        .bind(now_ms())
+        .bind(&club_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        club_id
+    }
+
     #[serial]
     #[tokio::test]
     async fn qr_landing_pages_send_csp_and_referrer_policy() {
@@ -712,7 +843,7 @@ mod tests {
 
     #[serial]
     #[tokio::test]
-    async fn landing_renders_for_valid_token_and_consumes_qr() {
+    async fn landing_renders_for_valid_token_without_consuming() {
         let (_dir, router, db) = fixture(false, false).await;
         let club_id = db.default_club_id().await.unwrap();
         let now = now_ms();
@@ -739,15 +870,8 @@ mod tests {
             .fetch_one(&db.pool)
             .await
             .unwrap();
-        // Now the QR token is consumed (checkin row created)
-        assert_eq!(after, before + 1);
-        
-        // Check that a handoff token was created
-        let handoff_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM checkin_handoff_tokens")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
-        assert!(handoff_count >= 1);
+        // The HTML page only peeks; the JSON landing endpoint consumes.
+        assert_eq!(before, after);
     }
 
     #[serial]
@@ -887,12 +1011,12 @@ mod tests {
         let now = now_ms();
         let token = db.mint_checkin_qr_token(&club_id, now).await.unwrap();
         let body = get_landing_api(&router, &format!("/api/c/demo/q/{token}/landing")).await;
-        
+
         // Check that claimToken is present
         assert!(body.get("claimToken").is_some());
         let claim_token = body["claimToken"].as_str().unwrap();
         assert!(claim_token.starts_with("h1."));
-        
+
         // Check that intentUrl uses the claim token
         assert!(body.get("intentUrl").is_some());
         let intent_url = body["intentUrl"].as_str().unwrap();
@@ -906,19 +1030,208 @@ mod tests {
         let club_id = db.default_club_id().await.unwrap();
         let now = now_ms();
         let token = db.mint_checkin_qr_token(&club_id, now).await.unwrap();
-        
+
         // First request consumes QR and creates handoff token
         let body1 = get_landing_api(&router, &format!("/api/c/demo/q/{token}/landing")).await;
         let claim_token = body1["claimToken"].as_str().unwrap();
-        
+
         // Second request with handoff token should also work
         let body2 = get_landing_api(&router, &format!("/api/c/demo/q/{claim_token}/landing")).await;
-        
+
         // Both should have the same club info
         assert_eq!(body1["clubName"], body2["clubName"]);
         assert_eq!(body1["slug"], body2["slug"]);
-        
+
         // The handoff token request should also return the claimToken
         assert_eq!(body2["claimToken"], claim_token);
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn guest_first_scan_flow_issues_device_and_accepts_ingest() {
+        let (_dir, router, db) = fixture(false, false).await;
+        let club_id = make_club_live(&db).await;
+        let now = now_ms();
+
+        // 1) Anonymous guest session (app 1.1.0+2 path).
+        let (status, body, set_cookie) =
+            post_json(&router, "/api/devices/anonymous", "{}", None, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], true);
+        let guest_cookie = cookie_pair(&set_cookie.expect("guest session cookie"));
+
+        // 2) The guest session may register a device (not a 401).
+        let (status, body, _) = post_json(
+            &router,
+            "/api/me/devices",
+            r#"{"label":"Pixel","installId":"install-first-scan-01"}"#,
+            Some(&guest_cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let device_id = body["id"].as_str().expect("device id").to_string();
+        let device_token = body["token"].as_str().expect("device token").to_string();
+
+        // 3) Landing consumes the q-token and returns a single-use claim token.
+        let qr = db.mint_checkin_qr_token(&club_id, now).await.unwrap();
+        let (status, landing, _) =
+            get_json(&router, &format!("/api/c/demo/q/{qr}/landing")).await;
+        assert_eq!(status, StatusCode::OK);
+        let claim = landing["claimToken"].as_str().expect("claimToken").to_string();
+        assert!(claim.starts_with("h1."));
+
+        // 4) Check-in with the handoff succeeds for a guest device; still not cleared.
+        let (status, checkin, _) = post_json(
+            &router,
+            "/api/checkin",
+            &format!(r#"{{"token":"{claim}"}}"#),
+            Some(&guest_cookie),
+            Some(&device_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(checkin["ok"], true);
+        assert_eq!(checkin["status"], "guest");
+        assert_eq!(checkin["needsSignup"], true);
+        assert!(checkin.get("cleared").is_none());
+
+        // 5) The guest device may share location with that club (no flight, not cleared).
+        let q = format!(
+            "id={device_id}&lat=-33.4&lon=-70.6&timestamp={}",
+            now / 1000
+        );
+        let res = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/osmand?{q}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert!(db
+            .club_id_for_device_checkin(&device_id, now)
+            .await
+            .is_some());
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn handoff_checkin_survives_qr_step_rotation() {
+        let (_dir, router, db) = fixture(false, false).await;
+        let club_id = make_club_live(&db).await;
+        let now = now_ms();
+        let (_session, _guest_sess, guest) = db
+            .create_guest_session(&club_id, "Guest", now)
+            .await
+            .unwrap();
+        let qr = db.mint_checkin_qr_token(&club_id, now).await.unwrap();
+        let (status, landing, _) =
+            get_json(&router, &format!("/api/c/demo/q/{qr}/landing")).await;
+        assert_eq!(status, StatusCode::OK);
+        let claim = landing["claimToken"].as_str().expect("claimToken").to_string();
+
+        // The HMAC QR step is long gone, but the handoff (10 min TTL) still checks in.
+        let record = db
+            .submit_checkin(&guest.id, None, &claim, now + 31_000)
+            .await
+            .expect("handoff check-in after step rotation");
+        assert!(record.expires_at > now + 31_000);
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn handoff_checkin_is_single_use_and_expires() {
+        let (_dir, router, db) = fixture(false, false).await;
+        let club_id = make_club_live(&db).await;
+        let now = now_ms();
+        let (session, _guest_sess, guest) = db
+            .create_guest_session(&club_id, "Guest", now)
+            .await
+            .unwrap();
+        let cookie = format!("{}={session}", crate::club::auth::COOKIE);
+
+        let handoff = db
+            .mint_handoff_token(&club_id, &guest.id, None, now)
+            .await
+            .unwrap();
+        let body = format!(r#"{{"token":"{handoff}"}}"#);
+        let (status, first, _) =
+            post_json(&router, "/api/checkin", &body, Some(&cookie), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(first["ok"], true);
+
+        let (status, second, _) =
+            post_json(&router, "/api/checkin", &body, Some(&cookie), None).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(second["reason"], "used_claim");
+        assert!(second["message"].as_str().is_some_and(|m| !m.is_empty()));
+
+        let expired = db
+            .mint_handoff_token(&club_id, &guest.id, None, now - 700_000)
+            .await
+            .unwrap();
+        let (status, body, _) = post_json(
+            &router,
+            "/api/checkin",
+            &format!(r#"{{"token":"{expired}"}}"#),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["reason"], "expired_claim");
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn landing_consume_marks_qr_used_for_checkin_and_kiosk() {
+        let (_dir, router, db) = fixture(false, false).await;
+        let club_id = make_club_live(&db).await;
+        let now = now_ms();
+        let (session, _guest_sess, _guest) = db
+            .create_guest_session(&club_id, "Guest", now)
+            .await
+            .unwrap();
+        let cookie = format!("{}={session}", crate::club::auth::COOKIE);
+        let qr = db.mint_checkin_qr_token(&club_id, now).await.unwrap();
+
+        let (status, landing, _) =
+            get_json(&router, &format!("/api/c/demo/q/{qr}/landing")).await;
+        assert_eq!(status, StatusCode::OK);
+        let claim = landing["claimToken"].as_str().expect("claimToken").to_string();
+
+        // Kiosk rotation sees the landing consume.
+        assert!(db
+            .club_checkin_ok_for_qr_window(&club_id, now - 1_000, now + 1_000)
+            .await
+            .unwrap());
+
+        // A later check-in with the original q-token is used_qr.
+        let (status, body, _) = post_json(
+            &router,
+            "/api/checkin",
+            &format!(r#"{{"token":"{qr}"}}"#),
+            Some(&cookie),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["reason"], "used_qr");
+        assert_eq!(body["error"], "used_qr");
+
+        // A second landing GET for the consumed q-token does not remint.
+        let (status, _, _) = get_json(&router, &format!("/api/c/demo/q/{qr}/landing")).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // The still-valid unused handoff returns the same config and claim token.
+        let (status, again, _) =
+            get_json(&router, &format!("/api/c/demo/q/{claim}/landing")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(again["claimToken"], claim);
     }
 }

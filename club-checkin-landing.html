@@ -23,6 +23,18 @@
       #android-steps { padding-left: 1.2rem; line-height: 1.55; margin: .75rem 0 0; }
       .secondary { font-size: .92rem; margin-top: 1.25rem; }
       #btn-intent { margin-top: .5rem; }
+      #claim-form { display: grid; gap: .75rem; }
+      #claim-form label { display: grid; gap: .3rem; font-size: .92rem; }
+      #claim-form input {
+        box-sizing: border-box; width: 100%; padding: .6rem .7rem; border-radius: 10px;
+        border: 1px solid rgba(255,255,255,.25); background: transparent; color: inherit;
+        font: inherit;
+      }
+      #claim-form button {
+        padding: .75rem 1rem; border-radius: 12px; border: 0; cursor: pointer;
+        background: #ecebff; color: #15132a; font-weight: 650; font-size: 1rem;
+      }
+      #claim-form button[disabled] { opacity: .6; cursor: progress; }
     </style>
   </head>
   <body>
@@ -39,6 +51,25 @@
         <h2 style="font-size:1rem;margin:1rem 0 .35rem" data-i18n="checkin.androidInstallTitle"></h2>
         <ol id="android-steps"></ol>
         <p class="muted" data-i18n="checkin.iosSoon"></p>
+      </section>
+      <section class="card" id="signup-card" hidden>
+        <h2 style="font-size:1rem;margin:0 0 .5rem">Crea tu cuenta</h2>
+        <p class="muted" style="margin:.25rem 0 .75rem">
+          Deja tus datos y te enviamos un enlace para entrar.
+        </p>
+        <form id="claim-form">
+          <label>Nombre
+            <input id="claim-name" name="name" autocomplete="name" required />
+          </label>
+          <label>Correo
+            <input id="claim-email" name="email" type="email" autocomplete="email" required />
+          </label>
+          <label>Licencia (opcional)
+            <input id="claim-license" name="license" autocomplete="off" />
+          </label>
+          <button id="claim-submit" type="submit">Enviar enlace</button>
+        </form>
+        <p id="claim-status" class="muted" role="status" aria-live="polite"></p>
       </section>
       <p class="secondary">
         <a id="view-live-map" href="/public-map.html" data-i18n="checkin.viewLiveMap"></a>

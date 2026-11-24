@@ -35,6 +35,13 @@ const clubNameEl = document.querySelector<HTMLHeadingElement>("#club-name")!;
 const logoEl = document.querySelector<HTMLImageElement>("#club-logo")!;
 const downloadSlot = document.querySelector<HTMLDivElement>("#download-primary")!;
 const androidSteps = document.querySelector<HTMLOListElement>("#android-steps")!;
+const signupCard = document.querySelector<HTMLElement>("#signup-card");
+const claimForm = document.querySelector<HTMLFormElement>("#claim-form");
+const claimStatus = document.querySelector<HTMLParagraphElement>("#claim-status");
+const claimSubmit = document.querySelector<HTMLButtonElement>("#claim-submit");
+const claimName = document.querySelector<HTMLInputElement>("#claim-name");
+const claimEmail = document.querySelector<HTMLInputElement>("#claim-email");
+const claimLicense = document.querySelector<HTMLInputElement>("#claim-license");
 
 function renderDownload(available: boolean, apkUrl: string): void {
   downloadSlot.replaceChildren();
@@ -63,6 +70,52 @@ function renderAndroidSteps(): void {
       return li;
     }),
   );
+}
+
+function setupClaimForm(hasClaim: boolean): void {
+  if (
+    !hasClaim ||
+    !signupCard ||
+    !claimForm ||
+    !claimStatus ||
+    !claimSubmit ||
+    !claimName ||
+    !claimEmail
+  ) {
+    return;
+  }
+  signupCard.hidden = false;
+  claimForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    claimSubmit.disabled = true;
+    claimStatus.textContent = "Enviando…";
+    try {
+      const res = await fetch("/api/club/auth/claim", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          name: claimName.value.trim(),
+          email: claimEmail.value.trim(),
+          license_no: claimLicense?.value.trim() || null,
+        }),
+      });
+      if (res.ok) {
+        claimForm.hidden = true;
+        claimStatus.textContent = "Listo. Revisa tu correo y abre el enlace para entrar.";
+      } else if (res.status === 409) {
+        claimStatus.textContent =
+          "Ese correo ya tiene cuenta. Inicia sesión en la app o pídele ayuda al club.";
+      } else {
+        claimStatus.textContent =
+          "No pudimos enviar el enlace. Revisa tus datos e inténtalo de nuevo.";
+      }
+    } catch {
+      claimStatus.textContent =
+        "No pudimos enviar el enlace. Revisa tu conexión e inténtalo de nuevo.";
+    } finally {
+      claimSubmit.disabled = false;
+    }
+  });
 }
 
 async function loadConfig(): Promise<void> {
@@ -106,6 +159,7 @@ async function loadConfig(): Promise<void> {
     cfg.releaseAvailable === true && typeof cfg.apkUrl === "string" && cfg.apkUrl.length > 0;
   renderDownload(releaseAvailable, cfg.apkUrl ?? "/app/flightvis.apk");
   renderAndroidSteps();
+  setupClaimForm(typeof cfg.claimToken === "string" && cfg.claimToken.length > 0);
   const reg = document.querySelector<HTMLAnchorElement>("#link-register");
   if (reg && paths.slug) {
     reg.href = `/c/${encodeURIComponent(paths.slug)}/registro`;

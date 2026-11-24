@@ -76,6 +76,32 @@ pub async fn post_ingest(
                 )
                     .into_response();
             }
+            // Guest / unverified device with a live check-in: approval gates `cleared`, not sharing.
+            if let Some(club_id) = db
+                .club_id_for_device_checkin(&device_id, state.live.now_ms())
+                .await
+            {
+                if db.club_operational(&club_id).await.is_err() {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({ "error": "club unavailable" })),
+                    )
+                        .into_response();
+                }
+                let guest_key = format!("club:{club_id}:{device_id}");
+                if !state.live.allow_ingest(&guest_key).await {
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(json!({ "error": "rate limited" })),
+                    )
+                        .into_response();
+                }
+                return match state.live.ingest_fixes(&guest_key, fixes).await {
+                    Ok(n) => (StatusCode::OK, Json(json!({ "ok": true, "accepted": n })))
+                        .into_response(),
+                    Err(msg) => bad_request(msg).into_response(),
+                };
+            }
             return bad_request("no active flight").into_response();
         }
     }
@@ -270,6 +296,31 @@ pub async fn osmand_ingest(
                 {
                     return (StatusCode::OK, "OK").into_response();
                 }
+            }
+            // Guest / unverified device with a live check-in: approval gates `cleared`, not sharing.
+            if let Some(club_id) = db
+                .club_id_for_device_checkin(&device_id, state.live.now_ms())
+                .await
+            {
+                if db.club_operational(&club_id).await.is_err() {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({ "error": "club unavailable" })),
+                    )
+                        .into_response();
+                }
+                let guest_key = format!("club:{club_id}:{device_id}");
+                if !state.live.allow_ingest(&guest_key).await {
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        Json(json!({ "error": "rate limited" })),
+                    )
+                        .into_response();
+                }
+                return match state.live.ingest_fixes(&guest_key, vec![fix]).await {
+                    Ok(_) => (StatusCode::OK, "OK").into_response(),
+                    Err(msg) => bad_request(msg).into_response(),
+                };
             }
             return bad_request("no active flight").into_response();
         }

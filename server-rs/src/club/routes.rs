@@ -1,6 +1,6 @@
 use crate::club::{
     access_request::AccessRequestError,
-    auth::{self, digest_token, parse_display_cookie, parse_session_cookie},
+    auth::{self, parse_display_cookie, parse_session_cookie},
     db::{
         now_ms, AdminPendingCounts, ApprovePilotCheckout, CheckinReject, CheckoutError, ClubDb,
         DeleteError, DeviceRegisterError, EndError, PatchError, RegisterError, StartFlightError,
@@ -24,7 +24,6 @@ use axum::{
 use futures_util::stream;
 use serde::Deserialize;
 use serde_json::json;
-use sqlx::PgPool;
 use std::{collections::HashMap, convert::Infallible, time::Duration};
 
 #[allow(unused_imports)]
@@ -2028,6 +2027,7 @@ async fn create_device(
     let Viewer::Pilot { id, .. } = v
     else {
         // If no session, return a no-op response (app swallows errors in _restore)
+        crate::club::checkin::log_reason("api/me/devices", "no_session");
         return (
             StatusCode::OK,
             Json(json!({ "ok": true, "ignored": true })),
@@ -2045,9 +2045,14 @@ async fn create_device(
         .device_register_throttle
         .allow(&client_ip.0, crate::now_secs())
     {
+        crate::club::checkin::log_reason("api/me/devices", "rate_limited");
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({ "error": "too many attempts" })),
+            Json(json!({
+                "error": "rate_limited",
+                "reason": "rate_limited",
+                "message": "Hiciste demasiados intentos. Espera un momento y vuelve a intentarlo.",
+            })),
         )
             .into_response();
     }
@@ -2064,25 +2069,40 @@ async fn create_device(
         {
             Ok(reg) => return Json(reg).into_response(),
             Err(DeviceRegisterError::CapExceeded) => {
+                crate::club::checkin::log_reason("api/me/devices", "device_cap");
                 return (
                     StatusCode::CONFLICT,
                     Json(json!({
-                        "error": format!("device cap ({MAX_DEVICES_PER_PILOT}) reached")
+                        "error": "device_cap",
+                        "reason": "device_cap",
+                        "message": format!(
+                            "Llegaste al máximo de {MAX_DEVICES_PER_PILOT} dispositivos. Elimina uno antes de agregar otro."
+                        ),
                     })),
                 )
                     .into_response();
             }
             Err(DeviceRegisterError::InvalidInstallId) => {
+                crate::club::checkin::log_reason("api/me/devices", "invalid_install_id");
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "invalid installId" })),
+                    Json(json!({
+                        "error": "invalid_install_id",
+                        "reason": "invalid_install_id",
+                        "message": "El identificador de instalación no es válido. Reinstala la app e inténtalo de nuevo.",
+                    })),
                 )
                     .into_response();
             }
             Err(DeviceRegisterError::Db) => {
+                crate::club::checkin::log_reason("api/me/devices", "db_error");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": "db error" })),
+                    Json(json!({
+                        "error": "db_error",
+                        "reason": "db_error",
+                        "message": "No pudimos guardar el dispositivo. Inténtalo de nuevo.",
+                    })),
                 )
                     .into_response();
             }
@@ -2095,11 +2115,18 @@ async fn create_device(
             "label": body.label,
         }))
         .into_response(),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "db error" })),
-        )
-            .into_response(),
+        Err(_) => {
+            crate::club::checkin::log_reason("api/me/devices", "db_error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "db_error",
+                    "reason": "db_error",
+                    "message": "No pudimos crear el dispositivo. Inténtalo de nuevo.",
+                })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -2115,9 +2142,14 @@ async fn delete_device(
         ..
     } = v
     else {
+        crate::club::checkin::log_reason("api/me/devices", "not_approved");
         return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
+            Json(json!({
+                "error": "unauthorized",
+                "reason": "not_approved",
+                "message": "Necesitas que el club apruebe tu cuenta para administrar dispositivos.",
+            })),
         )
             .into_response();
     };
@@ -2146,9 +2178,14 @@ async fn delete_device(
 async fn list_devices(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
     let Viewer::Pilot { id, .. } = v else {
+        crate::club::checkin::log_reason("api/me/devices", "no_session");
         return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
+            Json(json!({
+                "error": "unauthorized",
+                "reason": "no_session",
+                "message": "Inicia sesión para ver tus dispositivos.",
+            })),
         )
             .into_response();
     };
@@ -2202,11 +2239,14 @@ async fn require_display_club(
 #[derive(Deserialize)]
 struct CheckinBody {
     token: String,
+    #[serde(rename = "deviceId", default)]
+    device_id: Option<String>,
 }
 
 async fn post_checkin(
     State(state): State<AppState>,
     headers: HeaderMap,
+    client_ip: ClientIp,
     Json(body): Json<CheckinBody>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
@@ -2217,17 +2257,18 @@ async fn post_checkin(
             .into_response();
     };
     let now = now_ms();
+    let bearer = bearer_token(&headers);
     let mut pilot_id: Option<String> = None;
     let mut device_id: Option<String> = None;
-    
+
     // Try to get device from bearer token first
-    if let Some(bearer) = bearer_token(&headers) {
-        if let Some(dev) = db.resolve_device_token(&bearer).await {
+    if let Some(token) = bearer.as_deref() {
+        if let Some(dev) = db.resolve_device_token(token).await {
             device_id = Some(dev.clone());
             pilot_id = db.device_pilot_id(&dev).await;
         }
     }
-    
+
     // If no device found, try to get pilot from session (including guest sessions)
     if pilot_id.is_none() {
         let v = viewer(&state, &headers).await;
@@ -2235,45 +2276,48 @@ async fn post_checkin(
             pilot_id = Some(id);
         }
     }
-    
+
+    // A session may name its device without a bearer; only accept it when it owns the device.
+    if device_id.is_none() {
+        if let (Some(pilot), Some(dev)) = (
+            pilot_id.as_deref(),
+            body.device_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+        ) {
+            if db.device_pilot_id(dev).await.as_deref() == Some(pilot) {
+                device_id = Some(dev.to_string());
+            }
+        }
+    }
+
     let Some(pilot_id) = pilot_id else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "no_device", "reason": "no_device" })),
-        )
-            .into_response();
+        return checkin_reason(StatusCode::UNAUTHORIZED, "no_device");
     };
-    
+
     let token = body.token.trim();
-    
-    // Check if the token is a handoff token or QR token to validate club
+
+    // Handoff and QR tokens both name their club.
     let target_club = if crate::club::checkin::is_handoff_token(token) {
         crate::club::checkin::parse_handoff_token_club_id(token)
     } else {
         crate::club::checkin::parse_checkin_token_club_id(token)
     };
-    
+
     if let Some(club_id) = &target_club {
         if db.club_operational(club_id).await.is_err() {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "club unavailable", "reason": "club_unavailable" })),
-            )
-                .into_response();
+            return checkin_reason(StatusCode::FORBIDDEN, "club_unavailable");
         }
     }
-    
+
     // Validate device ownership if we have both device and pilot
     if let Some(dev) = &device_id {
         if db.device_pilot_id(dev).await.as_deref() != Some(pilot_id.as_str()) {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "device mismatch", "reason": "invalid_device" })),
-            )
-                .into_response();
+            return checkin_reason(StatusCode::FORBIDDEN, "invalid_device");
         }
     }
-    
+
     match db
         .submit_checkin(&pilot_id, device_id.as_deref(), token, now)
         .await
@@ -2286,18 +2330,13 @@ async fn post_checkin(
                 )
                     .into_response();
             };
-            
+
             // Get pilot status to include in response
             let pilot_status: String = db
                 .pilot_status(&pilot_id)
                 .await
                 .unwrap_or_else(|_| "pending".to_string());
-            
-            // Check if pilot needs signup (is guest)
             let needs_signup = pilot_status == "guest";
-            
-            // If we have a device but no bearer token was provided, mint and return a device token
-            // This handles the case where a guest has a device but no bearer token
             let mut response = json!({
                 "ok": true,
                 "id": record.id,
@@ -2305,85 +2344,55 @@ async fn post_checkin(
                 "status": pilot_status,
                 "needsSignup": needs_signup,
             });
-            
-            // If we have a device_id but no bearer token was used, create a new device token
-            if device_id.is_some() && bearer_token(&headers).is_none() {
+
+            // No bearer was sent: rotate an existing device or mint one for this session.
+            if bearer.is_none() {
                 if let Some(dev_id) = &device_id {
-                    // Create a new device token for this device
-                    let new_token = auth::new_device_token();
-                    let hash = auth::digest_token(&new_token);
-                    
-                    // Update the device with the new token hash
-                    let _ = sqlx::query(
-                        "UPDATE devices SET token_hash = $1 WHERE id = $2",
-                    )
-                    .bind(&hash)
-                    .bind(dev_id)
-                    .execute(&db.pool)
-                    .await;
-                    
-                    response["token"] = json!(new_token);
+                    // Only rotate when the device really exists; raw tokens are never recoverable.
+                    if let Some(new_token) = db.rotate_device_token(dev_id).await {
+                        response["token"] = json!(new_token);
+                    }
+                } else if state
+                    .device_register_throttle
+                    .allow(&client_ip.0, crate::now_secs())
+                {
+                    if let Ok((dev_id, new_token)) = db.create_device(&pilot_id, "checkin").await {
+                        response["deviceId"] = json!(dev_id);
+                        response["token"] = json!(new_token);
+                    }
                 }
             }
-            
+
             Json(response).into_response()
         }
-        Err(CheckinReject::Format) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "invalid token", "reason": "format" })),
-        )
-            .into_response(),
-        Err(CheckinReject::ForgedHmac) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "invalid token", "reason": "forged_hmac" })),
-        )
-            .into_response(),
-        Err(CheckinReject::OldStep) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "expired_qr", "reason": "expired_qr" })),
-        )
-            .into_response(),
-        Err(CheckinReject::WrongClub) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "club_mismatch", "reason": "club_mismatch" })),
-        )
-            .into_response(),
-        Err(CheckinReject::Replay) => (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "used_qr", "reason": "used_qr" })),
-        )
-            .into_response(),
-        Err(CheckinReject::ExpiredClaim) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "expired_claim", "reason": "expired_claim" })),
-        )
-            .into_response(),
-        Err(CheckinReject::UsedClaim) => (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "used_claim", "reason": "used_claim" })),
-        )
-            .into_response(),
-        Err(CheckinReject::ClubMismatch) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "club_mismatch", "reason": "club_mismatch" })),
-        )
-            .into_response(),
-        Err(CheckinReject::NoDevice) => (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "no_device", "reason": "no_device" })),
-        )
-            .into_response(),
-        Err(CheckinReject::InvalidDevice) => (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "invalid_device", "reason": "invalid_device" })),
-        )
-            .into_response(),
-        Err(CheckinReject::NotCleared) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "not_cleared", "reason": "not_cleared" })),
-        )
-            .into_response(),
+        Err(CheckinReject::Format) => checkin_reason(StatusCode::BAD_REQUEST, "format"),
+        Err(CheckinReject::ForgedHmac) => checkin_reason(StatusCode::FORBIDDEN, "forged_hmac"),
+        Err(CheckinReject::OldStep) => checkin_reason(StatusCode::FORBIDDEN, "expired_qr"),
+        Err(CheckinReject::WrongClub) => checkin_reason(StatusCode::FORBIDDEN, "club_mismatch"),
+        Err(CheckinReject::Replay) => checkin_reason(StatusCode::CONFLICT, "used_qr"),
+        Err(CheckinReject::ExpiredClaim) => checkin_reason(StatusCode::FORBIDDEN, "expired_claim"),
+        Err(CheckinReject::UsedClaim) => checkin_reason(StatusCode::CONFLICT, "used_claim"),
+        Err(CheckinReject::ClubMismatch) => checkin_reason(StatusCode::FORBIDDEN, "club_mismatch"),
+        Err(CheckinReject::NoDevice) => checkin_reason(StatusCode::UNAUTHORIZED, "no_device"),
+        Err(CheckinReject::InvalidDevice) => {
+            checkin_reason(StatusCode::UNAUTHORIZED, "invalid_device")
+        }
+        Err(CheckinReject::NotCleared) => checkin_reason(StatusCode::FORBIDDEN, "not_cleared"),
     }
+}
+
+/// Machine reason + es-CL message; logs only the reason code.
+fn checkin_reason(status: StatusCode, reason: &str) -> axum::response::Response {
+    crate::club::checkin::log_reason("api/checkin", reason);
+    (
+        status,
+        Json(json!({
+            "error": reason,
+            "reason": reason,
+            "message": crate::club::checkin::reason_message(reason),
+        })),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]

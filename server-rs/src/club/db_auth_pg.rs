@@ -490,11 +490,15 @@ impl ClubDb {
     /// Create a guest pilot for handoff without creating a session
     /// This is used when a QR token is scanned in the browser and we need to create
     /// a guest pilot that will be re-scoped to the club when the app submits the checkin
-    pub async fn create_guest_for_handoff(&self, club_id: &str, now: i64) -> Result<String, DbError> {
+    pub async fn create_guest_for_handoff(
+        &self,
+        club_id: &str,
+        now: i64,
+    ) -> Result<String, DbError> {
         let guest_pilot_id = new_id();
         let guest_email = format!("guest-{guest_pilot_id}@guest.invalid");
         let display_name = "Guest";
-        
+
         sqlx::query(
             "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, created_at)
              VALUES ($1, $2, $3, $4, '', 'guest', 'pilot', '', $5)",
@@ -506,8 +510,31 @@ impl ClubDb {
         .bind(now)
         .execute(&self.pool)
         .await?;
-        
+
         Ok(guest_pilot_id)
+    }
+
+    /// Open a guest session for an existing guest pilot so the browser landing can claim it.
+    pub async fn create_guest_session_for_pilot(
+        &self,
+        club_id: &str,
+        pilot_id: &str,
+        now: i64,
+    ) -> Result<String, DbError> {
+        let session_id = new_id();
+        let expires = now + GUEST_SESSION_TTL_MS;
+        sqlx::query(
+            "INSERT INTO guest_sessions (id, club_id, guest_pilot_id, created_at, expires_at)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(&session_id)
+        .bind(club_id)
+        .bind(pilot_id)
+        .bind(now)
+        .bind(expires)
+        .execute(&self.pool)
+        .await?;
+        self.create_pilot_session(pilot_id, now).await
     }
 
     pub async fn claim_guest(
