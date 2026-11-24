@@ -209,6 +209,10 @@ export function applyI18nDocument(root: ParentNode = document): void {
     const key = el.dataset.i18nAria;
     if (key) el.setAttribute("aria-label", t(key));
   });
+  root.querySelectorAll<HTMLImageElement>("[data-i18n-alt]").forEach((el) => {
+    const key = el.dataset.i18nAlt;
+    if (key) el.alt = t(key);
+  });
   const metaI18n = document.querySelector<HTMLMetaElement>('meta[data-i18n-meta]');
   if (metaI18n?.dataset.i18nMeta) {
     metaI18n.content = t(metaI18n.dataset.i18nMeta);

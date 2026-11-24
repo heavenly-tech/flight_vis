@@ -37,6 +37,10 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
   let clubQrVisible = true;
   let localQrHidden = false;
   let qrStepTimer: number | undefined;
+  let layoutPollTimer: number | undefined;
+  let mapPollTimer: number | undefined;
+  let activeLoopStarted = false;
+  let activating = false;
 
   async function displaySessionActive(): Promise<boolean> {
     const res = await fetch("/api/display/map", { credentials: "same-origin" });
@@ -148,20 +152,55 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     };
   }
 
+  async function startActiveLoop(): Promise<void> {
+    if (activeLoopStarted) return;
+    activeLoopStarted = true;
+    activatePanel.hidden = true;
+    if (localToggleBtn) {
+      localToggleBtn.hidden = false;
+      syncLocalToggleLabel();
+    }
+    await fetchLayout();
+    statusEl.textContent = t("kiosk.qrRotateHint", { seconds: String(CHECKIN_STEP_SEC) });
+    await refreshMap();
+    watchLayoutStream();
+    window.clearInterval(layoutPollTimer);
+    layoutPollTimer = window.setInterval(() => void fetchLayout(), 8000);
+    startQrRefreshLoop();
+    window.clearInterval(mapPollTimer);
+    mapPollTimer = window.setInterval(() => void refreshMap(), 5000);
+  }
+
+  async function handleActivate(): Promise<void> {
+    if (activating) return;
+    activating = true;
+    try {
+      if (await activateDisplay()) {
+        await startActiveLoop();
+      }
+    } finally {
+      activating = false;
+    }
+  }
+
   window.addEventListener("resize", () => paintQr());
 
-  activateBtn.addEventListener("click", () => {
-    void (async () => {
-      if (await activateDisplay()) {
-        refreshQrImage();
-        startQrRefreshLoop();
-        await fetchLayout();
-        await refreshMap();
-        watchLayoutStream();
-        window.setInterval(() => void fetchLayout(), 8000);
-      }
-    })();
-  });
+  const activateForm = activateToken.form ?? activateBtn.closest("form");
+  if (activateForm) {
+    activateForm.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      void handleActivate();
+    });
+    if (activateBtn.type === "button") {
+      activateBtn.addEventListener("click", () => {
+        void handleActivate();
+      });
+    }
+  } else {
+    activateBtn.addEventListener("click", () => {
+      void handleActivate();
+    });
+  }
 
   localToggleBtn?.addEventListener("click", () => {
     localQrHidden = !localQrHidden;
@@ -174,20 +213,9 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     await startClubPage();
     if (!(await displaySessionActive())) {
       activatePanel.hidden = false;
-      statusEl.textContent = t("kiosk.pasteToken");
+      statusEl.textContent = t("kiosk.awaitingActivation");
       return;
     }
-    activatePanel.hidden = true;
-    if (localToggleBtn) {
-      localToggleBtn.hidden = false;
-      syncLocalToggleLabel();
-    }
-    await fetchLayout();
-    statusEl.textContent = t("kiosk.qrRotateHint", { seconds: String(CHECKIN_STEP_SEC) });
-    await refreshMap();
-    watchLayoutStream();
-    window.setInterval(() => void fetchLayout(), 8000);
-    startQrRefreshLoop();
-    window.setInterval(() => void refreshMap(), 5000);
+    await startActiveLoop();
   })();
 }

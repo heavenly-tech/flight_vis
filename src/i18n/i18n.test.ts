@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { flattenCatalog, bundledLocaleIds, CANONICAL_LOCALE } from "./catalog";
-import { initI18n, t, resolveLocale, apiErrorMessage, setLocale, getLocale } from "./index";
+import {
+  initI18n,
+  t,
+  resolveLocale,
+  apiErrorMessage,
+  setLocale,
+  getLocale,
+  applyI18nDocument,
+} from "./index";
 
 describe("i18n catalogs", () => {
   it("bundled locales share canonical keys", () => {
@@ -61,5 +69,19 @@ describe("i18n catalogs", () => {
   it("maps api error slugs", () => {
     initI18n();
     expect(apiErrorMessage("unauthorized")).toBe(t("api.unauthorized"));
+  });
+
+  it("applies data-i18n-aria and data-i18n-alt attributes", () => {
+    initI18n({ stored: "es" });
+    const wrap = document.createElement("div");
+    wrap.innerHTML = `
+      <section data-i18n-aria="kiosk.liveMapAria"></section>
+      <img data-i18n-alt="kiosk.qrAlt" />
+    `;
+    applyI18nDocument(wrap);
+    expect(wrap.querySelector("section")?.getAttribute("aria-label")).toBe(
+      t("kiosk.liveMapAria"),
+    );
+    expect(wrap.querySelector("img")?.alt).toBe(t("kiosk.qrAlt"));
   });
 });

@@ -1,4 +1,5 @@
 import { bootI18n, t } from "../i18n/boot";
+import { renderMarkdownInto, renderSafeInlineMarkdown } from "./safeMarkdown";
 
 type AppRelease = {
   available: boolean;
@@ -14,6 +15,7 @@ const shaWrap = document.querySelector<HTMLParagraphElement>("#sha")!;
 const shaVal = document.querySelector<HTMLElement>("#sha-val")!;
 const download = document.querySelector<HTMLAnchorElement>("#download")!;
 const openInApp = document.querySelector<HTMLAnchorElement>("#open-in-app")!;
+const uninstallNoticeBody = document.querySelector<HTMLParagraphElement>("#uninstall-notice-body");
 const sideloadSteps = document.querySelector<HTMLOListElement>("#sideload-steps")!;
 
 async function loadRelease(): Promise<void> {
@@ -26,11 +28,15 @@ async function loadRelease(): Promise<void> {
     const apkProbe = await fetch(data.apkUrl, { method: "HEAD" });
     const hasApk = apkProbe.ok && data.available;
     if (!hasApk) {
-      status.textContent = data.message ?? t("app.releaseSoon");
+      renderMarkdownInto(status, data.message ?? t("app.releaseSoon"));
       download.hidden = true;
       return;
     }
     status.textContent = t("app.releaseReady");
+    const releaseNote = document.querySelector<HTMLElement>("#release-note");
+    if (releaseNote && data.message?.trim()) {
+      renderMarkdownInto(releaseNote, data.message);
+    }
     if (data.version) {
       versionEl.hidden = false;
       versionEl.textContent = t("app.versionLabel", { version: data.version });
@@ -64,10 +70,13 @@ async function loadRelease(): Promise<void> {
 
 void (async () => {
   await bootI18n({ switcher: "#lang-slot" });
+  if (uninstallNoticeBody) {
+    uninstallNoticeBody.replaceChildren(renderSafeInlineMarkdown(t("app.uninstallNotice")));
+  }
   sideloadSteps.replaceChildren(
-    ...[1, 2, 3, 4, 5].map((n) => {
+    ...[1, 2, 3, 4].map((n) => {
       const li = document.createElement("li");
-      li.textContent = t(`app.sideloadStep${n}`);
+      li.appendChild(renderSafeInlineMarkdown(t(`app.sideloadStep${n}`)));
       return li;
     }),
   );

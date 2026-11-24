@@ -155,6 +155,7 @@ fn sidecar_path(base: &Path, encoding: &str) -> PathBuf {
 }
 
 pub const HTML_REFERRER_POLICY: &str = "strict-origin-when-cross-origin";
+const APK_CONTENT_DISPOSITION: &str = "attachment; filename=\"flightvis.apk\"";
 
 fn cache_for(relative: &str) -> &'static str {
     if is_geoid_asset(relative) {
@@ -196,6 +197,7 @@ struct FileResponseOpts<'a> {
     cache: &'a str,
     etag: &'a str,
     content_encoding: Option<&'a str>,
+    content_disposition: Option<&'a str>,
     vary_encoding: bool,
     not_modified: bool,
     sized_body: Option<Vec<u8>>,
@@ -240,6 +242,9 @@ async fn file_response(opts: FileResponseOpts<'_>) -> Result<axum::response::Res
     }
     if let Some(enc) = opts.content_encoding {
         builder = builder.header(header::CONTENT_ENCODING, enc);
+    }
+    if let Some(disposition) = opts.content_disposition {
+        builder = builder.header(header::CONTENT_DISPOSITION, disposition);
     }
     if opts.vary_encoding {
         builder = builder.header(header::VARY, "Accept-Encoding");
@@ -302,12 +307,18 @@ pub async fn serve(
             } else {
                 None
             };
+            let content_disposition = if ext_of(relative).eq_ignore_ascii_case("apk") {
+                Some(APK_CONTENT_DISPOSITION)
+            } else {
+                None
+            };
             return file_response(FileResponseOpts {
                 path: &serve_path,
                 content_type: mime_for(&ext_of(relative).to_lowercase()),
                 cache,
                 etag: &etag,
                 content_encoding,
+                content_disposition,
                 vary_encoding: vary,
                 not_modified,
                 sized_body,
@@ -333,6 +344,7 @@ pub async fn serve(
             cache: "no-cache",
             etag: &etag,
             content_encoding: None,
+            content_disposition: None,
             vary_encoding: false,
             not_modified: if_none_match == Some(etag.as_str()),
             sized_body: None,
@@ -500,6 +512,35 @@ mod tests {
                 .get(header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok()),
             Some("application/vnd.android.package-archive")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn present_app_apk_has_single_content_type_and_attachment_disposition() {
+        let dir = temp_dist();
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        std::fs::write(dir.join("app/flightvis.apk"), b"PK-fake").unwrap();
+        std::fs::write(dir.join("index.html"), "x").unwrap();
+        let res = serve(&dir, "/app/flightvis.apk", &HeaderMap::new())
+            .await
+            .expect("apk");
+        assert_eq!(res.status(), StatusCode::OK);
+        let content_types: Vec<_> = res
+            .headers()
+            .get_all(header::CONTENT_TYPE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .collect();
+        assert_eq!(
+            content_types,
+            vec!["application/vnd.android.package-archive"]
+        );
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_DISPOSITION)
+                .and_then(|v| v.to_str().ok()),
+            Some("attachment; filename=\"flightvis.apk\"")
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

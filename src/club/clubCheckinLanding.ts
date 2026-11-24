@@ -10,6 +10,7 @@ type LandingConfig = {
   releaseAvailable?: boolean;
   apkUrl?: string;
   publicMapPath?: string;
+  appPath?: string;
 };
 
 function landingPaths(): { slug: string; token: string | null } | null {
@@ -94,6 +95,14 @@ async function loadConfig(): Promise<void> {
   }
   mapLink.href = cfg.publicMapPath ?? "/public-map.html";
   mapLink.textContent = t("checkin.viewLiveMap");
+  const appLink = document.querySelector<HTMLAnchorElement>("#link-app-install");
+  if (appLink) {
+    const safeAppPath =
+      cfg.appPath && cfg.appPath.startsWith("/") && !cfg.appPath.startsWith("//")
+        ? cfg.appPath
+        : "/app.html";
+    appLink.href = safeAppPath;
+  }
   const releaseAvailable =
     cfg.releaseAvailable === true && typeof cfg.apkUrl === "string" && cfg.apkUrl.length > 0;
   renderDownload(releaseAvailable, cfg.apkUrl ?? "/app/flightvis.apk");
