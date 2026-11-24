@@ -908,15 +908,10 @@ pub async fn post_club_flight_start(
         }
     };
     let v = viewer(&state, &headers).await;
-    let Viewer::Pilot {
-        id: pilot_id,
-        status: PilotStatus::Approved,
-        ..
-    } = v
-    else {
+    let Viewer::Pilot { id: pilot_id, .. } = v else {
         return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
+            Json(json!({ "error": "unauthorized", "reason": "no_device" })),
         )
             .into_response();
     };
@@ -925,7 +920,7 @@ pub async fn post_club_flight_start(
         None => {
             return (
                 StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "device token required" })),
+                Json(json!({ "error": "device token required", "reason": "no_device" })),
             )
                 .into_response();
         }
@@ -942,7 +937,7 @@ pub async fn post_club_flight_start(
         None => {
             return (
                 StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "invalid device token" })),
+                Json(json!({ "error": "invalid device token", "reason": "invalid_device" })),
             )
                 .into_response();
         }
@@ -2143,17 +2138,10 @@ async fn create_device(
     Json(body): Json<DeviceBody>,
 ) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
-    let Viewer::Pilot {
-        id,
-        status: PilotStatus::Approved,
-        ..
-    } = v
-    else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
-        )
-            .into_response();
+    let Viewer::Pilot { id, .. } = v else {
+        // If no session, return a no-op response (app swallows errors in _restore)
+        crate::club::checkin::log_reason("api/me/devices", "no_session");
+        return (StatusCode::OK, Json(json!({ "ok": true, "ignored": true }))).into_response();
     };
     let Some(db) = club_db(&state) else {
         return (
@@ -2166,9 +2154,14 @@ async fn create_device(
         .device_register_throttle
         .allow(&client_ip.0, crate::now_secs())
     {
+        crate::club::checkin::log_reason("api/me/devices", "rate_limited");
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json(json!({ "error": "too many attempts" })),
+            Json(json!({
+                "error": "rate_limited",
+                "reason": "rate_limited",
+                "message": "Hiciste demasiados intentos. Espera un momento y vuelve a intentarlo.",
+            })),
         )
             .into_response();
     }
@@ -2185,41 +2178,64 @@ async fn create_device(
         {
             Ok(reg) => return Json(reg).into_response(),
             Err(DeviceRegisterError::CapExceeded) => {
+                crate::club::checkin::log_reason("api/me/devices", "device_cap");
                 return (
                     StatusCode::CONFLICT,
                     Json(json!({
-                        "error": format!("device cap ({MAX_DEVICES_PER_PILOT}) reached")
+                        "error": "device_cap",
+                        "reason": "device_cap",
+                        "message": format!(
+                            "Llegaste al máximo de {MAX_DEVICES_PER_PILOT} dispositivos. Elimina uno antes de agregar otro."
+                        ),
                     })),
                 )
                     .into_response();
             }
             Err(DeviceRegisterError::InvalidInstallId) => {
+                crate::club::checkin::log_reason("api/me/devices", "invalid_install_id");
                 return (
                     StatusCode::BAD_REQUEST,
-                    Json(json!({ "error": "invalid installId" })),
+                    Json(json!({
+                        "error": "invalid_install_id",
+                        "reason": "invalid_install_id",
+                        "message": "El identificador de instalación no es válido. Reinstala la app e inténtalo de nuevo.",
+                    })),
                 )
                     .into_response();
             }
             Err(DeviceRegisterError::Db) => {
+                crate::club::checkin::log_reason("api/me/devices", "db_error");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": "db error" })),
+                    Json(json!({
+                        "error": "db_error",
+                        "reason": "db_error",
+                        "message": "No pudimos guardar el dispositivo. Inténtalo de nuevo.",
+                    })),
                 )
                     .into_response();
             }
         }
     }
     match db.create_device(&id, body.label.trim()).await {
-        Ok((device_id, _token)) => Json(json!({
+        Ok((device_id, token)) => Json(json!({
             "id": device_id,
+            "token": token,
             "label": body.label,
         }))
         .into_response(),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "db error" })),
-        )
-            .into_response(),
+        Err(_) => {
+            crate::club::checkin::log_reason("api/me/devices", "db_error");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": "db_error",
+                    "reason": "db_error",
+                    "message": "No pudimos crear el dispositivo. Inténtalo de nuevo.",
+                })),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -2235,9 +2251,14 @@ async fn delete_device(
         ..
     } = v
     else {
+        crate::club::checkin::log_reason("api/me/devices", "not_approved");
         return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
+            Json(json!({
+                "error": "unauthorized",
+                "reason": "not_approved",
+                "message": "Necesitas que el club apruebe tu cuenta para administrar dispositivos.",
+            })),
         )
             .into_response();
     };
@@ -2266,9 +2287,14 @@ async fn delete_device(
 async fn list_devices(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
     let Viewer::Pilot { id, .. } = v else {
+        crate::club::checkin::log_reason("api/me/devices", "no_session");
         return (
             StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
+            Json(json!({
+                "error": "unauthorized",
+                "reason": "no_session",
+                "message": "Inicia sesión para ver tus dispositivos.",
+            })),
         )
             .into_response();
     };
@@ -2322,11 +2348,14 @@ async fn require_display_club(
 #[derive(Deserialize)]
 struct CheckinBody {
     token: String,
+    #[serde(rename = "deviceId", default)]
+    device_id: Option<String>,
 }
 
 async fn post_checkin(
     State(state): State<AppState>,
     headers: HeaderMap,
+    client_ip: ClientIp,
     Json(body): Json<CheckinBody>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
@@ -2337,51 +2366,67 @@ async fn post_checkin(
             .into_response();
     };
     let now = now_ms();
+    let bearer = bearer_token(&headers);
     let mut pilot_id: Option<String> = None;
     let mut device_id: Option<String> = None;
-    if let Some(bearer) = bearer_token(&headers) {
-        if let Some(dev) = db.resolve_device_token(&bearer).await {
+
+    // Try to get device from bearer token first
+    if let Some(token) = bearer.as_deref() {
+        if let Some(dev) = db.resolve_device_token(token).await {
             device_id = Some(dev.clone());
             pilot_id = db.device_pilot_id(&dev).await;
         }
     }
+
+    // If no device found, try to get pilot from session (including guest sessions)
     if pilot_id.is_none() {
         let v = viewer(&state, &headers).await;
-        if let Viewer::Pilot {
-            id,
-            status: PilotStatus::Approved,
-            ..
-        } = v
-        {
+        if let Viewer::Pilot { id, .. } = v {
             pilot_id = Some(id);
         }
     }
-    let Some(pilot_id) = pilot_id else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
-        )
-            .into_response();
-    };
-    let token = body.token.trim();
-    if let Some(target_club) = crate::club::checkin::parse_checkin_token_club_id(token) {
-        if db.club_operational(&target_club).await.is_err() {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "club unavailable" })),
-            )
-                .into_response();
+
+    // A session may name its device without a bearer; only accept it when it owns the device.
+    if device_id.is_none() {
+        if let (Some(pilot), Some(dev)) = (
+            pilot_id.as_deref(),
+            body.device_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+        ) {
+            if db.device_pilot_id(dev).await.as_deref() == Some(pilot) {
+                device_id = Some(dev.to_string());
+            }
         }
     }
+
+    let Some(pilot_id) = pilot_id else {
+        return checkin_reason(StatusCode::UNAUTHORIZED, "no_device");
+    };
+
+    let token = body.token.trim();
+
+    // Handoff and QR tokens both name their club.
+    let target_club = if crate::club::checkin::is_handoff_token(token) {
+        crate::club::checkin::parse_handoff_token_club_id(token)
+    } else {
+        crate::club::checkin::parse_checkin_token_club_id(token)
+    };
+
+    if let Some(club_id) = &target_club {
+        if db.club_operational(club_id).await.is_err() {
+            return checkin_reason(StatusCode::FORBIDDEN, "club_unavailable");
+        }
+    }
+
+    // Validate device ownership if we have both device and pilot
     if let Some(dev) = &device_id {
         if db.device_pilot_id(dev).await.as_deref() != Some(pilot_id.as_str()) {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "device mismatch" })),
-            )
-                .into_response();
+            return checkin_reason(StatusCode::FORBIDDEN, "invalid_device");
         }
     }
+
     match db
         .submit_checkin(&pilot_id, device_id.as_deref(), token, now)
         .await
@@ -2394,39 +2439,64 @@ async fn post_checkin(
                 )
                     .into_response();
             };
-            Json(json!({
+
+            // Get pilot status to include in response
+            let pilot_status: String = db
+                .pilot_status(&pilot_id)
+                .await
+                .unwrap_or_else(|_| "pending".to_string());
+            let needs_signup = pilot_status == "guest";
+            let mut response = json!({
                 "ok": true,
                 "id": record.id,
                 "expiresAt": expires_at,
-            }))
-            .into_response()
+                "status": pilot_status,
+                "needsSignup": needs_signup,
+            });
+
+            // No bearer was sent: rotate an existing device or mint one for this session.
+            if bearer.is_none() {
+                if let Some(dev_id) = &device_id {
+                    // Only rotate when the device really exists; raw tokens are never recoverable.
+                    if let Some(new_token) = db.rotate_device_token(dev_id).await {
+                        response["token"] = json!(new_token);
+                    }
+                } else if state
+                    .device_register_throttle
+                    .allow(&client_ip.0, crate::now_secs())
+                {
+                    if let Ok((dev_id, new_token)) = db.create_device(&pilot_id, "checkin").await {
+                        response["deviceId"] = json!(dev_id);
+                        response["token"] = json!(new_token);
+                    }
+                }
+            }
+
+            Json(response).into_response()
         }
-        Err(CheckinReject::Format) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({ "error": "invalid token", "reason": "format" })),
-        )
-            .into_response(),
-        Err(CheckinReject::ForgedHmac) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "invalid token", "reason": "forged_hmac" })),
-        )
-            .into_response(),
-        Err(CheckinReject::OldStep) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "invalid token", "reason": "old_step" })),
-        )
-            .into_response(),
-        Err(CheckinReject::WrongClub) => (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "invalid token", "reason": "wrong_club" })),
-        )
-            .into_response(),
-        Err(CheckinReject::Replay) => (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "token already used", "reason": "replay" })),
-        )
-            .into_response(),
+        Err(CheckinReject::Format) => checkin_reason(StatusCode::BAD_REQUEST, "format"),
+        Err(CheckinReject::ForgedHmac) => checkin_reason(StatusCode::FORBIDDEN, "forged_hmac"),
+        Err(CheckinReject::OldStep) => checkin_reason(StatusCode::FORBIDDEN, "expired_qr"),
+        Err(CheckinReject::WrongClub) => checkin_reason(StatusCode::FORBIDDEN, "club_mismatch"),
+        Err(CheckinReject::Replay) => checkin_reason(StatusCode::CONFLICT, "used_qr"),
+        Err(CheckinReject::ExpiredClaim) => checkin_reason(StatusCode::FORBIDDEN, "expired_claim"),
+        Err(CheckinReject::UsedClaim) => checkin_reason(StatusCode::CONFLICT, "used_claim"),
+        Err(CheckinReject::ClubMismatch) => checkin_reason(StatusCode::FORBIDDEN, "club_mismatch"),
     }
+}
+
+/// Machine reason + es-CL message; logs only the reason code.
+fn checkin_reason(status: StatusCode, reason: &str) -> axum::response::Response {
+    crate::club::checkin::log_reason("api/checkin", reason);
+    (
+        status,
+        Json(json!({
+            "error": reason,
+            "reason": reason,
+            "message": crate::club::checkin::reason_message(reason),
+        })),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]

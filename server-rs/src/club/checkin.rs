@@ -5,6 +5,34 @@ use subtle::ConstantTimeEq;
 type HmacSha256 = Hmac<Sha256>;
 
 pub const CHECKIN_STEP_SEC: i64 = 30;
+pub const HANDOFF_TOKEN_TTL_SEC: i64 = 600; // 10 minutes
+
+/// Es-CL (tú) message for a machine reason code. Never include tokens or ids.
+pub fn reason_message(reason: &str) -> &'static str {
+    match reason {
+        "expired_qr" => "El código QR expiró. Escanea el código que está en pantalla.",
+        "used_qr" => "Ese código QR ya se usó. Escanea el código actual.",
+        "expired_claim" => "El enlace de check-in expiró. Escanea el QR otra vez.",
+        "used_claim" => "Este enlace de check-in ya se usó. Escanea el QR otra vez.",
+        "no_device" => "No encontramos tu sesión. Inicia sesión o escanea el QR de nuevo.",
+        "invalid_device" => "Este dispositivo no está autorizado. Vuelve a iniciar sesión.",
+        "not_cleared" => {
+            "El club aún no te habilita. Pídele al administrador que apruebe tu cuenta."
+        }
+        "club_mismatch" => "Este código pertenece a otro club.",
+        "club_unavailable" => "El club no está disponible en este momento.",
+        "format" | "forged_hmac" => "El código no es válido. Escanea el QR de nuevo.",
+        _ => "No pudimos completar la operación. Inténtalo de nuevo.",
+    }
+}
+
+/// Log only the machine reason code (never q-tokens, handoff tokens, session ids or bearers).
+pub fn log_reason(route: &str, reason: &str) {
+    log::warn!("reason={reason} route={route}");
+}
+
+/// Prefix for handoff tokens to distinguish from QR tokens
+pub const HANDOFF_TOKEN_PREFIX: &str = "h1.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CheckinTokenError {
@@ -32,6 +60,25 @@ fn sign_step(secret: &str, club_id: &str, step: i64) -> String {
 
 pub fn token_digest(token: &str) -> String {
     hex::encode(Sha256::digest(token.as_bytes()))
+}
+
+/// Check if a token is a handoff token (starts with h1.)
+pub fn is_handoff_token(token: &str) -> bool {
+    token.trim().starts_with(HANDOFF_TOKEN_PREFIX)
+}
+
+/// Parse the club_id from a handoff token (format: h1.{club_id}.{random_id})
+pub fn parse_handoff_token_club_id(token: &str) -> Option<String> {
+    let token = token.trim();
+    if !token.starts_with(HANDOFF_TOKEN_PREFIX) {
+        return None;
+    }
+    let parts: Vec<&str> = token.split('.').collect();
+    if parts.len() >= 3 && parts[0] == "h1" {
+        Some(parts[1].to_string())
+    } else {
+        None
+    }
 }
 
 /// Club id embedded in a `v1.{club}.{step}.{sig}` token (no HMAC verify).
