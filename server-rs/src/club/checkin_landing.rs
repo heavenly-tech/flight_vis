@@ -1344,4 +1344,241 @@ mod tests {
             .unwrap();
         assert_eq!(ok.status(), StatusCode::OK);
     }
+
+    async fn create_live_club(db: &ClubDb, slug: &str, name: &str, now: i64) -> String {
+        let club_id = crate::club::auth::new_id();
+        sqlx::query(
+            "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at)
+             VALUES ($1, $2, $3, $4, 'live', $4)",
+        )
+        .bind(&club_id)
+        .bind(name)
+        .bind(slug)
+        .bind(now)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+        club_id
+    }
+
+    async fn handoff_consumed_at(db: &ClubDb, token: &str) -> Option<i64> {
+        let hash = crate::club::auth::digest_token(token);
+        sqlx::query_scalar("SELECT consumed_at FROM checkin_handoff_tokens WHERE token_hash = $1")
+            .bind(&hash)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap()
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn handoff_checkin_rejects_other_club_non_guest_without_consuming_token() {
+        let (_dir, router, db) = fixture(false, false).await;
+        let now = now_ms();
+        let club_a = make_club_live(&db).await;
+        let club_b = create_live_club(&db, "club-b", "Club B", now).await;
+
+        let pilot_a = db
+            .register(
+                &club_a,
+                "Pilot A",
+                "pilota@club-a.test",
+                "LA1",
+                "password12",
+            )
+            .await
+            .unwrap();
+        db.approve_pilot(&pilot_a).await.unwrap();
+        let (session_a, _) = db
+            .login(&club_a, "pilota@club-a.test", "password12", now)
+            .await
+            .unwrap();
+        let cookie_a = format!("{}={session_a}", crate::club::auth::COOKIE);
+        let (dev_a_id, dev_a_token) = db.create_device(&pilot_a, "a-phone").await.unwrap();
+
+        let pilot_b = db
+            .register(
+                &club_b,
+                "Pilot B",
+                "pilotb@club-b.test",
+                "LB1",
+                "password12",
+            )
+            .await
+            .unwrap();
+        db.approve_pilot(&pilot_b).await.unwrap();
+        let (session_b, _) = db
+            .login(&club_b, "pilotb@club-b.test", "password12", now)
+            .await
+            .unwrap();
+        let cookie_b = format!("{}={session_b}", crate::club::auth::COOKIE);
+        let (dev_b_id, dev_b_token) = db.create_device(&pilot_b, "b-phone").await.unwrap();
+
+        // Mint a handoff token for Club B via the browser landing flow.
+        let qr_b = db.mint_checkin_qr_token(&club_b, now).await.unwrap();
+        let (status, landing, _) =
+            get_json(&router, &format!("/api/c/club-b/q/{qr_b}/landing")).await;
+        assert_eq!(status, StatusCode::OK);
+        let claim_b = landing["claimToken"]
+            .as_str()
+            .expect("claimToken")
+            .to_string();
+        assert!(claim_b.starts_with("h1."));
+
+        // Non-guest pilot from Club A must be rejected with the wrong_club / club_mismatch response.
+        let (status, reject, _) = post_json(
+            &router,
+            "/api/checkin",
+            &format!(r#"{{"token":"{claim_b}"}}"#),
+            Some(&cookie_a),
+            Some(&dev_a_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(reject["reason"], "club_mismatch");
+        assert_eq!(reject["error"], "club_mismatch");
+        assert!(reject["message"].as_str().is_some_and(|m| !m.is_empty()));
+
+        // Pilot A must not have an active check-in at Club B, and the failure is audited.
+        assert!(db
+            .club_id_for_device_checkin(&dev_a_id, now)
+            .await
+            .is_none());
+        let fail_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM checkins
+             WHERE club_id = $1 AND pilot_id = $2 AND outcome = 'fail' AND fail_reason = 'wrong_club'",
+        )
+        .bind(&club_a)
+        .bind(&pilot_a)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+        assert_eq!(fail_count, 1);
+
+        // The handoff token must remain unconsumed in the DB after the rejected attempt.
+        assert!(
+            handoff_consumed_at(&db, &claim_b).await.is_none(),
+            "rejected cross-club check-in must not consume the handoff token"
+        );
+
+        // A legitimate Club B pilot can still check in with that exact handoff token.
+        let (status, ok, _) = post_json(
+            &router,
+            "/api/checkin",
+            &format!(r#"{{"token":"{claim_b}"}}"#),
+            Some(&cookie_b),
+            Some(&dev_b_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ok["ok"], true);
+        assert_eq!(ok["status"], "approved");
+        assert_eq!(ok["needsSignup"], false);
+        assert!(handoff_consumed_at(&db, &claim_b).await.is_some());
+        assert_eq!(
+            db.club_id_for_device_checkin(&dev_b_id, now)
+                .await
+                .as_deref(),
+            Some(club_b.as_str())
+        );
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn handoff_checkin_allows_same_club_non_guest_pilot() {
+        let (_dir, router, db) = fixture(false, false).await;
+        let now = now_ms();
+        let club_b = create_live_club(&db, "club-b", "Club B", now).await;
+
+        let pilot_b = db
+            .register(
+                &club_b,
+                "Pilot B",
+                "pilotb@club-b.test",
+                "LB1",
+                "password12",
+            )
+            .await
+            .unwrap();
+        db.approve_pilot(&pilot_b).await.unwrap();
+        let (session_b, _) = db
+            .login(&club_b, "pilotb@club-b.test", "password12", now)
+            .await
+            .unwrap();
+        let cookie_b = format!("{}={session_b}", crate::club::auth::COOKIE);
+        let (dev_b_id, dev_b_token) = db.create_device(&pilot_b, "b-phone").await.unwrap();
+
+        let qr_b = db.mint_checkin_qr_token(&club_b, now).await.unwrap();
+        let (status, landing, _) =
+            get_json(&router, &format!("/api/c/club-b/q/{qr_b}/landing")).await;
+        assert_eq!(status, StatusCode::OK);
+        let claim_b = landing["claimToken"]
+            .as_str()
+            .expect("claimToken")
+            .to_string();
+
+        let (status, body, _) = post_json(
+            &router,
+            "/api/checkin",
+            &format!(r#"{{"token":"{claim_b}"}}"#),
+            Some(&cookie_b),
+            Some(&dev_b_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["status"], "approved");
+        assert_eq!(body["needsSignup"], false);
+        assert!(handoff_consumed_at(&db, &claim_b).await.is_some());
+        assert_eq!(
+            db.club_id_for_device_checkin(&dev_b_id, now)
+                .await
+                .as_deref(),
+            Some(club_b.as_str())
+        );
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn handoff_checkin_rescopes_guest_from_other_club() {
+        let (_dir, router, db) = fixture(false, false).await;
+        let now = now_ms();
+        let club_a = make_club_live(&db).await;
+        let club_b = create_live_club(&db, "club-b", "Club B", now).await;
+
+        let (guest_session, _guest_sess, guest) = db
+            .create_guest_session(&club_a, "Guest A", now)
+            .await
+            .unwrap();
+        let guest_cookie = format!("{}={guest_session}", crate::club::auth::COOKIE);
+        let (dev_id, dev_token) = db.create_device(&guest.id, "guest-phone").await.unwrap();
+
+        let qr_b = db.mint_checkin_qr_token(&club_b, now).await.unwrap();
+        let (status, landing, _) =
+            get_json(&router, &format!("/api/c/club-b/q/{qr_b}/landing")).await;
+        assert_eq!(status, StatusCode::OK);
+        let claim_b = landing["claimToken"]
+            .as_str()
+            .expect("claimToken")
+            .to_string();
+
+        let (status, body, _) = post_json(
+            &router,
+            "/api/checkin",
+            &format!(r#"{{"token":"{claim_b}"}}"#),
+            Some(&guest_cookie),
+            Some(&dev_token),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["status"], "guest");
+        assert_eq!(body["needsSignup"], true);
+        assert_eq!(db.pilot_club_id(&guest.id).await.unwrap(), club_b);
+        assert!(handoff_consumed_at(&db, &claim_b).await.is_some());
+        assert_eq!(
+            db.club_id_for_device_checkin(&dev_id, now).await.as_deref(),
+            Some(club_b.as_str())
+        );
+    }
 }

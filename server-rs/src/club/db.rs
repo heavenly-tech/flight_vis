@@ -1544,14 +1544,40 @@ impl ClubDb {
 
         // Check if this is a handoff token
         if checkin::is_handoff_token(token) {
-            let (club_id, _handoff_pilot_id, _) = self.consume_handoff_token(token, now).await?;
+            // Validate the handoff token without consuming it so a rejected cross-club
+            // check-in leaves the token unconsumed for a legitimate club user.
+            let (club_id, _handoff_pilot_id, _) = self.validate_handoff_token(token, now).await?;
 
-            // Verify the handoff token's pilot matches the caller's pilot
-            // For guests, we allow re-scoping to the QR club
+            // Non-guest pilots must belong to the handoff token's club; guests may
+            // re-scope to the QR/handoff club (same rule as the plain QR-token path).
             let pilot_club = self
                 .pilot_club_id(pilot_id)
                 .await
                 .map_err(|_| CheckinReject::WrongClub)?;
+            let pilot_status = self
+                .pilot_status(pilot_id)
+                .await
+                .map_err(|_| CheckinReject::WrongClub)?;
+            let digest = checkin::token_digest(token);
+
+            if pilot_club != club_id && pilot_status != "guest" {
+                let _ = self
+                    .insert_checkin_row(
+                        &pilot_club,
+                        Some(pilot_id),
+                        device_id,
+                        0,
+                        &digest,
+                        now,
+                        None,
+                        "fail",
+                        Some("wrong_club"),
+                    )
+                    .await;
+                return Err(CheckinReject::WrongClub);
+            }
+
+            let (club_id, _handoff_pilot_id, _) = self.consume_handoff_token(token, now).await?;
 
             // If the pilot is a guest and the handoff token is for a different club,
             // we need to reattach the guest to the token's club
@@ -1579,7 +1605,6 @@ impl ClubDb {
                 .await
                 .map_err(|_| CheckinReject::ForgedHmac)?;
 
-            let digest = checkin::token_digest(token);
             let expires = now + valid_min * 60_000;
             let id = self
                 .insert_checkin_row(
@@ -1817,49 +1842,8 @@ impl ClubDb {
         token: &str,
         now: i64,
     ) -> Result<(String, String, Option<String>), CheckinReject> {
-        // Parse token to get club_id
-        let Some(token_club_id) = checkin::parse_handoff_token_club_id(token) else {
-            return Err(CheckinReject::Format);
-        };
-
+        let (club_id, pilot_id, device_id) = self.validate_handoff_token(token, now).await?;
         let hash = digest_token(token);
-
-        // Find unused, unexpired token
-        let row = sqlx::query(
-            "SELECT club_id, pilot_id, device_id, expires_at, consumed_at
-             FROM checkin_handoff_tokens
-             WHERE token_hash = $1
-             ORDER BY created_at DESC LIMIT 1",
-        )
-        .bind(&hash)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|_| CheckinReject::ForgedHmac)?;
-
-        let Some(row) = row else {
-            return Err(CheckinReject::Format);
-        };
-
-        let club_id: String = row.try_get(0).map_err(|_| CheckinReject::ForgedHmac)?;
-        let pilot_id: String = row.try_get(1).map_err(|_| CheckinReject::ForgedHmac)?;
-        let device_id: Option<String> = row.try_get(2).ok().flatten();
-        let expires_at: i64 = row.try_get(3).map_err(|_| CheckinReject::ForgedHmac)?;
-        let consumed_at: Option<i64> = row.try_get(4).ok().flatten();
-
-        // Check if already consumed
-        if consumed_at.is_some() {
-            return Err(CheckinReject::UsedClaim);
-        }
-
-        // Check if expired
-        if now > expires_at {
-            return Err(CheckinReject::ExpiredClaim);
-        }
-
-        // Check club mismatch
-        if club_id != token_club_id {
-            return Err(CheckinReject::ClubMismatch);
-        }
 
         // Mark as consumed atomically
         let updated = sqlx::query(
@@ -2043,6 +2027,19 @@ impl ClubDb {
             .execute(&self.pool)
             .await?;
             self.ensure_e2e_join_club(t).await?;
+            // Ensure demo club has a base aerodrome
+            let base = self.club_base_aerodrome(&club_id).await?;
+            if base.icao.is_none() || base.lat.is_none() || base.lon.is_none() {
+                let (icao, lat, lon) = crate::club::db_kiosk_pg::validate_base_aerodrome(
+                    Some("SCTB"),
+                    Some(-33.456),
+                    Some(-70.548),
+                )
+                .unwrap();
+                let _ = self
+                    .set_club_base_aerodrome(&club_id, &icao, lat, lon)
+                    .await;
+            }
             return Ok(());
         }
         let admin_id = new_id();

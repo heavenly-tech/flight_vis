@@ -1,9 +1,54 @@
 use crate::club::{
     db::{ClubDb, DbError},
+    db_club_lifecycle::validate_icao,
     kiosk_qr::{clamp_kiosk_qr_layout, default_kiosk_qr_layout, DEFAULT_PREVIEW_ASPECT},
 };
 use serde::Serialize;
 use sqlx::Row;
+
+/// Validates and normalizes base aerodrome data.
+/// Returns (icao, lat, lon) on success, or an error string.
+pub fn validate_base_aerodrome(
+    icao: Option<&str>,
+    lat: Option<f64>,
+    lon: Option<f64>,
+) -> Result<(String, f64, f64), &'static str> {
+    let icao = icao.map(|s| s.trim().to_ascii_uppercase());
+
+    // Validate ICAO
+    let icao_str = match icao {
+        Some(ref s) if !s.is_empty() => {
+            if !validate_icao(s) {
+                return Err("invalid icao");
+            }
+            s.clone()
+        }
+        Some(_) => return Err("invalid icao"),
+        None => return Err("invalid icao"),
+    };
+
+    // Validate lat
+    let lat_val = match lat {
+        Some(l) if l.is_finite() && (-90.0..=90.0).contains(&l) => l,
+        _ => return Err("invalid lat"),
+    };
+
+    // Validate lon
+    let lon_val = match lon {
+        Some(l) if l.is_finite() && (-180.0..=180.0).contains(&l) => l,
+        _ => return Err("invalid lon"),
+    };
+
+    Ok((icao_str, lat_val, lon_val))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClubBaseAerodrome {
+    pub icao: Option<String>,
+    pub lat: Option<f64>,
+    pub lon: Option<f64>,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -150,5 +195,140 @@ impl ClubDb {
             .await?;
         }
         Ok(())
+    }
+
+    /// Get the club's base aerodrome (icao, lat, lon).
+    /// Returns null values when missing or out of range.
+    pub async fn club_base_aerodrome(&self, club_id: &str) -> Result<ClubBaseAerodrome, DbError> {
+        let row =
+            sqlx::query("SELECT aerodrome_icao, latitude, longitude FROM clubs WHERE id = $1")
+                .bind(club_id)
+                .fetch_one(&self.pool)
+                .await?;
+
+        let icao: Option<String> = row.try_get(0).ok().flatten();
+        let lat: Option<f64> = row.try_get(1).ok().flatten();
+        let lon: Option<f64> = row.try_get(2).ok().flatten();
+
+        // Return null if coords are out of range
+        let lat_valid = lat.is_some_and(|l| l.is_finite() && (-90.0..=90.0).contains(&l));
+        let lon_valid = lon.is_some_and(|l| l.is_finite() && (-180.0..=180.0).contains(&l));
+
+        let (icao_out, lat_out, lon_out) = if lat_valid && lon_valid {
+            (icao, lat, lon)
+        } else {
+            (None, None, None)
+        };
+
+        Ok(ClubBaseAerodrome {
+            icao: icao_out,
+            lat: lat_out,
+            lon: lon_out,
+        })
+    }
+
+    /// Set the club's base aerodrome. Validates inputs.
+    /// Returns the updated base on success.
+    pub async fn set_club_base_aerodrome(
+        &self,
+        club_id: &str,
+        icao: &str,
+        lat: f64,
+        lon: f64,
+    ) -> Result<ClubBaseAerodrome, DbError> {
+        // Validate inputs
+        let (icao_upper, lat_upper, lon_upper) =
+            validate_base_aerodrome(Some(icao), Some(lat), Some(lon)).map_err(DbError::protocol)?;
+
+        sqlx::query(
+            "UPDATE clubs SET aerodrome_icao = $1, latitude = $2, longitude = $3 WHERE id = $4",
+        )
+        .bind(&icao_upper)
+        .bind(lat_upper)
+        .bind(lon_upper)
+        .bind(club_id)
+        .execute(&self.pool)
+        .await?;
+
+        self.club_base_aerodrome(club_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_base_aerodrome_valid_sctb() {
+        let result = validate_base_aerodrome(Some("SCTB"), Some(-33.456), Some(-70.548));
+        assert!(result.is_ok());
+        let (icao, lat, lon) = result.unwrap();
+        assert_eq!(icao, "SCTB");
+        assert!((lat - (-33.456)).abs() < f64::EPSILON);
+        assert!((lon - (-70.548)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn validate_base_aerodrome_lowercase_icao() {
+        let result = validate_base_aerodrome(Some("sctb"), Some(-33.456), Some(-70.548));
+        assert!(result.is_ok());
+        let (icao, _, _) = result.unwrap();
+        assert_eq!(icao, "SCTB");
+    }
+
+    #[test]
+    fn validate_base_aerodrome_invalid_icao_too_short() {
+        let result = validate_base_aerodrome(Some("SC"), Some(-33.456), Some(-70.548));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "invalid icao");
+    }
+
+    #[test]
+    fn validate_base_aerodrome_invalid_icao_with_digit() {
+        let result = validate_base_aerodrome(Some("SCT1"), Some(-33.456), Some(-70.548));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "invalid icao");
+    }
+
+    #[test]
+    fn validate_base_aerodrome_lat_out_of_range_high() {
+        let result = validate_base_aerodrome(Some("SCTB"), Some(91.0), Some(-70.548));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "invalid lat");
+    }
+
+    #[test]
+    fn validate_base_aerodrome_lat_out_of_range_low() {
+        let result = validate_base_aerodrome(Some("SCTB"), Some(-91.0), Some(-70.548));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "invalid lat");
+    }
+
+    #[test]
+    fn validate_base_aerodrome_lon_out_of_range_high() {
+        let result = validate_base_aerodrome(Some("SCTB"), Some(-33.456), Some(181.0));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "invalid lon");
+    }
+
+    #[test]
+    fn validate_base_aerodrome_lon_out_of_range_low() {
+        let result = validate_base_aerodrome(Some("SCTB"), Some(-33.456), Some(-181.0));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "invalid lon");
+    }
+
+    #[test]
+    fn validate_base_aerodrome_nan_lat() {
+        let result = validate_base_aerodrome(Some("SCTB"), Some(f64::NAN), Some(-70.548));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "invalid lat");
+    }
+
+    #[test]
+    fn validate_base_aerodrome_nan_lon() {
+        let result = validate_base_aerodrome(Some("SCTB"), Some(-33.456), Some(f64::NAN));
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "invalid lon");
     }
 }

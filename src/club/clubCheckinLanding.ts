@@ -1,4 +1,5 @@
 import { initI18n, applyI18nDocument, t } from "../i18n/index";
+import { fetchAppRelease, renderReleaseInfo } from "../app/releaseInfo";
 
 type LandingConfig = {
   intentUrl?: string;
@@ -42,6 +43,8 @@ const claimSubmit = document.querySelector<HTMLButtonElement>("#claim-submit");
 const claimName = document.querySelector<HTMLInputElement>("#claim-name");
 const claimEmail = document.querySelector<HTMLInputElement>("#claim-email");
 const claimLicense = document.querySelector<HTMLInputElement>("#claim-license");
+const appVersionEl = document.querySelector<HTMLParagraphElement>("#app-version")!;
+const appReleaseNoteEl = document.querySelector<HTMLParagraphElement>("#app-release-note")!;
 
 function renderDownload(available: boolean, apkUrl: string): void {
   downloadSlot.replaceChildren();
@@ -155,9 +158,31 @@ async function loadConfig(): Promise<void> {
   }
   mapLink.href = cfg.publicMapPath ?? "/public-map.html";
   mapLink.textContent = t("checkin.viewLiveMap");
-  const releaseAvailable =
-    cfg.releaseAvailable === true && typeof cfg.apkUrl === "string" && cfg.apkUrl.length > 0;
-  renderDownload(releaseAvailable, cfg.apkUrl ?? "/app/flightvis.apk");
+  
+  // Try to fetch app release info
+  const appRelease = await fetchAppRelease();
+  
+  // Determine which release info to use
+  let releaseAvailable = false;
+  let apkUrl = "/app/flightvis.apk";
+  
+  if (appRelease) {
+    // Use app release info if available
+    renderReleaseInfo(
+      { version: appVersionEl, note: appReleaseNoteEl },
+      appRelease,
+      (v: string) => t("checkin.versionLabel", { version: v }),
+    );
+    releaseAvailable = appRelease.available && appRelease.apkUrl.length > 0;
+    apkUrl = appRelease.apkUrl;
+  } else {
+    // Fall back to landing config
+    releaseAvailable =
+      cfg.releaseAvailable === true && typeof cfg.apkUrl === "string" && cfg.apkUrl.length > 0;
+    apkUrl = cfg.apkUrl ?? "/app/flightvis.apk";
+  }
+  
+  renderDownload(releaseAvailable, apkUrl);
   renderAndroidSteps();
   setupClaimForm(typeof cfg.claimToken === "string" && cfg.claimToken.length > 0);
   const reg = document.querySelector<HTMLAnchorElement>("#link-register");
