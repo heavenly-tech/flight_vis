@@ -12,6 +12,7 @@ type LandingConfig = {
   releaseAvailable?: boolean;
   apkUrl?: string;
   publicMapPath?: string;
+  appPath?: string;
 };
 
 function landingPaths(): { slug: string; token: string | null } | null {
@@ -158,14 +159,22 @@ async function loadConfig(): Promise<void> {
   }
   mapLink.href = cfg.publicMapPath ?? "/public-map.html";
   mapLink.textContent = t("checkin.viewLiveMap");
-  
+  const appLink = document.querySelector<HTMLAnchorElement>("#link-app-install");
+  if (appLink) {
+    const safeAppPath =
+      cfg.appPath && cfg.appPath.startsWith("/") && !cfg.appPath.startsWith("//")
+        ? cfg.appPath
+        : "/app.html";
+    appLink.href = safeAppPath;
+  }
+
   // Try to fetch app release info
   const appRelease = await fetchAppRelease();
-  
+
   // Determine which release info to use
   let releaseAvailable = false;
   let apkUrl = "/app/flightvis.apk";
-  
+
   if (appRelease) {
     // Use app release info if available
     renderReleaseInfo(
@@ -181,14 +190,10 @@ async function loadConfig(): Promise<void> {
       cfg.releaseAvailable === true && typeof cfg.apkUrl === "string" && cfg.apkUrl.length > 0;
     apkUrl = cfg.apkUrl ?? "/app/flightvis.apk";
   }
-  
+
   renderDownload(releaseAvailable, apkUrl);
   renderAndroidSteps();
   setupClaimForm(typeof cfg.claimToken === "string" && cfg.claimToken.length > 0);
-  const reg = document.querySelector<HTMLAnchorElement>("#link-register");
-  if (reg && paths.slug) {
-    reg.href = `/c/${encodeURIComponent(paths.slug)}/registro`;
-  }
 }
 
 void loadConfig();

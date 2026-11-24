@@ -160,6 +160,9 @@ const API_ALIASES: Record<string, string> = {
   "pending approval": "api.pendingApproval",
   "club disabled": "api.clubDisabled",
   "club missing": "api.clubMissing",
+  "club not found": "api.clubMissing",
+  "club closed": "api.clubMissing",
+  invalid_club: "api.clubMissing",
   "email exists": "api.emailExists",
   "weak password": "api.weakPassword",
   "register failed": "api.registerFailed",
@@ -208,6 +211,10 @@ export function applyI18nDocument(root: ParentNode = document): void {
   root.querySelectorAll<HTMLElement>("[data-i18n-aria]").forEach((el) => {
     const key = el.dataset.i18nAria;
     if (key) el.setAttribute("aria-label", t(key));
+  });
+  root.querySelectorAll<HTMLImageElement>("[data-i18n-alt]").forEach((el) => {
+    const key = el.dataset.i18nAlt;
+    if (key) el.alt = t(key);
   });
   const metaI18n = document.querySelector<HTMLMetaElement>('meta[data-i18n-meta]');
   if (metaI18n?.dataset.i18nMeta) {

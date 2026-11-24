@@ -7,6 +7,7 @@ describe("renderReleaseInfo", () => {
   let noteEl: HTMLElement;
 
   beforeEach(() => {
+    document.body.innerHTML = "";
     versionEl = document.createElement("p");
     versionEl.id = "version";
     versionEl.hidden = true;
@@ -186,5 +187,60 @@ describe("renderReleaseInfo", () => {
       (v: string) => `Versión ${v}`,
     );
     expect(noteEl.textContent).toBe("Test message");
+  });
+
+  it("renders safe inline markdown via DOM APIs while keeping raw HTML literal", () => {
+    const data = {
+      available: true,
+      version: "1.2.0",
+      sha256: null,
+      apkUrl: "/app/flightvis.apk",
+      message: "**Importante:** lee la [guía](/app.html), ignora [xss](javascript:alert(1)) y <b>literal</b>.",
+    };
+    renderReleaseInfo(
+      { version: versionEl, note: noteEl },
+      data,
+      (v: string) => `Versión ${v}`,
+    );
+    expect(noteEl.hidden).toBe(false);
+    expect(noteEl.querySelector("strong")?.textContent).toBe("Importante:");
+    expect(noteEl.querySelector("a")?.getAttribute("href")).toBe("/app.html");
+    expect(noteEl.querySelectorAll("a")).toHaveLength(1);
+    expect(noteEl.querySelector("b")).toBeNull();
+    expect(noteEl.textContent).toContain("[xss](javascript:alert(1))");
+    expect(noteEl.textContent).toContain("<b>literal</b>");
+    expect(noteEl.textContent).not.toContain("**");
+  });
+
+  it("renders multi-block markdown into a sibling container and cleans it up when cleared", () => {
+    renderReleaseInfo(
+      { version: versionEl, note: noteEl },
+      {
+        available: true,
+        version: "1.2.0",
+        sha256: null,
+        apkUrl: "/app/flightvis.apk",
+        message: "**Cambios**\n\n- Uno\n- Dos",
+      },
+      (v: string) => `Versión ${v}`,
+    );
+    expect(noteEl.hidden).toBe(true);
+    const box = document.body.querySelector<HTMLDivElement>('[data-md-for="note"]');
+    expect(box).not.toBeNull();
+    expect(box?.querySelector("strong")?.textContent).toBe("Cambios");
+    expect(box?.querySelectorAll("ul > li")).toHaveLength(2);
+
+    renderReleaseInfo(
+      { version: versionEl, note: noteEl },
+      {
+        available: true,
+        version: "1.2.0",
+        sha256: null,
+        apkUrl: "/app/flightvis.apk",
+      },
+      (v: string) => `Versión ${v}`,
+    );
+    expect(noteEl.hidden).toBe(true);
+    expect(document.body.querySelector('[data-md-for="note"]')).toBeNull();
   });
 });

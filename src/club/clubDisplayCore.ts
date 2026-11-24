@@ -32,11 +32,11 @@ type BaseAerodrome = {
 type AircraftPosition = {
   tail: string;
   pilotName?: string;
-  fix: {
+  fix?: {
     lat: number;
     lon: number;
     alt?: number;
-  };
+  } | null;
 };
 
 export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
@@ -58,6 +58,10 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
   let clubQrVisible = true;
   let localQrHidden = false;
   let qrStepTimer: number | undefined;
+  let layoutPollTimer: number | undefined;
+  let mapPollTimer: number | undefined;
+  let activeLoopStarted = false;
+  let activating = false;
   let base: BaseAerodrome | null = null;
   let mapContainer: HTMLElement | null = null;
 
@@ -146,7 +150,7 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     );
 
     // Update the tile map
-    renderTileMap(data.aircraft);
+    renderTileMap(data.aircraft ?? []);
   }
 
   function renderTileMap(aircraft: AircraftPosition[]): void {
@@ -188,9 +192,12 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     const viewportRect = viewport.getBoundingClientRect();
     const viewportPx = { w: viewportRect.width, h: viewportRect.height };
 
-    // Get aircraft positions (filter out non-finite coords)
-    const aircraftPositions = aircraft
-      .filter((a) => Number.isFinite(a.fix.lat) && Number.isFinite(a.fix.lon))
+    // Get aircraft positions (filter out missing or non-finite coords)
+    const aircraftPositions = (aircraft ?? [])
+      .filter(
+        (a): a is AircraftPosition & { fix: { lat: number; lon: number; alt?: number } } =>
+          a.fix != null && Number.isFinite(a.fix.lat) && Number.isFinite(a.fix.lon),
+      )
       .map((a) => ({ lat: a.fix.lat, lon: a.fix.lon, tail: a.tail }));
 
     // Compute view
@@ -375,6 +382,38 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     };
   }
 
+  async function startActiveLoop(): Promise<void> {
+    if (activeLoopStarted) return;
+    activeLoopStarted = true;
+    activatePanel.hidden = true;
+    if (localToggleBtn) {
+      localToggleBtn.hidden = false;
+      syncLocalToggleLabel();
+    }
+    base = await fetchBase();
+    await fetchLayout();
+    statusEl.textContent = t("kiosk.qrRotateHint", { seconds: String(CHECKIN_STEP_SEC) });
+    await refreshMap();
+    watchLayoutStream();
+    window.clearInterval(layoutPollTimer);
+    layoutPollTimer = window.setInterval(() => void fetchLayout(), 8000);
+    startQrRefreshLoop();
+    window.clearInterval(mapPollTimer);
+    mapPollTimer = window.setInterval(() => void refreshMap(), 5000);
+  }
+
+  async function handleActivate(): Promise<void> {
+    if (activating) return;
+    activating = true;
+    try {
+      if (await activateDisplay()) {
+        await startActiveLoop();
+      }
+    } finally {
+      activating = false;
+    }
+  }
+
   window.addEventListener("resize", () => {
     paintQr();
     if (mapContainer) {
@@ -382,20 +421,22 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     }
   });
 
-  activateBtn.addEventListener("click", () => {
-    void (async () => {
-      if (await activateDisplay()) {
-        // Fetch base after activation
-        base = await fetchBase();
-        refreshQrImage();
-        startQrRefreshLoop();
-        await fetchLayout();
-        await refreshMap();
-        watchLayoutStream();
-        window.setInterval(() => void fetchLayout(), 8000);
-      }
-    })();
-  });
+  const activateForm = activateToken.form ?? activateBtn.closest("form");
+  if (activateForm) {
+    activateForm.addEventListener("submit", (ev) => {
+      ev.preventDefault();
+      void handleActivate();
+    });
+    if (activateBtn.type === "button") {
+      activateBtn.addEventListener("click", () => {
+        void handleActivate();
+      });
+    }
+  } else {
+    activateBtn.addEventListener("click", () => {
+      void handleActivate();
+    });
+  }
 
   localToggleBtn?.addEventListener("click", () => {
     localQrHidden = !localQrHidden;
@@ -408,24 +449,9 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     await startClubPage();
     if (!(await displaySessionActive())) {
       activatePanel.hidden = false;
-      statusEl.textContent = t("kiosk.pasteToken");
+      statusEl.textContent = t("kiosk.awaitingActivation");
       return;
     }
-    activatePanel.hidden = true;
-    if (localToggleBtn) {
-      localToggleBtn.hidden = false;
-      syncLocalToggleLabel();
-    }
-    
-    // Fetch base and layout
-    base = await fetchBase();
-    await fetchLayout();
-    
-    statusEl.textContent = t("kiosk.qrRotateHint", { seconds: String(CHECKIN_STEP_SEC) });
-    await refreshMap();
-    watchLayoutStream();
-    window.setInterval(() => void fetchLayout(), 8000);
-    startQrRefreshLoop();
-    window.setInterval(() => void refreshMap(), 5000);
+    await startActiveLoop();
   })();
 }

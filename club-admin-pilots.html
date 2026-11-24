@@ -3,29 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title data-i18n="nav.pilots">flight_vis</title>
+    <title data-i18n="nav.pilots">Pilotos</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
       main { max-width: 44rem; margin: 1rem auto; padding: 0 1rem 2rem; }
       .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
-      button { font: inherit; padding: .3rem .5rem; }
+      button { font: inherit; padding: .3rem .55rem; }
       #invite-form { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1rem; align-items: center; }
-      #invite-form input { font: inherit; padding: .3rem .5rem; min-width: 14rem; }
-      .mem-row { margin: .5rem 0; padding: .5rem 0; border-bottom: 1px solid #ddd; }
+      #invite-form input { font: inherit; padding: .35rem .55rem; min-width: 14rem; }
+      .mem-row { margin: .5rem 0; padding: .5rem 0; border-bottom: 1px solid var(--stroke, rgba(255,255,255,.12)); }
       .mem-row .badge { font-size: .85rem; opacity: .85; margin-left: .35rem; }
       .mem-actions { margin-top: .35rem; display: flex; flex-wrap: wrap; gap: .35rem; }
       #invite-status { font-size: .9rem; min-height: 1.2rem; }
     </style>
   </head>
-  <body>
-    <main>
+  <body class="admin-page">
+    <main data-page="admin-pilots">
       <div id="lang-slot"></div>
       <h1 data-i18n="nav.pilots">Pilotos</h1>
       <div id="admin-nav"></div>
       <section id="invite-section">
         <h2 style="font-size:1rem" data-i18n="club.admin.addAdmin">Agregar administrador</h2>
-        <p style="font-size:.9rem;margin:.25rem 0 .5rem" data-i18n="club.admin.inviteLead">
-          Confirma el enlace para administrar este club.
+        <p style="font-size:.9rem;margin:.25rem 0 .5rem" data-i18n="club.admin.inviteSendLead">
+          Envía un correo de invitación para sumar otro administrador al club.
         </p>
         <form id="invite-form" method="post" action="/api/admin/memberships/invite">
           <label>
@@ -39,8 +39,17 @@
       <h2 style="font-size:1rem" data-i18n="club.admin.pendingHeading">Pilotos pendientes</h2>
       <ul id="pending"></ul>
       <h2 style="font-size:1rem" data-i18n="club.admin.membershipsHeading">Membresías</h2>
+      <p id="memberships-status" aria-live="polite" hidden></p>
       <div id="memberships"></div>
     </main>
+    <dialog id="remove-dialog" aria-labelledby="remove-dialog-title">
+      <h2 id="remove-dialog-title" data-i18n="club.admin.removeConfirmTitle">Quitar acceso</h2>
+      <p id="remove-dialog-body"></p>
+      <div class="dialog-actions">
+        <button type="button" id="remove-cancel" class="chip" data-i18n="common.cancel">Cancelar</button>
+        <button type="button" id="remove-confirm" class="chip danger" data-i18n="club.admin.remove">Quitar acceso</button>
+      </div>
+    </dialog>
     <script type="module" src="/src/club/adminPilots.ts"></script>
   </body>
 </html>

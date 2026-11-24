@@ -1312,3 +1312,68 @@ dialog input {
 .admin-qr-pill {
   pointer-events: auto;
 }
+
+/* Club admin consoles */
+html:has(body.admin-page),
+body.admin-page {
+  height: auto;
+  min-height: 100%;
+  overflow: auto;
+}
+
+.admin-nav a {
+  color: var(--cyan);
+}
+
+.admin-nav .badge {
+  display: inline-block;
+  background: #c62828;
+  color: #fff;
+  border-radius: 999px;
+  padding: 0 0.45rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  vertical-align: middle;
+}
+
+.admin-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin-bottom: 0.6rem;
+}
+
+.admin-field > span {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.status-error {
+  color: #fca5a5;
+  background: rgba(248, 113, 113, 0.12);
+  border: 1px solid rgba(248, 113, 113, 0.45);
+  border-radius: 0.45rem;
+  padding: 0.45rem 0.65rem;
+  margin: 0.5rem 0;
+}
+
+.status-ok {
+  color: #a7f3d0;
+  margin: 0.5rem 0;
+}
+
+dialog textarea {
+  width: 100%;
+  border: 1px solid var(--stroke);
+  background: var(--panel);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font: 500 14px Outfit, sans-serif;
+  resize: vertical;
+}
+
+dialog h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+}

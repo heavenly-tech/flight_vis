@@ -91,9 +91,15 @@ test.describe("production CSP (release server)", () => {
   });
 
   test("strict CSP on login, signup, account, and admin HTML", async ({ request }) => {
+    for (const signupPath of ["/signup", "/signup.html"]) {
+      const res = await request.get(signupPath, { maxRedirects: 0 });
+      expect(res.status(), signupPath).toBe(200);
+      assertStrictCsp(res.headers()["content-security-policy"] ?? "", signupPath);
+      const html = await res.text();
+      expect(html, signupPath).toContain('data-page="account-signup"');
+    }
     const strictPaths = [
       "/login",
-      "/signup",
       "/account-clubs.html",
       "/club-admin-types.html",
       "/club-admin-requests.html",

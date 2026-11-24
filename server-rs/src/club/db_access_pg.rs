@@ -605,6 +605,47 @@ impl ClubDb {
         Ok(())
     }
 
+    pub async fn revoke_checkout(
+        &self,
+        club_id: &str,
+        admin_id: &str,
+        checkout_id: &str,
+        now: i64,
+    ) -> Result<bool, DbError> {
+        let mut tx = self.pool.begin().await?;
+        let deleted: Option<String> = sqlx::query_scalar(
+            "DELETE FROM checkouts c
+             USING pilots p, aircraft_types t
+             WHERE c.id = $1
+               AND p.id = c.pilot_id
+               AND t.id = c.type_id
+               AND t.club_id = $2
+               AND p.club_id = $2
+               AND (c.club_id IS NULL OR c.club_id = $2)
+             RETURNING c.id",
+        )
+        .bind(checkout_id)
+        .bind(club_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(id) = deleted else {
+            return Ok(false);
+        };
+        sqlx::query(
+            "INSERT INTO audit_log (id, club_id, actor_pilot_id, action, entity_type, entity_id, detail, created_at)
+             VALUES ($1, $2, $3, 'revoke', 'checkout', $4, NULL, $5)",
+        )
+        .bind(new_id())
+        .bind(club_id)
+        .bind(admin_id)
+        .bind(&id)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
     pub async fn admin_pending_counts(&self, club_id: &str) -> AdminPendingCounts {
         AdminPendingCounts {
             pilots: self.list_pending_pilots(club_id).await.len(),

@@ -396,6 +396,13 @@ impl ClubDb {
         if self.club_operational(&pilot.club_id).await.is_err() {
             return Err(MagicConsumeError::ClubUnavailable);
         }
+        if let Some((_, mem_status)) = self.membership_in_club(&pilot.id, &pilot.club_id).await {
+            if !crate::club::membership_status::MembershipStatus::parse(&mem_status)
+                .allows_club_api()
+            {
+                return Err(MagicConsumeError::Invalid);
+            }
+        }
         if let Some(aid) =
             sqlx::query_scalar::<_, Option<String>>("SELECT account_id FROM pilots WHERE id = $1")
                 .bind(&pilot.id)
