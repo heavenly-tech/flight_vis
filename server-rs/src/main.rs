@@ -149,12 +149,40 @@ async fn health() -> Json<serde_json::Value> {
 }
 
 async fn auth_me(State(state): State<AppState>, headers: HeaderMap) -> Json<serde_json::Value> {
-    let authenticated = session_token(&headers)
+    let mut authenticated = session_token(&headers)
         .map(|token| state.auth.verify(&token, now_secs()))
         .unwrap_or(false);
+
+    let mut can_manage_library = authenticated;
+
+    // Check for account session
+    if !authenticated {
+        if let Some(db) = state.club.as_ref() {
+            let account_session = club::parse_account_session_cookie(&headers);
+            if let Some(account) = db.account_from_session(account_session.as_deref()).await {
+                authenticated = true;
+                can_manage_library = false;
+            }
+        }
+    }
+
+    // Check for club session
+    if !authenticated {
+        if let Some(db) = state.club.as_ref() {
+            let club_session = club::parse_session_cookie(&headers);
+            let now = club::now_ms();
+            let (_viewer, pilot) = db.viewer_with_pilot(club_session.as_deref(), now).await;
+            if let Some(pilot) = pilot {
+                authenticated = true;
+                can_manage_library = db.is_platform_superadmin(&pilot.id, &state.superadmin_emails).await;
+            }
+        }
+    }
+
     Json(json!({
         "authenticated": authenticated,
         "configured": state.auth.configured(),
+        "canManageLibrary": can_manage_library,
     }))
 }
 

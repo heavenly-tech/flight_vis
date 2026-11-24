@@ -732,8 +732,8 @@ async function boot(): Promise<void> {
 
   shareButton.addEventListener("click", async () => {
     if (!flight || !trim) return;
-    if (!auth.authenticated) {
-      window.location.href = loginUrl();
+    if (!auth.canManageLibrary) {
+      setStatus(t("globe.logInToSave"));
       return;
     }
     const slug = normalizeSlug(slugInput.value);

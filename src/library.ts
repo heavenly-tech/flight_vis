@@ -89,7 +89,7 @@ export function mountLibrary(opts: {
     const auth = opts.getAuth();
     loginLink.href = loginUrl();
     loginLink.hidden = auth.authenticated;
-    tools.hidden = !auth.authenticated;
+    tools.hidden = !auth.canManageLibrary;
     if (!auth.configured) {
       hint.textContent = t("globe.uploadLocked");
     } else if (!auth.authenticated) {

@@ -16,6 +16,7 @@ export type FlightRecord = {
 export type AuthStatus = {
   authenticated: boolean;
   configured: boolean;
+  canManageLibrary: boolean;
 };
 
 export type FlightListItem = {
@@ -55,8 +56,13 @@ export function entrarUrl(next = window.location.pathname || "/"): string {
 
 export async function getAuth(): Promise<AuthStatus> {
   const res = await fetch("/api/auth/me", { credentials: "same-origin" });
-  if (!res.ok) return { authenticated: false, configured: true };
-  return res.json() as Promise<AuthStatus>;
+  if (!res.ok) return { authenticated: false, configured: true, canManageLibrary: false };
+  const authStatus = await res.json() as AuthStatus;
+  return {
+    authenticated: authStatus.authenticated,
+    configured: authStatus.configured,
+    canManageLibrary: authStatus.canManageLibrary ?? false,
+  };
 }
 
 export async function logout(): Promise<void> {
