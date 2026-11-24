@@ -1,6 +1,8 @@
 import { test, expect } from "@playwright/test";
+import { stubArcgisTiles } from "./globe-csp-helpers";
 
 test("globe library panel opens for a signed-in club session", async ({ page }) => {
+  await stubArcgisTiles(page);
   const login = await page.request.post("/api/club/login", {
     data: { email: "pilot@demo.test", password: "password12" },
   });
@@ -39,6 +41,7 @@ test("globe library panel opens for a signed-in club session", async ({ page }) 
 });
 
 test("library hides remote delete button when canManageLibrary is false", async ({ page }) => {
+  await stubArcgisTiles(page);
   const remoteFlights = [
     {
       slug: "vuelo-5",
@@ -74,8 +77,12 @@ test("library hides remote delete button when canManageLibrary is false", async 
 
   await page.goto("/");
   await expect(page.locator("#btn-login")).toBeHidden({ timeout: 15_000 });
+  // Boot auto-opens the library for a signed-in pilot, and #btn-library toggles,
+  // so wait for the auto-open and only click when the panel stayed closed.
   const panel = page.locator("#library-panel");
-  if (await panel.isHidden()) {
+  try {
+    await panel.waitFor({ state: "visible", timeout: 5_000 });
+  } catch {
     await page.click("#btn-library");
   }
   await expect(panel).toBeVisible({ timeout: 15_000 });
@@ -88,6 +95,7 @@ test("library hides remote delete button when canManageLibrary is false", async 
 test("library delete dialog updates #delete-title and deletes when canManageLibrary is true", async ({
   page,
 }) => {
+  await stubArcgisTiles(page);
   const pageErrors: string[] = [];
   page.on("pageerror", (err) => pageErrors.push(err.message));
 
@@ -140,8 +148,12 @@ test("library delete dialog updates #delete-title and deletes when canManageLibr
 
   await page.goto("/");
   await expect(page.locator("#btn-login")).toBeHidden({ timeout: 15_000 });
+  // Boot auto-opens the library for a signed-in pilot, and #btn-library toggles,
+  // so wait for the auto-open and only click when the panel stayed closed.
   const panel = page.locator("#library-panel");
-  if (await panel.isHidden()) {
+  try {
+    await panel.waitFor({ state: "visible", timeout: 5_000 });
+  } catch {
     await page.click("#btn-library");
   }
   await expect(panel).toBeVisible({ timeout: 15_000 });
@@ -156,6 +168,6 @@ test("library delete dialog updates #delete-title and deletes when canManageLibr
 
   await page.locator('#delete-form button[value="ok"]').click();
   await expect.poll(() => deletedSlug).toBe("vuelo-5");
-  await expect(page.locator("#library-list li")).toHaveCount(0);
+  await expect(page.locator("#library-list li")).toHaveCount(0, { timeout: 15_000 });
   expect(pageErrors).toEqual([]);
 });
