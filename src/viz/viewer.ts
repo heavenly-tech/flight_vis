@@ -8,6 +8,7 @@ import {
   Color,
   ConstantPositionProperty,
   ConstantProperty,
+  DistanceDisplayCondition,
   EllipsoidTerrainProvider,
   Entity,
   GeometryInstance,
@@ -42,6 +43,7 @@ import { fullRange, pointsInTrim } from "../track/trim";
 import { colorForUnit, normalizeValue, valueForMode } from "./colors";
 import { lerpAngle, wrapAngle, type FollowMode } from "./follow";
 import { QUALITY_LEVELS, resolutionScaleForLevel } from "./resolution";
+import { computeTagLabelLayouts } from "./tagLayout";
 import { e2eGlobeHooksEnabled, markGlobePainted } from "../e2eGlobeHooks";
 
 const ESRI_IMAGERY =
@@ -391,9 +393,17 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     drawnTagKey = key;
     clearTags();
     if (!flight) return;
+    const anchors = shown
+      .map((tag) => {
+        const pos = tagAnchors.get(tag.id);
+        return pos ? { id: tag.id, x: pos.x, y: pos.y, z: pos.z } : null;
+      })
+      .filter((a): a is { id: string; x: number; y: number; z: number } => a !== null);
+    const placements = computeTagLabelLayouts(anchors);
     for (const tag of shown) {
       const position = tagAnchors.get(tag.id);
       if (!position) continue;
+      const placement = placements.get(tag.id);
       tagEntities.push(
         viewer.entities.add({
           id: `flight-tag:${tag.id}`,
@@ -407,18 +417,25 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
           }),
           label: {
             text: tag.label,
-            font: "14px Outfit, sans-serif",
+            font: "12px Outfit, sans-serif",
             fillColor: Color.WHITE,
             outlineColor: Color.BLACK,
             outlineWidth: 2,
             style: LabelStyle.FILL_AND_OUTLINE,
             showBackground: true,
             backgroundColor: Color.fromCssColorString("rgba(10,14,20,0.82)"),
-            pixelOffset: new Cartesian2(0, -22),
+            backgroundPadding: new Cartesian2(6, 4),
+            pixelOffset: new Cartesian2(placement?.offsetX ?? 0, placement?.offsetY ?? -16),
             horizontalOrigin: HorizontalOrigin.CENTER,
-            verticalOrigin: VerticalOrigin.BOTTOM,
+            verticalOrigin:
+              placement?.verticalOrigin === "TOP" ? VerticalOrigin.TOP : VerticalOrigin.BOTTOM,
             disableDepthTestDistance: Number.POSITIVE_INFINITY,
-            scaleByDistance: new NearFarScalar(800, 1.05, 120000, 0.55),
+            scaleByDistance: new NearFarScalar(800, 1.0, 50_000, 0.6),
+            translucencyByDistance: new NearFarScalar(15_000, 1.0, 75_000, 0.4),
+            distanceDisplayCondition: new DistanceDisplayCondition(
+              0,
+              placement?.maxDisplayDistanceM ?? 75_000,
+            ),
           },
         }),
       );
@@ -697,8 +714,10 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     }
     unlockCamera();
     const sphere = BoundingSphere.fromPoints(pts);
+    const narrow = viewer.canvas.clientWidth > 0 && viewer.canvas.clientWidth < 640;
+    const range = Math.max(sphere.radius * (narrow ? 2.5 : 2.1), narrow ? 9500 : 8000);
     viewer.camera.flyToBoundingSphere(sphere, {
-      offset: new HeadingPitchRange(0, CesiumMath.toRadians(-48), Math.max(sphere.radius * 2.1, 8000)),
+      offset: new HeadingPitchRange(0, CesiumMath.toRadians(-48), range),
       duration: 1.2,
     });
     requestRender();

@@ -1127,38 +1127,30 @@ struct PublicMapQuery {
 async fn resolve_public_map_club(
     db: &ClubDb,
     slug: Option<&str>,
-) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<crate::club::db_club_lifecycle::ClubPublicRow, (StatusCode, Json<serde_json::Value>)> {
     let club_id = if let Some(slug) = slug.filter(|s| !s.is_empty()) {
         let Some(club_id) = db.club_id_for_slug_any(slug).await else {
             return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))));
         };
-        let Some(row) = db.club_public_row(&club_id).await else {
-            return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))));
-        };
-        if row.suspended_at.is_some() {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "club suspended" })),
-            ));
-        }
-        if !ClubDb::is_public_verified(&row) {
-            return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))));
-        }
-        row.id
+        club_id
     } else {
         db.default_club_id()
             .await
             .map_err(|_| (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))))?
     };
-    if let Some(row) = db.club_public_row(&club_id).await {
-        if row.suspended_at.is_some() {
-            return Err((
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "club suspended" })),
-            ));
-        }
+    let Some(row) = db.club_public_row(&club_id).await else {
+        return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))));
+    };
+    if row.suspended_at.is_some() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "club suspended" })),
+        ));
     }
-    Ok(club_id)
+    if !ClubDb::is_public_verified(&row) {
+        return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))));
+    }
+    Ok(row)
 }
 
 async fn public_map(
@@ -1168,7 +1160,7 @@ async fn public_map(
     axum::extract::Query(q): axum::extract::Query<PublicMapQuery>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
-        return Json(json!({ "aircraft": [] })).into_response();
+        return Json(json!({ "aircraft": [], "clubName": null, "base": null })).into_response();
     };
     if let Some(resp) = crate::club::slug_redirect::maybe_club_slug_redirect(
         db,
@@ -1180,12 +1172,19 @@ async fn public_map(
     {
         return resp;
     }
-    let club_id = match resolve_public_map_club(db, q.club.as_deref()).await {
-        Ok(id) => id,
+    let club_row = match resolve_public_map_club(db, q.club.as_deref()).await {
+        Ok(row) => row,
         Err(e) => return e.into_response(),
     };
-    let aircraft = db.public_map(&club_id).await;
-    Json(json!({ "aircraft": aircraft, "club": q.club })).into_response()
+    let aircraft = db.public_map(&club_row.id).await;
+    let base = db.club_base_aerodrome(&club_row.id).await.ok();
+    Json(json!({
+        "aircraft": aircraft,
+        "club": q.club,
+        "clubName": club_row.name,
+        "base": base,
+    }))
+    .into_response()
 }
 
 async fn admin_map(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {

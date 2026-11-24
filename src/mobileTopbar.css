@@ -1,0 +1,87 @@
+/* Mobile narrow-viewport layout fixes for index.html top bar and safe bottom margin. */
+@media (max-width: 640px) {
+  body #ui {
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+
+  #ui .topbar {
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-areas:
+      "logo actions"
+      "title title"
+      "library library";
+    gap: 6px 8px;
+    align-items: center;
+  }
+
+  #ui .brand-block {
+    display: contents;
+  }
+
+  #ui .brand-lockup {
+    grid-area: logo;
+    margin: 0;
+    min-width: 40px;
+    min-height: 40px;
+    justify-content: center;
+    pointer-events: auto;
+  }
+
+  #ui .brand-logo {
+    width: 34px;
+    height: 34px;
+  }
+
+  #ui .brand {
+    display: none;
+  }
+
+  #ui .flight-name {
+    grid-area: title;
+    max-width: 100%;
+    width: 100%;
+    font-size: 16px;
+    line-height: 1.25;
+    margin: 0;
+    pointer-events: auto;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  #ui .top-actions {
+    grid-area: actions;
+    justify-self: stretch;
+    margin-left: 0;
+    justify-content: flex-end;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    min-width: 0;
+  }
+
+  #ui .top-actions .chip,
+  #ui .top-actions .file-btn {
+    padding: 8px 10px;
+    min-height: 44px;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  #ui .top-actions a.chip {
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  #ui .transport {
+    margin-bottom: max(4px, env(safe-area-inset-bottom));
+  }
+
+  #ui .transport .play,
+  #ui .transport .chip {
+    padding: 10px 10px;
+    white-space: nowrap;
+  }
+}

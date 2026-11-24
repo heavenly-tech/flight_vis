@@ -68,6 +68,8 @@ mod club_slug_rename_tests;
 mod cross_site_csrf_tests;
 #[cfg(test)]
 mod load_test;
+#[cfg(test)]
+mod public_map_tests;
 
 pub use auth::parse_account_session_cookie;
 pub use auth::parse_session_cookie;

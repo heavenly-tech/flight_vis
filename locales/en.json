@@ -165,7 +165,10 @@
     "publicMap": {
       "title": "Public live map",
       "subtitle": "Anonymous — public flights only. Pilot names only when allowed.",
-      "membersLink": "Club map (members)"
+      "membersLink": "Club map (members)",
+      "empty": "No active public flights right now.",
+      "mapAria": "Public live map",
+      "unavailable": "Could not load the public map for this club."
     }
   },
   "pilot": {

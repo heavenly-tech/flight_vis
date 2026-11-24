@@ -138,7 +138,10 @@
     "publicMap": {
       "title": "Mapa en vivo público",
       "subtitle": "Anónimo — solo vuelos públicos. Nombre del piloto solo si está permitido.",
-      "membersLink": "Mapa del club (miembros)"
+      "membersLink": "Mapa del club (miembros)",
+      "empty": "No hay vuelos públicos activos en este momento.",
+      "mapAria": "Mapa en vivo público",
+      "unavailable": "No se pudo cargar el mapa público de este club."
     },
     "signup": {
       "title": "Crear club",
