@@ -69,6 +69,7 @@ mod cross_site_csrf_tests;
 #[cfg(test)]
 mod load_test;
 
+pub use auth::parse_account_session_cookie;
 pub use auth::parse_session_cookie;
 pub use contract_routes::router as contract_router;
 pub use db::{now_ms, ClubDb};

@@ -12,7 +12,7 @@ use super::ingest::{osmand_ingest, post_ingest};
 use super::sse::live_stream;
 
 async fn list_live(State(state): State<AppState>, headers: HeaderMap) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
+    if let Err(denied) = require_auth(&state, &headers).await {
         return *denied;
     }
     let sessions = state.live.list_sessions().await;
@@ -24,7 +24,7 @@ async fn get_fixes(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
+    if let Err(denied) = require_auth(&state, &headers).await {
         return *denied;
     }
     match state.live.get_fixes(&id).await {
@@ -38,7 +38,7 @@ async fn stop_live(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
+    if let Err(denied) = require_auth(&state, &headers).await {
         return *denied;
     }
     if state.live.stop_session(&id).await {
@@ -53,7 +53,7 @@ async fn ack_live(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
+    if let Err(denied) = require_auth(&state, &headers).await {
         return *denied;
     }
     match state.live.ack_session(&id).await {

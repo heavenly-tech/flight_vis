@@ -53,7 +53,7 @@ export async function mockAuthAuthenticated(page: Page): Promise<void> {
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ authenticated: true, configured: true }),
+      body: JSON.stringify({ authenticated: true, configured: true, canManageLibrary: true }),
     });
   });
 }

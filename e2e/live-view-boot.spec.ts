@@ -36,7 +36,7 @@ test("live route clears globe preparing status after track loads", async ({ page
     }
     globalThis.EventSource = MockEventSource as typeof EventSource;
 
-    const auth = { authenticated: true, configured: true };
+    const auth = { authenticated: true, configured: true, canManageLibrary: true };
     const origFetch = globalThis.fetch.bind(globalThis);
     globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
