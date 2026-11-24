@@ -5,23 +5,30 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title data-i18n="nav.checkouts">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
-    <style>
-      main { max-width: 46rem; margin: 1rem auto; padding: 0 1rem 2rem; }
-      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
-      input, button, select { font: inherit; padding: .45rem .6rem; margin: .2rem 0; display: block; width: 100%; max-width: 20rem; }
-    </style>
   </head>
-  <body>
-    <main>
-      <div id="lang-slot"></div>
-      <h1>Checkouts</h1>
+  <body class="fv-page">
+    <main class="admin-shell">
+      <div id="lang-slot" class="lang-bar"></div>
+      <h1 data-i18n="nav.checkouts">Habilitaciones</h1>
       <div id="admin-nav"></div>
-      <form id="form">
-        <select id="pilot" required></select>
-        <input name="type" placeholder="Type code (C152)" required />
-        <input name="tail" placeholder="Optional tail override" />
-        <input name="expires_at" type="datetime-local" placeholder="Expiry (optional)" />
-        <button type="submit">Add checkout</button>
+      <form id="form" class="admin-form-stack">
+        <div class="field">
+          <label for="pilot" data-i18n="club.admin.rolePilot">Piloto</label>
+          <select id="pilot" required></select>
+        </div>
+        <div class="field">
+          <label for="checkout-type" data-i18n="admin.aircraftTypeLabel">Tipo de aeronave</label>
+          <input id="checkout-type" name="type" placeholder="C152" required />
+        </div>
+        <div class="field">
+          <label for="checkout-tail" data-i18n="admin.tailOptionalLabel">Matrícula específica (opcional)</label>
+          <input id="checkout-tail" name="tail" placeholder="CC-ABC" />
+        </div>
+        <div class="field">
+          <label for="checkout-expires" data-i18n="admin.expiresOptionalLabel">Vencimiento (opcional)</label>
+          <input id="checkout-expires" name="expires_at" type="datetime-local" />
+        </div>
+        <button type="submit" class="btn-primary" data-i18n="common.save">Guardar</button>
       </form>
       <ul id="list"></ul>
     </main>

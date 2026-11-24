@@ -2,6 +2,15 @@ import { startClubPage } from "../club/i18nPage";
 import { applyI18nDocument, apiErrorMessage, t } from "../i18n/index";
 import { safeNextPath } from "../club/safeNext";
 
+function membershipStatusLabel(status: string): string {
+  if (status === "active") return t("club.login.statusActive");
+  if (status === "pending") return t("club.login.statusPending");
+  if (status === "rejected") return t("club.login.statusRejected");
+  if (status === "revoked") return t("club.login.statusRevoked");
+  if (status === "suspended") return t("club.login.statusSuspended");
+  return status;
+}
+
 function staffRoles(role: string): boolean {
   return role === "admin" || role === "staff";
 }
@@ -157,9 +166,9 @@ export async function bootMisClubs(): Promise<void> {
       const li = document.createElement("li");
       const btn = document.createElement("button");
       btn.type = "button";
-      const label = m.name ?? m.slug ?? m.id;
+      const label = m.name ?? m.slug ?? t("club.login.unnamedClub");
       const activeMark = m.id === activeId ? " · ✓" : "";
-      btn.textContent = `${label} (${m.status})${activeMark}`;
+      btn.textContent = `${label} (${membershipStatusLabel(m.status)})${activeMark}`;
       btn.disabled = m.status !== "active";
       btn.addEventListener("click", async () => {
         const res = await fetch("/api/account/switch-club", {

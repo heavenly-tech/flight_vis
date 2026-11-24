@@ -34,12 +34,12 @@
   </head>
   <body>
     <main>
-      <div id="lang-slot"></div>
+      <div id="lang-slot" class="lang-bar"></div>
       <p class="badge" data-i18n="app.badge"></p>
       <h1 class="app-title" data-i18n="app.title"></h1>
       <p class="muted" data-i18n="app.subtitle"></p>
       <section class="card" id="release-card">
-        <p id="status" data-i18n="common.loading"></p>
+        <p id="status" role="status" aria-live="polite" data-i18n="common.loading"></p>
         <p id="release-note" class="muted" hidden></p>
         <p id="version" hidden></p>
         <p id="sha" hidden><strong>SHA-256</strong> <code id="sha-val"></code></p>

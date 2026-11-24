@@ -90,9 +90,9 @@
       }
     </style>
   </head>
-  <body>
-    <main>
-      <div id="lang-slot"></div>
+  <body class="fv-auth-page">
+    <main class="auth-card">
+      <div id="lang-slot" class="lang-bar"></div>
       <h1 data-i18n="entrar.title">Iniciar sesión</h1>
       <p class="lead" data-i18n="entrar.magicLead">
         Ingresa tu correo y te enviaremos un enlace para iniciar sesión.
@@ -122,7 +122,7 @@
           Enviar enlace
         </button>
         <button type="submit" id="submit-password" class="primary-btn" hidden data-i18n="club.login.submit">
-          Inicia sesión
+          Iniciar sesión
         </button>
         <a
           id="use-password"
@@ -135,7 +135,7 @@
         <a class="muted-link" id="back-magic" href="/login" hidden data-i18n="entrar.backMagic">
           ← Usar enlace mágico
         </a>
-        <p class="msg" id="form-msg"></p>
+        <p class="msg" id="form-msg" role="status" aria-live="polite"></p>
         <details id="legacy-details" class="muted" hidden>
           <summary data-i18n="club.login.legacyApk">
             App Android 1.0 (sesión directa del club)

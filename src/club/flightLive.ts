@@ -70,7 +70,7 @@ async function run(): Promise<void> {
   if (fixesRes.ok) {
     const data = (await fixesRes.json()) as { fixes: import("../live/types").LiveFix[] };
     if (data.fixes?.length >= 2) {
-      const flight = await fixesToFlight(data.fixes, { name: id });
+      const flight = await fixesToFlight(data.fixes, { name: t("flight.liveTitle") });
       await viewer.setFlight(flight, "altitude", undefined, true);
     }
   }
@@ -81,7 +81,7 @@ async function run(): Promise<void> {
         const payload = JSON.parse(evt.data) as { fixes?: import("../live/types").LiveFix[] };
         const chunk = payload.fixes ?? [];
         if (chunk.length < 2) return;
-        const flight = await fixesToFlight(chunk, { name: id });
+        const flight = await fixesToFlight(chunk, { name: t("flight.liveTitle") });
         await viewer.setFlight(flight, "altitude", undefined, true);
       } catch {
         /* keepalive */

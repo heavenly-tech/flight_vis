@@ -5,22 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title data-i18n="nav.tails">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
-    <style>
-      main { max-width: 44rem; margin: 1rem auto; padding: 0 1rem 2rem; }
-      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
-      input, button, select { font: inherit; padding: .45rem .6rem; }
-      li { margin: .35rem 0; }
-    </style>
   </head>
-  <body>
-    <main>
-      <div id="lang-slot"></div>
-      <h1>Tails</h1>
+  <body class="fv-page">
+    <main class="admin-shell">
+      <div id="lang-slot" class="lang-bar"></div>
+      <h1 data-i18n="nav.tails">Matrículas</h1>
       <div id="admin-nav"></div>
-      <form id="form" style="display:flex;gap:.5rem;flex-wrap:wrap;margin-bottom:1rem">
-        <input name="tail" placeholder="N123AB" required />
-        <input name="type" placeholder="C152" required />
-        <button type="submit">Upsert tail</button>
+      <form id="form" class="admin-form-row">
+        <div class="field">
+          <label for="tail-code" data-i18n="admin.tailLabel">Matrícula</label>
+          <input id="tail-code" name="tail" placeholder="CC-ABC" required />
+        </div>
+        <div class="field">
+          <label for="tail-type" data-i18n="admin.aircraftTypeLabel">Tipo de aeronave</label>
+          <input id="tail-type" name="type" placeholder="C152" required />
+        </div>
+        <button type="submit" class="btn-primary" data-i18n="common.save">Guardar</button>
       </form>
       <ul id="list"></ul>
     </main>

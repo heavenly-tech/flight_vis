@@ -163,6 +163,8 @@ const API_ALIASES: Record<string, string> = {
   "email exists": "api.emailExists",
   "weak password": "api.weakPassword",
   "register failed": "api.registerFailed",
+  "signup failed": "api.registerFailed",
+  "join failed": "api.joinFailed",
   "club suspended": "api.clubSuspended",
   "invalid json": "api.invalidJson",
   "device token required": "api.deviceTokenRequired",
@@ -176,15 +178,32 @@ const API_ALIASES: Record<string, string> = {
   forbidden: "api.forbidden",
   "db error": "api.dbError",
   "invalid locale": "api.invalidLocale",
+  "invalid slug": "api.invalidSlug",
+  "slug taken": "api.slugTaken",
+  unchanged: "api.unchanged",
+  locked: "globe.uploadLocked",
+  "too many attempts": "api.rateLimited",
+  "rate limited": "api.rateLimited",
+  csrf: "api.forbidden",
+  last_admin: "club.admin.lastAdmin",
+  "invalid icao": "admin.invalidBase",
+  "invalid lat": "admin.invalidBase",
+  "invalid lon": "admin.invalidBase",
+  "invalid layout": "api.genericError",
+  exists: "api.slugTaken",
+  "unsupported media type": "api.genericError",
+  "session still active": "api.activeFlightExists",
 };
 
 export function apiErrorMessage(raw: string, vars?: Record<string, string>): string {
-  const key = API_ALIASES[raw.toLowerCase()] ?? (raw.includes("not cleared") ? "api.notCleared" : null);
+  const normalized = raw.trim().toLowerCase();
+  const key = API_ALIASES[normalized] ?? (normalized.includes("not cleared") ? "api.notCleared" : null);
   if (key) return t(key, vars);
-  const slug = raw.toLowerCase().replace(/\s+/g, "_");
+  const slug = normalized.replace(/\s+/g, "_");
   const dotted = `api.${slug.replace(/_/g, (m, i) => (i ? m : ""))}`;
   if (state.messages[dotted]) return t(dotted, vars);
-  return raw;
+  if (raw.trim()) console.warn("[i18n] unmapped api error:", raw);
+  return t("api.genericError", vars);
 }
 
 export function applyI18nDocument(root: ParentNode = document): void {
@@ -209,6 +228,10 @@ export function applyI18nDocument(root: ParentNode = document): void {
     const key = el.dataset.i18nAria;
     if (key) el.setAttribute("aria-label", t(key));
   });
+  root.querySelectorAll<HTMLImageElement>("[data-i18n-alt]").forEach((el) => {
+    const key = el.dataset.i18nAlt;
+    if (key) el.alt = t(key);
+  });
   const metaI18n = document.querySelector<HTMLMetaElement>('meta[data-i18n-meta]');
   if (metaI18n?.dataset.i18nMeta) {
     metaI18n.content = t(metaI18n.dataset.i18nMeta);
@@ -217,6 +240,8 @@ export function applyI18nDocument(root: ParentNode = document): void {
 
 function paintLangSwitcher(slot: HTMLElement, select: HTMLSelectElement): void {
   const label = slot.querySelector("label") ?? document.createElement("label");
+  if (!select.id) select.id = "fv-lang-select";
+  label.htmlFor = select.id;
   label.textContent = `${t("common.language")}: `;
   select.setAttribute("aria-label", t("common.language"));
   select.replaceChildren(

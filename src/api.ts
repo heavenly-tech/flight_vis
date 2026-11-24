@@ -1,6 +1,7 @@
 import type { LiveSessionSummary } from "./live/types";
 import type { FlightTag } from "./track/types";
 import { safeNextPath } from "./club/safeNext";
+import { apiErrorMessage, t } from "./i18n/index";
 
 export type FlightRecord = {
   slug: string;
@@ -30,13 +31,17 @@ export type FlightListItem = {
   local?: boolean;
 };
 
-function throwAuthOr(res: Response, body: { error?: string }, fallback: string): never {
+function throwAuthOr(res: Response, body: { error?: string }, fallbackKey: string): never {
   if (res.status === 401) {
     throw new Error(
-      body.error === "locked" ? "Upload is locked until FLIGHT_VIS_PASSWORD is set." : "Log in to manage saved flights.",
+      body.error === "locked" ? t("globe.uploadLocked") : t("globe.logInToManage"),
     );
   }
-  throw new Error(body.error || fallback);
+  if (body.error) {
+    const mapped = apiErrorMessage(body.error);
+    if (mapped !== t("api.genericError")) throw new Error(mapped);
+  }
+  throw new Error(t(fallbackKey));
 }
 
 export function shareUrl(slug: string): string {
@@ -78,7 +83,7 @@ export async function logout(): Promise<void> {
 export async function getFlight(slug: string): Promise<FlightRecord | null> {
   const res = await fetch(`/api/flights/${encodeURIComponent(slug)}`, { credentials: "same-origin" });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error("Could not load flight");
+  if (!res.ok) throw new Error(t("globe.couldNotLoadFlight"));
   return res.json() as Promise<FlightRecord>;
 }
 
@@ -99,11 +104,15 @@ export async function saveFlight(input: {
   });
   if (res.status === 401) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error === "locked" ? "Upload is locked until FLIGHT_VIS_PASSWORD is set." : "Log in to save this flight.");
+    throw new Error(body.error === "locked" ? t("globe.uploadLocked") : t("globe.logInToSave"));
   }
   if (!res.ok) {
-    const text = await res.text();
-    throw new Error(text || "Could not save flight");
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    if (body.error) {
+      const mapped = apiErrorMessage(body.error);
+      if (mapped !== t("api.genericError")) throw new Error(mapped);
+    }
+    throw new Error(t("globe.couldNotSave"));
   }
   return res.json() as Promise<FlightRecord>;
 }
@@ -112,7 +121,7 @@ export async function listFlights(): Promise<FlightListItem[]> {
   const res = await fetch("/api/flights", { credentials: "same-origin" });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throwAuthOr(res, body, "Could not list flights");
+    throwAuthOr(res, body, "globe.libraryCouldNotList");
   }
   return res.json() as Promise<FlightListItem[]>;
 }
@@ -128,7 +137,7 @@ export async function uploadFlights(
     body: JSON.stringify({ files, conflict }),
   });
   const body = (await res.json().catch(() => ({}))) as { error?: string; items?: FlightListItem[] };
-  if (!res.ok) throwAuthOr(res, body, body.error || "Could not upload flights");
+  if (!res.ok) throwAuthOr(res, body, "globe.libraryCouldNotUpload");
   return body as { items: FlightListItem[] };
 }
 
@@ -153,7 +162,7 @@ export async function renameFlight(
   });
   const body = (await res.json().catch(() => ({}))) as FlightListItem & { error?: string; slug?: string };
   if (res.status === 409) throw new SlugConflictError(body.slug || input.slug || slug);
-  if (!res.ok) throwAuthOr(res, body, body.error || "Could not rename flight");
+  if (!res.ok) throwAuthOr(res, body, "globe.libraryCouldNotRename");
   return body;
 }
 
@@ -164,18 +173,18 @@ export async function deleteFlight(slug: string): Promise<void> {
   });
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throwAuthOr(res, body, body.error || "Could not delete flight");
+    throwAuthOr(res, body, "globe.libraryCouldNotDelete");
   }
 }
 
 export async function listLiveSessions(): Promise<LiveSessionSummary[]> {
   const res = await fetch("/api/live", { credentials: "same-origin" });
   if (res.status === 401 || res.status === 403) {
-    throw new Error("Log in to list live sessions.");
+    throw new Error(t("viewer.loginRequired"));
   }
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error || "Could not list live sessions");
+    throwAuthOr(res, body, "api.genericError");
   }
   const body = (await res.json()) as { sessions?: LiveSessionSummary[] };
   return body.sessions ?? [];
@@ -188,14 +197,14 @@ export async function stopLiveSession(id: string): Promise<void> {
     headers: { Accept: "application/json" },
   });
   if (res.status === 401 || res.status === 403) {
-    throw new Error("Log in to stop live sessions.");
+    throw new Error(t("viewer.loginRequired"));
   }
   if (res.status === 404) {
-    throw new Error("Live session not found");
+    throw new Error(t("viewer.notFound"));
   }
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error || "Could not stop live session");
+    throwAuthOr(res, body, "api.genericError");
   }
 }
 
@@ -206,16 +215,16 @@ export async function ackLiveSession(id: string): Promise<void> {
     headers: { Accept: "application/json" },
   });
   if (res.status === 401 || res.status === 403) {
-    throw new Error("Log in to acknowledge live sessions.");
+    throw new Error(t("viewer.loginRequired"));
   }
   if (res.status === 404) {
-    throw new Error("Live session not found");
+    throw new Error(t("viewer.notFound"));
   }
   if (res.status === 409) {
-    throw new Error("Session still active");
+    throw new Error(t("api.activeFlightExists"));
   }
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(body.error || "Could not acknowledge live session");
+    throwAuthOr(res, body, "api.genericError");
   }
 }

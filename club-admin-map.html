@@ -6,64 +6,81 @@
     <title data-i18n="admin.liveMapTitle">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
-      main { max-width: 44rem; margin: 1rem auto; padding: 0 1rem 2rem; }
-      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
-      #ticks label { display: inline-block; margin: 0 .65rem .35rem 0; }
-      button, select { font: inherit; padding: .45rem .7rem; }
-      #lang-slot { margin: .5rem 0; font-size: .9rem; }
-      #club-locale { margin: 1rem 0; padding: .75rem; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; }
+      #ticks label {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.35rem;
+        margin: 0 0.75rem 0.45rem 0;
+      }
+      .section-heading {
+        font-size: 1rem;
+        margin: 0 0 0.65rem;
+      }
+      .btn-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-top: 0.5rem;
+      }
+      #club-base-icao-input {
+        text-transform: uppercase;
+      }
     </style>
   </head>
-  <body>
-    <main>
-      <div id="lang-slot"></div>
+  <body class="fv-page">
+    <main class="admin-shell">
+      <div id="lang-slot" class="lang-bar"></div>
       <h1 data-i18n="admin.liveMapTitle"></h1>
       <p class="muted" data-i18n="admin.tailFilterHint"></p>
       <div id="admin-nav"></div>
       <section id="club-locale">
-        <label>
-          <span data-i18n="admin.clubDefaultLanguage"></span>
+        <div class="field">
+          <label for="club-locale-select" data-i18n="admin.clubDefaultLanguage"></label>
           <select id="club-locale-select"></select>
-        </label>
-        <p class="muted" data-i18n="admin.clubDefaultLanguageHelp"></p>
-        <button type="button" id="club-locale-save" data-i18n="common.save"></button>
-        <p id="club-locale-msg" class="muted"></p>
+        </div>
+        <p id="club-locale-help" class="muted" data-i18n="admin.clubDefaultLanguageHelp"></p>
+        <button type="button" id="club-locale-save" class="btn-primary" data-i18n="common.save"></button>
+        <p id="club-locale-msg" class="status-msg" role="status" aria-live="polite"></p>
       </section>
       <section id="club-slug">
-        <label>
-          <span data-i18n="admin.clubSlug"></span>
+        <div class="field">
+          <label for="club-slug-input" data-i18n="admin.clubSlug"></label>
           <input id="club-slug-input" type="text" maxlength="48" spellcheck="false" pattern="[a-z0-9-]+" />
-        </label>
-        <p class="muted" data-i18n="admin.clubSlugHelp"></p>
-        <button type="button" id="club-slug-save" data-i18n="admin.clubSlugSave"></button>
-        <p id="club-slug-msg" class="muted"></p>
+        </div>
+        <p id="club-slug-help" class="muted" data-i18n="admin.clubSlugHelp"></p>
+        <button type="button" id="club-slug-save" class="btn-primary" data-i18n="admin.clubSlugSave"></button>
+        <p id="club-slug-msg" class="status-msg" role="status" aria-live="polite"></p>
       </section>
       <section id="club-base">
-        <h2 style="font-size:1rem" data-i18n="admin.aerodromeBase"></h2>
-        <label>
-          <span data-i18n="admin.icaoCode"></span>
-          <input id="club-base-icao-input" type="text" maxlength="4" spellcheck="false" style="text-transform:uppercase" />
-        </label>
-        <label>
-          <span data-i18n="admin.latitude"></span>
-          <input id="club-base-lat-input" type="number" step="0.0001" min="-90" max="90" />
-        </label>
-        <label>
-          <span data-i18n="admin.longitude"></span>
-          <input id="club-base-lon-input" type="number" step="0.0001" min="-180" max="180" />
-        </label>
-        <button type="button" id="club-base-save" data-i18n="admin.saveBase"></button>
-        <p id="club-base-msg" class="muted"></p>
+        <h2 class="section-heading" data-i18n="admin.aerodromeBase"></h2>
+        <div class="admin-form-row">
+          <div class="field">
+            <label for="club-base-icao-input" data-i18n="admin.icaoCode"></label>
+            <input id="club-base-icao-input" type="text" maxlength="4" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label for="club-base-lat-input" data-i18n="admin.latitude"></label>
+            <input id="club-base-lat-input" type="number" step="0.0001" min="-90" max="90" />
+          </div>
+          <div class="field">
+            <label for="club-base-lon-input" data-i18n="admin.longitude"></label>
+            <input id="club-base-lon-input" type="number" step="0.0001" min="-180" max="180" />
+          </div>
+        </div>
+        <button type="button" id="club-base-save" class="btn-primary" data-i18n="admin.saveBase"></button>
+        <p id="club-base-msg" class="status-msg" role="status" aria-live="polite"></p>
       </section>
       <section>
-        <h2 style="font-size:1rem" data-i18n="admin.showTails"></h2>
+        <h2 class="section-heading" data-i18n="admin.showTails"></h2>
         <div id="ticks"></div>
-        <button type="button" id="save" data-i18n="admin.saveSelection"></button>
-        <button type="button" id="btn-kiosk" data-i18n="admin.kioskSession"></button>
-        <p id="kiosk-url" class="muted"></p>
+        <div class="btn-row">
+          <button type="button" id="save" class="btn-primary" data-i18n="admin.saveSelection"></button>
+          <button type="button" id="btn-kiosk" class="btn-secondary" data-i18n="admin.kioskSession"></button>
+        </div>
+        <p id="kiosk-url" class="status-msg" role="status" aria-live="polite"></p>
       </section>
       <section>
-        <h2 style="font-size:1rem" data-i18n="admin.liveAircraft"></h2>
+        <h2 class="section-heading" data-i18n="admin.liveAircraft"></h2>
         <ul id="live"></ul>
       </section>
     </main>

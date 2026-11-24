@@ -28,7 +28,7 @@ async function run(): Promise<void> {
   if (fixesRes.ok) {
     const data = (await fixesRes.json()) as { fixes: import("../live/types").LiveFix[] };
     if (data.fixes?.length >= 2) {
-      const flight = await fixesToFlight(data.fixes, { name: meta.flightId });
+      const flight = await fixesToFlight(data.fixes, { name: t("sharePage.title") });
       await viewer.setFlight(flight, "altitude", undefined, true);
     }
   }
