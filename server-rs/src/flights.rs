@@ -29,10 +29,15 @@ async fn list_flights(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
-        return *denied;
+    // Any valid session can list; only library managers see the shared disk library.
+    if !crate::signed_in(&state, &headers).await {
+        return crate::auth_denied(&state);
     }
-    Json(state.store.list_flights().await).into_response()
+    if crate::can_manage_library(&state, &headers).await {
+        Json(state.store.list_flights().await).into_response()
+    } else {
+        Json(Vec::<crate::store::FlightListItem>::new()).into_response()
+    }
 }
 
 async fn get_flight(
@@ -59,7 +64,7 @@ async fn put_flight(
     Path(raw): Path<String>,
     body: Bytes,
 ) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
+    if let Err(denied) = require_auth(&state, &headers).await {
         return *denied;
     }
     let slug = normalize_slug(&raw);
@@ -106,7 +111,7 @@ async fn post_flights(
                 .into_response();
         }
     }
-    if let Err(denied) = require_auth(&state, &headers) {
+    if let Err(denied) = require_auth(&state, &headers).await {
         return *denied;
     }
     let parsed: UploadBody = serde_json::from_slice(&body).unwrap_or_default();
@@ -144,7 +149,7 @@ async fn patch_flight(
             .into_response();
         }
     }
-    if let Err(denied) = require_auth(&state, &headers) {
+    if let Err(denied) = require_auth(&state, &headers).await {
         return *denied;
     }
     let slug = normalize_slug(&raw);
@@ -171,7 +176,7 @@ async fn delete_flight(
     headers: HeaderMap,
     Path(raw): Path<String>,
 ) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
+    if let Err(denied) = require_auth(&state, &headers).await {
         return *denied;
     }
     let slug = normalize_slug(&raw);
@@ -371,7 +376,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             body,
-            serde_json::json!({ "authenticated": true, "configured": true })
+            serde_json::json!({ "authenticated": true, "configured": true, "canManageLibrary": true, "legacyAuthenticated": true })
         );
 
         let (status, body, _) = call(
@@ -410,7 +415,7 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             body,
-            serde_json::json!({ "authenticated": false, "configured": true })
+            serde_json::json!({ "authenticated": false, "configured": true, "canManageLibrary": false, "legacyAuthenticated": false })
         );
         cleanup(&data_dir).await;
     }

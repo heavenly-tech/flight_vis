@@ -27,6 +27,10 @@ pub(crate) struct Fixture {
 }
 
 pub(crate) async fn setup() -> Fixture {
+    setup_with_superadmins(&[]).await
+}
+
+pub(crate) async fn setup_with_superadmins(emails: &[&str]) -> Fixture {
     let data_dir = tempfile::tempdir().expect("tempdir");
     let club = ClubDb::open_test().await.expect("club db");
     let club_id = club.default_club_id().await.unwrap();
@@ -80,7 +84,7 @@ pub(crate) async fn setup() -> Fixture {
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
-        superadmin_emails: Default::default(),
+        superadmin_emails: emails.iter().map(|e| e.to_string()).collect(),
     };
     Fixture {
         _dir: data_dir,
@@ -1703,4 +1707,280 @@ fn android_fingerprint_env_validation() {
     let list = crate::club::android_assetlinks::android_cert_sha256_list();
     assert_eq!(list.len(), 1);
     std::env::remove_var("FLIGHT_ANDROID_CERT_SHA256");
+}
+
+// ---- Disk-library session policy -------------------------------------------
+
+const DISK_TRACK: &str = "<?xml version=\"1.0\"?>\n<gpx version=\"1.1\"><trk><name>Disk</name><trkseg>\n<trkpt lat=\"-33.4\" lon=\"-70.6\"><ele>800</ele><time>2024-01-01T12:00:00Z</time></trkpt>\n<trkpt lat=\"-33.41\" lon=\"-70.61\"><ele>820</ele><time>2024-01-01T12:01:00Z</time></trkpt>\n</trkseg></trk></gpx>";
+
+async fn call_json(
+    router: &mut axum::Router,
+    method: &str,
+    uri: &str,
+    cookie: Option<&str>,
+    body: &str,
+) -> (StatusCode, serde_json::Value) {
+    let mut request = Request::builder().method(method).uri(uri);
+    if let Some(cookie) = cookie {
+        request = request.header(header::COOKIE, cookie);
+    }
+    if !body.is_empty() {
+        request = request.header(header::CONTENT_TYPE, "application/json");
+    }
+    let payload = if body.is_empty() {
+        Body::empty()
+    } else {
+        Body::from(body.to_string())
+    };
+    let res = router.call(request.body(payload).unwrap()).await.unwrap();
+    let status = res.status();
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+async fn put_disk_flight(
+    router: &mut axum::Router,
+    cookie: Option<&str>,
+    slug: &str,
+) -> (StatusCode, serde_json::Value) {
+    let body = serde_json::json!({
+        "name": slug,
+        "fileName": format!("{slug}.gpx"),
+        "track": DISK_TRACK,
+        "tags": [],
+    })
+    .to_string();
+    call_json(
+        router,
+        "PUT",
+        &format!("/api/flights/{slug}"),
+        cookie,
+        &body,
+    )
+    .await
+}
+
+async fn login_legacy(router: &mut axum::Router) -> String {
+    let res = router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json")
+                .body(Body::from(r#"{"password":"x"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    res.headers()
+        .get(header::SET_COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .expect("set-cookie")
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+async fn account_cookie(club: &ClubDb, email: &str) -> String {
+    let now = now_ms();
+    let account_id = club
+        .ensure_account_for_email(email, None, now)
+        .await
+        .expect("account");
+    let session = club
+        .create_account_session(&account_id, None, now)
+        .await
+        .expect("account session");
+    crate::club::auth::set_account_session_cookie(&session, false)
+}
+
+#[tokio::test]
+#[serial]
+async fn club_session_is_signed_in_but_cannot_manage_disk_library() {
+    let mut fx = setup().await;
+    let cookie = login_cookie(&mut fx.router, "a@test").await;
+    let cookie = cookie.as_str();
+
+    let (status, body) = call_json(&mut fx.router, "GET", "/api/auth/me", Some(cookie), "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["authenticated"], true);
+    assert_eq!(body["canManageLibrary"], false);
+    assert_eq!(body["configured"], true);
+
+    let (status, body) = call_json(&mut fx.router, "GET", "/api/flights", Some(cookie), "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array(), "expected a JSON array, got {body}");
+    assert!(body.as_array().unwrap().is_empty());
+
+    let (status, body) = put_disk_flight(&mut fx.router, Some(cookie), "club-denied").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"], "unauthorized");
+}
+
+#[tokio::test]
+#[serial]
+async fn account_session_is_signed_in_but_cannot_manage_disk_library() {
+    let mut fx = setup().await;
+    let cookie = account_cookie(&fx.club, "acct@test").await;
+    let cookie = cookie.as_str();
+
+    let (status, body) = call_json(&mut fx.router, "GET", "/api/auth/me", Some(cookie), "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["authenticated"], true);
+    assert_eq!(body["canManageLibrary"], false);
+    assert_eq!(body["configured"], true);
+
+    let (status, body) = call_json(&mut fx.router, "GET", "/api/flights", Some(cookie), "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.is_array(), "expected a JSON array, got {body}");
+    assert!(body.as_array().unwrap().is_empty());
+
+    let (status, body) = put_disk_flight(&mut fx.router, Some(cookie), "acct-denied").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"], "unauthorized");
+}
+
+#[tokio::test]
+#[serial]
+async fn superadmin_sessions_can_manage_disk_library() {
+    let mut fx = setup_with_superadmins(&["a@test"]).await;
+
+    // Seed one disk track through a legacy fv_session.
+    let legacy = login_legacy(&mut fx.router).await;
+    assert!(legacy.starts_with("fv_session="));
+    let legacy = legacy.as_str();
+    let (status, _) = put_disk_flight(&mut fx.router, Some(legacy), "seeded").await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Club pilot whose email is in the superadmin allowlist.
+    let club_cookie = login_cookie(&mut fx.router, "a@test").await;
+    let club_cookie = club_cookie.as_str();
+    let (status, body) =
+        call_json(&mut fx.router, "GET", "/api/auth/me", Some(club_cookie), "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["authenticated"], true);
+    assert_eq!(body["canManageLibrary"], true);
+
+    let (status, body) =
+        call_json(&mut fx.router, "GET", "/api/flights", Some(club_cookie), "").await;
+    assert_eq!(status, StatusCode::OK);
+    let slugs: Vec<&str> = body
+        .as_array()
+        .expect("array")
+        .iter()
+        .filter_map(|item| item["slug"].as_str())
+        .collect();
+    assert!(slugs.contains(&"seeded"), "missing seeded track: {body}");
+
+    let (status, _) = put_disk_flight(&mut fx.router, Some(club_cookie), "from-superadmin").await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Account session promoted through accounts.global_role.
+    let now = now_ms();
+    let account_id = fx
+        .club
+        .ensure_account_for_email("root@test", None, now)
+        .await
+        .expect("account");
+    sqlx::query("UPDATE accounts SET global_role = 'superadmin' WHERE id = $1")
+        .bind(&account_id)
+        .execute(&fx.club.pool)
+        .await
+        .expect("promote");
+    let session = fx
+        .club
+        .create_account_session(&account_id, None, now)
+        .await
+        .expect("account session");
+    let root_cookie = crate::club::auth::set_account_session_cookie(&session, false);
+    let root_cookie = root_cookie.as_str();
+    let (status, body) =
+        call_json(&mut fx.router, "GET", "/api/auth/me", Some(root_cookie), "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["authenticated"], true);
+    assert_eq!(body["canManageLibrary"], true);
+    let (status, _) = put_disk_flight(&mut fx.router, Some(root_cookie), "root-write").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+#[serial]
+async fn anonymous_invalid_and_device_credentials_are_not_signed_in() {
+    let mut fx = setup().await;
+
+    let (status, body) = call_json(&mut fx.router, "GET", "/api/auth/me", None, "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["authenticated"], false);
+    assert_eq!(body["canManageLibrary"], false);
+    assert_eq!(body["configured"], true);
+
+    let (status, body) = call_json(&mut fx.router, "GET", "/api/flights", None, "").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["error"], "unauthorized");
+
+    // Invalid account session id.
+    let bogus = "fv_account_session=not-a-real-session";
+    let (status, body) = call_json(&mut fx.router, "GET", "/api/auth/me", Some(bogus), "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["authenticated"], false);
+    assert_eq!(body["canManageLibrary"], false);
+
+    // Expired account session.
+    let now = now_ms();
+    let account_id = fx
+        .club
+        .ensure_account_for_email("expired@test", None, now)
+        .await
+        .expect("account");
+    let session = fx
+        .club
+        .create_account_session(&account_id, None, now)
+        .await
+        .expect("account session");
+    sqlx::query("UPDATE account_sessions SET expires_at = 0 WHERE account_id = $1")
+        .bind(&account_id)
+        .execute(&fx.club.pool)
+        .await
+        .expect("expire");
+    let expired = crate::club::auth::set_account_session_cookie(&session, false);
+    let expired = expired.as_str();
+    let (status, body) = call_json(&mut fx.router, "GET", "/api/auth/me", Some(expired), "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["authenticated"], false);
+    assert_eq!(body["canManageLibrary"], false);
+
+    // Device token / Authorization: Bearer alone never authenticates.
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/auth/me")
+                .header(header::AUTHORIZATION, format!("Bearer {}", fx.device_token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["authenticated"], false);
+    assert_eq!(body["canManageLibrary"], false);
+
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/api/flights")
+                .header(header::AUTHORIZATION, format!("Bearer {}", fx.device_token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 }
