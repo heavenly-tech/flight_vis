@@ -17,6 +17,7 @@ export type AuthStatus = {
   authenticated: boolean;
   configured: boolean;
   canManageLibrary: boolean;
+  legacyAuthenticated?: boolean;
 };
 
 export type FlightListItem = {
@@ -62,6 +63,7 @@ export async function getAuth(): Promise<AuthStatus> {
     authenticated: authStatus.authenticated,
     configured: authStatus.configured,
     canManageLibrary: authStatus.canManageLibrary ?? false,
+    legacyAuthenticated: authStatus.legacyAuthenticated ?? false,
   };
 }
 

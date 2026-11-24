@@ -66,7 +66,7 @@ const logoutButton = document.querySelector<HTMLButtonElement>("#btn-logout")!;
 const accountLink = document.querySelector<HTMLAnchorElement>("#btn-account")!;
 const adminQrButton = document.querySelector<HTMLButtonElement>("#btn-admin-qr");
 
-let auth: AuthStatus = { authenticated: false, configured: true };
+let auth: AuthStatus = { authenticated: false, configured: true, canManageLibrary: false };
 let library: LibraryHandle | null = null;
 
 // Session state for account/club login
@@ -89,7 +89,8 @@ function syncAuthUi(): void {
   loginLink.href = entrarUrl();
   const showAccount = session.loggedIn || auth.authenticated;
   loginLink.hidden = showAccount;
-  logoutButton.hidden = !auth.authenticated;
+  // Logout button only for legacy fv_session (POST /logout only clears that cookie)
+  logoutButton.hidden = !auth.legacyAuthenticated;
 
   // Update account link based on session state
   if (session.clubAdmin) {
@@ -725,7 +726,7 @@ async function boot(): Promise<void> {
 
   logoutButton.addEventListener("click", async () => {
     await logout();
-    auth = { authenticated: false, configured: auth.configured };
+    auth = { authenticated: false, configured: auth.configured, canManageLibrary: false };
     syncAuthUi();
     library?.setOpen(false);
   });
@@ -733,7 +734,10 @@ async function boot(): Promise<void> {
   shareButton.addEventListener("click", async () => {
     if (!flight || !trim) return;
     if (!auth.canManageLibrary) {
-      setStatus(t("globe.logInToSave"));
+      // Silent no-op if authenticated but cannot manage library
+      if (!auth.authenticated) {
+        setStatus(t("globe.logInToSave"));
+      }
       return;
     }
     const slug = normalizeSlug(slugInput.value);
@@ -809,6 +813,10 @@ async function boot(): Promise<void> {
     if (files.length > 1 || library?.isOpen()) {
       if (!auth.authenticated) {
         window.location.href = loginUrl();
+        return;
+      }
+      if (!auth.canManageLibrary) {
+        // Signed in but cannot manage library - silent no-op
         return;
       }
       library?.setOpen(true);
@@ -925,7 +933,7 @@ async function boot(): Promise<void> {
   try {
     auth = await getAuth();
   } catch {
-    auth = { authenticated: false, configured: true };
+    auth = { authenticated: false, configured: true, canManageLibrary: false };
   }
 
   // Check session state for account/club login

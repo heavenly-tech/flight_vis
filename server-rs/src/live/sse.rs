@@ -57,7 +57,7 @@ pub async fn live_stream(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(denied) = crate::require_auth(&state, &headers) {
+    if let Err(denied) = crate::require_auth(&state, &headers).await {
         return denied.into_response();
     }
 

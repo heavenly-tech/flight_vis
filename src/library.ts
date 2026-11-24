@@ -132,7 +132,7 @@ export function mountLibrary(opts: {
 
       const actions = document.createElement("div");
       actions.className = "library-item-actions";
-      if (!item.local) {
+      if (!item.local && auth.canManageLibrary) {
         const renameBtn = document.createElement("button");
         renameBtn.type = "button";
         renameBtn.className = "chip";
@@ -237,8 +237,8 @@ export function mountLibrary(opts: {
 
   async function saveFiles(files: File[]): Promise<FlightListItem[]> {
     const auth = opts.getAuth();
-    if (!auth.authenticated) {
-      window.location.href = loginUrl();
+    // Disk uploads need library management rights; never bounce to /login.
+    if (!auth.canManageLibrary) {
       return [];
     }
     const tracks = [];

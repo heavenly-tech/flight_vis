@@ -475,7 +475,7 @@ async fn post_video(
     Query(query): Query<HashMap<String, String>>,
     body: Body,
 ) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
+    if let Err(denied) = require_auth(&state, &headers).await {
         return *denied;
     }
     let slug = normalize_slug(&raw_slug);
@@ -631,7 +631,7 @@ async fn patch_video(
     RoutePath((raw_slug, id)): RoutePath<(String, String)>,
     body: Bytes,
 ) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
+    if let Err(denied) = require_auth(&state, &headers).await {
         return *denied;
     }
     let slug = normalize_slug(&raw_slug);
@@ -666,7 +666,7 @@ async fn delete_video(
     headers: HeaderMap,
     RoutePath((raw_slug, id)): RoutePath<(String, String)>,
 ) -> axum::response::Response {
-    if let Err(denied) = require_auth(&state, &headers) {
+    if let Err(denied) = require_auth(&state, &headers).await {
         return *denied;
     }
     let slug = normalize_slug(&raw_slug);

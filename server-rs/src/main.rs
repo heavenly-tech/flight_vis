@@ -148,41 +148,85 @@ async fn health() -> Json<serde_json::Value> {
     Json(json!({ "ok": true }))
 }
 
+// Policy helpers
+async fn signed_in(state: &AppState, headers: &HeaderMap) -> bool {
+    // Legacy valid fv_session
+    if let Some(token) = session_token(headers) {
+        if state.auth.verify(&token, now_secs()) {
+            return true;
+        }
+    }
+    // Valid fv_account_session
+    if let Some(db) = state.club.as_ref() {
+        if let Some(sess) = club::parse_account_session_cookie(headers) {
+            let now = club::now_ms();
+            if db.account_from_session(&sess, now).await.is_some() {
+                return true;
+            }
+        }
+    }
+    // Valid fv_club_session yielding a pilot
+    if let Some(db) = state.club.as_ref() {
+        if let Some(sess) = club::parse_session_cookie(headers) {
+            let now = club::now_ms();
+            let (_viewer, pilot) = db.viewer_with_pilot(Some(sess.as_str()), now).await;
+            if pilot.is_some() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+async fn can_manage_library(state: &AppState, headers: &HeaderMap) -> bool {
+    // Legacy valid fv_session -> signed in AND can manage
+    if let Some(token) = session_token(headers) {
+        if state.auth.verify(&token, now_secs()) {
+            return true;
+        }
+    }
+    // Valid fv_account_session
+    if let Some(db) = state.club.as_ref() {
+        if let Some(sess) = club::parse_account_session_cookie(headers) {
+            let now = club::now_ms();
+            if let Some((account, _)) = db.account_from_session(&sess, now).await {
+                // Can manage if account is platform superadmin OR email in superadmin allowlist
+                if db.account_is_platform_superadmin(&account.id).await {
+                    return true;
+                }
+                if club::superadmin::is_superadmin_email(&state.superadmin_emails, &account.email) {
+                    return true;
+                }
+                return false;
+            }
+        }
+    }
+    // Valid fv_club_session with pilot
+    if let Some(db) = state.club.as_ref() {
+        if let Some(sess) = club::parse_session_cookie(headers) {
+            let now = club::now_ms();
+            let (_viewer, pilot) = db.viewer_with_pilot(Some(sess.as_str()), now).await;
+            if let Some(pilot) = pilot {
+                return db.is_platform_superadmin(&pilot.id, &state.superadmin_emails).await;
+            }
+        }
+    }
+    false
+}
+
 async fn auth_me(State(state): State<AppState>, headers: HeaderMap) -> Json<serde_json::Value> {
-    let mut authenticated = session_token(&headers)
+    let authenticated = signed_in(&state, &headers).await;
+    let can_manage = can_manage_library(&state, &headers).await;
+    // Legacy session (fv_session) is the only one that POST /logout clears.
+    let legacy_authenticated = session_token(&headers)
         .map(|token| state.auth.verify(&token, now_secs()))
         .unwrap_or(false);
-
-    let mut can_manage_library = authenticated;
-
-    // Check for account session
-    if !authenticated {
-        if let Some(db) = state.club.as_ref() {
-            let account_session = club::parse_account_session_cookie(&headers);
-            if let Some(account) = db.account_from_session(account_session.as_deref()).await {
-                authenticated = true;
-                can_manage_library = false;
-            }
-        }
-    }
-
-    // Check for club session
-    if !authenticated {
-        if let Some(db) = state.club.as_ref() {
-            let club_session = club::parse_session_cookie(&headers);
-            let now = club::now_ms();
-            let (_viewer, pilot) = db.viewer_with_pilot(club_session.as_deref(), now).await;
-            if let Some(pilot) = pilot {
-                authenticated = true;
-                can_manage_library = db.is_platform_superadmin(&pilot.id, &state.superadmin_emails).await;
-            }
-        }
-    }
 
     Json(json!({
         "authenticated": authenticated,
         "configured": state.auth.configured(),
-        "canManageLibrary": can_manage_library,
+        "canManageLibrary": can_manage,
+        "legacyAuthenticated": legacy_authenticated,
     }))
 }
 
@@ -794,24 +838,24 @@ async fn logout(State(_state): State<AppState>, headers: HeaderMap) -> impl Into
     ([(header::SET_COOKIE, cookie)], redirect_found("/login")).into_response()
 }
 
-fn require_auth(
+async fn require_auth(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<(), Box<axum::response::Response>> {
-    let ok = session_token(headers)
-        .map(|token| state.auth.verify(&token, now_secs()))
-        .unwrap_or(false);
-    if ok {
+    if can_manage_library(state, headers).await {
         return Ok(());
     }
+    Err(Box::new(auth_denied(state)))
+}
+
+/// Unauthorized/locked body shared by every disk-library write and the list.
+fn auth_denied(state: &AppState) -> axum::response::Response {
     let error = if state.auth.configured() {
         "unauthorized"
     } else {
         "locked"
     };
-    Err(Box::new(
-        (StatusCode::UNAUTHORIZED, Json(json!({ "error": error }))).into_response(),
-    ))
+    (StatusCode::UNAUTHORIZED, Json(json!({ "error": error }))).into_response()
 }
 
 fn build_router(state: AppState) -> Router {
