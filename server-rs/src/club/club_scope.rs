@@ -42,6 +42,15 @@ impl ClubDb {
             .flatten()
     }
 
+    pub async fn club_name(&self, club_id: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT name FROM clubs WHERE id = $1")
+            .bind(club_id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()
+    }
+
     pub async fn resolve_club_context(&self, slug: &str) -> Result<ClubContext, ClubScopeError> {
         let Some(club_id) = self.club_id_for_slug_any(slug).await else {
             return Err(ClubScopeError::NotFound);

@@ -316,3 +316,92 @@ body.fv-auth-page {
   width: 0;
   overflow: hidden;
 }
+
+/* Shared admin header bar, active nav pill, and mobile scroll strip */
+.admin-header-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem 0.75rem;
+  padding: 0.5rem 0.75rem;
+  margin: 0.6rem 0 0.5rem;
+  border: 1px solid var(--stroke, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 0.86rem;
+}
+
+.admin-header-club {
+  font-weight: 600;
+  color: var(--text, #f4f7fb);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.7rem;
+  margin-left: auto;
+}
+
+.admin-header-link {
+  color: var(--cyan, #67e8f9);
+  text-decoration: none;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.admin-header-link:hover {
+  text-decoration: underline;
+}
+
+.admin-shell button.admin-header-logout {
+  padding: 0.28rem 0.65rem;
+  font-size: 0.84rem;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.admin-nav a[aria-current="page"],
+.admin-nav a[aria-current="page"]:visited,
+.admin-nav a[aria-current="page"]:hover {
+  background: var(--admin-nav-active-bg, #ecebff);
+  color: var(--admin-nav-active-fg, #15132a);
+  border-color: var(--admin-nav-active-border, #ecebff);
+  font-weight: 650;
+}
+
+:root[data-theme="light"] .admin-nav a[aria-current="page"],
+:root[data-theme="light"] .admin-nav a[aria-current="page"]:visited,
+:root[data-theme="light"] .admin-nav a[aria-current="page"]:hover {
+  background: #15132a;
+  color: #ecebff;
+  border-color: #15132a;
+}
+
+@media (max-width: 640px) {
+  .admin-header-bar {
+    padding: 0.45rem 0.65rem;
+  }
+
+  .admin-header-actions {
+    margin-left: 0;
+  }
+
+  .admin-nav {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    padding-bottom: 0.25rem;
+    margin: 0.5rem 0 0.85rem;
+  }
+
+  .admin-nav a {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+}

@@ -558,6 +558,7 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
                 .await
                 .unwrap_or_else(|_| "es".to_string());
             let club_slug = db.club_slug(&p.club_id).await.unwrap_or_default();
+            let club_name = db.club_name(&p.club_id).await.unwrap_or_default();
             Json(json!({
                 "pilot": {
                     "id": p.id,
@@ -570,6 +571,7 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
                 },
                 "clubDefaultLocale": club_default,
                 "clubSlug": club_slug,
+                "clubName": club_name,
             }))
         }
         .into_response(),

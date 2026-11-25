@@ -9,9 +9,16 @@ export interface PendingCounts {
   accessRequests: number;
 }
 
+export interface ClubMeSummary {
+  clubName?: string | null;
+  clubSlug?: string | null;
+}
+
 let adminNavLocaleBound = false;
 let cachedRequestsCount = 0;
 let cachedPilotsCount = 0;
+let cachedClubMe: ClubMeSummary | null = null;
+let clubMeFetchPromise: Promise<ClubMeSummary | null> | null = null;
 
 const NAV_KEYS = [
   ["club-admin-types.html", "nav.types"],
@@ -22,8 +29,26 @@ const NAV_KEYS = [
   ["club-admin-map.html", "nav.adminMap"],
   ["club-admin-kiosk-layout.html", "nav.kioskQr"],
   ["club-admin-checkin-qr.html", "nav.adminCheckinQr"],
-  ["login?mode=club", "nav.login"],
 ] as const;
+
+export function normalizeAdminPathname(path: string): string {
+  const pathOnly = path.split(/[?#]/, 1)[0] ?? "";
+  const trimmed = pathOnly.replace(/\/+$/, "");
+  if (!trimmed) return "/";
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
+export function isAdminNavLinkActive(linkHref: string, pathname: string): boolean {
+  return normalizeAdminPathname(linkHref) === normalizeAdminPathname(pathname);
+}
+
+export function resolveActiveClubLabel(me: ClubMeSummary | null | undefined): string | null {
+  const name = typeof me?.clubName === "string" ? me.clubName.trim() : "";
+  if (name) return name;
+  const slug = typeof me?.clubSlug === "string" ? me.clubSlug.trim() : "";
+  if (slug) return slug;
+  return null;
+}
 
 /** Pending access requests count shown in both the admin nav badge and Solicitudes heading. */
 export function pendingAccessRequestsCount(counts: PendingCounts): number {
@@ -75,17 +100,110 @@ export async function refreshNavRequestsBadge(): Promise<number | null> {
 export function resetAdminNavStateForTests(): void {
   cachedRequestsCount = 0;
   cachedPilotsCount = 0;
+  cachedClubMe = null;
+  clubMeFetchPromise = null;
+}
+
+function paintActiveClubEl(): void {
+  const clubEl = document.querySelector<HTMLSpanElement>("#admin-header-club");
+  if (!clubEl) return;
+  const label = resolveActiveClubLabel(cachedClubMe);
+  if (label) {
+    clubEl.textContent = t("nav.activeClub", { name: label });
+    clubEl.hidden = false;
+  } else {
+    clubEl.textContent = "";
+    clubEl.hidden = true;
+  }
+}
+
+export function loadActiveClubMe(): Promise<ClubMeSummary | null> {
+  if (clubMeFetchPromise) return clubMeFetchPromise;
+  clubMeFetchPromise = (async () => {
+    try {
+      const me = await api<ClubMeSummary>("/api/club/me");
+      cachedClubMe = {
+        clubName: typeof me.clubName === "string" ? me.clubName : null,
+        clubSlug: typeof me.clubSlug === "string" ? me.clubSlug : null,
+      };
+      paintActiveClubEl();
+      return cachedClubMe;
+    } catch {
+      return null;
+    }
+  })();
+  return clubMeFetchPromise;
+}
+
+export async function performAccountLogout(
+  navigate: (url: string) => void = (url) => location.replace(url),
+): Promise<void> {
+  try {
+    await fetch("/api/account/logout", {
+      method: "POST",
+      credentials: "same-origin",
+    });
+  } catch {
+    /* still redirect to login */
+  }
+  navigate("/login");
 }
 
 function mountAdminNavInner(): void {
   const slot = document.querySelector("#admin-nav");
   if (!slot) return;
+
+  const headerBar = document.createElement("div");
+  headerBar.className = "admin-header-bar";
+
+  const clubSpan = document.createElement("span");
+  clubSpan.id = "admin-header-club";
+  clubSpan.className = "admin-header-club";
+  const clubLabel = resolveActiveClubLabel(cachedClubMe);
+  if (clubLabel) {
+    clubSpan.textContent = t("nav.activeClub", { name: clubLabel });
+    clubSpan.hidden = false;
+  } else {
+    clubSpan.hidden = true;
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "admin-header-actions";
+
+  const myClubsLink = document.createElement("a");
+  myClubsLink.className = "admin-header-link";
+  myClubsLink.href = "/account-clubs.html";
+  myClubsLink.textContent = t("nav.myClubs");
+
+  const myAccountLink = document.createElement("a");
+  myAccountLink.className = "admin-header-link";
+  myAccountLink.href = "/account.html";
+  myAccountLink.textContent = t("nav.myAccount");
+
+  const logoutBtn = document.createElement("button");
+  logoutBtn.type = "button";
+  logoutBtn.id = "admin-header-logout";
+  logoutBtn.className = "admin-header-logout";
+  logoutBtn.textContent = t("pilot.logOut");
+  logoutBtn.addEventListener("click", () => {
+    logoutBtn.disabled = true;
+    void performAccountLogout();
+  });
+
+  actions.append(myClubsLink, myAccountLink, logoutBtn);
+  headerBar.append(clubSpan, actions);
+
   const nav = document.createElement("nav");
   nav.className = "admin-nav";
+  const currentPath = typeof location !== "undefined" ? location.pathname : "/";
   for (const [href, key] of NAV_KEYS) {
     const a = document.createElement("a");
-    a.href = `/${href}`;
+    const target = `/${href}`;
+    a.href = target;
     a.textContent = t(key);
+    if (isAdminNavLinkActive(target, currentPath)) {
+      a.setAttribute("aria-current", "page");
+    }
     if (href === "club-admin-pilots.html") {
       const badge = document.createElement("span");
       badge.id = "admin-nav-pilots-badge";
@@ -104,7 +222,7 @@ function mountAdminNavInner(): void {
     }
     nav.appendChild(a);
   }
-  slot.replaceChildren(nav);
+  slot.replaceChildren(headerBar, nav);
 }
 
 export function mountAdminNav(): void {
@@ -114,6 +232,7 @@ export function mountAdminNav(): void {
     window.addEventListener("fv-i18n-ready", () => mountAdminNavInner());
   }
   mountAdminNavInner();
+  void loadActiveClubMe();
   void refreshNavRequestsBadge();
 }
 

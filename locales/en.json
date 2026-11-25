@@ -64,7 +64,9 @@
     "pilotProfile": "Pilot profile",
     "androidApp": "Android app",
     "myAccount": "My account",
-    "clubAdmin": "Club admin"
+    "clubAdmin": "Club admin",
+    "myClubs": "My clubs",
+    "activeClub": "Club: {name}"
   },
   "api": {
     "unauthorized": "Unauthorized",
@@ -552,7 +554,8 @@
       "current": "Current password",
       "currentOptionalMagic": "Current password (optional if you signed in with a magic link recently)",
       "new": "New password",
-      "submit": "Save password"
+      "submit": "Save password",
+      "saved": "Password saved."
     },
     "join": {
       "title": "Join a club",

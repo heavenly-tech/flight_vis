@@ -61,7 +61,9 @@
     "createClub": "Crear club",
     "registerClub": "Registrar club",
     "myAccount": "Mi cuenta",
-    "clubAdmin": "Administrar club"
+    "clubAdmin": "Administrar club",
+    "myClubs": "Mis clubes",
+    "activeClub": "Club: {name}"
   },
   "auth": {
     "wrongPassword": "Contraseña incorrecta."
@@ -552,7 +554,8 @@
       "current": "Contraseña actual",
       "currentOptionalMagic": "Contraseña actual (opcional si ingresaste con enlace mágico hace poco)",
       "new": "Nueva contraseña",
-      "submit": "Guardar contraseña"
+      "submit": "Guardar contraseña",
+      "saved": "Contraseña guardada."
     },
     "join": {
       "title": "Únete a un club",

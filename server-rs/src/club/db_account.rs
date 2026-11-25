@@ -770,6 +770,15 @@ impl ClubDb {
         Ok((session_id, acct))
     }
 
+    pub async fn logout_account_session(&self, session_id: &str) -> Result<(), DbError> {
+        let session_db_id = digest_token(session_id);
+        sqlx::query("DELETE FROM account_sessions WHERE id = $1")
+            .bind(&session_db_id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn account_from_session(
         &self,
         session_id: &str,
