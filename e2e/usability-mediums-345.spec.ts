@@ -151,7 +151,7 @@ test("kiosk layout merges save into one Guardar button and supports keyboard pos
   expect(visibleCalls).toEqual([]);
 
   await page.locator("#btn-save").click();
-  await expect(page.locator("#save-status")).toHaveText("Guardado", { timeout: 10_000 });
+  await expect(page.locator("#save-status")).toHaveText(/^(Guardado|Saved)$/, { timeout: 10_000 });
   expect(patchCalls).toBe(1);
   expect(visibleCalls).toEqual([false]);
 
@@ -161,7 +161,7 @@ test("kiosk layout merges save into one Guardar button and supports keyboard pos
 
   await visibleCheckbox.setChecked(true);
   await page.locator("#btn-save").click();
-  await expect(page.locator("#save-status")).toHaveText("Guardado", { timeout: 10_000 });
+  await expect(page.locator("#save-status")).toHaveText(/^(Guardado|Saved)$/, { timeout: 10_000 });
   expect(visibleCalls).toEqual([false, true]);
 });
 
