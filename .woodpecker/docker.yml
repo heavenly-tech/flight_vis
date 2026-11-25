@@ -1,0 +1,37 @@
+# Woodpecker workflow: release-style docker build + check-i18n (push to main only).
+# Matrix dispatches amd64 and arm64 workflows to agents via `labels.platform`.
+when:
+  - event: push
+    branch: main
+
+matrix:
+  ARCH:
+    - amd64
+    - arm64
+
+labels:
+  platform: linux/${ARCH}
+
+steps:
+  - name: docker-build
+    image: docker:27.4.0-cli
+    pull: false
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    commands:
+      - export TAG="flight_vis:ci-${ARCH}"
+      - |
+        if [ "${ARCH}" = "arm64" ]; then
+          docker buildx build --platform linux/arm64 -t "${TAG}" --load .
+        else
+          docker build -t "${TAG}" .
+        fi
+      - docker run --rm "${TAG}" /app/flight_vis check-i18n
+
+  - name: cleanup
+    image: alpine:3.20
+    pull: false
+    when:
+      - status: [success, failure]
+    commands:
+      - rm -rf server-rs/target node_modules

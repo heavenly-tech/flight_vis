@@ -1,0 +1,135 @@
+# Woodpecker workflow: check (linux/arm64 Mac mini agent).
+when:
+  - event: pull_request
+  - event: push
+    branch: main
+
+labels:
+  platform: linux/arm64
+
+services:
+  - name: postgres
+    image: postgres:18-alpine
+    pull: false
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: flight_vis_test
+    ports:
+      - 5432
+
+steps:
+  - name: wait-postgres
+    image: postgres:18-alpine
+    pull: false
+    commands:
+      - |
+        until PGPASSWORD=postgres psql -h postgres -U postgres -d flight_vis_test -c 'SELECT 1' >/dev/null 2>&1; do
+          sleep 1
+        done
+
+  - name: postgres-owner-migration-smoke
+    image: postgres:18-alpine
+    pull: false
+    commands:
+      - |
+        PGPASSWORD=postgres psql -h postgres -U postgres -v ON_ERROR_STOP=1 <<'SQL'
+        DROP DATABASE IF EXISTS flight_vis_owner_test;
+        DROP ROLE IF EXISTS flightvis;
+        CREATE ROLE flightvis LOGIN NOSUPERUSER PASSWORD 'flightvis_ci_test';
+        CREATE DATABASE flight_vis_owner_test OWNER flightvis;
+        SQL
+
+  - name: owner-migration-cargo-test
+    image: fv-ci:rust-1.89-bookworm
+    pull: false
+    environment:
+      DATABASE_URL: postgres://flightvis:flightvis_ci_test@postgres:5432/flight_vis_owner_test
+    commands:
+      - cargo test --manifest-path server-rs/Cargo.toml club::database::tests::flightvis_owner_migrations -- --exact --nocapture
+
+  - name: cargo-fmt
+    image: fv-ci:rust-1.89-bookworm
+    pull: false
+    commands:
+      - cargo fmt --manifest-path server-rs/Cargo.toml -- --check
+
+  - name: cargo-test
+    image: fv-ci:rust-1.89-bookworm
+    pull: false
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/flight_vis_test
+    commands:
+      - cargo test --manifest-path server-rs/Cargo.toml
+
+  - name: cargo-clippy
+    image: fv-ci:rust-1.89-bookworm
+    pull: false
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/flight_vis_test
+    commands:
+      - cargo clippy --manifest-path server-rs/Cargo.toml --all-targets -- -D warnings
+
+  - name: frontend
+    image: node:22-alpine
+    pull: false
+    commands:
+      - npm ci
+      - npm run build
+
+  - name: dist-inline-scripts
+    image: node:22-alpine
+    pull: false
+    commands:
+      - node scripts/check-dist-inline.mjs
+
+  - name: dist-bundle-checks
+    image: alpine:3.20
+    pull: false
+    commands:
+      - apk add --no-cache ripgrep
+      - |
+        if rg -q 'qrserver\.com' dist/; then
+          echo "dist/ must not reference external QR image hosts"
+          rg 'qrserver\.com' dist/
+          exit 1
+        fi
+      - |
+        for f in e2e-csp-hooks.js e2e-live-csp-sse.js; do
+          if [ -f "dist/$f" ]; then
+            echo "dist/ must not ship $f (scripts/e2e-gateway only)"
+            exit 1
+          fi
+        done
+
+  - name: frontend-lint
+    image: node:22-alpine
+    pull: false
+    commands:
+      - npm run lint
+
+  - name: voseo-check
+    image: node:22-alpine
+    pull: false
+    commands:
+      - node scripts/voseo-check.mjs
+
+  - name: globe-csp
+    image: node:22-alpine
+    pull: false
+    commands:
+      - node scripts/check-globe-csp.mjs
+
+  - name: csp-html-dist
+    image: node:22-alpine
+    pull: false
+    commands:
+      - node scripts/check-csp-html-dist.mjs
+
+  - name: cleanup
+    image: alpine:3.20
+    pull: false
+    when:
+      - status: [success, failure]
+    commands:
+      - rm -rf server-rs/target node_modules
