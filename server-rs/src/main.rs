@@ -398,6 +398,16 @@ async fn club_login_html_redirect(
     redirect_found(&login_redirect_query(&query, false))
 }
 
+async fn club_globe_screen_html_redirect(uri: Uri) -> impl IntoResponse {
+    let location = match uri.query() {
+        Some(q) if !q.is_empty() && !q.bytes().any(|b| b < 0x20 || b == 0x7f) => {
+            format!("/club-screen.html?{q}")
+        }
+        _ => "/club-screen.html".to_string(),
+    };
+    redirect_found(&location)
+}
+
 async fn login_legacy_redirect(Query(query): Query<HashMap<String, String>>) -> impl IntoResponse {
     redirect_found(&login_redirect_query(&query, true))
 }
@@ -869,6 +879,10 @@ fn build_router(state: AppState) -> Router {
         .route("/login.html", get(login_html_redirect))
         .route("/login/legacy", get(login_legacy_redirect))
         .route("/club-login.html", get(club_login_html_redirect))
+        .route(
+            "/club-globe-screen.html",
+            get(club_globe_screen_html_redirect),
+        )
         .route("/logout", get(logout).post(logout));
     if state.club.is_some() {
         app = app.merge(club::router()).merge(club::contract_router());

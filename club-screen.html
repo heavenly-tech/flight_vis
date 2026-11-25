@@ -13,6 +13,7 @@
         flex-direction: column;
         width: 100vw;
         height: 100vh;
+        height: 100dvh;
         overflow: hidden;
         background: linear-gradient(180deg, #0b0f14 0%, #121922 100%);
       }
@@ -20,42 +21,177 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 1rem;
-        padding: 1.25rem 2rem 0.75rem;
+        gap: 0.75rem 1rem;
+        padding: 0.9rem 1.5rem 0.8rem;
         flex: 0 0 auto;
         z-index: 6;
+        background: rgba(11, 15, 20, 0.95);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
       }
       .kiosk-header-main {
         display: flex;
+        flex-direction: column;
+        gap: 0.15rem;
+        min-width: 0;
+        flex: 1 1 auto;
+      }
+      .kiosk-club-name {
+        margin: 0;
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: #67e8f9;
+        letter-spacing: 0.02em;
+        line-height: 1.25;
+      }
+      .kiosk-club-name[hidden] { display: none; }
+      .kiosk-heading-row {
+        display: flex;
         flex-wrap: wrap;
         align-items: baseline;
-        gap: 0.4rem 1.25rem;
+        gap: 0.25rem 1rem;
         min-width: 0;
       }
       .kiosk-header-main h2 { margin: 0; font-size: 1.15rem; font-weight: 600; }
       #status-bar {
         margin: 0;
         font-size: 0.85rem;
-        opacity: 0.75;
+        opacity: 0.78;
       }
       #toolbar-local {
         display: flex;
         flex: 0 0 auto;
+        align-items: center;
         gap: 0.5rem;
+        flex-wrap: wrap;
       }
-      #toolbar-local button { font: inherit; padding: 0.35rem 0.65rem; }
+      #toolbar-local button {
+        font: inherit;
+        min-height: 44px;
+        min-width: 44px;
+        padding: 0.45rem 0.85rem;
+      }
+      #toolbar-local button[hidden] { display: none; }
       #map-layer {
+        position: relative;
         flex: 1 1 auto;
         min-height: 0;
-        overflow: auto;
-        padding: 0.75rem 2rem 2rem;
+        overflow: hidden;
         box-sizing: border-box;
-        opacity: 0.92;
       }
-      #map-layer ul { list-style: none; margin: 0; padding: 0; columns: 2; gap: 1rem; }
-      #map-layer li { padding: 0.35rem 0; font-size: 1.05rem; }
-      #map-layer.map-expanded { padding: 1rem 2.5rem 2.5rem; }
-      #map-layer.map-expanded ul { columns: 3; font-size: 1.2rem; }
+      .kiosk-list-bar {
+        position: relative;
+        z-index: 4;
+        pointer-events: none;
+        padding: 0.75rem 1.25rem 0;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.5rem;
+        max-height: 45%;
+        overflow-y: auto;
+        box-sizing: border-box;
+      }
+      .kiosk-empty {
+        pointer-events: auto;
+        margin: 0;
+        padding: 0.55rem 0.9rem;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        background: rgba(11, 15, 20, 0.84);
+        color: #cbd5e1;
+        font-size: 0.95rem;
+      }
+      .kiosk-empty[hidden] { display: none; }
+      #map-layer ul.kiosk-aircraft-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+      }
+      #map-layer ul.kiosk-aircraft-list:empty { display: none; }
+      #map-layer ul.kiosk-aircraft-list li {
+        margin: 0;
+        padding: 0;
+      }
+      .kiosk-tail-chip {
+        pointer-events: auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 44px;
+        min-width: 44px;
+        padding: 0.5rem 0.95rem;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.24);
+        background: rgba(11, 15, 20, 0.86);
+        color: #f4f7fb;
+        font: 600 0.95rem Outfit, system-ui, sans-serif;
+        cursor: pointer;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+      }
+      .kiosk-tail-chip:hover {
+        border-color: rgba(103, 232, 249, 0.65);
+        background: rgba(16, 25, 36, 0.95);
+      }
+      .kiosk-tail-chip[aria-pressed="true"],
+      .kiosk-tail-chip.is-focused {
+        border-color: #67e8f9;
+        background: rgba(14, 58, 74, 0.94);
+        color: #ffffff;
+        box-shadow: 0 0 0 2px rgba(103, 232, 249, 0.35), 0 4px 12px rgba(0, 0, 0, 0.55);
+      }
+      .kiosk-focus-detail {
+        pointer-events: auto;
+        display: inline-flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.35rem 0.9rem;
+        padding: 0.5rem 0.9rem;
+        border-radius: 10px;
+        border: 1px solid rgba(103, 232, 249, 0.45);
+        background: rgba(11, 15, 20, 0.9);
+        color: #f4f7fb;
+        font-size: 0.92rem;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+      }
+      .kiosk-focus-detail[hidden] { display: none; }
+      .kiosk-focus-tail {
+        font-family: "IBM Plex Mono", ui-monospace, monospace;
+        font-weight: 700;
+        color: #67e8f9;
+      }
+      .kiosk-focus-item {
+        color: #e2e8f0;
+      }
+      .kiosk-map-aircraft {
+        position: absolute;
+        transform: translate(-50%, -100%);
+        min-height: 36px;
+        min-width: 44px;
+        padding: 0.3rem 0.65rem;
+        border: 2px solid rgba(255, 255, 255, 0.85);
+        border-radius: 6px;
+        background: #ff5500;
+        color: #fff;
+        font: 700 0.85rem Outfit, system-ui, sans-serif;
+        white-space: nowrap;
+        pointer-events: auto;
+        cursor: pointer;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.55);
+        z-index: 3;
+      }
+      .kiosk-map-aircraft:hover {
+        background: #ff6a1f;
+      }
+      .kiosk-map-aircraft[aria-pressed="true"],
+      .kiosk-map-aircraft.is-focused {
+        border-color: #67e8f9;
+        background: #0284c7;
+        box-shadow: 0 0 0 3px rgba(103, 232, 249, 0.4), 0 4px 12px rgba(0, 0, 0, 0.65);
+        z-index: 5;
+      }
       #activate {
         position: absolute;
         inset: 0;
@@ -79,6 +215,7 @@
         border-radius: 12px;
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
       }
+      #qr-wrap[hidden] { display: none; }
       #qr-wrap img {
         display: block;
         width: 100%;
@@ -86,30 +223,62 @@
         object-fit: contain;
         filter: contrast(1.25);
       }
+      @media (max-width: 600px) {
+        .kiosk-header {
+          padding: 0.65rem 0.9rem 0.6rem;
+          flex-wrap: wrap;
+        }
+        .kiosk-list-bar {
+          padding: 0.6rem 0.9rem 0;
+        }
+      }
+      @media (max-width: 480px) {
+        #qr-wrap {
+          padding: 8px;
+          border-radius: 10px;
+        }
+      }
     </style>
   </head>
   <body>
     <div class="kiosk-viewport" id="viewport">
       <header class="kiosk-header">
         <div class="kiosk-header-main">
-          <h2 data-i18n="kiosk.liveAircraft">Aeronaves en vivo</h2>
-          <p id="status-bar" role="status" aria-live="polite" data-i18n="kiosk.starting">Iniciando pantalla…</p>
+          <p id="club-name" class="kiosk-club-name" hidden></p>
+          <div class="kiosk-heading-row">
+            <h2 data-i18n="kiosk.liveAircraft">Aeronaves en vivo</h2>
+            <p id="status-bar" role="status" aria-live="polite" data-i18n="kiosk.starting">Iniciando pantalla…</p>
+          </div>
         </div>
         <div id="toolbar-local">
+          <button type="button" id="btn-view-all" class="btn-secondary" data-i18n="kiosk.viewAll" hidden>Ver todas</button>
           <button type="button" id="btn-local-qr" class="btn-secondary" data-i18n="kiosk.qrHide" hidden>Ocultar QR</button>
         </div>
       </header>
       <section id="map-layer" data-i18n-aria="kiosk.liveMapAria" aria-label="Mapa en vivo del club">
-        <ul id="map"></ul>
+        <div class="kiosk-list-bar" id="aircraft-bar">
+          <p id="map-empty" class="kiosk-empty" role="status" aria-live="polite" data-i18n="kiosk.noAircraft" hidden>No hay aeronaves en vuelo.</p>
+          <ul id="map" class="kiosk-aircraft-list"></ul>
+          <div id="focus-detail" class="kiosk-focus-detail" role="region" data-i18n-aria="kiosk.focusedAircraftAria" aria-label="Detalle de aeronave seleccionada" aria-live="polite" hidden></div>
+        </div>
       </section>
       <div id="qr-wrap" hidden>
-        <img id="qr" data-i18n-alt="kiosk.qrAlt" alt="Código QR de check-in" width="256" height="256" />
+        <img id="qr" data-i18n-alt="kiosk.qrAlt" alt="Código QR de registro" width="256" height="256" />
       </div>
       <div id="activate" hidden>
         <form id="activate-inner" class="auth-card">
-          <label for="activate-token" class="activate-label" data-i18n="kiosk.pasteToken">Pega el token de activación de pantalla desde el mapa admin.</label>
+          <label for="activate-token" class="activate-label" data-i18n="kiosk.pasteToken">Pega el código de activación desde el mapa de administración.</label>
           <div class="activate-row">
-            <input id="activate-token" name="token" type="password" autocomplete="off" required />
+            <input
+              id="activate-token"
+              name="token"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              data-i18n-placeholder="kiosk.pasteTokenPlaceholder"
+              placeholder="Pega el código aquí"
+              required
+            />
             <button type="submit" id="btn-activate" class="btn-primary" data-i18n="kiosk.activate">Activar pantalla</button>
           </div>
         </form>

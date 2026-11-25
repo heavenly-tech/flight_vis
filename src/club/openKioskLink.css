@@ -1,0 +1,19 @@
+.kiosk-link-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0 0 1rem;
+}
+
+.kiosk-link-bar:empty {
+  display: none;
+}
+
+.open-kiosk-link {
+  color: var(--cyan, #67e8f9);
+}
+
+.open-kiosk-link:visited {
+  color: var(--cyan, #67e8f9);
+}

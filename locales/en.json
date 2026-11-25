@@ -274,7 +274,7 @@
   },
   "admin": {
     "liveMapTitle": "Admin live map",
-    "tailFilterHint": "Tail ticks filter this view only (persisted).",
+    "tailFilterHint": "Selected tails filter this view and any club display you activate.",
     "showTails": "Show tails",
     "saveSelection": "Save selection",
     "kioskSession": "Create club display session",
@@ -392,7 +392,13 @@
     "qrHide": "Hide QR",
     "qrRotateHint": "QR rotates every {seconds} seconds.",
     "liveMapAria": "Live club map",
-    "awaitingActivation": "Display not activated."
+    "awaitingActivation": "Display not activated.",
+    "viewAll": "View all",
+    "noAircraft": "No aircraft in flight.",
+    "pasteTokenPlaceholder": "Paste the code here",
+    "detailAltitude": "Altitude",
+    "detailSpeed": "Speed",
+    "focusedAircraftAria": "Selected aircraft details"
   },
   "globe": {
     "metaDescription": "3D flight visualization for IGC and GPX tracks.",
@@ -604,5 +610,21 @@
       "bodyPlain": "Hello,\n\nYou were invited as a club administrator. Use this link (expires in {minutes} minutes):\n{url}\n\nIf you did not expect this email, ignore it.",
       "bodyHtml": "<p>Hello,</p><p>You were invited as a club administrator. <a href=\"{url}\">Accept the invitation</a> (expires in {minutes} minutes).</p><p>If you did not expect this email, ignore it.</p>"
     }
+  },
+  "adminMap": {
+    "noLiveAircraft": "No aircraft in flight right now.",
+    "selectAllTails": "All",
+    "selectNoTails": "None",
+    "selectionSaved": "Selection saved.",
+    "clubSettings": "Club settings",
+    "kioskCardTitle": "Club display (kiosk)",
+    "openClubScreen": "Open club screen",
+    "openDisplay": "Open display",
+    "copyCode": "Copy code",
+    "copyLink": "Copy link",
+    "copySelected": "Text selected to copy.",
+    "displayUrlLabel": "Club display URL",
+    "activationCodeLabel": "Activation code",
+    "noTailsRegistered": "No tails registered yet."
   }
 }

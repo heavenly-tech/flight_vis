@@ -2958,3 +2958,132 @@ async fn signup_without_club_works_for_both_magic_and_password() {
     .await;
     assert_eq!(counts["pilots"], 0);
 }
+
+#[tokio::test]
+#[serial]
+async fn display_base_returns_club_name_scoped_to_display_cookie() {
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let expected_name = fx
+        .club
+        .club_public_row(&club_id)
+        .await
+        .expect("default club row")
+        .name;
+    fx.club
+        .set_club_base_aerodrome(&club_id, "SCTB", -33.456, -70.548)
+        .await
+        .unwrap();
+
+    // Create a second club so we verify scoping returns only the activated club's name.
+    let now = now_ms();
+    let other_slug = format!("other-club-{}", &crate::club::auth::new_id()[..8]);
+    let (_, _) = fx
+        .club
+        .signup_club("Other Flying Club", &other_slug, "other@test", None, now)
+        .await
+        .unwrap();
+
+    // Unauthenticated /api/display/base must still reject with 401.
+    let (st_unauth, _) = call_json(&mut fx.router, "GET", "/api/display/base", None, "").await;
+    assert_eq!(st_unauth, StatusCode::UNAUTHORIZED);
+
+    let pilot_a = fx.pilot_a.clone();
+    let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
+    let (st_sess, sess_body) = call_json(
+        &mut fx.router,
+        "POST",
+        "/api/admin/display-sessions",
+        Some(&admin_cookie),
+        r#"{"label":"kiosk-test"}"#,
+    )
+    .await;
+    assert_eq!(st_sess, StatusCode::OK);
+    let token = sess_body["token"].as_str().expect("display token");
+
+    let act_res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/display/activate")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "token": token }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(act_res.status(), StatusCode::OK);
+    let display_cookie = extract_cookie_pair(act_res.headers(), crate::club::auth::DISPLAY_COOKIE)
+        .expect("display cookie");
+
+    let (st_base, base_body) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/display/base",
+        Some(&display_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(st_base, StatusCode::OK);
+    assert_eq!(base_body["icao"], "SCTB");
+    assert_eq!(base_body["lat"], -33.456);
+    assert_eq!(base_body["lon"], -70.548);
+    assert_eq!(base_body["clubName"], expected_name);
+}
+
+#[tokio::test]
+#[serial]
+async fn club_globe_screen_routes_redirect_to_club_screen() {
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let slug = fx.club.club_slug(&club_id).await.expect("default slug");
+
+    let cases = [
+        ("/club-globe-screen.html", "/club-screen.html"),
+        (
+            "/club-globe-screen.html?kiosk=1&lang=es",
+            "/club-screen.html?kiosk=1&lang=es",
+        ),
+        ("/club/globe-screen", "/club/screen"),
+        ("/club/globe-screen?kiosk=1", "/club/screen?kiosk=1"),
+        (
+            &format!("/c/{slug}/globe-screen"),
+            &format!("/c/{slug}/screen"),
+        ),
+        (
+            &format!("/c/{slug}/globe-screen?kiosk=1"),
+            &format!("/c/{slug}/screen?kiosk=1"),
+        ),
+    ];
+
+    for (from, expected_loc) in cases {
+        let res = fx
+            .router
+            .call(Request::builder().uri(from).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FOUND, "GET {from}");
+        assert_eq!(
+            res.headers()
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok()),
+            Some(expected_loc),
+            "Location for GET {from}"
+        );
+    }
+
+    let missing = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/c/no-such-club-slug-xyz/globe-screen")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}

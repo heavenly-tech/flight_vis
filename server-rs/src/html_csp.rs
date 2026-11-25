@@ -28,7 +28,6 @@ pub const HTML_CSP_ROUTE_TABLE: &[(&str, HtmlCspKind)] = &[
     // Globe: Cesium viewer (main SPA, shared flight view)
     ("/index.html", HtmlCspKind::Globe),
     ("/__spa_index__", HtmlCspKind::Globe),
-    ("/club-globe-screen.html", HtmlCspKind::Globe),
     ("/share-flight.html", HtmlCspKind::Globe),
     // Strict: auth, account, admin, lists, club registration, QR / check-in, e2e fixtures
     ("/login", HtmlCspKind::Strict),
@@ -71,7 +70,6 @@ pub const DIST_HTML_FILES: &[&str] = &[
     "account-clubs.html",
     "account.html",
     "app.html",
-    "club-globe-screen.html",
     "club-pilot.html",
     "club-flight.html",
     "signup.html",
