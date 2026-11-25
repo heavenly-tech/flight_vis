@@ -382,11 +382,6 @@ export function createLiveRuntime(host: LiveHost): LiveRuntime {
     void startList();
   });
 
-  langBtn.addEventListener("click", () => {
-    const next = getLocale() === "en" ? "es" : "en";
-    void setLiveLang(next);
-  });
-
   trimForm.addEventListener("submit", (event) => {
     const submitter = (event as SubmitEvent).submitter as HTMLButtonElement | null;
     if (submitter?.value === "cancel") {

@@ -6,8 +6,6 @@
     <title data-i18n="admin.checkinQrTitle">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
-      main { max-width: 28rem; margin: 1rem auto; padding: 0 1rem 2rem; }
-      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
       #qr-panel {
         margin: 1rem 0;
         padding: 1rem;
@@ -15,25 +13,34 @@
         border-radius: 12px;
         text-align: center;
       }
-      #qr-panel img { max-width: 100%; height: auto; display: block; margin: 0 auto; }
-      .toolbar { display: flex; gap: .75rem; flex-wrap: wrap; margin: 1rem 0; }
-      button { font: inherit; padding: .55rem .85rem; }
+      #qr-panel img {
+        max-width: 100%;
+        height: auto;
+        display: block;
+        margin: 0 auto;
+      }
+      .toolbar {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        margin: 1rem 0;
+      }
     </style>
   </head>
-  <body>
-    <main>
-      <div id="lang-slot"></div>
+  <body class="fv-page">
+    <main class="admin-shell">
+      <div id="lang-slot" class="lang-bar"></div>
       <h1 data-i18n="admin.checkinQrTitle"></h1>
       <p class="muted" data-i18n="admin.checkinQrLead"></p>
       <div id="admin-nav"></div>
       <div class="toolbar">
-        <button type="button" id="btn-show-qr" data-i18n="admin.checkinQrShow" disabled></button>
-        <button type="button" id="btn-hide-qr" data-i18n="admin.checkinQrHide" hidden></button>
+        <button type="button" id="btn-show-qr" class="btn-primary" data-i18n="admin.checkinQrShow" disabled></button>
+        <button type="button" id="btn-hide-qr" class="btn-secondary" data-i18n="admin.checkinQrHide" hidden></button>
       </div>
       <div id="qr-panel" hidden>
-        <img id="qr-img" alt="" width="280" height="280" />
+        <img id="qr-img" alt="Código QR de registro" data-i18n-alt="kiosk.qrAlt" width="280" height="280" />
       </div>
-      <p id="status" class="muted"></p>
+      <p id="status" class="status-msg" role="status" aria-live="polite"></p>
     </main>
     <script type="module" src="/src/club/adminCheckinQr.ts"></script>
   </body>

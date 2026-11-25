@@ -9,9 +9,11 @@ const save = document.querySelector<HTMLButtonElement>("#save")!;
 const kiosk = document.querySelector<HTMLButtonElement>("#btn-kiosk")!;
 const kioskOut = document.querySelector<HTMLParagraphElement>("#kiosk-url")!;
 const clubLocaleSelect = document.querySelector<HTMLSelectElement>("#club-locale-select");
+const clubLocaleHelp = document.querySelector<HTMLParagraphElement>("#club-locale-help");
 const clubLocaleSave = document.querySelector<HTMLButtonElement>("#club-locale-save");
 const clubLocaleMsg = document.querySelector<HTMLParagraphElement>("#club-locale-msg");
 const clubSlugInput = document.querySelector<HTMLInputElement>("#club-slug-input");
+const clubSlugHelp = document.querySelector<HTMLParagraphElement>("#club-slug-help");
 const clubSlugSave = document.querySelector<HTMLButtonElement>("#club-slug-save");
 const clubSlugMsg = document.querySelector<HTMLParagraphElement>("#club-slug-msg");
 const clubBaseIcaoInput = document.querySelector<HTMLInputElement>("#club-base-icao-input");
@@ -19,6 +21,18 @@ const clubBaseLatInput = document.querySelector<HTMLInputElement>("#club-base-la
 const clubBaseLonInput = document.querySelector<HTMLInputElement>("#club-base-lon-input");
 const clubBaseSave = document.querySelector<HTMLButtonElement>("#club-base-save");
 const clubBaseMsg = document.querySelector<HTMLParagraphElement>("#club-base-msg");
+
+let currentClubSlug = "cas-tobalaba";
+
+function paintSlugHelp(): void {
+  const slug = currentClubSlug || "cas-tobalaba";
+  if (clubLocaleHelp) {
+    clubLocaleHelp.textContent = t("admin.clubDefaultLanguageHelp", { slug });
+  }
+  if (clubSlugHelp) {
+    clubSlugHelp.textContent = t("admin.clubSlugHelp", { slug });
+  }
+}
 
 async function refresh(): Promise<void> {
   const aircraft = await api<{ aircraft: { tail: string }[] }>("/api/admin/aircraft");
@@ -59,24 +73,45 @@ function mountClubLocalePicker(current?: string): void {
 }
 
 kiosk?.addEventListener("click", async () => {
-  const body = await api<{ screenUrl: string; token: string }>("/api/admin/display-sessions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ label: "Kiosk" }),
-  });
-  const url = `${location.origin}${body.screenUrl}`;
-  kioskOut.innerHTML = `${t("admin.kioskOpenUrl")} <a href="${url}" target="_blank" rel="noopener">${url}</a><br />
-    ${t("admin.kioskActivationToken")} <code>${body.token}</code>`;
+  try {
+    const body = await api<{ screenUrl: string; token: string }>("/api/admin/display-sessions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ label: "Kiosk" }),
+    });
+    const url = `${location.origin}${body.screenUrl}`;
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = url;
+    const code = document.createElement("code");
+    code.textContent = body.token;
+    kioskOut.replaceChildren(
+      document.createTextNode(`${t("admin.kioskOpenUrl")} `),
+      link,
+      document.createElement("br"),
+      document.createTextNode(`${t("admin.kioskActivationToken")} `),
+      code,
+    );
+  } catch (e) {
+    console.error("[adminMap] create display session failed:", e);
+    kioskOut.textContent = t("api.genericError");
+  }
 });
 
 save.addEventListener("click", async () => {
-  const tails = [...ticks.querySelectorAll<HTMLInputElement>("input:checked")].map((i) => i.value);
-  await api("/api/admin/map/tails", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tails }),
-  });
-  await refresh();
+  try {
+    const tails = [...ticks.querySelectorAll<HTMLInputElement>("input:checked")].map((i) => i.value);
+    await api("/api/admin/map/tails", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tails }),
+    });
+    await refresh();
+  } catch (e) {
+    console.error("[adminMap] save tails failed:", e);
+  }
 });
 
 function slugApiMessage(res: Response, payload: { error?: string }): string {
@@ -98,7 +133,11 @@ clubSlugSave?.addEventListener("click", async () => {
     body: JSON.stringify({ slug }),
   });
   const payload = (await res.json().catch(() => ({}))) as { error?: string; slug?: string };
-  if (res.ok && payload.slug) clubSlugInput.value = payload.slug;
+  if (res.ok && payload.slug) {
+    clubSlugInput.value = payload.slug;
+    currentClubSlug = payload.slug;
+    paintSlugHelp();
+  }
   if (clubSlugMsg) clubSlugMsg.textContent = slugApiMessage(res, payload);
 });
 
@@ -148,12 +187,15 @@ clubBaseSave?.addEventListener("click", async () => {
 
 void (async () => {
   if (!(await ensureClubAdminOrRedirect())) return;
-  void startClubPage({ switcher: "#lang-slot" });
+  await startClubPage({ switcher: "#lang-slot" });
   mountAdminNav();
+  window.addEventListener("fv-locale-change", paintSlugHelp);
   try {
     const me = await api<{ clubDefaultLocale?: string; clubSlug?: string }>("/api/club/me");
     mountClubLocalePicker(me.clubDefaultLocale ?? "es");
+    if (me.clubSlug) currentClubSlug = me.clubSlug;
     if (clubSlugInput) clubSlugInput.value = me.clubSlug ?? "";
+    paintSlugHelp();
     
     // Load base aerodrome
     const baseRes = await api<{ icao: string | null; lat: number | null; lon: number | null }>("/api/admin/club/base");

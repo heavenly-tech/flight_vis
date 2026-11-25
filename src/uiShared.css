@@ -1,0 +1,318 @@
+/* Shared dark-theme accessibility, typography, card, form, and admin styles. */
+
+:where(a) {
+  color: var(--cyan, #67e8f9);
+}
+
+:where(a:visited) {
+  color: #7dd3fc;
+}
+
+:where(a:hover) {
+  color: #a5f3fc;
+}
+
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--cyan, #67e8f9);
+  outline-offset: 2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.muted {
+  color: var(--muted, #9aa6b5);
+}
+
+html:has(body.fv-page),
+body.fv-page {
+  height: auto;
+  min-height: 100dvh;
+  overflow: auto;
+}
+
+html:has(body.fv-auth-page),
+body.fv-auth-page {
+  height: auto;
+  min-height: 100dvh;
+  overflow: auto;
+}
+
+body.fv-auth-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.auth-card {
+  width: min(26rem, 100%);
+  margin: 0 auto;
+  padding: 1.35rem 1.4rem;
+  border: 1px solid var(--stroke, rgba(255, 255, 255, 0.12));
+  border-radius: 16px;
+  background: #10151d;
+  color: var(--text, #f4f7fb);
+}
+
+.auth-card h1,
+.admin-shell h1 {
+  margin: 0 0 0.45rem;
+  font-size: 1.3rem;
+  line-height: 1.25;
+}
+
+.admin-shell {
+  max-width: 48rem;
+  margin: 1.5rem auto;
+  padding: 1.35rem 1.4rem 2rem;
+  border: 1px solid var(--stroke, rgba(255, 255, 255, 0.12));
+  border-radius: 16px;
+  background: #10151d;
+  color: var(--text, #f4f7fb);
+}
+
+.admin-shell section {
+  border: 1px solid var(--stroke, rgba(255, 255, 255, 0.12));
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+  margin: 1rem 0;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.admin-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.75rem 0 1.25rem;
+  font-size: 0.88rem;
+}
+
+.admin-nav a {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.32rem 0.65rem;
+  border-radius: 999px;
+  border: 1px solid var(--stroke, rgba(255, 255, 255, 0.14));
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--cyan, #67e8f9);
+  text-decoration: none;
+}
+
+.admin-nav a:hover {
+  border-color: rgba(103, 232, 249, 0.5);
+  background: rgba(103, 232, 249, 0.08);
+}
+
+.lang-bar,
+#lang-slot.lang-switcher {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  margin-bottom: 0.9rem;
+  font-size: 0.88rem;
+  color: var(--muted, #9aa6b5);
+}
+
+.public-map-toolbar #lang-slot.lang-switcher,
+.public-map-toolbar .lang-bar {
+  margin-bottom: 0;
+}
+
+#lang-slot select,
+.lang-bar select,
+.lang-switcher select {
+  width: auto;
+  max-width: 100%;
+  margin: 0;
+  padding: 0.32rem 0.55rem;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: #0b0f16;
+  color: var(--text, #f4f7fb);
+  font: inherit;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin: 0.65rem 0;
+}
+
+.field label,
+.auth-card form label,
+.admin-shell form label {
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--muted, #9aa6b5);
+}
+
+.field-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.92rem;
+  color: var(--text, #f4f7fb);
+}
+
+.auth-card input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),
+.auth-card select,
+.auth-card textarea,
+.admin-shell input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),
+.admin-shell select,
+.admin-shell textarea,
+.fv-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.6rem 0.75rem;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: #0b0f16;
+  color: var(--text, #f4f7fb);
+  font: inherit;
+}
+
+.auth-card input::placeholder,
+.admin-shell input::placeholder,
+.fv-input::placeholder {
+  color: #6e7b8b;
+}
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.65rem 1.05rem;
+  border: 0;
+  border-radius: 10px;
+  background: #ecebff;
+  color: #15132a;
+  font: 650 0.95rem Outfit, system-ui, sans-serif;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #ffffff;
+  color: #15132a;
+}
+
+.btn-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-secondary,
+.admin-shell button:not(.btn-primary),
+.auth-card button:not(.btn-primary):not(.primary-btn) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.55rem 0.9rem;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text, #f4f7fb);
+  font: 500 0.92rem Outfit, system-ui, sans-serif;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.btn-secondary:hover:not(:disabled),
+.admin-shell button:not(.btn-primary):hover:not(:disabled),
+.auth-card button:not(.btn-primary):not(.primary-btn):hover:not(:disabled) {
+  border-color: rgba(103, 232, 249, 0.55);
+  background: rgba(103, 232, 249, 0.1);
+}
+
+.btn-secondary:disabled,
+.admin-shell button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.auth-card button[type="submit"],
+.auth-card .btn-block {
+  width: 100%;
+  margin-top: 0.5rem;
+}
+
+.admin-shell .admin-form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  align-items: flex-end;
+  margin-bottom: 1rem;
+}
+
+.admin-shell .admin-form-row .field {
+  flex: 1 1 12rem;
+  margin: 0;
+}
+
+.admin-shell .admin-form-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 24rem;
+  margin-bottom: 1rem;
+}
+
+.admin-shell .admin-form-stack .field {
+  margin: 0;
+}
+
+.admin-shell .kiosk-coords {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  align-items: flex-end;
+  margin: 0.75rem 0;
+}
+
+.admin-shell .kiosk-coords .field {
+  flex: 0 1 7.5rem;
+  margin: 0;
+}
+
+.admin-shell ul {
+  padding-left: 1.2rem;
+}
+
+.admin-shell li {
+  margin: 0.45rem 0;
+}
+
+.status-msg {
+  min-height: 1.25em;
+  font-size: 0.92rem;
+  color: var(--muted, #9aa6b5);
+}
+
+.error-msg {
+  min-height: 1.25em;
+  font-size: 0.92rem;
+  color: #fca5a5;
+}
+
+.hp {
+  position: absolute;
+  left: -9999px;
+  opacity: 0;
+  height: 0;
+  width: 0;
+  overflow: hidden;
+}

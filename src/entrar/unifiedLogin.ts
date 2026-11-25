@@ -112,6 +112,7 @@ loginForm?.addEventListener("submit", (ev) => {
       body: JSON.stringify({ email, locale: getLocale() }),
     });
     if (formMsg) {
+      formMsg.setAttribute("role", res.ok ? "status" : "alert");
       formMsg.textContent = res.ok ? t("club.login.magicSent") : t("club.login.failed");
     }
   })();
@@ -138,7 +139,10 @@ void (async () => {
   const err = params.get("e") === "1";
   if (err) {
     const { apiErrorMessage } = await import("../i18n/index");
-    if (formMsg) formMsg.textContent = apiErrorMessage("unauthorized");
+    if (formMsg) {
+      formMsg.setAttribute("role", "alert");
+      formMsg.textContent = apiErrorMessage("unauthorized");
+    }
   }
   const meRes = await fetch("/api/account/me", { credentials: "same-origin" });
   if (meRes.ok) {

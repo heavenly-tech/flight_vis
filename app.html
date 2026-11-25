@@ -6,19 +6,23 @@
     <title data-i18n="app.title">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
+      html, body { height: auto; min-height: 100dvh; overflow: auto; }
       main { max-width: 42rem; margin: 2rem auto; padding: 0 1.25rem; }
-      .card { border: 1px solid var(--stroke, rgba(255,255,255,.12)); border-radius: 16px; padding: 1.25rem 1.5rem; background: var(--panel, #10151d); }
+      .card { border: 1px solid var(--stroke, rgba(255,255,255,.12)); border-radius: 16px; padding: 1.25rem 1.5rem; background: var(--panel, #10151d); min-width: 0; max-width: 100%; }
       .muted { opacity: .75; }
       ol { padding-left: 1.2rem; line-height: 1.6; }
       code { font-size: .92em; }
+      #sha { overflow-wrap: anywhere; }
+      #sha-val { overflow-wrap: anywhere; word-break: break-all; }
       .badge { display: inline-block; padding: .2rem .55rem; border-radius: 999px; background: rgba(103,232,249,.15); color: #67e8f9; font-size: .8rem; letter-spacing: .04em; }
+      .app-cta-row { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; align-items: center; }
       a.dl { display: inline-block; margin-top: 1rem; padding: .65rem 1.1rem; border-radius: 10px; background: #ecebff; color: #15132a; font-weight: 650; text-decoration: none; }
+      .app-cta-row a.dl { margin-top: 0; }
       a.dl[disabled] { opacity: .45; pointer-events: none; }
       #lang-slot { font-size: .9rem; margin-bottom: .75rem; }
       h1.app-title { margin-top: .5rem; }
       #release-card { margin-top: 1.25rem; }
       a.dl.secondary {
-        margin-left: .5rem;
         background: transparent;
         color: #ecebff;
         border: 1px solid rgba(236,235,255,.35);
@@ -35,17 +39,19 @@
   </head>
   <body>
     <main>
-      <div id="lang-slot"></div>
+      <div id="lang-slot" class="lang-bar"></div>
       <p class="badge" data-i18n="app.badge"></p>
       <h1 class="app-title" data-i18n="app.title"></h1>
       <p class="muted" data-i18n="app.subtitle"></p>
       <section class="card" id="release-card">
-        <p id="status" data-i18n="common.loading"></p>
+        <p id="status" role="status" aria-live="polite" data-i18n="common.loading"></p>
         <p id="release-note" class="muted" hidden></p>
         <p id="version" hidden></p>
         <p id="sha" hidden><strong>SHA-256</strong> <code id="sha-val"></code></p>
-        <a class="dl" id="download" hidden download="flightvis.apk" data-i18n="app.downloadApk"></a>
-        <a class="dl secondary" id="open-in-app" hidden data-i18n="app.openInApp"></a>
+        <div class="app-cta-row">
+          <a class="dl" id="download" hidden download="flightvis.apk" data-i18n="app.downloadApk"></a>
+          <a class="dl secondary" id="open-in-app" hidden data-i18n="app.openInApp"></a>
+        </div>
       </section>
       <section class="card card-spaced notice-warn" id="uninstall-notice" role="note">
         <h2 class="card-heading" data-i18n="app.uninstallNoticeTitle"></h2>

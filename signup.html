@@ -6,24 +6,27 @@
     <title data-i18n="account.signup.title">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
-      main { max-width: 24rem; margin: 3rem auto; padding: 1rem; }
-      input:not([type="checkbox"]), button, select { width: 100%; padding: .6rem; margin: .35rem 0; font: inherit; box-sizing: border-box; }
       .club-toggle { display: flex; align-items: center; gap: .5rem; margin: .65rem 0 .35rem; cursor: pointer; }
       .club-toggle input[type="checkbox"] { width: auto; margin: 0; }
       #club-select-wrap { margin: .35rem 0 .5rem; }
       #club-select-wrap[hidden] { display: none; }
       #club-pending-hint { margin: .25rem 0 0; font-size: .88rem; }
-      #lang-slot { margin-bottom: .75rem; font-size: .9rem; }
     </style>
   </head>
-  <body>
-    <main data-page="account-signup">
-      <div id="lang-slot"></div>
+  <body class="fv-auth-page">
+    <main class="auth-card" data-page="account-signup">
+      <div id="lang-slot" class="lang-bar"></div>
       <h1 data-i18n="account.signup.title">Crea tu cuenta</h1>
-      <p class="muted" data-i18n="account.signup.lead">Una cuenta personal; después únete a clubs.</p>
+      <p class="muted" data-i18n="account.signup.lead">Una cuenta personal; después únete a clubes.</p>
       <form id="form" method="post" action="/api/account/signup">
-        <input name="email" type="email" required data-i18n-placeholder="account.signup.email" placeholder="Correo" />
-        <input name="password" type="password" data-i18n-placeholder="account.signup.password" placeholder="Contraseña (opcional)" minlength="8" />
+        <div class="field">
+          <label for="signup-email" data-i18n="account.signup.email">Correo</label>
+          <input id="signup-email" name="email" type="email" required autocomplete="email" data-i18n-placeholder="account.signup.email" />
+        </div>
+        <div class="field">
+          <label for="signup-password" data-i18n="account.signup.password">Contraseña (opcional)</label>
+          <input id="signup-password" name="password" type="password" autocomplete="new-password" data-i18n-placeholder="account.signup.password" minlength="8" />
+        </div>
         <label class="club-toggle" for="is-club-member">
           <input id="is-club-member" type="checkbox" />
           <span data-i18n="account.signup.clubMemberToggle">Soy socio de un club</span>
@@ -37,10 +40,10 @@
             Tu solicitud queda pendiente hasta que el administrador del club la apruebe.
           </p>
         </div>
-        <button type="submit" data-i18n="account.signup.submit">Crear cuenta</button>
+        <button type="submit" class="btn-primary" data-i18n="account.signup.submit">Crear cuenta</button>
       </form>
-      <p id="msg" class="muted" role="status" aria-live="polite"></p>
-      <p class="muted"><a href="/login?mode=pilot" data-i18n="account.signup.haveAccount">¿Ya tienes cuenta? Inicia sesión</a></p>
+      <p id="msg" class="status-msg" role="status" aria-live="polite"></p>
+      <p class="muted"><a href="/login?mode=pilot" data-i18n="account.signup.haveAccount"></a></p>
     </main>
     <script type="module" src="/src/club/accountSignupPage.ts"></script>
   </body>

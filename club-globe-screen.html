@@ -99,24 +99,24 @@
   </head>
   <body>
     <div class="kiosk-viewport" id="viewport">
-      <p id="status-bar" data-i18n="kiosk.starting"></p>
+      <p id="status-bar" role="status" aria-live="polite" data-i18n="kiosk.starting"></p>
       <div id="toolbar-local">
-        <button type="button" id="btn-local-qr" data-i18n="kiosk.qrHide" hidden></button>
+        <button type="button" id="btn-local-qr" class="btn-secondary" data-i18n="kiosk.qrHide" hidden></button>
       </div>
-      <section id="map-layer" aria-label="Live club map">
+      <section id="map-layer" aria-label="Mapa del club en vivo" data-i18n-aria="kiosk.mapAria">
         <h2 data-i18n="kiosk.liveAircraft"></h2>
         <ul id="map"></ul>
       </section>
       <div id="qr-wrap" hidden>
-        <img id="qr" alt="Check-in QR" width="256" height="256" />
+        <img id="qr" alt="Código QR de registro" data-i18n-alt="kiosk.qrAlt" width="256" height="256" />
       </div>
       <div id="activate" hidden>
-        <div id="activate-inner">
-          <p class="muted" data-i18n="kiosk.pasteToken"></p>
-          <div class="row" style="display:flex;gap:.5rem;flex-wrap:wrap;margin:.75rem 0">
-            <input id="activate-token" type="password" autocomplete="off" style="flex:1;min-width:12rem;font:inherit" />
-            <button type="button" id="btn-activate" data-i18n="kiosk.activate"></button>
+        <div id="activate-inner" class="auth-card">
+          <div class="field">
+            <label for="activate-token" data-i18n="kiosk.pasteToken"></label>
+            <input id="activate-token" type="password" autocomplete="off" />
           </div>
+          <button type="button" id="btn-activate" class="btn-primary btn-block" data-i18n="kiosk.activate"></button>
         </div>
       </div>
     </div>

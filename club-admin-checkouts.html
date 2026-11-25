@@ -6,39 +6,35 @@
     <title data-i18n="nav.checkouts">Habilitaciones</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
-      main { max-width: 46rem; margin: 1rem auto; padding: 0 1rem 2rem; }
-      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
-      #form input, #form button, #form select { font: inherit; padding: .45rem .6rem; display: block; width: 100%; max-width: 22rem; }
       #list { list-style: none; padding: 0; margin: 1.25rem 0 0; }
       .checkout-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; padding: .55rem 0; border-bottom: 1px solid var(--stroke, rgba(255,255,255,.12)); }
-      .btn-revoke { font: inherit; padding: .3rem .65rem; }
     </style>
   </head>
-  <body class="admin-page">
-    <main data-page="admin-checkouts">
-      <div id="lang-slot"></div>
+  <body class="fv-page admin-page">
+    <main class="admin-shell" data-page="admin-checkouts">
+      <div id="lang-slot" class="lang-bar"></div>
       <h1 data-i18n="nav.checkouts">Habilitaciones</h1>
       <div id="admin-nav"></div>
-      <form id="form">
-        <label class="admin-field" for="pilot">
-          <span data-i18n="admin.checkouts.pilotLabel">Piloto</span>
+      <form id="form" class="admin-form-stack">
+        <div class="field">
+          <label for="pilot" data-i18n="admin.checkouts.pilotLabel">Piloto</label>
           <select id="pilot" name="pilot_id" required></select>
-        </label>
-        <label class="admin-field" for="type">
-          <span data-i18n="admin.checkouts.typeLabel">Tipo de aeronave</span>
+        </div>
+        <div class="field">
+          <label for="type" data-i18n="admin.checkouts.typeLabel">Tipo de aeronave</label>
           <select id="type" name="type" required></select>
-        </label>
-        <label class="admin-field" for="tail">
-          <span data-i18n="admin.checkouts.tailLabel">Matrícula específica (opcional)</span>
+        </div>
+        <div class="field">
+          <label for="tail" data-i18n="admin.checkouts.tailLabel">Matrícula específica (opcional)</label>
           <select id="tail" name="tail"></select>
-        </label>
-        <label class="admin-field" for="expires_at">
-          <span data-i18n="admin.checkouts.expiresLabel">Vence (opcional)</span>
+        </div>
+        <div class="field">
+          <label for="expires_at" data-i18n="admin.checkouts.expiresLabel">Vence (opcional)</label>
           <input id="expires_at" name="expires_at" type="date" />
-        </label>
-        <button type="submit" data-i18n="admin.checkouts.add">Agregar habilitación</button>
+        </div>
+        <button type="submit" class="btn-primary" data-i18n="admin.checkouts.add">Agregar habilitación</button>
       </form>
-      <p id="checkouts-status" aria-live="polite" hidden></p>
+      <p id="checkouts-status" role="status" aria-live="polite" hidden></p>
       <ul id="list"></ul>
     </main>
     <dialog id="revoke-dialog" aria-labelledby="revoke-dialog-title">

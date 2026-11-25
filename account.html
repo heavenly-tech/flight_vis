@@ -6,57 +6,36 @@
     <title data-i18n="account.password.title">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
-      body {
-        min-height: 100vh;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        margin: 0;
-        padding: 1rem;
-      }
-      main {
-        width: min(400px, 100%);
-        padding: 1.25rem;
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 16px;
-        background: #10151d;
-      }
-      input,
-      button {
-        width: 100%;
-        padding: 0.65rem;
-        margin: 0.35rem 0;
-        font: inherit;
-        box-sizing: border-box;
-      }
       #current-wrap[hidden] {
         display: none !important;
       }
     </style>
   </head>
-  <body>
-    <main>
-      <div id="lang-slot"></div>
+  <body class="fv-auth-page">
+    <main class="auth-card">
+      <div id="lang-slot" class="lang-bar"></div>
       <h1 data-i18n="account.password.title">Cuenta</h1>
       <p id="email-line" class="muted"></p>
       <form id="password-form">
-        <div id="current-wrap">
+        <div id="current-wrap" class="field">
           <label id="current-label" for="current" data-i18n="account.password.current"
             >Contraseña actual</label
           >
           <input id="current" name="current_password" type="password" autocomplete="current-password" />
         </div>
-        <label for="new-password" data-i18n="account.password.new">Contraseña nueva</label>
-        <input
-          id="new-password"
-          name="password"
-          type="password"
-          autocomplete="new-password"
-          required
-          minlength="8"
-        />
-        <button type="submit" data-i18n="account.password.submit">Guardar contraseña</button>
-        <p id="msg" class="muted"></p>
+        <div class="field">
+          <label for="new-password" data-i18n="account.password.new">Nueva contraseña</label>
+          <input
+            id="new-password"
+            name="password"
+            type="password"
+            autocomplete="new-password"
+            required
+            minlength="8"
+          />
+        </div>
+        <button type="submit" class="btn-primary" data-i18n="account.password.submit">Guardar contraseña</button>
+        <p id="msg" class="status-msg" role="status" aria-live="polite"></p>
       </form>
       <p class="muted"><a href="/account-clubs.html" data-i18n="club.login.misClubs"></a></p>
     </main>

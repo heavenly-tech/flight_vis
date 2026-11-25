@@ -5,23 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title data-i18n="nav.tails">Matrículas</title>
     <link rel="stylesheet" href="/src/style.css" />
-    <style>
-      main { max-width: 44rem; margin: 1rem auto; padding: 0 1rem 2rem; }
-      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
-      #form { display: flex; gap: .65rem; flex-wrap: wrap; align-items: flex-end; margin-bottom: 1rem; }
-      #form input, #form button, #form select { font: inherit; padding: .45rem .6rem; }
-      #list li { margin: .45rem 0; display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
-      #list button { font: inherit; padding: .3rem .6rem; }
-    </style>
   </head>
-  <body class="admin-page">
-    <main data-page="admin-tails">
-      <div id="lang-slot"></div>
+  <body class="fv-page admin-page">
+    <main class="admin-shell" data-page="admin-tails">
+      <div id="lang-slot" class="lang-bar"></div>
       <h1 data-i18n="nav.tails">Matrículas</h1>
       <div id="admin-nav"></div>
-      <form id="form">
-        <label class="admin-field" for="tail-input">
-          <span data-i18n="admin.tails.tailLabel">Matrícula</span>
+      <form id="form" class="admin-form-row">
+        <div class="field">
+          <label for="tail-input" data-i18n="admin.tails.tailLabel">Matrícula</label>
           <input
             id="tail-input"
             name="tail"
@@ -29,9 +21,9 @@
             placeholder="ej. CC-ABC"
             required
           />
-        </label>
-        <label class="admin-field" for="type-input">
-          <span data-i18n="admin.tails.typeLabel">Tipo de aeronave</span>
+        </div>
+        <div class="field">
+          <label for="type-input" data-i18n="admin.tails.typeLabel">Tipo de aeronave</label>
           <input
             id="type-input"
             name="type"
@@ -39,10 +31,10 @@
             placeholder="ej. C152"
             required
           />
-        </label>
-        <button type="submit" data-i18n="admin.tails.save">Guardar matrícula</button>
+        </div>
+        <button type="submit" class="btn-primary" data-i18n="admin.tails.save">Guardar matrícula</button>
       </form>
-      <p id="tails-status" aria-live="polite" hidden></p>
+      <p id="tails-status" role="status" aria-live="polite" hidden></p>
       <ul id="list"></ul>
     </main>
     <script type="module" src="/src/club/adminTails.ts"></script>

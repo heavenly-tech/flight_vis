@@ -1,13 +1,11 @@
 <!doctype html>
-<html lang="es">
+<html lang="es-CL">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title data-i18n="admin.kioskQrTitle">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
-      main { max-width: 52rem; margin: 1rem auto; padding: 0 1rem 2rem; }
-      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
       #preview-frame {
         position: relative;
         width: 100%;
@@ -15,11 +13,18 @@
         aspect-ratio: 16 / 9;
         margin: 1rem auto;
         background: #121922;
-        border: 1px solid rgba(255,255,255,.12);
-        border-radius: 8px;
+        border: 1px solid var(--stroke, rgba(255, 255, 255, 0.12));
+        border-radius: 12px;
         overflow: hidden;
       }
-      #preview-map { position: absolute; inset: 0; padding: 1rem; opacity: 0.5; pointer-events: none; font-size: 0.9rem; }
+      #preview-map {
+        position: absolute;
+        inset: 0;
+        padding: 1rem;
+        opacity: 0.5;
+        pointer-events: none;
+        font-size: 0.9rem;
+      }
       #preview-qr {
         position: absolute;
         box-sizing: border-box;
@@ -27,11 +32,16 @@
         background: #fff;
         padding: 10px;
         border-radius: 10px;
-        box-shadow: 0 4px 16px rgba(0,0,0,.35);
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
         cursor: move;
         touch-action: none;
       }
-      #preview-qr img { width: 100%; height: 100%; display: block; filter: contrast(1.25); }
+      #preview-qr img {
+        width: 100%;
+        height: 100%;
+        display: block;
+        filter: contrast(1.25);
+      }
       #resize-handle {
         position: absolute;
         right: -6px;
@@ -42,38 +52,62 @@
         border-radius: 3px;
         cursor: nwse-resize;
       }
-      .toolbar { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; margin: 1rem 0; }
-      select, button { font: inherit; padding: .4rem .65rem; }
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        align-items: center;
+        margin: 1rem 0;
+      }
+      .toolbar select {
+        width: auto;
+      }
     </style>
   </head>
-  <body>
-    <main>
-      <div id="lang-slot"></div>
-      <h1>QR en pantalla kiosk</h1>
-      <p class="muted">Arrastre para mover; esquina inferior para redimensionar (cuadrado). Vista previa según relación de aspecto.</p>
+  <body class="fv-page">
+    <main class="admin-shell">
+      <div id="lang-slot" class="lang-bar"></div>
+      <h1 data-i18n="admin.kioskQrTitle">QR en pantalla del club</h1>
+      <p class="muted" data-i18n="admin.kioskQrHint">
+        Arrastra para mover; esquina inferior para redimensionar (cuadrado). Vista previa según relación de aspecto.
+      </p>
       <div id="admin-nav"></div>
       <div class="toolbar">
-        <label>
+        <label for="checkin-qr-visible" class="field-inline">
           <input type="checkbox" id="checkin-qr-visible" checked />
           <span data-i18n="admin.kioskCheckinQrVisible"></span>
         </label>
-        <button type="button" id="btn-save-visible" data-i18n="admin.kioskCheckinQrVisibleSave"></button>
       </div>
       <div class="toolbar">
-        <label>Relación de aspecto
+        <label for="aspect" class="field-inline">
+          <span data-i18n="admin.aspectRatio">Relación de aspecto</span>
           <select id="aspect">
             <option value="1.7777777778" selected>16:9</option>
             <option value="1.3333333333">4:3</option>
             <option value="1">1:1</option>
           </select>
         </label>
-        <button type="button" id="btn-save">Guardar</button>
-        <button type="button" id="btn-reset">Restablecer</button>
-        <span id="save-status" class="muted"></span>
+        <button type="button" id="btn-save" class="btn-primary" data-i18n="common.save">Guardar</button>
+        <button type="button" id="btn-reset" class="btn-secondary" data-i18n="admin.reset">Restablecer</button>
+        <span id="save-status" class="status-msg" role="status" aria-live="polite"></span>
+      </div>
+      <div class="kiosk-coords">
+        <div class="field">
+          <label for="qr-x" data-i18n="admin.kioskQrX">Posición X (%)</label>
+          <input id="qr-x" type="number" min="0" max="100" step="1" />
+        </div>
+        <div class="field">
+          <label for="qr-y" data-i18n="admin.kioskQrY">Posición Y (%)</label>
+          <input id="qr-y" type="number" min="0" max="100" step="1" />
+        </div>
+        <div class="field">
+          <label for="qr-size" data-i18n="admin.kioskQrSize">Tamaño (%)</label>
+          <input id="qr-size" type="number" min="18" max="50" step="1" />
+        </div>
       </div>
       <div id="preview-frame">
-        <div id="preview-map">Vista previa · mapa en vivo</div>
-        <div id="preview-qr" role="img" aria-label="QR preview">
+        <div id="preview-map" data-i18n="admin.kioskQrPreviewMap">Vista previa · mapa en vivo</div>
+        <div id="preview-qr" role="img" aria-label="Vista previa del código QR" data-i18n-aria="admin.kioskQrPreviewAria">
           <img src="/api/club/screen/qr.svg" alt="" />
           <span id="resize-handle" aria-hidden="true"></span>
         </div>

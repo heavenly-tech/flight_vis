@@ -5,32 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title data-i18n="nav.types">Tipos</title>
     <link rel="stylesheet" href="/src/style.css" />
-    <style>
-      main { max-width: 40rem; margin: 1rem auto; padding: 0 1rem 2rem; }
-      .admin-nav { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1.25rem; font-size: .9rem; }
-      #form { display: flex; gap: .65rem; flex-wrap: wrap; align-items: flex-end; margin-bottom: 1rem; }
-      #form input, #form button { font: inherit; padding: .45rem .6rem; }
-    </style>
   </head>
-  <body class="admin-page">
-    <main data-page="admin-types">
-      <div id="lang-slot"></div>
+  <body class="fv-page admin-page">
+    <main class="admin-shell" data-page="admin-types">
+      <div id="lang-slot" class="lang-bar"></div>
       <h1 data-i18n="admin.types.title">Tipos de aeronave</h1>
       <p id="who" class="muted"></p>
       <div id="admin-nav"></div>
-      <form id="form" class="row">
-        <label class="admin-field" for="code">
-          <span data-i18n="admin.types.codeLabel">Código del tipo</span>
+      <form id="form" class="admin-form-row">
+        <div class="field">
+          <label for="code" data-i18n="admin.types.codeLabel">Código del tipo</label>
           <input
             id="code"
             data-i18n-placeholder="admin.types.codePlaceholder"
             placeholder="ej. C152"
             required
           />
-        </label>
-        <button type="submit" data-i18n="admin.types.save">Guardar tipo</button>
+        </div>
+        <button type="submit" class="btn-primary" data-i18n="admin.types.save">Guardar tipo</button>
       </form>
-      <p id="types-status" aria-live="polite" hidden></p>
+      <p id="types-status" role="status" aria-live="polite" hidden></p>
       <ul id="list"></ul>
     </main>
     <script type="module" src="/src/club/adminTypes.ts"></script>

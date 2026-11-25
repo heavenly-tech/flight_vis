@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title data-i18n="kiosk.screenTitle">Pantalla de check-in</title>
+    <title data-i18n="kiosk.screenTitle">Pantalla de registro del club</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
       html, body { margin: 0; height: 100%; background: #0b0f14; color: #e8ecf1; }
@@ -96,21 +96,21 @@
           <p id="status-bar" role="status" aria-live="polite" data-i18n="kiosk.starting">Iniciando pantalla…</p>
         </div>
         <div id="toolbar-local">
-          <button type="button" id="btn-local-qr" data-i18n="kiosk.qrHide" hidden>Ocultar QR</button>
+          <button type="button" id="btn-local-qr" class="btn-secondary" data-i18n="kiosk.qrHide" hidden>Ocultar QR</button>
         </div>
       </header>
       <section id="map-layer" data-i18n-aria="kiosk.liveMapAria" aria-label="Mapa en vivo del club">
         <ul id="map"></ul>
       </section>
       <div id="qr-wrap" hidden>
-        <img id="qr" data-i18n-alt="kiosk.qrAlt" alt="QR de check-in" width="256" height="256" />
+        <img id="qr" data-i18n-alt="kiosk.qrAlt" alt="Código QR de check-in" width="256" height="256" />
       </div>
       <div id="activate" hidden>
-        <form id="activate-inner">
+        <form id="activate-inner" class="auth-card">
           <label for="activate-token" class="activate-label" data-i18n="kiosk.pasteToken">Pega el token de activación de pantalla desde el mapa admin.</label>
           <div class="activate-row">
             <input id="activate-token" name="token" type="password" autocomplete="off" required />
-            <button type="submit" id="btn-activate" data-i18n="kiosk.activate">Activar pantalla</button>
+            <button type="submit" id="btn-activate" class="btn-primary" data-i18n="kiosk.activate">Activar pantalla</button>
           </div>
         </form>
       </div>

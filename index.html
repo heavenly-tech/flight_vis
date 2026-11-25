@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="es-CL">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
@@ -21,7 +21,7 @@
     <div id="ui">
       <header class="topbar">
         <div class="brand-block">
-          <a class="brand-lockup" href="/" aria-label="flight_vis home">
+          <a class="brand-lockup" href="/" aria-label="Inicio de flight_vis" data-i18n-aria="globe.brandHomeAria">
             <img
               class="brand-logo"
               src="/assets/brand/flightvis-logo.svg"
@@ -89,21 +89,21 @@
 
       <aside id="hud" class="hud" hidden>
         <div id="hud-grid" class="hud-grid" role="group" data-i18n-aria="globe.flightStats">
-          <div class="hud-stat hud-primary"><span>ALT</span><strong id="stat-alt">—</strong></div>
-          <div class="hud-stat hud-primary"><span>SPD</span><strong id="stat-spd">—</strong></div>
-          <div class="hud-stat hud-primary"><span>VARIO</span><strong id="stat-vario">—</strong></div>
-          <div class="hud-stat hud-primary"><span>TIME</span><strong id="stat-time">—</strong></div>
-          <div class="hud-stat hud-secondary"><span>DIST</span><strong id="stat-dist">—</strong></div>
-          <div class="hud-stat hud-secondary"><span>UTC</span><strong id="stat-utc">—</strong></div>
-          <div class="hud-stat hud-secondary" id="hud-acc-row" hidden><span>ACC</span><strong id="stat-acc">—</strong></div>
+          <div class="hud-stat hud-primary"><span data-i18n="globe.hudAlt">ALT</span><strong id="stat-alt">—</strong></div>
+          <div class="hud-stat hud-primary"><span data-i18n="globe.hudSpeed">VEL</span><strong id="stat-spd">—</strong></div>
+          <div class="hud-stat hud-primary"><span data-i18n="globe.hudVario">VARIO</span><strong id="stat-vario">—</strong></div>
+          <div class="hud-stat hud-primary"><span data-i18n="globe.hudTime">TIEMPO</span><strong id="stat-time">—</strong></div>
+          <div class="hud-stat hud-secondary"><span data-i18n="globe.hudDist">DIST</span><strong id="stat-dist">—</strong></div>
+          <div class="hud-stat hud-secondary"><span data-i18n="globe.hudUtc">UTC</span><strong id="stat-utc">—</strong></div>
+          <div class="hud-stat hud-secondary" id="hud-acc-row" hidden><span data-i18n="globe.hudAcc">PREC</span><strong id="stat-acc">—</strong></div>
         </div>
         <button type="button" id="btn-hud" class="chip disclosure hud-toggle" hidden aria-expanded="false">
-          <span data-i18n="globe.stats">Stats</span> <span class="caret" aria-hidden="true">^</span>
+          <span data-i18n="globe.stats">Resumen</span> <span class="caret" aria-hidden="true">^</span>
         </button>
       </aside>
 
-      <p id="status" class="status" hidden></p>
-      <p id="live-status" class="status live-status" hidden></p>
+      <p id="status" class="status" role="status" aria-live="polite" hidden></p>
+      <p id="live-status" class="status live-status" role="status" aria-live="polite" hidden></p>
 
       <footer class="transport">
         <div class="transport-row transport-primary transport-compact">
@@ -133,9 +133,9 @@
           <div id="tag-list" class="tag-list" hidden></div>
         </div>
         <div id="more-panel" class="more-panel" hidden>
-          <div class="more-live-row transport-extra" role="group" aria-label="Live and language">
-            <button type="button" id="btn-live-sessions" class="chip" hidden data-i18n-aria="viewer.liveSessions">Live</button>
-            <button type="button" id="btn-lang" class="chip" data-i18n-title="common.language" aria-label="Toggle language">EN</button>
+          <div class="more-live-row transport-extra" role="group" aria-label="En vivo e idioma" data-i18n-aria="globe.liveAndLangAria">
+            <button type="button" id="btn-live-sessions" class="chip" hidden data-i18n-aria="viewer.liveSessions">En vivo</button>
+            <button type="button" id="btn-lang" class="chip" data-i18n-title="common.language" aria-label="Cambiar idioma" data-i18n-aria="globe.toggleLanguageAria">ES</button>
           </div>
           <div class="modes color-modes mobile-color" role="group" data-i18n-aria="globe.trackColor">
             <span class="group-label" data-i18n="globe.trackColor">Color</span>
@@ -160,7 +160,7 @@
             <button type="button" id="btn-end-here" class="chip" data-i18n="globe.endHere">End here</button>
           </div>
           <div id="timeline-scrub" class="timeline-scrub" data-live-timeline-reserved>
-            <canvas id="profile" height="100" aria-label="Altitude profile and trim"></canvas>
+            <canvas id="profile" height="100" aria-label="Perfil de altitud y recorte" data-i18n-aria="globe.altitudeProfileAria"></canvas>
             <div id="timeline-live-edge" class="timeline-live-edge" aria-hidden="true">
               <span class="timeline-live-mark"></span>
             </div>
@@ -180,7 +180,7 @@
           <span data-i18n="globe.slug">Slug</span>
           <input id="rename-slug" name="slug" type="text" maxlength="64" spellcheck="false" required />
         </label>
-        <p id="rename-warn" class="dialog-warn" hidden></p>
+        <p id="rename-warn" class="dialog-warn" role="alert" hidden></p>
         <div class="dialog-actions">
           <button type="submit" class="play" data-i18n="common.save">Save</button>
           <button type="button" id="rename-overwrite" class="chip danger" hidden data-i18n="common.save">Overwrite</button>
@@ -231,11 +231,12 @@
 
     <dialog id="tag-dialog">
       <form method="dialog" id="tag-form">
-        <p data-i18n="globe.tagDialogTitle">Mark an event at the playhead</p>
-        <input id="tag-label" name="label" type="text" maxlength="80" data-i18n-placeholder="globe.tagPlaceholder" placeholder="Takeoff, ridge, landing…" required />
+        <p data-i18n="globe.tagDialogTitle">Marca un evento en el cabezal</p>
+        <label for="tag-label" class="visually-hidden" data-i18n="globe.tag">Etiqueta</label>
+        <input id="tag-label" name="label" type="text" maxlength="80" data-i18n-placeholder="globe.tagPlaceholder" placeholder="Despegue, cerro, aterrizaje…" required />
         <div class="dialog-actions">
-          <button type="submit" value="ok" class="play" data-i18n="globe.addTag">Add tag</button>
-          <button type="submit" value="cancel" formnovalidate class="chip" data-i18n="common.cancel">Cancel</button>
+          <button type="submit" value="ok" class="play" data-i18n="globe.addTag">Añadir etiqueta</button>
+          <button type="submit" value="cancel" formnovalidate class="chip" data-i18n="common.cancel">Cancelar</button>
         </div>
       </form>
     </dialog>
@@ -243,12 +244,12 @@
     <!-- Admin QR Check-in Overlay -->
     <div id="admin-qr-overlay" class="admin-qr-overlay" hidden>
       <div class="admin-qr-header">
-        <h3 class="admin-qr-title" data-i18n="globe.adminQrTitle">Check-in QR</h3>
-        <button type="button" id="admin-qr-minimize" class="chip admin-qr-minimize" data-i18n="globe.adminQrMinimize">Minimize</button>
+        <h3 class="admin-qr-title" data-i18n="globe.adminQrTitle">QR de registro</h3>
+        <button type="button" id="admin-qr-minimize" class="chip admin-qr-minimize" data-i18n="globe.adminQrMinimize">Minimizar</button>
       </div>
       <div class="admin-qr-body">
-        <img id="admin-qr-img" class="admin-qr-img" alt="" />
-        <p id="admin-qr-status" class="admin-qr-status" data-i18n="globe.adminQrStatus">Show this QR to the pilot</p>
+        <img id="admin-qr-img" class="admin-qr-img" alt="Código QR de registro" data-i18n-alt="kiosk.qrAlt" />
+        <p id="admin-qr-status" class="admin-qr-status" role="status" aria-live="polite" data-i18n="globe.adminQrStatus">Muestra este QR al piloto</p>
       </div>
       <div id="admin-qr-resize" class="admin-qr-resize"></div>
     </div>

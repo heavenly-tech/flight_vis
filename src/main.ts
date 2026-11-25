@@ -1,5 +1,6 @@
 import "cesium/Build/Cesium/Widgets/widgets.css";
 import "./style.css";
+import "./mobileTopbar.css";
 import { getAuth, getFlight, entrarUrl, loginUrl, logout, saveFlight, shareUrl, type AuthStatus } from "./api";
 import { isTrackFile, mountLibrary, type LibraryHandle } from "./library";
 import { formatClock, formatDuration } from "./track/geo";
@@ -23,6 +24,7 @@ import {
   setLocale,
   t,
 } from "./i18n/index";
+import { friendlyErrorMessage } from "./i18n/errorMessages";
 
 const SAMPLE_URL = `${import.meta.env.BASE_URL}samples/vuelo5.gpx`;
 const HANDLE = 10;
@@ -81,6 +83,8 @@ function refreshGlobeChrome(): void {
   shareButtonLabel = t("globe.saveCopyLink");
   syncAuthUi();
   syncPlayLabel();
+  refreshTrimStats();
+  renderHud();
   document.querySelector<HTMLButtonElement>("#btn-lang")!.textContent =
     getLocale().toUpperCase();
 }
@@ -289,7 +293,7 @@ function renderHud(): void {
   const p = sample.point;
   const altEl = document.querySelector("#stat-alt")!;
   if (p.positionAlt != null && !isGeoidReady() && Math.abs(p.alt - p.positionAlt) < 0.5) {
-    altEl.textContent = `${Math.round(p.positionAlt)} m ellip.`;
+    altEl.textContent = `${Math.round(p.positionAlt)} m ${t("globe.altEllip")}`;
   } else {
     altEl.textContent = `${Math.round(p.alt)} m`;
   }
@@ -329,7 +333,7 @@ function maybeDrawProfile(force: boolean): void {
 function refreshTrimStats(): void {
   if (!flight || !trim) return;
   const stats = rangeStats(flight, trim);
-  summaryEl.textContent = `${(stats.distanceM / 1000).toFixed(1)} km · ${formatDuration(stats.durationMs)} · ${Math.round(stats.maxAlt)} m max`;
+  summaryEl.textContent = `${(stats.distanceM / 1000).toFixed(1)} km · ${formatDuration(stats.durationMs)} · ${Math.round(stats.maxAlt)} m ${t("globe.summaryMax")}`;
 }
 
 function isMobileLayout(): boolean {
@@ -763,10 +767,11 @@ async function boot(): Promise<void> {
       library?.setCurrentSlug(saved.slug);
       await library?.refresh();
       await navigator.clipboard.writeText(url);
-      setStatus(`Copied ${url}`);
+      setStatus(t("globe.copiedLink", { url }));
       window.setTimeout(() => setStatus(null), 2400);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Could not save");
+      console.error("[globe] saveFlight failed:", error);
+      setStatus(friendlyErrorMessage(error, "globe.couldNotSave"));
     } finally {
       shareButton.disabled = false;
     }
@@ -801,7 +806,8 @@ async function boot(): Promise<void> {
       await previewLocal(file);
       setFileOpen(false);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Could not parse track");
+      console.error("[globe] previewLocal failed:", error);
+      setStatus(friendlyErrorMessage(error, "globe.couldNotParseTrack"));
     }
   });
 
@@ -826,7 +832,8 @@ async function boot(): Promise<void> {
     try {
       await previewLocal(files[0]);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Could not parse track");
+      console.error("[globe] drop previewLocal failed:", error);
+      setStatus(friendlyErrorMessage(error, "globe.couldNotParseTrack"));
     }
   });
 
@@ -1072,10 +1079,11 @@ async function boot(): Promise<void> {
     if (slug && (await loadFromSlug(slug))) return;
     if (await loadFromSlug("vuelo-5")) return;
     const res = await fetch(SAMPLE_URL);
-    if (!res.ok) throw new Error("Could not load Vuelo5");
+    if (!res.ok) throw new Error("Could not load sample flight");
     await loadText(await res.text(), "vuelo5.gpx", { slug: "vuelo-5" });
   } catch (error) {
-    setStatus(error instanceof Error ? error.message : t("globe.couldNotLoadFlight"));
+    console.error("[globe] initial flight load failed:", error);
+    setStatus(friendlyErrorMessage(error, "globe.couldNotLoadFlight"));
   }
 }
 
