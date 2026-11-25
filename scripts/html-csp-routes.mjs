@@ -1,6 +1,6 @@
 /**
  * Mirror of `server-rs/src/html_csp.rs` `HTML_CSP_ROUTE_TABLE`.
- * @typedef {"strict" | "globe"} HtmlCspKind
+ * @typedef {"strict" | "map" | "globe"} HtmlCspKind
  */
 
 /** @type {Readonly<Record<string, HtmlCspKind>>} */
@@ -8,6 +8,9 @@ export const HTML_CSP_ROUTE_TABLE = Object.freeze({
   "/index.html": "globe",
   "/__spa_index__": "globe",
   "/share-flight.html": "globe",
+  "/club-admin-map.html": "map",
+  "/public-map.html": "map",
+  "/club-screen.html": "map",
   "/login": "strict",
   "/login.html": "strict",
   "/login-legacy.html": "strict",
@@ -27,13 +30,10 @@ export const HTML_CSP_ROUTE_TABLE = Object.freeze({
   "/club-admin-tails.html": "strict",
   "/club-admin-pilots.html": "strict",
   "/club-admin-checkouts.html": "strict",
-  "/club-admin-map.html": "strict",
   "/club-admin-kiosk-layout.html": "strict",
   "/club-admin-requests.html": "strict",
   "/club-admin-checkin-qr.html": "strict",
   "/club-map.html": "strict",
-  "/public-map.html": "strict",
-  "/club-screen.html": "strict",
   "/e2e-live.html": "strict",
   "/club-checkin-landing.html": "strict",
   "/club-checkin-expired.html": "strict",

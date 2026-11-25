@@ -3087,3 +3087,40 @@ async fn club_globe_screen_routes_redirect_to_club_screen() {
         .unwrap();
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+#[serial]
+async fn club_screen_dynamic_routes_serve_map_csp() {
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let slug = fx.club.club_slug(&club_id).await.expect("default slug");
+    std::fs::create_dir_all(&fx.dist_dir).expect("dist dir");
+    std::fs::write(
+        fx.dist_dir.join("club-screen.html"),
+        "<!doctype html><html lang=\"es-CL\"><body>screen</body></html>",
+    )
+    .expect("write club-screen.html");
+
+    for uri in ["/club/screen".to_string(), format!("/c/{slug}/screen")] {
+        let res = fx
+            .router
+            .call(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "GET {uri}");
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .and_then(|v| v.to_str().ok()),
+            Some(crate::html_csp::HTML_MAP_CSP),
+            "GET {uri} must serve HTML_MAP_CSP"
+        );
+        assert_eq!(
+            res.headers()
+                .get(header::REFERRER_POLICY)
+                .and_then(|v| v.to_str().ok()),
+            Some(crate::html_csp::SENSITIVE_REFERRER_POLICY),
+            "GET {uri} must keep no-referrer"
+        );
+    }
+}

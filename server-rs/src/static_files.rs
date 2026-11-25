@@ -361,7 +361,7 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::html_csp::{HTML_GLOBE_CSP, HTML_STRICT_CSP};
+    use crate::html_csp::{HTML_GLOBE_CSP, HTML_MAP_CSP, HTML_STRICT_CSP};
     use axum::http::HeaderValue;
 
     fn temp_dist() -> PathBuf {
@@ -562,6 +562,26 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some(HTML_STRICT_CSP)
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn serve_tile_map_html_uses_map_csp() {
+        let dir = temp_dist();
+        for file in ["club-admin-map.html", "club-screen.html", "public-map.html"] {
+            std::fs::write(dir.join(file), "<!doctype html>").unwrap();
+            let res = serve(&dir, &format!("/{file}"), &HeaderMap::new())
+                .await
+                .expect(file);
+            assert_eq!(res.status(), StatusCode::OK, "{file}");
+            assert_eq!(
+                res.headers()
+                    .get(header::CONTENT_SECURITY_POLICY)
+                    .and_then(|v| v.to_str().ok()),
+                Some(HTML_MAP_CSP),
+                "{file} must use HTML_MAP_CSP"
+            );
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

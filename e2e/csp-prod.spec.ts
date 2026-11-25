@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import {
   expectedCspForPath,
   HTML_GLOBE_CSP,
+  HTML_MAP_CSP,
   HTML_STRICT_CSP,
   HTML_CSP_ROUTE_TABLE,
   policyKindForPath,
@@ -13,8 +14,17 @@ const CSP_VIOLATION =
 
 function assertStrictCsp(csp: string, path: string) {
   expect(csp, `${path} strict CSP`).toBe(HTML_STRICT_CSP);
+  expect(csp).toContain("img-src 'self';");
   expect(csp).not.toContain("wasm-unsafe-eval");
   expect(csp).not.toMatch(/https?:\/\//);
+  expect(csp).not.toContain("blob:");
+}
+
+function assertMapCsp(csp: string, path: string) {
+  expect(csp, `${path} map CSP`).toBe(HTML_MAP_CSP);
+  expect(csp).toContain("img-src 'self' https://services.arcgisonline.com");
+  expect(csp).not.toContain("wasm-unsafe-eval");
+  expect(csp).not.toContain("elevation3d.arcgis.com");
   expect(csp).not.toContain("blob:");
 }
 
@@ -81,11 +91,14 @@ function expectNoReferrer(headers: Record<string, string>, label: string) {
 test.describe.configure({ timeout: 120_000 });
 
 test.describe("production CSP (release server)", () => {
-  test("every HTML CSP route resolves to strict or globe policy", () => {
+  test("every HTML CSP route resolves to strict, map, or globe policy", () => {
     for (const path of Object.keys(HTML_CSP_ROUTE_TABLE)) {
       expect(policyKindForPath(path), path).toBeDefined();
       expectedCspForPath(path);
     }
+    expect(policyKindForPath("/club-screen.html")).toBe("map");
+    expect(policyKindForPath("/public-map.html")).toBe("map");
+    expect(policyKindForPath("/club-admin-map.html")).toBe("map");
     expect(policyKindForPath("/vuelo-5")).toBe("globe");
     expect(policyKindForPath("/assets/foo.js")).toBeUndefined();
   });
@@ -100,18 +113,52 @@ test.describe("production CSP (release server)", () => {
     }
     const strictPaths = [
       "/login",
+      "/login.html",
       "/account-clubs.html",
       "/club-admin-types.html",
       "/club-admin-requests.html",
       "/club-checkin-landing.html",
       "/club-map.html",
-      "/public-map.html",
     ];
     for (const path of strictPaths) {
       const res = await request.get(path);
       expect(res.ok(), path).toBeTruthy();
       assertStrictCsp(res.headers()["content-security-policy"] ?? "", path);
     }
+  });
+
+  test("map CSP on tile-map pages while login remains strict", async ({ page, request }) => {
+    for (const path of ["/club-screen.html", "/public-map.html"]) {
+      const res = await request.get(path);
+      expect(res.ok(), path).toBeTruthy();
+      assertMapCsp(res.headers()["content-security-policy"] ?? "", path);
+    }
+
+    const loginRes = await request.get("/login.html");
+    expect(loginRes.ok(), "/login.html").toBeTruthy();
+    const loginCsp = loginRes.headers()["content-security-policy"] ?? "";
+    assertStrictCsp(loginCsp, "/login.html");
+    expect(loginCsp).not.toContain("services.arcgisonline.com");
+
+    await page.goto("/login?mode=password&next=/club-admin-map.html");
+    await page.locator("#login-form input[name=email]").fill("admin@demo.test");
+    await page.locator("#login-form input[name=password]").fill("password12");
+    await page.locator("#submit-password").click();
+    await page.waitForURL(/club-admin-map\.html/, { timeout: 30_000 });
+
+    const adminMapRes = await page.goto("/club-admin-map.html");
+    expect(adminMapRes?.ok(), "/club-admin-map.html").toBeTruthy();
+    assertMapCsp(
+      adminMapRes?.headers()["content-security-policy"] ?? "",
+      "/club-admin-map.html",
+    );
+
+    const adminPilotsRes = await page.goto("/club-admin-pilots.html");
+    expect(adminPilotsRes?.ok(), "/club-admin-pilots.html").toBeTruthy();
+    assertStrictCsp(
+      adminPilotsRes?.headers()["content-security-policy"] ?? "",
+      "/club-admin-pilots.html",
+    );
   });
 
   test("admin HTML strict CSP with staff session", async ({ page }) => {
@@ -136,19 +183,20 @@ test.describe("production CSP (release server)", () => {
 
   test("dynamic club and share HTML headers", async ({ request }) => {
     const demoToken = "00000000-0000-0000-0000-000000000001";
-    const rows: { path: string; csp: "strict" | "globe"; noReferrer?: boolean }[] = [
+    const rows: { path: string; csp: "strict" | "map" | "globe"; noReferrer?: boolean }[] = [
       { path: "/c/demo", csp: "strict", noReferrer: true },
       { path: "/c/demo/registro", csp: "strict", noReferrer: true },
       { path: `/c/demo/q/${demoToken}`, csp: "strict", noReferrer: true },
       { path: "/s/share-e2e-token", csp: "globe", noReferrer: true },
-      { path: "/club/screen", csp: "strict", noReferrer: true },
-      { path: "/c/demo/screen", csp: "strict", noReferrer: true },
+      { path: "/club/screen", csp: "map", noReferrer: true },
+      { path: "/c/demo/screen", csp: "map", noReferrer: true },
     ];
     for (const row of rows) {
       const res = await request.get(row.path);
       expect(res.status() !== 500, row.path).toBeTruthy();
       const csp = res.headers()["content-security-policy"] ?? "";
       if (row.csp === "strict") assertStrictCsp(csp, row.path);
+      else if (row.csp === "map") assertMapCsp(csp, row.path);
       else assertGlobeCsp(csp, row.path);
       if (row.noReferrer) expectNoReferrer(res.headers(), row.path);
     }
