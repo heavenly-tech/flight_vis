@@ -19,8 +19,10 @@ use tower::Service;
 
 pub(crate) struct Fixture {
     _dir: tempfile::TempDir,
+    dist_dir: std::path::PathBuf,
     pub(crate) router: axum::Router,
     pub(crate) club: ClubDb,
+    mailer: crate::club::mail::Mailer,
     pilot_a: String,
     _pilot_b: String,
     device_token: String,
@@ -68,8 +70,10 @@ pub(crate) async fn setup_with_superadmins(emails: &[&str]) -> Fixture {
     let (_dev, device_token) = club.create_device(&pilot_a, "phone").await.unwrap();
     let live = Arc::new(LiveEngine::new(data_dir.path()));
     let (video_queue, _) = tokio::sync::mpsc::channel(4);
+    let dist_dir = data_dir.path().join("dist");
+    let mailer = crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default());
     let state = AppState {
-        dist_dir: data_dir.path().join("dist"),
+        dist_dir: dist_dir.clone(),
         auth: Auth::with_password("x"),
         device_auth: DeviceAuth::empty(),
         live,
@@ -81,15 +85,17 @@ pub(crate) async fn setup_with_superadmins(emails: &[&str]) -> Fixture {
         share_lookup_throttle: crate::LoginThrottle::default(),
         account_password_throttle: crate::LoginThrottle::default(),
         account_password_account_throttle: crate::LoginThrottle::default(),
-        mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+        mailer: mailer.clone(),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
         superadmin_emails: emails.iter().map(|e| e.to_string()).collect(),
     };
     Fixture {
         _dir: data_dir,
+        dist_dir,
         router: build_router(state),
         club,
+        mailer,
         pilot_a,
         _pilot_b: pilot_b,
         device_token,
@@ -1983,4 +1989,972 @@ async fn anonymous_invalid_and_device_credentials_are_not_signed_in() {
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+#[serial]
+async fn admin_delete_checkout_enforces_scope_csrf_and_audit() {
+    let mut fx = setup().await;
+    let club_a = fx.club.default_club_id().await.expect("club_a");
+    let now = now_ms();
+
+    // Promote pilot_a to active admin of club_a.
+    sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
+        .bind(&fx.pilot_a)
+        .execute(&fx.club.pool)
+        .await
+        .expect("role admin");
+    fx.club
+        .ensure_membership_row(&fx.pilot_a, &club_a, "admin", "active")
+        .await
+        .expect("membership admin");
+
+    let admin_a_cookie = login_cookie(&mut fx.router, "a@test").await;
+    let pilot_b_cookie = login_cookie(&mut fx.router, "b@test").await;
+
+    // Create club_b and an active admin in club_b to test cross-club isolation.
+    let club_b = crate::club::auth::new_id();
+    sqlx::query(
+        "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at, checkin_window_hours, latitude, longitude)
+         VALUES ($1, 'Club B', 'club-b', $2, 'live', $2, 12, -33.4489, -70.6693)",
+    )
+    .bind(&club_b)
+    .bind(now)
+    .execute(&fx.club.pool)
+    .await
+    .expect("club_b");
+    let admin_b = fx
+        .club
+        .register(&club_b, "Admin B", "adminb@test", "", "password12")
+        .await
+        .expect("register admin_b");
+    fx.club
+        .mark_email_verified(&admin_b, now)
+        .await
+        .expect("verify admin_b");
+    fx.club
+        .approve_pilot(&admin_b)
+        .await
+        .expect("approve admin_b");
+    sqlx::query("UPDATE pilots SET role = 'admin' WHERE id = $1")
+        .bind(&admin_b)
+        .execute(&fx.club.pool)
+        .await
+        .expect("admin_b role");
+    fx.club
+        .ensure_membership_row(&admin_b, &club_b, "admin", "active")
+        .await
+        .expect("admin_b membership");
+    let admin_b_sess = fx
+        .club
+        .create_pilot_session(&admin_b, now)
+        .await
+        .expect("admin_b session");
+    let admin_b_cookie = crate::club::auth::set_session_cookie(&admin_b_sess, false);
+
+    // Fetch club_a checkouts and pick pilot_b's checkout.
+    let (status, list) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/admin/checkouts",
+        Some(&admin_a_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let target_id = list["checkouts"]
+        .as_array()
+        .expect("checkouts array")
+        .iter()
+        .find(|c| c["pilot_email"] == "b@test")
+        .and_then(|c| c["id"].as_str())
+        .expect("pilot_b checkout id")
+        .to_string();
+    let uri = format!("/api/admin/checkouts/{target_id}");
+
+    // Anonymous -> 401.
+    let (status, _) = call_json(&mut fx.router, "DELETE", &uri, None, "").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Non-admin pilot -> 403.
+    let (status, _) = call_json(&mut fx.router, "DELETE", &uri, Some(&pilot_b_cookie), "").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Cross-site CSRF -> 403.
+    let csrf_res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("DELETE")
+                .uri(&uri)
+                .header(header::COOKIE, &admin_a_cookie)
+                .header("sec-fetch-site", "cross-site")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(csrf_res.status(), StatusCode::FORBIDDEN);
+
+    // Cross-club admin -> 404 and checkout remains in club_a.
+    let (status, _) = call_json(&mut fx.router, "DELETE", &uri, Some(&admin_b_cookie), "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(fx
+        .club
+        .list_checkouts(&club_a)
+        .await
+        .iter()
+        .any(|c| c.id == target_id));
+
+    // Same-club admin -> 200 and checkout removed + audited.
+    let (status, body) = call_json(&mut fx.router, "DELETE", &uri, Some(&admin_a_cookie), "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ok"], true);
+    assert!(!fx
+        .club
+        .list_checkouts(&club_a)
+        .await
+        .iter()
+        .any(|c| c.id == target_id));
+
+    let audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM audit_log
+         WHERE club_id = $1 AND actor_pilot_id = $2
+           AND action = 'revoke' AND entity_type = 'checkout' AND entity_id = $3",
+    )
+    .bind(&club_a)
+    .bind(&fx.pilot_a)
+    .bind(&target_id)
+    .fetch_one(&fx.club.pool)
+    .await
+    .expect("audit query");
+    assert_eq!(audit_count, 1);
+
+    // Deleting again -> 404.
+    let (status, _) = call_json(&mut fx.router, "DELETE", &uri, Some(&admin_a_cookie), "").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+fn extract_magic_token_from_mail(mailer: &crate::club::mail::Mailer, to_email: &str) -> String {
+    let mail = mailer
+        .captured()
+        .into_iter()
+        .rev()
+        .find(|m| m.to.eq_ignore_ascii_case(to_email))
+        .expect("captured magic link email");
+    let marker = "token=";
+    let start = mail.body.find(marker).expect("token= in magic link") + marker.len();
+    mail.body[start..]
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != '"' && *c != '<' && *c != '&')
+        .collect()
+}
+
+fn extract_cookie_pair(headers: &axum::http::HeaderMap, cookie_name: &str) -> Option<String> {
+    let prefix = format!("{cookie_name}=");
+    headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|c| c.starts_with(&prefix) && !c.contains("Max-Age=0"))
+        .and_then(|c| c.split(';').next())
+        .map(String::from)
+}
+
+#[tokio::test]
+#[serial]
+async fn signup_routes_serve_signup_html_with_strict_csp_no_redirect() {
+    let mut fx = setup().await;
+    std::fs::create_dir_all(&fx.dist_dir).expect("dist dir");
+    std::fs::write(
+        fx.dist_dir.join("signup.html"),
+        "<!doctype html><html lang=\"es-CL\"><body><h1>Crea tu cuenta</h1></body></html>",
+    )
+    .expect("write signup.html");
+
+    for uri in ["/signup", "/signup.html"] {
+        let res = fx
+            .router
+            .call(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "uri {uri} must not redirect");
+        assert!(
+            res.headers().get(header::LOCATION).is_none(),
+            "uri {uri} must not set Location"
+        );
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .and_then(|v| v.to_str().ok()),
+            Some(crate::html_csp::HTML_STRICT_CSP),
+            "uri {uri} must use strict CSP"
+        );
+        let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("Crea tu cuenta"), "uri {uri} body mismatch");
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn public_clubs_endpoint_lists_only_active_non_suspended_with_name_and_slug_only() {
+    let mut fx = setup().await;
+    let now = now_ms();
+
+    let active_slug = format!("act-{}", &crate::club::auth::new_id()[..8]);
+    let (active_id, active_tok) = fx
+        .club
+        .signup_club("Club Activo", &active_slug, "act@test", Some("SCEL"), now)
+        .await
+        .unwrap();
+    fx.club
+        .try_consume_magic_club_verify(&active_tok, now)
+        .await
+        .unwrap();
+    let _ = active_id;
+
+    let pending_slug = format!("pend-{}", &crate::club::auth::new_id()[..8]);
+    let _ = fx
+        .club
+        .signup_club("Club Pendiente", &pending_slug, "pend@test", None, now)
+        .await
+        .unwrap();
+
+    let susp_slug = format!("susp-{}", &crate::club::auth::new_id()[..8]);
+    let (susp_id, susp_tok) = fx
+        .club
+        .signup_club("Club Suspendido", &susp_slug, "susp@test", None, now)
+        .await
+        .unwrap();
+    fx.club
+        .try_consume_magic_club_verify(&susp_tok, now)
+        .await
+        .unwrap();
+    fx.club.set_club_suspended(&susp_id, now).await.unwrap();
+
+    let (status, body) = call_json(&mut fx.router, "GET", "/api/clubs/public", None, "").await;
+    assert_eq!(status, StatusCode::OK);
+    let clubs = body["clubs"].as_array().expect("clubs array");
+    let slugs: Vec<&str> = clubs.iter().filter_map(|c| c["slug"].as_str()).collect();
+    assert!(slugs.contains(&active_slug.as_str()));
+    assert!(!slugs.contains(&pending_slug.as_str()));
+    assert!(!slugs.contains(&susp_slug.as_str()));
+
+    for item in clubs {
+        let obj = item.as_object().expect("club object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["name", "slug"],
+            "public club entry must expose only name and slug, got {item}"
+        );
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn signup_with_club_magic_link_creates_pending_request_enforces_access_and_is_idempotent() {
+    ensure_test_i18n();
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let club_slug: String = sqlx::query_scalar("SELECT slug FROM clubs WHERE id = $1")
+        .bind(&club_id)
+        .fetch_one(&fx.club.pool)
+        .await
+        .unwrap();
+    let pilot_a = fx.pilot_a.clone();
+    let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
+    let club_flight_id = start_flight(
+        &mut fx.router,
+        &fx.club,
+        &admin_cookie,
+        &fx.device_token,
+        "club",
+    )
+    .await;
+
+    let (st, counts_before) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/admin/pending-counts",
+        Some(&admin_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(counts_before["pilots"], 0);
+
+    // 1. Magic-link signup with optional clubSlug (no password).
+    let email = "magic-club-join@test";
+    let signup_body = serde_json::json!({ "email": email, "clubSlug": club_slug }).to_string();
+    let signup_res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/signup")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(signup_body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(signup_res.status(), StatusCode::CREATED);
+
+    // Pending request must NOT exist before email verification.
+    let (_, counts_unverified) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/admin/pending-counts",
+        Some(&admin_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(counts_unverified["pilots"], 0);
+
+    // 2. Consume magic link (without nonce cookie -> works cross-device too).
+    let token = extract_magic_token_from_mail(&fx.mailer, email);
+    let verify_res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/auth/magic")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(format!("token={token}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(verify_res.status(), StatusCode::FOUND);
+    let acct_cookie = extract_cookie_pair(verify_res.headers(), crate::club::auth::ACCOUNT_COOKIE)
+        .expect("account session cookie");
+
+    // 3. Visible in admin pending pilots queue, admin memberships, and pending counts.
+    let (st, counts_after) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/admin/pending-counts",
+        Some(&admin_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(counts_after["pilots"], 1);
+
+    let (st, pend_pilots) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/admin/pilots/pending",
+        Some(&admin_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let pending_pilot_id = pend_pilots["pilots"]
+        .as_array()
+        .expect("pilots array")
+        .iter()
+        .find(|p| p["email"] == email)
+        .and_then(|p| p["id"].as_str())
+        .expect("pending pilot visible in admin pending queue")
+        .to_string();
+
+    let (st, memberships_json) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/admin/memberships",
+        Some(&admin_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let membership_id = memberships_json["memberships"]
+        .as_array()
+        .expect("memberships array")
+        .iter()
+        .find(|m| m["email"] == email && m["status"] == "pending")
+        .and_then(|m| m["id"].as_str())
+        .expect("pending membership visible in admin memberships")
+        .to_string();
+
+    // 4. Idempotent: re-submitting signup and consuming a second magic link creates no duplicates.
+    let signup_res2 = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/signup")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(signup_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(signup_res2.status(), StatusCode::CREATED);
+    let nonce2 = extract_cookie_pair(
+        signup_res2.headers(),
+        crate::club::auth::SIGNUP_NONCE_COOKIE,
+    )
+    .expect("nonce cookie");
+    let token2 = extract_magic_token_from_mail(&fx.mailer, email);
+    let verify_res2 = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/auth/magic")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, &nonce2)
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(format!("token={token2}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(verify_res2.status(), StatusCode::FOUND);
+
+    let mem_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint FROM club_memberships m
+         JOIN pilots p ON p.id = m.pilot_id
+         WHERE lower(p.email) = lower($1) AND m.club_id = $2",
+    )
+    .bind(email)
+    .bind(&club_id)
+    .fetch_one(&fx.club.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        mem_count, 1,
+        "double signup must not duplicate pending request"
+    );
+
+    // 5. NO club access before admin approves.
+    let (st, _) = call_json(
+        &mut fx.router,
+        "POST",
+        "/api/account/switch-club",
+        Some(&acct_cookie),
+        &serde_json::json!({ "membershipId": membership_id }).to_string(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    for denied_uri in [
+        "/api/club/map",
+        "/api/me/tails",
+        "/api/admin/pilots",
+        "/api/admin/memberships",
+        "/api/admin/display-sessions",
+    ] {
+        let (st, _) = call_json(&mut fx.router, "GET", denied_uri, Some(&acct_cookie), "").await;
+        assert!(
+            st == StatusCode::UNAUTHORIZED || st == StatusCode::FORBIDDEN,
+            "pending member must not access {denied_uri}, got {st}"
+        );
+    }
+
+    let (st, _) = call_json(
+        &mut fx.router,
+        "GET",
+        &format!("/api/flights/{club_flight_id}/fixes"),
+        Some(&acct_cookie),
+        "",
+    )
+    .await;
+    assert_ne!(
+        st,
+        StatusCode::OK,
+        "pending member must not access club-visibility flight"
+    );
+
+    let (st, lib) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/flights",
+        Some(&acct_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(lib.as_array().map(Vec::len), Some(0));
+    let (st, _) = put_disk_flight(&mut fx.router, Some(&acct_cookie), "pending-denied").await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+    // Legacy club magic login also rejects pending membership.
+    let legacy_tok = fx
+        .club
+        .issue_magic_login(&club_id, email, now_ms())
+        .await
+        .unwrap()
+        .expect("token");
+    assert!(
+        fx.club
+            .consume_magic_login(&legacy_tok, &club_id, now_ms())
+            .await
+            .is_err(),
+        "pending member must not mint legacy club session via magic login"
+    );
+
+    // 6. Admin approves the pending pilot -> count drops and pilot gains club access.
+    let (st, _) = call_json(
+        &mut fx.router,
+        "POST",
+        &format!("/api/admin/pilots/{pending_pilot_id}/approve"),
+        Some(&admin_cookie),
+        "{}",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (_, counts_approved) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/admin/pending-counts",
+        Some(&admin_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(counts_approved["pilots"], 0);
+
+    let (st, _) = call_json(
+        &mut fx.router,
+        "POST",
+        "/api/account/switch-club",
+        Some(&acct_cookie),
+        &serde_json::json!({ "membershipId": membership_id }).to_string(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (st, _) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/club/map",
+        Some(&acct_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/me/tails",
+        Some(&acct_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = call_json(
+        &mut fx.router,
+        "GET",
+        &format!("/api/flights/{club_flight_id}/fixes"),
+        Some(&acct_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+}
+
+#[tokio::test]
+#[serial]
+async fn signup_with_club_password_flow_creates_pending_request_and_enables_password_login() {
+    ensure_test_i18n();
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let club_slug: String = sqlx::query_scalar("SELECT slug FROM clubs WHERE id = $1")
+        .bind(&club_id)
+        .fetch_one(&fx.club.pool)
+        .await
+        .unwrap();
+    let pilot_a = fx.pilot_a.clone();
+    let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
+
+    let email = "pw-club-join@test";
+    let pw = "password1234";
+    let signup_res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/signup")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(
+                    serde_json::json!({
+                        "email": email,
+                        "password": pw,
+                        "clubSlug": club_slug,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(signup_res.status(), StatusCode::CREATED);
+    let nonce_cookie =
+        extract_cookie_pair(signup_res.headers(), crate::club::auth::SIGNUP_NONCE_COOKIE)
+            .expect("signup nonce cookie");
+
+    let token = extract_magic_token_from_mail(&fx.mailer, email);
+    let verify_res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/auth/magic")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, &nonce_cookie)
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(format!("token={token}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(verify_res.status(), StatusCode::FOUND);
+
+    // Password login succeeds after verification.
+    let login_res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(
+                    serde_json::json!({ "email": email, "password": pw }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login_res.status(), StatusCode::OK);
+    let acct_cookie = extract_cookie_pair(login_res.headers(), crate::club::auth::ACCOUNT_COOKIE)
+        .expect("account session cookie from password login");
+
+    // Pending membership appears in admin pending queue and counts.
+    let (st, counts) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/admin/pending-counts",
+        Some(&admin_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(counts["pilots"], 1);
+
+    let (st, mems) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/admin/memberships",
+        Some(&admin_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let membership_id = mems["memberships"]
+        .as_array()
+        .expect("memberships")
+        .iter()
+        .find(|m| m["email"] == email && m["status"] == "pending")
+        .and_then(|m| m["id"].as_str())
+        .expect("pending membership")
+        .to_string();
+
+    // Blocked before approval; granted after approval via /api/account/memberships/{id}/approve.
+    let (st, _) = call_json(
+        &mut fx.router,
+        "POST",
+        "/api/account/switch-club",
+        Some(&acct_cookie),
+        &serde_json::json!({ "membershipId": membership_id }).to_string(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    let (st, _) = call_json(
+        &mut fx.router,
+        "POST",
+        &format!("/api/account/memberships/{membership_id}/approve"),
+        Some(&admin_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (st, _) = call_json(
+        &mut fx.router,
+        "POST",
+        "/api/account/switch-club",
+        Some(&acct_cookie),
+        &serde_json::json!({ "membershipId": membership_id }).to_string(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (st, _) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/club/map",
+        Some(&acct_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+}
+
+#[tokio::test]
+#[serial]
+async fn signup_rejects_invalid_nonexistent_unverified_and_suspended_clubs() {
+    ensure_test_i18n();
+    let mut fx = setup().await;
+    let now = now_ms();
+
+    let pending_slug = format!("pend-rej-{}", &crate::club::auth::new_id()[..8]);
+    let _ = fx
+        .club
+        .signup_club("Unverified", &pending_slug, "unv@test", None, now)
+        .await
+        .unwrap();
+
+    let susp_slug = format!("susp-rej-{}", &crate::club::auth::new_id()[..8]);
+    let (susp_id, susp_tok) = fx
+        .club
+        .signup_club("Suspended", &susp_slug, "susp-rej@test", None, now)
+        .await
+        .unwrap();
+    fx.club
+        .try_consume_magic_club_verify(&susp_tok, now)
+        .await
+        .unwrap();
+    fx.club.set_club_suspended(&susp_id, now).await.unwrap();
+
+    for bad_slug in [
+        "",
+        "nonexistent-club",
+        "../etc",
+        "bad--slug",
+        pending_slug.as_str(),
+    ] {
+        let email = format!("bad-{bad_slug}@test").replace('/', "_");
+        let (st, body) = call_json(
+            &mut fx.router,
+            "POST",
+            "/api/account/signup",
+            None,
+            &serde_json::json!({ "email": email, "clubSlug": bad_slug }).to_string(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "slug={bad_slug}");
+        assert_eq!(body["error"], "club not found", "slug={bad_slug}");
+        assert!(
+            fx.club.account_by_email(&email).await.is_none(),
+            "rejected signup must not create account for slug={bad_slug}"
+        );
+    }
+
+    let (st, body) = call_json(
+        &mut fx.router,
+        "POST",
+        "/api/account/signup",
+        None,
+        &serde_json::json!({ "email": "susp-join@test", "clubSlug": susp_slug }).to_string(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "club suspended");
+    assert!(fx.club.account_by_email("susp-join@test").await.is_none());
+
+    // Club suspended between signup and magic-link consume creates no membership.
+    let race_slug = format!("race-susp-{}", &crate::club::auth::new_id()[..8]);
+    let (race_club_id, race_tok) = fx
+        .club
+        .signup_club("Race Club", &race_slug, "race-owner@test", None, now)
+        .await
+        .unwrap();
+    fx.club
+        .try_consume_magic_club_verify(&race_tok, now)
+        .await
+        .unwrap();
+
+    let race_email = "race-pilot@test";
+    let (st, _) = call_json(
+        &mut fx.router,
+        "POST",
+        "/api/account/signup",
+        None,
+        &serde_json::json!({ "email": race_email, "clubSlug": race_slug }).to_string(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+    let tok = extract_magic_token_from_mail(&fx.mailer, race_email);
+    fx.club
+        .set_club_suspended(&race_club_id, now)
+        .await
+        .unwrap();
+
+    let verify_res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/auth/magic")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(format!("token={tok}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(verify_res.status(), StatusCode::FOUND);
+    let acct = fx
+        .club
+        .account_by_email(race_email)
+        .await
+        .expect("verified account");
+    assert!(fx.club.list_account_memberships(&acct.id).await.is_empty());
+}
+
+#[tokio::test]
+#[serial]
+async fn signup_without_club_works_for_both_magic_and_password() {
+    ensure_test_i18n();
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let pilot_a = fx.pilot_a.clone();
+    let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
+
+    // 1. Magic-link signup without club.
+    let email_magic = "noclub-magic@test";
+    let res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/signup")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(
+                    serde_json::json!({ "email": email_magic }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::CREATED);
+    let tok_magic = extract_magic_token_from_mail(&fx.mailer, email_magic);
+    let verify_magic = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/auth/magic")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(format!("token={tok_magic}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(verify_magic.status(), StatusCode::FOUND);
+    let cookie_magic =
+        extract_cookie_pair(verify_magic.headers(), crate::club::auth::ACCOUNT_COOKIE)
+            .expect("magic account session");
+    let (st, me_magic) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/account/me",
+        Some(&cookie_magic),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(me_magic["memberships"].as_array().map(Vec::len), Some(0));
+
+    // 2. Password signup without club.
+    let email_pw = "noclub-pw@test";
+    let pw = "password1234";
+    let res_pw = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/signup")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(
+                    serde_json::json!({ "email": email_pw, "password": pw }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res_pw.status(), StatusCode::CREATED);
+    let nonce_pw = extract_cookie_pair(res_pw.headers(), crate::club::auth::SIGNUP_NONCE_COOKIE)
+        .expect("nonce cookie");
+    let tok_pw = extract_magic_token_from_mail(&fx.mailer, email_pw);
+    let verify_pw = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/auth/magic")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::COOKIE, &nonce_pw)
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(format!("token={tok_pw}")))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(verify_pw.status(), StatusCode::FOUND);
+
+    let login_pw = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/account/login")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::ACCEPT, "application/json")
+                .header("sec-fetch-site", "same-origin")
+                .body(Body::from(
+                    serde_json::json!({ "email": email_pw, "password": pw }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login_pw.status(), StatusCode::OK);
+    let cookie_pw = extract_cookie_pair(login_pw.headers(), crate::club::auth::ACCOUNT_COOKIE)
+        .expect("password account session");
+    let (st, me_pw) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/account/me",
+        Some(&cookie_pw),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(me_pw["memberships"].as_array().map(Vec::len), Some(0));
+
+    let (_, counts) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/admin/pending-counts",
+        Some(&admin_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(counts["pilots"], 0);
 }

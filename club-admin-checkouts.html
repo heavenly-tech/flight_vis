@@ -3,35 +3,48 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title data-i18n="nav.checkouts">flight_vis</title>
+    <title data-i18n="nav.checkouts">Habilitaciones</title>
     <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      #list { list-style: none; padding: 0; margin: 1.25rem 0 0; }
+      .checkout-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; padding: .55rem 0; border-bottom: 1px solid var(--stroke, rgba(255,255,255,.12)); }
+    </style>
   </head>
-  <body class="fv-page">
-    <main class="admin-shell">
+  <body class="fv-page admin-page">
+    <main class="admin-shell" data-page="admin-checkouts">
       <div id="lang-slot" class="lang-bar"></div>
       <h1 data-i18n="nav.checkouts">Habilitaciones</h1>
       <div id="admin-nav"></div>
       <form id="form" class="admin-form-stack">
         <div class="field">
-          <label for="pilot" data-i18n="club.admin.rolePilot">Piloto</label>
-          <select id="pilot" required></select>
+          <label for="pilot" data-i18n="admin.checkouts.pilotLabel">Piloto</label>
+          <select id="pilot" name="pilot_id" required></select>
         </div>
         <div class="field">
-          <label for="checkout-type" data-i18n="admin.aircraftTypeLabel">Tipo de aeronave</label>
-          <input id="checkout-type" name="type" placeholder="C152" required />
+          <label for="type" data-i18n="admin.checkouts.typeLabel">Tipo de aeronave</label>
+          <select id="type" name="type" required></select>
         </div>
         <div class="field">
-          <label for="checkout-tail" data-i18n="admin.tailOptionalLabel">Matrícula específica (opcional)</label>
-          <input id="checkout-tail" name="tail" placeholder="CC-ABC" />
+          <label for="tail" data-i18n="admin.checkouts.tailLabel">Matrícula específica (opcional)</label>
+          <select id="tail" name="tail"></select>
         </div>
         <div class="field">
-          <label for="checkout-expires" data-i18n="admin.expiresOptionalLabel">Vencimiento (opcional)</label>
-          <input id="checkout-expires" name="expires_at" type="datetime-local" />
+          <label for="expires_at" data-i18n="admin.checkouts.expiresLabel">Vence (opcional)</label>
+          <input id="expires_at" name="expires_at" type="date" />
         </div>
-        <button type="submit" class="btn-primary" data-i18n="common.save">Guardar</button>
+        <button type="submit" class="btn-primary" data-i18n="admin.checkouts.add">Agregar habilitación</button>
       </form>
+      <p id="checkouts-status" role="status" aria-live="polite" hidden></p>
       <ul id="list"></ul>
     </main>
+    <dialog id="revoke-dialog" aria-labelledby="revoke-dialog-title">
+      <h2 id="revoke-dialog-title" data-i18n="admin.checkouts.revokeTitle">Revocar habilitación</h2>
+      <p id="revoke-dialog-body"></p>
+      <div class="dialog-actions">
+        <button type="button" id="revoke-cancel" class="chip" data-i18n="common.cancel">Cancelar</button>
+        <button type="button" id="revoke-confirm" class="chip danger" data-i18n="admin.checkouts.revoke">Revocar</button>
+      </div>
+    </dialog>
     <script type="module" src="/src/club/adminCheckouts.ts"></script>
   </body>
 </html>

@@ -1,5 +1,8 @@
 {
-  "_meta": { "locale": "en", "dir": "ltr" },
+  "_meta": {
+    "locale": "en",
+    "dir": "ltr"
+  },
   "common": {
     "appName": "flight_vis",
     "cancel": "Cancel",
@@ -162,7 +165,17 @@
       "pendingHeading": "Pending pilots",
       "roleAdmin": "Administrator",
       "roleStaff": "Staff",
-      "rolePilot": "Pilot"
+      "rolePilot": "Pilot",
+      "inviteFailed": "Could not send the invitation. Please try again.",
+      "inviteSendLead": "Send an email invitation to add another administrator to this club.",
+      "removeConfirmTitle": "Remove access",
+      "removeConfirmBody": "Are you sure you want to remove access for {name} ({email}) from this club?",
+      "noPendingPilots": "No pending pilots.",
+      "noMemberships": "No memberships found.",
+      "actionFailed": "Could not complete the action. Please try again.",
+      "statusActive": "Active",
+      "statusPending": "Pending",
+      "statusSuspended": "Suspended"
     },
     "map": {
       "title": "Club map",
@@ -238,7 +251,8 @@
     "openApp": "Open the app",
     "publicMapTitle": "Live map (public)",
     "expiredTitle": "Invalid QR",
-    "expiredBody": "The code expired or is invalid. Ask the club for a new QR and scan again."
+    "expiredBody": "The code expired or is invalid. Ask the club for a new QR and scan again.",
+    "appInstallGuide": "View full app installation guide"
   },
   "app": {
     "badge": "flight_vis · Android",
@@ -248,14 +262,15 @@
     "downloadApk": "Download APK",
     "openInApp": "Open in the app",
     "sideloadTitle": "Sideloading steps",
-    "sideloadStep1": "On Android, open Settings → Apps → Special access → Install unknown apps and allow your browser to install packages.",
-    "sideloadStep2": "Download the APK using the button above (when available) and open it to install.",
-    "sideloadStep3": "After install, grant location Allow all the time so GPS points continue in the background.",
-    "sideloadStep4": "Set battery usage for the app to Unrestricted so Android does not kill tracking during flight.",
-    "sideloadStep5": "Copy your per-device token from the pilot profile into the app.",
+    "sideloadStep1": "On Android, open **Settings → Apps → Special access → Install unknown apps** and allow your browser to install packages.",
+    "sideloadStep2": "Download the APK using the button above and open it to install. If Chrome only saves the file, open it from **Downloads** or the **Files** app.",
+    "sideloadStep3": "After install, grant location **Allow all the time** so GPS positions keep recording in the background.",
+    "sideloadStep4": "Set battery usage for the app to **Unrestricted** so Android does not stop tracking during flight.",
     "releaseSoon": "App coming soon",
     "releaseReady": "Release ready to install.",
-    "versionLabel": "Version {version}"
+    "versionLabel": "Version {version}",
+    "uninstallNoticeTitle": "Note for previous beta testers",
+    "uninstallNotice": "If you installed an earlier beta of the app, **uninstall it before installing this one**: the Android package name changed, so it will not update in place."
   },
   "admin": {
     "liveMapTitle": "Admin live map",
@@ -313,7 +328,54 @@
     "checkinQrHide": "Hide QR",
     "checkinQrRotateHint": "QR rotates every {seconds} seconds.",
     "checkinQrAlreadyUsed": "This QR was already used. Generate a new one when you need it.",
-    "checkinQrHidden": "QR hidden."
+    "checkinQrHidden": "QR hidden.",
+    "checkouts": {
+      "pilotLabel": "Pilot",
+      "pilotPlaceholder": "Select a pilot",
+      "typeLabel": "Aircraft type",
+      "typePlaceholder": "Select a type (e.g. C152)",
+      "tailLabel": "Specific tail (optional)",
+      "allTails": "All tails of type",
+      "expiresLabel": "Expires (optional)",
+      "add": "Add checkout",
+      "noExpiry": "No expiry",
+      "revoke": "Revoke",
+      "revokeTitle": "Revoke checkout",
+      "revokeBody": "Revoke {pilot}'s checkout for {type} ({tail})?",
+      "empty": "No checkouts recorded yet.",
+      "saveFailed": "Could not save checkout.",
+      "revokeFailed": "Could not revoke checkout.",
+      "inactiveTailTag": "inactive"
+    },
+    "requests": {
+      "title": "Access requests",
+      "detail": "Tail {tail} · type {type}",
+      "empty": "No pending access requests.",
+      "rejectTitle": "Reject request",
+      "rejectSummary": "Request from {pilot} for {tail}.",
+      "rejectPlaceholder": "Enter a reason (optional)",
+      "actionFailed": "Could not update request."
+    },
+    "tails": {
+      "tailLabel": "Tail",
+      "tailPlaceholder": "e.g. CC-ABC",
+      "typeLabel": "Aircraft type",
+      "typePlaceholder": "e.g. C152",
+      "save": "Save tail",
+      "statusActive": "Active",
+      "statusInactive": "Inactive",
+      "empty": "No tails registered yet.",
+      "saveFailed": "Could not save tail."
+    },
+    "types": {
+      "title": "Aircraft types",
+      "codeLabel": "Type code",
+      "codePlaceholder": "e.g. C152",
+      "save": "Save type",
+      "signedInAs": "Admin: {name}",
+      "empty": "No aircraft types registered yet.",
+      "saveFailed": "Could not save aircraft type."
+    }
   },
   "kiosk": {
     "screenTitle": "Club check-in screen",
@@ -328,7 +390,9 @@
     "pasteToken": "Paste the display activation code from the admin map page.",
     "qrShow": "Show QR",
     "qrHide": "Hide QR",
-    "qrRotateHint": "QR rotates every {seconds} seconds."
+    "qrRotateHint": "QR rotates every {seconds} seconds.",
+    "liveMapAria": "Live club map",
+    "awaitingActivation": "Display not activated."
   },
   "globe": {
     "metaDescription": "3D flight visualization for IGC and GPX tracks.",
@@ -474,7 +538,14 @@
       "submit": "Create account",
       "success": "Check your email if you skipped a password.",
       "link": "Create account",
-      "haveAccount": "Already have an account? Sign in"
+      "haveAccount": "Already have an account? Sign in",
+      "clubMemberToggle": "I'm a club member",
+      "clubLabel": "Club",
+      "clubPlaceholder": "Choose your club",
+      "clubRequired": "Choose a club or uncheck the option.",
+      "clubPendingHint": "Your request will stay pending until the club administrator approves it.",
+      "noClubsAvailable": "No clubs are available right now.",
+      "successWithClub": "Check your email to confirm your account and send your club request."
     },
     "password": {
       "title": "Account password",

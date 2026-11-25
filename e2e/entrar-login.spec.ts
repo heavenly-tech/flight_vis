@@ -1,10 +1,30 @@
 import { expect, test } from "@playwright/test";
 
-test("unified login shows magic email and signup links", async ({ page }) => {
+test("unified login keeps magic link default and puts pilot signup primary over club signup", async ({
+  page,
+}) => {
   await page.goto("/login?next=/club-pilot.html", { waitUntil: "load" });
   await expect(page.locator("#email")).toBeVisible();
-  await expect(page.locator('a[href="/signup.html"]')).toBeVisible();
-  await expect(page.locator('a[href="/club-signup.html"]')).toBeVisible();
+  await expect(page.locator("#submit-magic")).toBeVisible();
+  await expect(page.locator("#password-reveal")).toBeHidden();
+  await expect(page.locator("#submit-password")).toBeHidden();
+  await expect(page.locator("#login-form")).toHaveAttribute(
+    "action",
+    "/api/account/magic-link",
+  );
+
+  const pilotLink = page.locator('a#register-pilot[href="/signup.html"]');
+  const clubLink = page.locator('a#register-club[href="/club-signup.html"]');
+  await expect(pilotLink).toBeVisible();
+  await expect(clubLink).toBeVisible();
+  await expect(pilotLink).toHaveClass(/\bprimary\b/);
+  await expect(clubLink).toHaveClass(/\bsecondary\b/);
+  await expect(page.locator('a[href="/club-register.html"]')).toHaveCount(0);
+
+  const order = await page
+    .locator("#register-pilot, #register-club")
+    .evaluateAll((nodes) => nodes.map((n) => n.id));
+  expect(order).toEqual(["register-pilot", "register-club"]);
 });
 
 test("club admin redirect uses unified login", async ({ page }) => {

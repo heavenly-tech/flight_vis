@@ -5,9 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title data-i18n="account.signup.title">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
+    <style>
+      .club-toggle { display: flex; align-items: center; gap: .5rem; margin: .65rem 0 .35rem; cursor: pointer; }
+      .club-toggle input[type="checkbox"] { width: auto; margin: 0; }
+      #club-select-wrap { margin: .35rem 0 .5rem; }
+      #club-select-wrap[hidden] { display: none; }
+      #club-pending-hint { margin: .25rem 0 0; font-size: .88rem; }
+    </style>
   </head>
   <body class="fv-auth-page">
-    <main class="auth-card">
+    <main class="auth-card" data-page="account-signup">
       <div id="lang-slot" class="lang-bar"></div>
       <h1 data-i18n="account.signup.title">Crea tu cuenta</h1>
       <p class="muted" data-i18n="account.signup.lead">Una cuenta personal; después únete a clubes.</p>
@@ -20,7 +27,20 @@
           <label for="signup-password" data-i18n="account.signup.password">Contraseña (opcional)</label>
           <input id="signup-password" name="password" type="password" autocomplete="new-password" data-i18n-placeholder="account.signup.password" minlength="8" />
         </div>
-        <button type="submit" class="btn-primary" data-i18n="account.signup.submit"></button>
+        <label class="club-toggle" for="is-club-member">
+          <input id="is-club-member" type="checkbox" />
+          <span data-i18n="account.signup.clubMemberToggle">Soy socio de un club</span>
+        </label>
+        <div id="club-select-wrap" hidden>
+          <label for="club-slug" data-i18n="account.signup.clubLabel">Club</label>
+          <select id="club-slug" name="clubSlug" disabled>
+            <option value="" data-i18n="account.signup.clubPlaceholder">Elige tu club</option>
+          </select>
+          <p id="club-pending-hint" class="muted" data-i18n="account.signup.clubPendingHint">
+            Tu solicitud queda pendiente hasta que el administrador del club la apruebe.
+          </p>
+        </div>
+        <button type="submit" class="btn-primary" data-i18n="account.signup.submit">Crear cuenta</button>
       </form>
       <p id="msg" class="status-msg" role="status" aria-live="polite"></p>
       <p class="muted"><a href="/login?mode=pilot" data-i18n="account.signup.haveAccount"></a></p>

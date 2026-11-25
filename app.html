@@ -29,6 +29,11 @@
       }
       section.card-spaced { margin-top: 1rem; }
       h2.card-heading { margin-top: 0; font-size: 1rem; }
+      .notice-warn { border-color: rgba(251, 191, 36, .45); background: rgba(251, 191, 36, .08); }
+      .notice-warn h2 { color: #fcd34d; }
+      .notice-warn p { margin: .4rem 0 0; line-height: 1.55; }
+      .release-markdown p { margin: .4rem 0; line-height: 1.55; }
+      .release-markdown ul, .release-markdown ol { margin: .4rem 0; padding-left: 1.2rem; line-height: 1.55; }
       p.footer-spaced { margin-top: 1.5rem; }
     </style>
   </head>
@@ -47,6 +52,10 @@
           <a class="dl" id="download" hidden download="flightvis.apk" data-i18n="app.downloadApk"></a>
           <a class="dl secondary" id="open-in-app" hidden data-i18n="app.openInApp"></a>
         </div>
+      </section>
+      <section class="card card-spaced notice-warn" id="uninstall-notice" role="note">
+        <h2 class="card-heading" data-i18n="app.uninstallNoticeTitle"></h2>
+        <p id="uninstall-notice-body" data-i18n="app.uninstallNotice"></p>
       </section>
       <section class="card card-spaced">
         <h2 class="card-heading" data-i18n="app.sideloadTitle"></h2>

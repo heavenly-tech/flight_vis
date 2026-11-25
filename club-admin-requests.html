@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title data-i18n="nav.requests">flight_vis</title>
+    <title data-i18n="nav.requests">Solicitudes</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
       .badge { background: #c62828; color: #fff; border-radius: 999px; padding: 0 .45rem; font-size: .75rem; margin-left: .25rem; }
@@ -11,13 +11,34 @@
       article button { margin-right: .45rem; }
     </style>
   </head>
-  <body class="fv-page">
-    <main class="admin-shell">
+  <body class="fv-page admin-page">
+    <main class="admin-shell" data-page="admin-requests">
       <div id="lang-slot" class="lang-bar"></div>
-      <h1><span data-i18n="nav.requests">Solicitudes</span> <span id="badge" class="badge" hidden>0</span></h1>
+      <h1><span data-i18n="admin.requests.title">Solicitudes de acceso</span> <span id="badge" class="badge" hidden>0</span></h1>
       <div id="admin-nav"></div>
+      <p id="requests-status" role="status" aria-live="polite" hidden></p>
       <div id="list"></div>
     </main>
+    <dialog id="reject-dialog" aria-labelledby="reject-dialog-title">
+      <form id="reject-form">
+        <h2 id="reject-dialog-title" data-i18n="admin.requests.rejectTitle">Rechazar solicitud</h2>
+        <p id="reject-dialog-summary"></p>
+        <label class="dialog-field" for="reject-reason">
+          <span data-i18n="admin.rejectPrompt">Motivo para el piloto</span>
+          <textarea
+            id="reject-reason"
+            name="reason"
+            rows="3"
+            data-i18n-placeholder="admin.requests.rejectPlaceholder"
+            placeholder="Escribe el motivo (opcional)"
+          ></textarea>
+        </label>
+        <div class="dialog-actions">
+          <button type="button" id="reject-cancel" class="chip" data-i18n="common.cancel">Cancelar</button>
+          <button type="submit" id="reject-confirm" class="chip danger" data-i18n="admin.reject">Rechazar</button>
+        </div>
+      </form>
+    </dialog>
     <script type="module" src="/src/club/adminRequests.ts"></script>
   </body>
 </html>

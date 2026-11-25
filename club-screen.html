@@ -9,40 +9,53 @@
       html, body { margin: 0; height: 100%; background: #0b0f14; color: #e8ecf1; }
       .kiosk-viewport {
         position: relative;
+        display: flex;
+        flex-direction: column;
         width: 100vw;
         height: 100vh;
         overflow: hidden;
         background: linear-gradient(180deg, #0b0f14 0%, #121922 100%);
       }
-      #map-layer {
-        position: absolute;
-        inset: 0;
-        padding: 1.5rem 2rem 2rem;
-        box-sizing: border-box;
-        opacity: 0.92;
-      }
-      #map-layer h2 { margin: 0 0 0.75rem; font-size: 1.1rem; font-weight: 600; }
-      #map-layer ul { list-style: none; margin: 0; padding: 0; columns: 2; gap: 1rem; }
-      #map-layer li { padding: 0.35rem 0; font-size: 1.05rem; }
-      #map-layer.map-expanded { padding: 2rem 2.5rem 2.5rem; }
-      #map-layer.map-expanded ul { columns: 3; font-size: 1.2rem; }
-      #toolbar-local {
-        position: absolute;
-        right: 1rem;
-        top: 1rem;
-        z-index: 6;
+      .kiosk-header {
         display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 1.25rem 2rem 0.75rem;
+        flex: 0 0 auto;
+        z-index: 6;
+      }
+      .kiosk-header-main {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0.4rem 1.25rem;
+        min-width: 0;
+      }
+      .kiosk-header-main h2 { margin: 0; font-size: 1.15rem; font-weight: 600; }
+      #status-bar {
+        margin: 0;
+        font-size: 0.85rem;
+        opacity: 0.75;
+      }
+      #toolbar-local {
+        display: flex;
+        flex: 0 0 auto;
         gap: 0.5rem;
       }
       #toolbar-local button { font: inherit; padding: 0.35rem 0.65rem; }
-      #status-bar {
-        position: absolute;
-        left: 1rem;
-        top: 1rem;
-        font-size: 0.85rem;
-        opacity: 0.75;
-        z-index: 2;
+      #map-layer {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: auto;
+        padding: 0.75rem 2rem 2rem;
+        box-sizing: border-box;
+        opacity: 0.92;
       }
+      #map-layer ul { list-style: none; margin: 0; padding: 0; columns: 2; gap: 1rem; }
+      #map-layer li { padding: 0.35rem 0; font-size: 1.05rem; }
+      #map-layer.map-expanded { padding: 1rem 2.5rem 2.5rem; }
+      #map-layer.map-expanded ul { columns: 3; font-size: 1.2rem; }
       #activate {
         position: absolute;
         inset: 0;
@@ -52,7 +65,11 @@
         background: rgba(0, 0, 0, 0.75);
         z-index: 10;
       }
-      #activate-inner { max-width: 28rem; padding: 1.5rem; }
+      #activate[hidden] { display: none; }
+      #activate-inner { max-width: 28rem; width: 100%; padding: 1.5rem; box-sizing: border-box; }
+      .activate-label { display: block; margin-bottom: 0.75rem; opacity: 0.85; }
+      .activate-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+      #activate-token { flex: 1; min-width: 12rem; font: inherit; }
       #qr-wrap {
         position: absolute;
         z-index: 5;
@@ -73,25 +90,29 @@
   </head>
   <body>
     <div class="kiosk-viewport" id="viewport">
-      <p id="status-bar" role="status" aria-live="polite" data-i18n="kiosk.starting"></p>
-      <div id="toolbar-local">
-        <button type="button" id="btn-local-qr" class="btn-secondary" data-i18n="kiosk.qrHide" hidden></button>
-      </div>
-      <section id="map-layer" aria-label="Mapa del club en vivo" data-i18n-aria="kiosk.mapAria">
-        <h2 data-i18n="kiosk.liveAircraft"></h2>
+      <header class="kiosk-header">
+        <div class="kiosk-header-main">
+          <h2 data-i18n="kiosk.liveAircraft">Aeronaves en vivo</h2>
+          <p id="status-bar" role="status" aria-live="polite" data-i18n="kiosk.starting">Iniciando pantalla…</p>
+        </div>
+        <div id="toolbar-local">
+          <button type="button" id="btn-local-qr" class="btn-secondary" data-i18n="kiosk.qrHide" hidden>Ocultar QR</button>
+        </div>
+      </header>
+      <section id="map-layer" data-i18n-aria="kiosk.liveMapAria" aria-label="Mapa en vivo del club">
         <ul id="map"></ul>
       </section>
       <div id="qr-wrap" hidden>
-        <img id="qr" alt="Código QR de registro" data-i18n-alt="kiosk.qrAlt" width="256" height="256" />
+        <img id="qr" data-i18n-alt="kiosk.qrAlt" alt="Código QR de check-in" width="256" height="256" />
       </div>
       <div id="activate" hidden>
-        <div id="activate-inner" class="auth-card">
-          <div class="field">
-            <label for="activate-token" data-i18n="kiosk.pasteToken"></label>
-            <input id="activate-token" type="password" autocomplete="off" />
+        <form id="activate-inner" class="auth-card">
+          <label for="activate-token" class="activate-label" data-i18n="kiosk.pasteToken">Pega el token de activación de pantalla desde el mapa admin.</label>
+          <div class="activate-row">
+            <input id="activate-token" name="token" type="password" autocomplete="off" required />
+            <button type="submit" id="btn-activate" class="btn-primary" data-i18n="kiosk.activate">Activar pantalla</button>
           </div>
-          <button type="button" id="btn-activate" class="btn-primary btn-block" data-i18n="kiosk.activate"></button>
-        </div>
+        </form>
       </div>
     </div>
     <script type="module" src="/src/club/clubScreen.ts"></script>

@@ -180,7 +180,17 @@
       "pendingHeading": "Pilotos pendientes",
       "roleAdmin": "Administrador",
       "roleStaff": "Encargado",
-      "rolePilot": "Piloto"
+      "rolePilot": "Piloto",
+      "inviteFailed": "No se pudo enviar la invitación. Intenta nuevamente.",
+      "inviteSendLead": "Envía un correo de invitación para sumar otro administrador al club.",
+      "removeConfirmTitle": "Quitar acceso",
+      "removeConfirmBody": "¿Seguro que quieres quitar el acceso de {name} ({email}) a este club?",
+      "noPendingPilots": "No hay pilotos pendientes.",
+      "noMemberships": "No hay membresías registradas.",
+      "actionFailed": "No se pudo completar la acción. Intenta nuevamente.",
+      "statusActive": "Activo",
+      "statusPending": "Pendiente",
+      "statusSuspended": "Suspendido"
     }
   },
   "pilot": {
@@ -241,7 +251,8 @@
     "openApp": "Abrir la app",
     "publicMapTitle": "Mapa en vivo (público)",
     "expiredTitle": "QR no válido",
-    "expiredBody": "El código expiró o no es válido. Pide un nuevo QR en el club y escanéalo de nuevo."
+    "expiredBody": "El código expiró o no es válido. Pide un nuevo QR en el club y escanéalo de nuevo.",
+    "appInstallGuide": "Ver guía completa de instalación de la app"
   },
   "app": {
     "badge": "flight_vis · Android",
@@ -252,13 +263,14 @@
     "openInApp": "Abrir en la app",
     "sideloadTitle": "Pasos para instalar",
     "sideloadStep1": "En Android, abre **Ajustes → Aplicaciones → Acceso especial → Instalar apps desconocidas** y permite que el navegador instale paquetes.",
-    "sideloadStep2": "Descarga el APK con el botón de arriba (cuando esté disponible) y ábrelo para instalar.",
+    "sideloadStep2": "Descarga el APK con el botón de arriba y ábrelo para instalar. Si Chrome solo guarda el archivo, ábrelo desde **Descargas** o la app **Archivos**.",
     "sideloadStep3": "Después de instalar, concede ubicación **Permitir todo el tiempo** para que el registro de puntos GPS siga en segundo plano.",
     "sideloadStep4": "Configura el uso de batería de la app en **Sin restricciones** para que Android no corte el rastreo durante el vuelo.",
-    "sideloadStep5": "Copia el token de dispositivo desde el **perfil piloto** hacia la app.",
     "releaseSoon": "App próximamente",
     "releaseReady": "Versión lista para instalar.",
-    "versionLabel": "Versión {version}"
+    "versionLabel": "Versión {version}",
+    "uninstallNoticeTitle": "Aviso para quienes probaron la beta anterior",
+    "uninstallNotice": "Si ya tenías instalada una versión beta anterior de la app, **desinstálala antes de instalar esta**: cambió el nombre del paquete en Android y no se actualiza encima."
   },
   "admin": {
     "liveMapTitle": "Mapa en vivo (administración)",
@@ -316,7 +328,54 @@
     "checkinQrHide": "Ocultar QR",
     "checkinQrRotateHint": "El QR rota cada {seconds} segundos.",
     "checkinQrAlreadyUsed": "Este QR ya se usó. Genera uno nuevo cuando lo necesites.",
-    "checkinQrHidden": "QR oculto."
+    "checkinQrHidden": "QR oculto.",
+    "checkouts": {
+      "pilotLabel": "Piloto",
+      "pilotPlaceholder": "Selecciona un piloto",
+      "typeLabel": "Tipo de aeronave",
+      "typePlaceholder": "Selecciona un tipo (ej. C152)",
+      "tailLabel": "Matrícula específica (opcional)",
+      "allTails": "Todas las matrículas del tipo",
+      "expiresLabel": "Vence (opcional)",
+      "add": "Agregar habilitación",
+      "noExpiry": "Sin vencimiento",
+      "revoke": "Revocar",
+      "revokeTitle": "Revocar habilitación",
+      "revokeBody": "¿Revocar la habilitación de {pilot} para {type} ({tail})?",
+      "empty": "Aún no hay habilitaciones registradas.",
+      "saveFailed": "No se pudo guardar la habilitación.",
+      "revokeFailed": "No se pudo revocar la habilitación.",
+      "inactiveTailTag": "inactiva"
+    },
+    "requests": {
+      "title": "Solicitudes de acceso",
+      "detail": "Matrícula {tail} · tipo {type}",
+      "empty": "No hay solicitudes pendientes.",
+      "rejectTitle": "Rechazar solicitud",
+      "rejectSummary": "Solicitud de {pilot} para {tail}.",
+      "rejectPlaceholder": "Escribe el motivo (opcional)",
+      "actionFailed": "No se pudo actualizar la solicitud."
+    },
+    "tails": {
+      "tailLabel": "Matrícula",
+      "tailPlaceholder": "ej. CC-ABC",
+      "typeLabel": "Tipo de aeronave",
+      "typePlaceholder": "ej. C152",
+      "save": "Guardar matrícula",
+      "statusActive": "Activa",
+      "statusInactive": "Inactiva",
+      "empty": "Aún no hay matrículas registradas.",
+      "saveFailed": "No se pudo guardar la matrícula."
+    },
+    "types": {
+      "title": "Tipos de aeronave",
+      "codeLabel": "Código del tipo",
+      "codePlaceholder": "ej. C152",
+      "save": "Guardar tipo",
+      "signedInAs": "Administrador: {name}",
+      "empty": "Aún no hay tipos de aeronave registrados.",
+      "saveFailed": "No se pudo guardar el tipo de aeronave."
+    }
   },
   "kiosk": {
     "screenTitle": "Pantalla de registro del club",
@@ -331,7 +390,9 @@
     "pasteToken": "Pega el código de activación desde el mapa de administración.",
     "qrShow": "Mostrar QR",
     "qrHide": "Ocultar QR",
-    "qrRotateHint": "El QR rota cada {seconds} segundos."
+    "qrRotateHint": "El QR rota cada {seconds} segundos.",
+    "liveMapAria": "Mapa en vivo del club",
+    "awaitingActivation": "Pantalla sin activar."
   },
   "globe": {
     "metaDescription": "Visualización 3D de vuelos IGC y GPX.",
@@ -477,7 +538,14 @@
       "submit": "Crear cuenta",
       "success": "Revisa tu correo si no pusiste contraseña.",
       "link": "Crear cuenta",
-      "haveAccount": "¿Ya tienes cuenta? Inicia sesión"
+      "haveAccount": "¿Ya tienes cuenta? Inicia sesión",
+      "clubMemberToggle": "Soy socio de un club",
+      "clubLabel": "Club",
+      "clubPlaceholder": "Elige tu club",
+      "clubRequired": "Elige un club o desmarca la opción.",
+      "clubPendingHint": "Tu solicitud queda pendiente hasta que el administrador del club la apruebe.",
+      "noClubsAvailable": "No hay clubes disponibles en este momento.",
+      "successWithClub": "Revisa tu correo para confirmar tu cuenta y enviar tu solicitud al club."
     },
     "password": {
       "title": "Contraseña de cuenta",

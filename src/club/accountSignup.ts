@@ -14,7 +14,7 @@ form.addEventListener("submit", async (e) => {
   if (pw) payload.password = pw;
   const res = await fetch("/api/account/signup", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
     credentials: "same-origin",
     body: JSON.stringify(payload),
   });

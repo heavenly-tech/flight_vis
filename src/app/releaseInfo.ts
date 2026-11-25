@@ -1,4 +1,5 @@
 import { releaseNoteText } from "./releaseNote";
+import { renderMarkdownInto } from "./safeMarkdown";
 
 export type AppRelease = {
   available: boolean;
@@ -49,9 +50,14 @@ export function renderReleaseInfo(
   // Release note
   const note = releaseNoteText(data);
   if (note !== null) {
-    els.note.textContent = note;
-    els.note.hidden = false;
+    renderMarkdownInto(els.note, note);
   } else {
+    if (els.note.id) {
+      els.note.parentElement
+        ?.querySelector<HTMLElement>(`[data-md-for="${els.note.id}"]`)
+        ?.remove();
+    }
+    els.note.replaceChildren();
     els.note.hidden = true;
   }
 }

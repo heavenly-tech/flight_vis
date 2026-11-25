@@ -77,3 +77,40 @@ test("app-release.json message with HTML is rendered literally", async ({ page, 
   // Check that there's no <b> element inside
   await expect(page.locator("#release-note b")).toHaveCount(0);
 });
+
+test("app-release.json markdown message renders safely once without duplicating in status", async ({
+  page,
+}) => {
+  await page.route("**/app/app-release.json", (route) => {
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        available: false,
+        version: "1.2.0",
+        sha256: null,
+        apkUrl: "/app/flightvis.apk",
+        message: "**Importante:** desinstala la app anterior y mantén <b>literal</b>.",
+      }),
+    });
+  });
+
+  await page.route("/app/flightvis.apk", (route) => {
+    if (route.request().method() === "HEAD") {
+      route.fulfill({ status: 404 });
+    } else {
+      route.continue();
+    }
+  });
+
+  await page.goto("/app.html", { waitUntil: "domcontentloaded" });
+
+  const releaseNote = page.locator("#release-note");
+  await expect(releaseNote).toBeVisible({ timeout: 15_000 });
+  await expect(releaseNote.locator("strong")).toHaveText("Importante:");
+  await expect(releaseNote.locator("b")).toHaveCount(0);
+  await expect(releaseNote).toContainText("<b>literal</b>");
+  expect(await releaseNote.textContent()).not.toContain("**");
+  // Message is rendered once in #release-note and not duplicated in #status
+  await expect(page.locator("#status")).not.toContainText("Importante:");
+});

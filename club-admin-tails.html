@@ -3,25 +3,38 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title data-i18n="nav.tails">flight_vis</title>
+    <title data-i18n="nav.tails">Matrículas</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
-  <body class="fv-page">
-    <main class="admin-shell">
+  <body class="fv-page admin-page">
+    <main class="admin-shell" data-page="admin-tails">
       <div id="lang-slot" class="lang-bar"></div>
       <h1 data-i18n="nav.tails">Matrículas</h1>
       <div id="admin-nav"></div>
       <form id="form" class="admin-form-row">
         <div class="field">
-          <label for="tail-code" data-i18n="admin.tailLabel">Matrícula</label>
-          <input id="tail-code" name="tail" placeholder="CC-ABC" required />
+          <label for="tail-input" data-i18n="admin.tails.tailLabel">Matrícula</label>
+          <input
+            id="tail-input"
+            name="tail"
+            data-i18n-placeholder="admin.tails.tailPlaceholder"
+            placeholder="ej. CC-ABC"
+            required
+          />
         </div>
         <div class="field">
-          <label for="tail-type" data-i18n="admin.aircraftTypeLabel">Tipo de aeronave</label>
-          <input id="tail-type" name="type" placeholder="C152" required />
+          <label for="type-input" data-i18n="admin.tails.typeLabel">Tipo de aeronave</label>
+          <input
+            id="type-input"
+            name="type"
+            data-i18n-placeholder="admin.tails.typePlaceholder"
+            placeholder="ej. C152"
+            required
+          />
         </div>
-        <button type="submit" class="btn-primary" data-i18n="common.save">Guardar</button>
+        <button type="submit" class="btn-primary" data-i18n="admin.tails.save">Guardar matrícula</button>
       </form>
+      <p id="tails-status" role="status" aria-live="polite" hidden></p>
       <ul id="list"></ul>
     </main>
     <script type="module" src="/src/club/adminTails.ts"></script>

@@ -65,12 +65,12 @@ export function mountLibrary(opts: {
   const renameCancel = document.querySelector<HTMLButtonElement>("#rename-cancel")!;
   const deleteDialog = document.querySelector<HTMLDialogElement>("#delete-dialog")!;
   const deleteForm = document.querySelector<HTMLFormElement>("#delete-form")!;
-  const deleteLabel = document.querySelector<HTMLElement>("#delete-label")!;
+  const deleteTitle = document.querySelector<HTMLElement>("#delete-title")!;
 
   let items: LibraryEntry[] = [];
   let currentSlug: string | null = opts.currentSlug();
   let renaming: FlightListItem | null = null;
-  let deleting: FlightListItem | null = null;
+  let deleting: LibraryEntry | null = null;
 
   function setOpen(open: boolean): void {
     panel.hidden = !open;
@@ -90,6 +90,16 @@ export function mountLibrary(opts: {
     loginLink.href = loginUrl();
     loginLink.hidden = auth.authenticated;
     tools.hidden = !auth.canManageLibrary;
+    if (!auth.canManageLibrary) {
+      if (renaming) {
+        renaming = null;
+        if (renameDialog.open) renameDialog.close();
+      }
+      if (deleting && !(deleting.local || isLocalSlug(deleting.slug))) {
+        deleting = null;
+        if (deleteDialog.open) deleteDialog.close();
+      }
+    }
     if (!auth.configured) {
       hint.textContent = t("globe.uploadLocked");
     } else if (!auth.authenticated) {
@@ -107,6 +117,7 @@ export function mountLibrary(opts: {
     }
 
     for (const item of visible) {
+      const isLocal = Boolean(item.local || isLocalSlug(item.slug));
       const row = document.createElement("li");
       row.className = "library-item";
       if (item.slug === currentSlug) row.classList.add("active");
@@ -116,14 +127,14 @@ export function mountLibrary(opts: {
       open.className = "library-open";
       const title = document.createElement("strong");
       title.textContent = item.name || item.slug;
-      if (item.local) {
+      if (isLocal) {
         const badge = document.createElement("span");
         badge.className = "library-local-badge";
         badge.textContent = t("globe.libraryLocalBadge");
         title.append(" ", badge);
       }
       const meta = document.createElement("span");
-      const slugLabel = item.local ? t("globe.libraryDeviceSlug") : item.slug;
+      const slugLabel = isLocal ? t("globe.libraryDeviceSlug") : item.slug;
       meta.textContent = [slugLabel, formatSize(item.size), formatWhen(item.updatedAt)].filter(Boolean).join(" · ");
       open.append(title, meta);
       open.addEventListener("click", () => {
@@ -132,7 +143,7 @@ export function mountLibrary(opts: {
 
       const actions = document.createElement("div");
       actions.className = "library-item-actions";
-      if (!item.local && auth.canManageLibrary) {
+      if (!isLocal && auth.canManageLibrary) {
         const renameBtn = document.createElement("button");
         renameBtn.type = "button";
         renameBtn.className = "chip";
@@ -140,14 +151,20 @@ export function mountLibrary(opts: {
         renameBtn.addEventListener("click", () => openRename(item));
         actions.append(renameBtn);
       }
-      const deleteBtn = document.createElement("button");
-      deleteBtn.type = "button";
-      deleteBtn.className = "chip danger";
-      deleteBtn.textContent = t("globe.libraryDelete");
-      deleteBtn.addEventListener("click", () => openDelete(item));
-      actions.append(deleteBtn);
+      if (isLocal || auth.canManageLibrary) {
+        const deleteBtn = document.createElement("button");
+        deleteBtn.type = "button";
+        deleteBtn.className = "chip danger";
+        deleteBtn.textContent = t("globe.libraryDelete");
+        deleteBtn.addEventListener("click", () => openDelete(item));
+        actions.append(deleteBtn);
+      }
 
-      row.append(open, actions);
+      if (actions.childElementCount > 0) {
+        row.append(open, actions);
+      } else {
+        row.append(open);
+      }
       listEl.append(row);
     }
   }
@@ -184,7 +201,7 @@ export function mountLibrary(opts: {
   }
 
   function openRename(item: LibraryEntry): void {
-    if (item.local) return;
+    if (item.local || isLocalSlug(item.slug) || !opts.getAuth().canManageLibrary) return;
     renaming = item;
     renameName.value = item.name;
     renameSlug.value = item.slug;
@@ -197,8 +214,15 @@ export function mountLibrary(opts: {
   }
 
   function openDelete(item: LibraryEntry): void {
+    const isLocal = Boolean(item.local || isLocalSlug(item.slug));
+    if (!isLocal && !opts.getAuth().canManageLibrary) return;
     deleting = item;
-    deleteLabel.textContent = `${item.name} (${item.slug})`;
+    const label = isLocal
+      ? item.name || item.slug
+      : item.name
+        ? `${item.name} (${item.slug})`
+        : item.slug;
+    deleteTitle.textContent = t("globe.deleteTitle", { label });
     deleteDialog.showModal();
   }
 
@@ -321,9 +345,13 @@ export function mountLibrary(opts: {
     }
     const target = deleting;
     deleting = null;
+    const isLocal = Boolean(target.local || isLocalSlug(target.slug));
+    if (!isLocal && !opts.getAuth().canManageLibrary) {
+      return;
+    }
     void (async () => {
       try {
-        if (target.local || isLocalSlug(target.slug)) {
+        if (isLocal) {
           await deleteLocalFlight(target.slug);
         } else {
           await deleteFlight(target.slug);

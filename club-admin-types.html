@@ -3,22 +3,28 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title data-i18n="nav.types">flight_vis</title>
+    <title data-i18n="nav.types">Tipos</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
-  <body class="fv-page">
-    <main class="admin-shell">
+  <body class="fv-page admin-page">
+    <main class="admin-shell" data-page="admin-types">
       <div id="lang-slot" class="lang-bar"></div>
-      <h1 data-i18n="nav.types">Tipos</h1>
+      <h1 data-i18n="admin.types.title">Tipos de aeronave</h1>
       <p id="who" class="muted"></p>
       <div id="admin-nav"></div>
       <form id="form" class="admin-form-row">
         <div class="field">
-          <label for="code" data-i18n="admin.aircraftTypeLabel">Tipo de aeronave</label>
-          <input id="code" placeholder="C152" required />
+          <label for="code" data-i18n="admin.types.codeLabel">Código del tipo</label>
+          <input
+            id="code"
+            data-i18n-placeholder="admin.types.codePlaceholder"
+            placeholder="ej. C152"
+            required
+          />
         </div>
-        <button type="submit" class="btn-primary" data-i18n="common.save">Guardar</button>
+        <button type="submit" class="btn-primary" data-i18n="admin.types.save">Guardar tipo</button>
       </form>
+      <p id="types-status" role="status" aria-live="polite" hidden></p>
       <ul id="list"></ul>
     </main>
     <script type="module" src="/src/club/adminTypes.ts"></script>

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title data-i18n="nav.pilots">flight_vis</title>
+    <title data-i18n="nav.pilots">Pilotos</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
       #invite-form { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0 1rem; align-items: flex-end; }
@@ -14,15 +14,15 @@
       #invite-status { font-size: .9rem; min-height: 1.2rem; }
     </style>
   </head>
-  <body class="fv-page">
-    <main class="admin-shell">
+  <body class="fv-page admin-page">
+    <main class="admin-shell" data-page="admin-pilots">
       <div id="lang-slot" class="lang-bar"></div>
       <h1 data-i18n="nav.pilots">Pilotos</h1>
       <div id="admin-nav"></div>
       <section id="invite-section">
         <h2 style="font-size:1rem" data-i18n="club.admin.addAdmin">Agregar administrador</h2>
-        <p style="font-size:.9rem;margin:.25rem 0 .5rem" data-i18n="club.admin.inviteLead">
-          Confirma el enlace para administrar este club.
+        <p style="font-size:.9rem;margin:.25rem 0 .5rem" data-i18n="club.admin.inviteSendLead">
+          Envía un correo de invitación para sumar otro administrador al club.
         </p>
         <form id="invite-form" method="post" action="/api/admin/memberships/invite">
           <div class="field">
@@ -36,8 +36,17 @@
       <h2 style="font-size:1rem" data-i18n="club.admin.pendingHeading">Pilotos pendientes</h2>
       <ul id="pending"></ul>
       <h2 style="font-size:1rem" data-i18n="club.admin.membershipsHeading">Membresías</h2>
+      <p id="memberships-status" role="status" aria-live="polite" hidden></p>
       <div id="memberships"></div>
     </main>
+    <dialog id="remove-dialog" aria-labelledby="remove-dialog-title">
+      <h2 id="remove-dialog-title" data-i18n="club.admin.removeConfirmTitle">Quitar acceso</h2>
+      <p id="remove-dialog-body"></p>
+      <div class="dialog-actions">
+        <button type="button" id="remove-cancel" class="chip" data-i18n="common.cancel">Cancelar</button>
+        <button type="button" id="remove-confirm" class="chip danger" data-i18n="club.admin.remove">Quitar acceso</button>
+      </div>
+    </dialog>
     <script type="module" src="/src/club/adminPilots.ts"></script>
   </body>
 </html>
