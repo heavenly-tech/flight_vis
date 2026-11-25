@@ -405,3 +405,84 @@ body.fv-auth-page {
     white-space: nowrap;
   }
 }
+
+/* Mis clubes membership cards */
+.account-email-line {
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.club-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.club-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--stroke, rgba(255, 255, 255, 0.14));
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.club-card.is-current {
+  border-color: rgba(103, 232, 249, 0.65);
+  background: rgba(103, 232, 249, 0.08);
+}
+
+.club-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem 0.6rem;
+}
+
+.club-card-name {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text, #f4f7fb);
+  overflow-wrap: anywhere;
+}
+
+.club-current-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: #ecebff;
+  color: #15132a;
+  font-size: 0.76rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+:root[data-theme="light"] .club-current-badge {
+  background: #15132a;
+  color: #ecebff;
+}
+
+.club-card-meta {
+  font-size: 0.86rem;
+  color: var(--muted, #9aa6b5);
+}
+
+.club-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.25rem;
+}
+
+.club-card-actions button {
+  width: auto;
+  flex: 1 1 auto;
+  margin: 0;
+}

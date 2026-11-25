@@ -29,7 +29,6 @@
     "usePassword": "Use password",
     "backMagic": "← Use magic link instead",
     "registerPilot": "Register as pilot",
-    "clubAdmin": "Club administration",
     "club": "Sign in as club",
     "pilot": "Sign in as pilot",
     "back": "← Back to chooser"
@@ -100,8 +99,6 @@
   "club": {
     "login": {
       "title": "Club login",
-      "clubTitle": "Club sign-in",
-      "clubLead": "Enter the club short name and use an admin or staff account.",
       "pilotTitle": "Pilot sign-in",
       "email": "Email",
       "password": "Password",
@@ -111,12 +108,14 @@
       "passwordOrMagic": "Enter your password or use the magic link.",
       "success": "Signed in.",
       "failed": "Login failed.",
-      "staffDenied": "No active admin or staff membership in that club.",
       "noClubs": "You are not in any club yet. Join below or create an account.",
       "continue": "Continue",
       "links": "Register · Pilot profile · Android app",
       "pickClub": "Choose a club",
       "misClubs": "My clubs",
+      "currentClub": "Current club",
+      "manageClub": "Manage",
+      "useClub": "Use this club",
       "unnamedClub": "Unnamed club",
       "statusActive": "active",
       "statusPending": "pending",

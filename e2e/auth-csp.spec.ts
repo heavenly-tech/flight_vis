@@ -119,7 +119,7 @@ test.describe("credential pages under prod CSP", () => {
     const leaks = installPasswordUrlGuard(page);
     const { consoleErrors } = installCspObservers(page);
     await page.goto("/login?mode=password", { waitUntil: "domcontentloaded" });
-    await page.locator("#legacy-details").click();
+    await page.locator("#legacy-details summary").click();
     await page.locator("#login-form input[name=email]").fill("admin@demo.test");
     await page.locator("#login-form input[name=password]").fill("password12");
     await page.locator("#legacy-submit").click();

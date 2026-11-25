@@ -14,8 +14,8 @@ export async function expectSingleFormLayout(page: Page): Promise<void> {
   const clubCta = page.locator("#register-club");
   await expect(pilotCta).toBeVisible();
   await expect(clubCta).toBeVisible();
-  await expect(pilotCta).toHaveClass(/\bprimary\b/);
-  await expect(pilotCta).not.toHaveClass(/\bsecondary\b/);
+  await expect(pilotCta).toHaveClass(/\bsecondary\b/);
+  await expect(pilotCta).not.toHaveClass(/\bprimary\b/);
   await expect(pilotCta).toHaveAttribute("href", "/signup.html");
   await expect(clubCta).toHaveClass(/\bsecondary\b/);
   await expect(clubCta).not.toHaveClass(/\bprimary\b/);
@@ -36,9 +36,13 @@ export async function expectSingleFormLayout(page: Page): Promise<void> {
 }
 
 export async function expectPasswordRevealed(page: Page): Promise<void> {
+  await expect(page.locator("#login-lead")).toHaveText("Inicia sesión con tu contraseña.");
   await expect(page.locator("#password-reveal")).toBeVisible();
   await expect(page.locator('input[name="email"][type="email"]')).toHaveCount(1);
   await expect(page.locator("#password")).toBeVisible();
   await expect(page.locator("#submit-password")).toBeVisible();
   await expect(page.locator("#submit-magic")).toBeHidden();
+  const legacyDetails = page.locator("#legacy-details");
+  await expect(legacyDetails).toBeVisible();
+  await expect(legacyDetails).not.toHaveAttribute("open", /.*/);
 }
