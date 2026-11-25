@@ -603,6 +603,11 @@
       "subject": "Administrator invitation on flight_vis",
       "bodyPlain": "Hello,\n\nYou were invited as a club administrator. Use this link (expires in {minutes} minutes):\n{url}\n\nIf you did not expect this email, ignore it.",
       "bodyHtml": "<p>Hello,</p><p>You were invited as a club administrator. <a href=\"{url}\">Accept the invitation</a> (expires in {minutes} minutes).</p><p>If you did not expect this email, ignore it.</p>"
+    },
+    "pilotInvite": {
+      "subject": "Pilot invitation on flight_vis",
+      "bodyPlain": "Hello,\n\nYou were invited to fly with the club. Use this link to accept (expires in {minutes} minutes):\n{url}\n\nIf you did not expect this email, ignore it.",
+      "bodyHtml": "<p>Hello,</p><p>You were invited to fly with the club. <a href=\"{url}\">Accept the invitation</a> (expires in {minutes} minutes).</p><p>If you did not expect this email, ignore it.</p>"
     }
   }
 }

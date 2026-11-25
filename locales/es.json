@@ -603,6 +603,11 @@
       "subject": "Invitación de administrador en flight_vis",
       "bodyPlain": "Hola,\n\nTe invitaron como administrador del club. Usa este enlace (vence en {minutes} minutos):\n{url}\n\nSi no esperabas este correo, ignóralo.",
       "bodyHtml": "<p>Hola,</p><p>Te invitaron como administrador del club. <a href=\"{url}\">Acepta la invitación</a> (vence en {minutes} minutos).</p><p>Si no esperabas este correo, ignóralo.</p>"
+    },
+    "pilotInvite": {
+      "subject": "Invitación de piloto en flight_vis",
+      "bodyPlain": "Hola,\n\nTe invitaron a volar con el club. Usa este enlace para aceptar (vence en {minutes} minutos):\n{url}\n\nSi no esperabas este correo, ignóralo.",
+      "bodyHtml": "<p>Hola,</p><p>Te invitaron a volar con el club. <a href=\"{url}\">Acepta la invitación</a> (vence en {minutes} minutos).</p><p>Si no esperabas este correo, ignóralo.</p>"
     }
   }
 }
