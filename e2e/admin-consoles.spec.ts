@@ -13,6 +13,13 @@ test("Solicitudes: nav badge matches page count and reject uses in-page dialog",
   });
   expect(login.ok()).toBeTruthy();
 
+  let pendingPilots = [
+    {
+      id: "pilot-e2e-p1",
+      name: "Mateo Silva",
+      email: "mateo@club.cl",
+    },
+  ];
   let requests = [
     {
       id: "req-e2e-1",
@@ -33,6 +40,7 @@ test("Solicitudes: nav badge matches page count and reject uses in-page dialog",
       status: "pending",
     },
   ];
+  const approvedPilots: string[] = [];
   const rejectedPayloads: Array<{ id: string; reason: string }> = [];
 
   await page.route("**/api/club/i18n/context", async (route) => {
@@ -46,7 +54,24 @@ test("Solicitudes: nav badge matches page count and reject uses in-page dialog",
     await route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ pilots: 4, accessRequests: requests.length }),
+      body: JSON.stringify({ pilots: pendingPilots.length, accessRequests: requests.length }),
+    });
+  });
+  await page.route("**/api/admin/pilots/pending", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ pilots: pendingPilots }),
+    });
+  });
+  await page.route("**/api/admin/pilots/*/approve", async (route) => {
+    const id = decodeURIComponent(route.request().url().split("/").slice(-2)[0] ?? "");
+    approvedPilots.push(id);
+    pendingPilots = pendingPilots.filter((p) => p.id !== id);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: true }),
     });
   });
   await page.route("**/api/admin/access-requests?status=pending", async (route) => {
@@ -71,9 +96,18 @@ test("Solicitudes: nav badge matches page count and reject uses in-page dialog",
   await page.goto("/club-admin-requests.html", { waitUntil: "networkidle" });
 
   await expect(page.locator("h1")).toContainText("Solicitudes de acceso");
+  await expect(page.locator("#pending-pilots li.pending-pilot-row")).toHaveCount(1);
   await expect(page.locator("#list article")).toHaveCount(2);
+  await expect(page.locator("#badge")).toHaveText("3");
+  await expect(page.locator("#admin-nav-requests-badge")).toHaveText("3");
+  await expect(page.locator("#admin-nav-pilots-badge")).toBeHidden();
+
+  // Approve pending pilot -> updates total badge to 2.
+  await page.locator('#pending-pilots li[data-pilot-id="pilot-e2e-p1"] .btn-approve').click();
+  await expect(page.locator("#pending-pilots li.pending-pilot-row")).toHaveCount(0);
   await expect(page.locator("#badge")).toHaveText("2");
   await expect(page.locator("#admin-nav-requests-badge")).toHaveText("2");
+  expect(approvedPilots).toEqual(["pilot-e2e-p1"]);
 
   // Open reject dialog -> cancel keeps card.
   const firstCard = page.locator('article[data-request-id="req-e2e-1"]');
@@ -109,6 +143,7 @@ test("Pilotos: invite error displays as alert and Quitar acceso requires dialog 
   let memberships = [
     {
       id: "mem-e2e-1",
+      pilotId: "pilot-e2e-1",
       name: "Carlos Soto",
       email: "carlos@club.cl",
       status: "active",
@@ -136,6 +171,13 @@ test("Pilotos: invite error displays as alert and Quitar acceso requires dialog 
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ pilots: [] }),
+    });
+  });
+  await page.route("**/api/admin/checkouts", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ checkouts: [] }),
     });
   });
   await page.route("**/api/admin/memberships", async (route) => {

@@ -8,9 +8,9 @@ import {
   mountAdminNav,
   openDialog,
   requireAdmin,
-  setNavPilotsBadge,
 } from "./adminCommon";
 import { startClubPage } from "./i18nPage";
+import { renderTextWithLink } from "./inlineLink";
 
 interface PendingPilotItem {
   id: string;
@@ -20,10 +20,19 @@ interface PendingPilotItem {
 
 interface MembershipItem {
   id: string;
+  pilotId?: string;
   name: string;
   email: string;
   status: string;
   role: string;
+}
+
+interface PilotCheckoutItem {
+  id: string;
+  pilot_id: string;
+  type_code: string;
+  tail: string | null;
+  expires_at: number | null;
 }
 
 export interface AdminPilotsController {
@@ -45,11 +54,12 @@ export function membershipStatusLabel(status: string): string {
 }
 
 export function mountAdminPilots(): AdminPilotsController {
-  const pending = document.querySelector<HTMLUListElement>("#pending")!;
+  const pendingNotice = document.querySelector<HTMLParagraphElement>("#pending-pilots-notice");
   const memberships = document.querySelector<HTMLDivElement>("#memberships")!;
   const membershipsStatus = document.querySelector<HTMLParagraphElement>("#memberships-status")!;
   const inviteForm = document.querySelector<HTMLFormElement>("#invite-form")!;
   const inviteEmail = document.querySelector<HTMLInputElement>("#invite-email")!;
+  const inviteRole = document.querySelector<HTMLSelectElement>("#invite-role");
   const inviteStatus = document.querySelector<HTMLParagraphElement>("#invite-status")!;
   const removeDialog = document.querySelector<HTMLDialogElement>("#remove-dialog")!;
   const removeBody = document.querySelector<HTMLParagraphElement>("#remove-dialog-body")!;
@@ -144,35 +154,48 @@ export function mountAdminPilots(): AdminPilotsController {
   });
 
   async function refresh(): Promise<void> {
-    const pend = await api<{ pilots: PendingPilotItem[] }>("/api/admin/pilots/pending");
-    setNavPilotsBadge(pend.pilots.length);
-    if (pend.pilots.length === 0) {
-      const empty = document.createElement("li");
-      empty.className = "muted";
-      empty.textContent = t("club.admin.noPendingPilots");
-      pending.replaceChildren(empty);
-    } else {
-      pending.replaceChildren(
-        ...pend.pilots.map((p) => {
-          const li = document.createElement("li");
-          const btn = document.createElement("button");
-          btn.type = "button";
-          btn.textContent = t("admin.approve");
-          btn.addEventListener("click", async () => {
-            const ok = await postAction(
-              `/api/admin/pilots/${encodeURIComponent(p.id)}/approve`,
-              "{}",
-            );
-            if (ok) await refresh();
-          });
-          li.append(`${p.name} (${p.email}) `, btn);
-          return li;
-        }),
-      );
+    const [roster, pendingPilots, checkoutsResult] = await Promise.all([
+      api<{ memberships: MembershipItem[] }>("/api/admin/memberships"),
+      api<{ pilots: PendingPilotItem[] }>("/api/admin/pilots/pending")
+        .then((d) => d.pilots)
+        .catch(() => null),
+      api<{ checkouts: PilotCheckoutItem[] }>("/api/admin/checkouts")
+        .then((d) => ({ ok: true as const, checkouts: d.checkouts }))
+        .catch(() => ({ ok: false as const, checkouts: [] as PilotCheckoutItem[] })),
+    ]);
+
+    const visibleMemberships = roster.memberships.filter(
+      (m) => m.status.toLowerCase() !== "pending",
+    );
+    const pendingFromMemberships = roster.memberships.length - visibleMemberships.length;
+    const pendingCount = Math.max(pendingPilots?.length ?? 0, pendingFromMemberships);
+
+    if (pendingNotice) {
+      if (pendingCount > 0) {
+        const template =
+          pendingCount === 1
+            ? t("club.admin.pendingNoticeOne")
+            : t("club.admin.pendingNoticeMany", { count: pendingCount });
+        renderTextWithLink(pendingNotice, template, "/club-admin-requests.html", t("nav.requests"));
+        pendingNotice.hidden = false;
+      } else {
+        pendingNotice.hidden = true;
+        pendingNotice.replaceChildren();
+      }
     }
 
-    const roster = await api<{ memberships: MembershipItem[] }>("/api/admin/memberships");
-    if (roster.memberships.length === 0) {
+    const now = Date.now();
+    const ratingsByPilot = new Map<string, PilotCheckoutItem[]>();
+    if (checkoutsResult.ok) {
+      for (const c of checkoutsResult.checkouts) {
+        if (c.expires_at != null && c.expires_at <= now) continue;
+        const bucket = ratingsByPilot.get(c.pilot_id) ?? [];
+        bucket.push(c);
+        ratingsByPilot.set(c.pilot_id, bucket);
+      }
+    }
+
+    if (visibleMemberships.length === 0) {
       const empty = document.createElement("p");
       empty.className = "muted";
       empty.textContent = t("club.admin.noMemberships");
@@ -181,16 +204,46 @@ export function mountAdminPilots(): AdminPilotsController {
     }
 
     memberships.replaceChildren(
-      ...roster.memberships.map((m) => {
+      ...visibleMemberships.map((m) => {
         const row = document.createElement("div");
-        row.className = "mem-row";
+        row.className = "admin-row mem-row";
         row.dataset.membershipId = m.id;
-        const title = document.createElement("div");
+
+        const identity = document.createElement("div");
+        identity.className = "mem-identity";
         const badge = document.createElement("span");
         badge.className = "badge";
         badge.textContent = `${roleLabel(m.role)} · ${membershipStatusLabel(m.status)}`;
-        title.append(`${m.name} · ${m.email} `, badge);
-        row.appendChild(title);
+        identity.append(`${m.name} · ${m.email} `, badge);
+        row.appendChild(identity);
+
+        const ratings = document.createElement("div");
+        ratings.className = "mem-ratings";
+        if (checkoutsResult.ok) {
+          const activeRatings = m.pilotId ? (ratingsByPilot.get(m.pilotId) ?? []) : [];
+          if (activeRatings.length > 0) {
+            for (const c of activeRatings) {
+              const chip = document.createElement("span");
+              chip.className = "rating-chip";
+              const tailText = c.tail ?? t("admin.checkouts.allTails");
+              chip.textContent = `${c.type_code} · ${tailText}`;
+              ratings.appendChild(chip);
+            }
+          } else {
+            const noRatings = document.createElement("span");
+            noRatings.className = "muted";
+            noRatings.textContent = t("club.admin.noRatings");
+            ratings.appendChild(noRatings);
+          }
+        }
+        const enableLink = document.createElement("a");
+        enableLink.className = "rating-link";
+        enableLink.href = m.pilotId
+          ? `/club-admin-checkouts.html?pilot=${encodeURIComponent(m.pilotId)}`
+          : "/club-admin-checkouts.html";
+        enableLink.textContent = t("club.admin.enablePilot");
+        ratings.appendChild(enableLink);
+        row.appendChild(ratings);
 
         const actions = document.createElement("div");
         actions.className = "mem-actions";
@@ -245,19 +298,24 @@ export function mountAdminPilots(): AdminPilotsController {
     inviteStatus.classList.remove("status-error", "status-ok");
     const email = inviteEmail.value.trim();
     if (!email) return;
+    const role: "pilot" | "admin" = inviteRole?.value === "admin" ? "admin" : "pilot";
     try {
       const res = await fetch("/api/admin/memberships/invite", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email, role }),
       });
       if (!res.ok) {
         const raw = await extractApiError(res);
         setInviteError(raw ? apiErrorMessage(raw) : t("club.admin.inviteFailed"));
         return;
       }
-      setInviteSuccess(t("club.admin.inviteSent"));
+      setInviteSuccess(
+        role === "admin"
+          ? t("club.admin.inviteSentAdmin")
+          : t("club.admin.inviteSentPilot"),
+      );
       inviteEmail.value = "";
     } catch {
       setInviteError(t("club.admin.inviteFailed"));
@@ -278,11 +336,11 @@ if (typeof document !== "undefined" && document.querySelector('[data-page="admin
       await controller.refresh();
     } catch (e) {
       if (!isClubAdminRedirect(e)) {
-        const pending = document.querySelector<HTMLUListElement>("#pending");
-        if (pending) {
-          const li = document.createElement("li");
-          li.textContent = t("api.adminOnly");
-          pending.replaceChildren(li);
+        const memberships = document.querySelector<HTMLDivElement>("#memberships");
+        if (memberships) {
+          const p = document.createElement("p");
+          p.textContent = t("api.adminOnly");
+          memberships.replaceChildren(p);
         }
       }
     }

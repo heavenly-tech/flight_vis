@@ -63,9 +63,8 @@ export async function fetchPendingAccessRequestsCount(): Promise<number> {
 export async function refreshNavRequestsBadge(): Promise<number | null> {
   try {
     const counts = await api<PendingCounts>("/api/admin/pending-counts");
-    const count = pendingAccessRequestsCount(counts);
+    const count = pendingAccessRequestsCount(counts) + pendingPilotsCount(counts);
     setNavRequestsBadge(count);
-    setNavPilotsBadge(pendingPilotsCount(counts));
     return count;
   } catch {
     return null;
