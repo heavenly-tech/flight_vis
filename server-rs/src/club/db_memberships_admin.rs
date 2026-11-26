@@ -9,6 +9,7 @@ use crate::club::{
 use sqlx::Row;
 
 pub const ADMIN_INVITE_PURPOSE: &str = "admin_invite";
+pub const PILOT_INVITE_PURPOSE: &str = "pilot_invite";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MembershipAdminError {
@@ -49,6 +50,9 @@ pub struct AdminInviteAccept {
     pub membership_id: String,
     #[allow(dead_code)]
     pub club_id: String,
+    pub purpose: String,
+    #[allow(dead_code)]
+    pub role: String,
 }
 
 impl ClubDb {
@@ -78,18 +82,25 @@ impl ClubDb {
             .collect()
     }
 
-    pub async fn invite_admin_membership(
+    pub async fn invite_membership(
         &self,
         club_id: &str,
         email: &str,
         inviter_pilot_id: &str,
+        role: &str,
         now: i64,
     ) -> Result<String, DbError> {
+        let (purpose, action) = match role {
+            "admin" => (ADMIN_INVITE_PURPOSE, "invite_admin"),
+            "pilot" => (PILOT_INVITE_PURPOSE, "invite_pilot"),
+            _ => return Err(DbError::protocol("invalid role")),
+        };
         let raw = new_share_token();
         let token_hash = digest_token(&raw);
         let id = new_id();
         let expires = now + ACCOUNT_MAGIC_TTL_MS;
         let email = email.trim().to_ascii_lowercase();
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO magic_login_tokens (id, email, token_hash, created_at, expires_at, purpose, club_id, pilot_id)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
@@ -99,15 +110,50 @@ impl ClubDb {
         .bind(&token_hash)
         .bind(now)
         .bind(expires)
-        .bind(ADMIN_INVITE_PURPOSE)
+        .bind(purpose)
         .bind(club_id)
         .bind(inviter_pilot_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        sqlx::query(
+            "INSERT INTO audit_log (id, club_id, actor_pilot_id, action, entity_type, entity_id, detail, created_at)
+             VALUES ($1, $2, $3, $4, 'membership', $5, $6, $7)",
+        )
+        .bind(new_id())
+        .bind(club_id)
+        .bind(inviter_pilot_id)
+        .bind(action)
+        .bind(&id)
+        .bind(role)
+        .bind(now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(raw)
     }
 
+    #[allow(dead_code)]
+    pub async fn invite_admin_membership(
+        &self,
+        club_id: &str,
+        email: &str,
+        inviter_pilot_id: &str,
+        now: i64,
+    ) -> Result<String, DbError> {
+        self.invite_membership(club_id, email, inviter_pilot_id, "admin", now)
+            .await
+    }
+
+    #[allow(dead_code)]
     pub async fn accept_admin_invite(
+        &self,
+        raw_token: &str,
+        now: i64,
+    ) -> Result<AdminInviteAccept, MembershipAdminError> {
+        self.accept_membership_invite(raw_token, now).await
+    }
+
+    pub async fn accept_membership_invite(
         &self,
         raw_token: &str,
         now: i64,
@@ -135,9 +181,11 @@ impl ClubDb {
         let used_at: Option<i64> = row.try_get(3).map_err(|_| MembershipAdminError::Db)?;
         let purpose: String = row.try_get(4).unwrap_or_default();
         let club_id: Option<String> = row.try_get(5).ok();
-        if purpose != ADMIN_INVITE_PURPOSE {
-            return Err(MembershipAdminError::NotFound);
-        }
+        let invited_role = match purpose.as_str() {
+            ADMIN_INVITE_PURPOSE => "admin",
+            PILOT_INVITE_PURPOSE => "pilot",
+            _ => return Err(MembershipAdminError::NotFound),
+        };
         let Some(club_id) = club_id else {
             return Err(MembershipAdminError::NotFound);
         };
@@ -208,10 +256,11 @@ impl ClubDb {
         .await
         .map_err(|_| MembershipAdminError::Db)?;
 
-        let pilot_id: Option<String> = sqlx::query_scalar(
-            "SELECT p.id FROM pilots p
+        let existing_pilot: Option<(String, String, String)> = sqlx::query_as(
+            "SELECT p.id, p.status, p.role FROM pilots p
              WHERE p.club_id = $1 AND p.account_id = $2
-             LIMIT 1",
+             LIMIT 1
+             FOR UPDATE",
         )
         .bind(&club_id)
         .bind(&account_id)
@@ -219,19 +268,41 @@ impl ClubDb {
         .await
         .map_err(|_| MembershipAdminError::Db)?;
 
-        let pilot_id = if let Some(pid) = pilot_id {
-            let status: String = sqlx::query_scalar("SELECT status FROM pilots WHERE id = $1")
-                .bind(&pid)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(|_| MembershipAdminError::Db)?;
+        let (pilot_id, effective_role) = if let Some((pid, status, existing_pilot_role)) =
+            existing_pilot
+        {
+            let existing_membership_role: Option<String> = sqlx::query_scalar(
+                "SELECT role FROM club_memberships WHERE pilot_id = $1 AND club_id = $2 FOR UPDATE",
+            )
+            .bind(&pid)
+            .bind(&club_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| MembershipAdminError::Db)?;
             match status.as_str() {
                 "approved" => {
+                    let effective_role = if invited_role == "admin"
+                        || membership_role_is_admin(&existing_pilot_role)
+                        || existing_membership_role
+                            .as_deref()
+                            .is_some_and(membership_role_is_admin)
+                    {
+                        "admin"
+                    } else if existing_pilot_role == "staff"
+                        || existing_membership_role.as_deref() == Some("staff")
+                    {
+                        "staff"
+                    } else {
+                        invited_role
+                    };
                     sqlx::query(
-                        "UPDATE pilots SET role = 'admin', password_hash = '' WHERE id = $1 AND account_id = $2",
+                        "UPDATE pilots SET role = $1, password_hash = '', email_verified_at = coalesce(email_verified_at, $4)
+                         WHERE id = $2 AND account_id = $3",
                     )
+                    .bind(effective_role)
                     .bind(&pid)
                     .bind(&account_id)
+                    .bind(now)
                     .execute(&mut *tx)
                     .await
                     .map_err(|_| MembershipAdminError::Db)?;
@@ -240,13 +311,18 @@ impl ClubDb {
                         .execute(&mut *tx)
                         .await
                         .map_err(|_| MembershipAdminError::Db)?;
+                    (pid, effective_role)
                 }
                 "pending" => {
+                    let effective_role = invited_role;
                     sqlx::query(
-                        "UPDATE pilots SET status = 'approved', role = 'admin', password_hash = '' WHERE id = $1 AND account_id = $2",
+                        "UPDATE pilots SET status = 'approved', role = $1, password_hash = '', email_verified_at = coalesce(email_verified_at, $4)
+                         WHERE id = $2 AND account_id = $3",
                     )
+                    .bind(effective_role)
                     .bind(&pid)
                     .bind(&account_id)
+                    .bind(now)
                     .execute(&mut *tx)
                     .await
                     .map_err(|_| MembershipAdminError::Db)?;
@@ -255,10 +331,10 @@ impl ClubDb {
                         .execute(&mut *tx)
                         .await
                         .map_err(|_| MembershipAdminError::Db)?;
+                    (pid, effective_role)
                 }
                 _ => return Err(MembershipAdminError::Db),
             }
-            pid
         } else {
             sqlx::query(
                 "DELETE FROM pilot_sessions WHERE pilot_id IN (
@@ -315,21 +391,27 @@ impl ClubDb {
             .await
             .map_err(|_| MembershipAdminError::Db)?;
             let pid = new_id();
-            let display = email.split('@').next().unwrap_or("Admin");
+            let fallback_name = if invited_role == "admin" {
+                "Admin"
+            } else {
+                "Pilot"
+            };
+            let display = email.split('@').next().unwrap_or(fallback_name);
             sqlx::query(
-                "INSERT INTO pilots (id, club_id, account_id, name, email, license_no, status, role, password_hash, created_at)
-                 VALUES ($1, $2, $3, $4, $5, '', 'approved', 'admin', '', $6)",
+                "INSERT INTO pilots (id, club_id, account_id, name, email, license_no, status, role, password_hash, email_verified_at, created_at)
+                 VALUES ($1, $2, $3, $4, $5, '', 'approved', $6, '', $7, $7)",
             )
             .bind(&pid)
             .bind(&club_id)
             .bind(&account_id)
             .bind(display)
             .bind(&email)
+            .bind(invited_role)
             .bind(now)
             .execute(&mut *tx)
             .await
             .map_err(|_| MembershipAdminError::Db)?;
-            pid
+            (pid, invited_role)
         };
 
         let membership_id: String = sqlx::query_scalar(
@@ -352,8 +434,9 @@ impl ClubDb {
         .map_err(|_| MembershipAdminError::Db)?;
         if exists {
             sqlx::query(
-                "UPDATE club_memberships SET role = 'admin', status = 'active' WHERE pilot_id = $1 AND club_id = $2",
+                "UPDATE club_memberships SET role = $1, status = 'active' WHERE pilot_id = $2 AND club_id = $3",
             )
+            .bind(effective_role)
             .bind(&pilot_id)
             .bind(&club_id)
             .execute(&mut *tx)
@@ -362,21 +445,37 @@ impl ClubDb {
         } else {
             sqlx::query(
                 "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
-                 VALUES ($1, $2, $3, 'admin', 'active', $4)",
+                 VALUES ($1, $2, $3, $4, 'active', $5)",
             )
             .bind(&membership_id)
             .bind(&pilot_id)
             .bind(&club_id)
+            .bind(effective_role)
             .bind(now)
             .execute(&mut *tx)
             .await
             .map_err(|_| MembershipAdminError::Db)?;
         }
+        sqlx::query(
+            "INSERT INTO audit_log (id, club_id, actor_pilot_id, action, entity_type, entity_id, detail, created_at)
+             VALUES ($1, $2, $3, 'accept_invite', 'membership', $4, $5, $6)",
+        )
+        .bind(new_id())
+        .bind(&club_id)
+        .bind(&pilot_id)
+        .bind(&membership_id)
+        .bind(effective_role)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| MembershipAdminError::Db)?;
         tx.commit().await.map_err(|_| MembershipAdminError::Db)?;
         Ok(AdminInviteAccept {
             account_id,
             membership_id,
             club_id,
+            purpose,
+            role: effective_role.to_string(),
         })
     }
 

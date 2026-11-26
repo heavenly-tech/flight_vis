@@ -53,8 +53,8 @@
     "requests": "Requests",
     "checkouts": "Checkouts",
     "adminMap": "Admin map",
-    "kioskQr": "Kiosk QR",
-    "adminCheckinQr": "Check-in QR",
+    "kioskQr": "Screen layout",
+    "adminCheckinQr": "Phone QR",
     "login": "Log in",
     "clubMap": "Club map",
     "globe": "Globe viewer",
@@ -175,7 +175,17 @@
       "actionFailed": "Could not complete the action. Please try again.",
       "statusActive": "Active",
       "statusPending": "Pending",
-      "statusSuspended": "Suspended"
+      "statusSuspended": "Suspended",
+      "inviteTitle": "Invite to club",
+      "inviteClubLead": "Send an email invitation to add a pilot or administrator to this club.",
+      "inviteRoleLabel": "Role",
+      "inviteSubmit": "Send invitation",
+      "inviteSentPilot": "If the email is valid, we sent a pilot invitation.",
+      "inviteSentAdmin": "If the email is valid, we sent an administrator invitation.",
+      "noRatings": "No checkouts",
+      "enablePilot": "Add checkout",
+      "pendingNoticeOne": "1 pilot is awaiting approval in {link}.",
+      "pendingNoticeMany": "{count} pilots are awaiting approval in {link}."
     },
     "map": {
       "title": "Club map",
@@ -345,7 +355,9 @@
       "empty": "No checkouts recorded yet.",
       "saveFailed": "Could not save checkout.",
       "revokeFailed": "Could not revoke checkout.",
-      "inactiveTailTag": "inactive"
+      "inactiveTailTag": "inactive",
+      "pendingPilotTag": "pending",
+      "pendingPilotWarning": "This pilot is not approved yet. Approve them in {link} before granting a checkout."
     },
     "requests": {
       "title": "Access requests",
@@ -354,7 +366,9 @@
       "rejectTitle": "Reject request",
       "rejectSummary": "Request from {pilot} for {tail}.",
       "rejectPlaceholder": "Enter a reason (optional)",
-      "actionFailed": "Could not update request."
+      "actionFailed": "Could not update request.",
+      "pendingPilotsTitle": "Pilots pending approval",
+      "accessRequestsTitle": "Checkout requests"
     },
     "tails": {
       "tailLabel": "Tail",
@@ -365,7 +379,9 @@
       "statusActive": "Active",
       "statusInactive": "Inactive",
       "empty": "No tails registered yet.",
-      "saveFailed": "Could not save tail."
+      "saveFailed": "Could not save tail.",
+      "typeSelectPlaceholder": "Select a type",
+      "noTypesHint": "Create a type first in {link}."
     },
     "types": {
       "title": "Aircraft types",
@@ -603,6 +619,11 @@
       "subject": "Administrator invitation on flight_vis",
       "bodyPlain": "Hello,\n\nYou were invited as a club administrator. Use this link (expires in {minutes} minutes):\n{url}\n\nIf you did not expect this email, ignore it.",
       "bodyHtml": "<p>Hello,</p><p>You were invited as a club administrator. <a href=\"{url}\">Accept the invitation</a> (expires in {minutes} minutes).</p><p>If you did not expect this email, ignore it.</p>"
+    },
+    "pilotInvite": {
+      "subject": "Pilot invitation on flight_vis",
+      "bodyPlain": "Hello,\n\nYou were invited to fly with the club. Use this link to accept (expires in {minutes} minutes):\n{url}\n\nIf you did not expect this email, ignore it.",
+      "bodyHtml": "<p>Hello,</p><p>You were invited to fly with the club. <a href=\"{url}\">Accept the invitation</a> (expires in {minutes} minutes).</p><p>If you did not expect this email, ignore it.</p>"
     }
   }
 }

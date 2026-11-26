@@ -8,11 +8,18 @@ import {
   mountAdminNav,
   openDialog,
   pendingAccessRequestsCount,
+  pendingPilotsCount,
   requireAdmin,
   setNavRequestsBadge,
   type PendingCounts,
 } from "./adminCommon";
 import { startClubPage } from "./i18nPage";
+
+interface PendingPilotItem {
+  id: string;
+  name: string;
+  email: string;
+}
 
 interface AccessRequestItem {
   id: string;
@@ -29,6 +36,7 @@ export interface AdminRequestsController {
 }
 
 export function mountAdminRequests(): AdminRequestsController {
+  const pendingPilotsList = document.querySelector<HTMLUListElement>("#pending-pilots");
   const list = document.querySelector<HTMLDivElement>("#list")!;
   const badge = document.querySelector<HTMLSpanElement>("#badge")!;
   const statusEl = document.querySelector<HTMLParagraphElement>("#requests-status")!;
@@ -104,14 +112,60 @@ export function mountAdminRequests(): AdminRequestsController {
   });
 
   async function refresh(): Promise<void> {
-    const [counts, pending] = await Promise.all([
+    const [counts, pendingPilots, pending] = await Promise.all([
       api<PendingCounts>("/api/admin/pending-counts"),
+      api<{ pilots: PendingPilotItem[] }>("/api/admin/pilots/pending"),
       api<{ requests: AccessRequestItem[] }>("/api/admin/access-requests?status=pending"),
     ]);
-    const count = pendingAccessRequestsCount(counts);
+    const count = pendingAccessRequestsCount(counts) + pendingPilotsCount(counts);
     badge.hidden = count === 0;
     badge.textContent = String(count);
     setNavRequestsBadge(count);
+
+    if (pendingPilotsList) {
+      if (pendingPilots.pilots.length === 0) {
+        const empty = document.createElement("li");
+        empty.className = "muted";
+        empty.textContent = t("club.admin.noPendingPilots");
+        pendingPilotsList.replaceChildren(empty);
+      } else {
+        pendingPilotsList.replaceChildren(
+          ...pendingPilots.pilots.map((p) => {
+            const li = document.createElement("li");
+            li.className = "admin-row pending-pilot-row";
+            li.dataset.pilotId = p.id;
+            const info = document.createElement("span");
+            info.className = "admin-row-text";
+            info.textContent = `${p.name} (${p.email})`;
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "btn-approve";
+            btn.textContent = t("admin.approve");
+            btn.addEventListener("click", async () => {
+              clearStatus();
+              try {
+                const res = await fetch(`/api/admin/pilots/${encodeURIComponent(p.id)}/approve`, {
+                  method: "POST",
+                  credentials: "same-origin",
+                  headers: { "Content-Type": "application/json" },
+                  body: "{}",
+                });
+                if (!res.ok) {
+                  const raw = await extractApiError(res);
+                  showError(raw ? apiErrorMessage(raw) : t("club.admin.actionFailed"));
+                  return;
+                }
+                await refresh();
+              } catch {
+                showError(t("club.admin.actionFailed"));
+              }
+            });
+            li.append(info, btn);
+            return li;
+          }),
+        );
+      }
+    }
 
     if (pending.requests.length === 0) {
       const empty = document.createElement("p");

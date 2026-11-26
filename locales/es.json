@@ -50,8 +50,8 @@
     "requests": "Solicitudes",
     "checkouts": "Habilitaciones",
     "adminMap": "Mapa de administración",
-    "kioskQr": "QR en pantalla",
-    "adminCheckinQr": "QR de registro",
+    "kioskQr": "Diseño de pantalla",
+    "adminCheckinQr": "QR en celular",
     "login": "Iniciar sesión",
     "clubMap": "Mapa del club",
     "globe": "Visor global",
@@ -190,7 +190,17 @@
       "actionFailed": "No se pudo completar la acción. Intenta nuevamente.",
       "statusActive": "Activo",
       "statusPending": "Pendiente",
-      "statusSuspended": "Suspendido"
+      "statusSuspended": "Suspendido",
+      "inviteTitle": "Invitar al club",
+      "inviteClubLead": "Envía un correo de invitación para sumar un piloto o administrador al club.",
+      "inviteRoleLabel": "Rol",
+      "inviteSubmit": "Enviar invitación",
+      "inviteSentPilot": "Si el correo es válido, enviamos una invitación de piloto.",
+      "inviteSentAdmin": "Si el correo es válido, enviamos una invitación de administrador.",
+      "noRatings": "Sin habilitaciones",
+      "enablePilot": "Habilitar",
+      "pendingNoticeOne": "1 piloto espera aprobación en {link}.",
+      "pendingNoticeMany": "{count} pilotos esperan aprobación en {link}."
     }
   },
   "pilot": {
@@ -345,7 +355,9 @@
       "empty": "Aún no hay habilitaciones registradas.",
       "saveFailed": "No se pudo guardar la habilitación.",
       "revokeFailed": "No se pudo revocar la habilitación.",
-      "inactiveTailTag": "inactiva"
+      "inactiveTailTag": "inactiva",
+      "pendingPilotTag": "pendiente",
+      "pendingPilotWarning": "Este piloto aún no está aprobado. Apruébalo en {link} antes de habilitarlo."
     },
     "requests": {
       "title": "Solicitudes de acceso",
@@ -354,7 +366,9 @@
       "rejectTitle": "Rechazar solicitud",
       "rejectSummary": "Solicitud de {pilot} para {tail}.",
       "rejectPlaceholder": "Escribe el motivo (opcional)",
-      "actionFailed": "No se pudo actualizar la solicitud."
+      "actionFailed": "No se pudo actualizar la solicitud.",
+      "pendingPilotsTitle": "Pilotos pendientes de aprobación",
+      "accessRequestsTitle": "Solicitudes de habilitación"
     },
     "tails": {
       "tailLabel": "Matrícula",
@@ -365,7 +379,9 @@
       "statusActive": "Activa",
       "statusInactive": "Inactiva",
       "empty": "Aún no hay matrículas registradas.",
-      "saveFailed": "No se pudo guardar la matrícula."
+      "saveFailed": "No se pudo guardar la matrícula.",
+      "typeSelectPlaceholder": "Selecciona un tipo",
+      "noTypesHint": "Primero crea un tipo en {link}."
     },
     "types": {
       "title": "Tipos de aeronave",
@@ -603,6 +619,11 @@
       "subject": "Invitación de administrador en flight_vis",
       "bodyPlain": "Hola,\n\nTe invitaron como administrador del club. Usa este enlace (vence en {minutes} minutos):\n{url}\n\nSi no esperabas este correo, ignóralo.",
       "bodyHtml": "<p>Hola,</p><p>Te invitaron como administrador del club. <a href=\"{url}\">Acepta la invitación</a> (vence en {minutes} minutos).</p><p>Si no esperabas este correo, ignóralo.</p>"
+    },
+    "pilotInvite": {
+      "subject": "Invitación de piloto en flight_vis",
+      "bodyPlain": "Hola,\n\nTe invitaron a volar con el club. Usa este enlace para aceptar (vence en {minutes} minutos):\n{url}\n\nSi no esperabas este correo, ignóralo.",
+      "bodyHtml": "<p>Hola,</p><p>Te invitaron a volar con el club. <a href=\"{url}\">Acepta la invitación</a> (vence en {minutes} minutos).</p><p>Si no esperabas este correo, ignóralo.</p>"
     }
   }
 }

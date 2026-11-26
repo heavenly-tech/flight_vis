@@ -24,18 +24,13 @@
         </div>
         <div class="field">
           <label for="type-input" data-i18n="admin.tails.typeLabel">Tipo de aeronave</label>
-          <input
-            id="type-input"
-            name="type"
-            data-i18n-placeholder="admin.tails.typePlaceholder"
-            placeholder="ej. C152"
-            required
-          />
+          <select id="type-input" name="type" required></select>
         </div>
         <button type="submit" class="btn-primary" data-i18n="admin.tails.save">Guardar matrícula</button>
       </form>
+      <p id="tails-no-types-hint" class="muted" hidden></p>
       <p id="tails-status" role="status" aria-live="polite" hidden></p>
-      <ul id="list"></ul>
+      <ul id="list" class="admin-list"></ul>
     </main>
     <script type="module" src="/src/club/adminTails.ts"></script>
   </body>

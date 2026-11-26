@@ -10,12 +10,14 @@ import {
   requireAdmin,
 } from "./adminCommon";
 import { startClubPage } from "./i18nPage";
+import { renderTextWithLink } from "./inlineLink";
 import { formatSantiagoDate, parseSantiagoDateToExpiryMs } from "./santiagoDate";
 
 interface PilotItem {
   id: string;
   name: string;
   email: string;
+  status?: string;
 }
 
 interface AircraftTypeItem {
@@ -51,14 +53,21 @@ export function mountAdminCheckouts(): AdminCheckoutsController {
   const typeSelect = document.querySelector<HTMLSelectElement>("#type")!;
   const tailSelect = document.querySelector<HTMLSelectElement>("#tail")!;
   const expiresInput = document.querySelector<HTMLInputElement>("#expires_at")!;
+  const pendingWarningEl = document.querySelector<HTMLParagraphElement>("#pending-pilot-warning");
   const statusEl = document.querySelector<HTMLParagraphElement>("#checkouts-status")!;
   const revokeDialog = document.querySelector<HTMLDialogElement>("#revoke-dialog")!;
   const revokeBody = document.querySelector<HTMLParagraphElement>("#revoke-dialog-body")!;
   const revokeCancel = document.querySelector<HTMLButtonElement>("#revoke-cancel")!;
   const revokeConfirm = document.querySelector<HTMLButtonElement>("#revoke-confirm")!;
 
+  let allPilots: PilotItem[] = [];
   let allAircraft: AircraftItem[] = [];
   let pendingRevoke: CheckoutItem | null = null;
+  const initialQueryPilot =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("pilot")?.trim() ?? ""
+      : "";
+  let appliedQueryPilot = false;
 
   function clearStatus(): void {
     statusEl.hidden = true;
@@ -75,6 +84,24 @@ export function mountAdminCheckouts(): AdminCheckoutsController {
     statusEl.classList.add("status-error");
     statusEl.setAttribute("role", "alert");
     statusEl.setAttribute("aria-live", "assertive");
+  }
+
+  function updatePendingPilotWarning(): void {
+    if (!pendingWarningEl) return;
+    const selected = allPilots.find((p) => p.id === pilotSelect.value);
+    const isPending = Boolean(selected && (selected.status ?? "").toLowerCase() === "pending");
+    if (isPending) {
+      renderTextWithLink(
+        pendingWarningEl,
+        t("admin.checkouts.pendingPilotWarning"),
+        "/club-admin-requests.html",
+        t("nav.requests"),
+      );
+      pendingWarningEl.hidden = false;
+    } else {
+      pendingWarningEl.hidden = true;
+      pendingWarningEl.replaceChildren();
+    }
   }
 
   function renderTailOptions(selectedType: string, preserveTail: string): void {
@@ -100,6 +127,10 @@ export function mountAdminCheckouts(): AdminCheckoutsController {
       tailSelect.value = "";
     }
   }
+
+  pilotSelect.addEventListener("change", () => {
+    updatePendingPilotWarning();
+  });
 
   typeSelect.addEventListener("change", () => {
     renderTailOptions(typeSelect.value, tailSelect.value);
@@ -167,6 +198,8 @@ export function mountAdminCheckouts(): AdminCheckoutsController {
       api<{ checkouts: CheckoutItem[] }>("/api/admin/checkouts"),
     ]);
 
+    allPilots = roster.pilots;
+
     const pilotPlaceholder = document.createElement("option");
     pilotPlaceholder.value = "";
     pilotPlaceholder.textContent = t("admin.checkouts.pilotPlaceholder");
@@ -175,13 +208,22 @@ export function mountAdminCheckouts(): AdminCheckoutsController {
       ...roster.pilots.map((p) => {
         const opt = document.createElement("option");
         opt.value = p.id;
-        opt.textContent = `${p.name} (${p.email})`;
+        const isPending = (p.status ?? "").toLowerCase() === "pending";
+        const pendingSuffix = isPending ? ` · ${t("admin.checkouts.pendingPilotTag")}` : "";
+        opt.textContent = `${p.name} (${p.email})${pendingSuffix}`;
         return opt;
       }),
     );
     if (prevPilot && roster.pilots.some((p) => p.id === prevPilot)) {
       pilotSelect.value = prevPilot;
+    } else if (!appliedQueryPilot && initialQueryPilot) {
+      const matched = roster.pilots.find((p) => p.id === initialQueryPilot);
+      if (matched) {
+        pilotSelect.value = matched.id;
+      }
     }
+    appliedQueryPilot = true;
+    updatePendingPilotWarning();
 
     const typePlaceholder = document.createElement("option");
     typePlaceholder.value = "";
