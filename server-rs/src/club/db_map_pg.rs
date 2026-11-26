@@ -6,7 +6,8 @@ use crate::club::{
     geo::{bbox_for_radius_km, haversine_km},
     map::{dedupe_by_tail, filter_admin_tails, DeviceFix, TailLivePosition},
     map_filter::{
-        apply_public_cap, public_track_passes, visibility_is_public, AltitudeMode, MapViewFilter,
+        apply_public_cap, evaluate_public_altitude, public_track_passes, visibility_is_public,
+        AltitudeEval, AltitudeMode, MapViewFilter,
     },
     trail::{
         TrailMinutes, DEFAULT_NEARBY_PUBLIC_RADIUS_KM, DEFAULT_TRAIL_MINUTES, LIVE_FIX_MAX_AGE_MS,
@@ -406,6 +407,9 @@ impl ClubDb {
     /// - Never returns `private` or other clubs' `club`-only flights.
     /// - Excludes suspended, pending/unverified, and deleted clubs.
     /// - Respects `show_pilot_name_public`; never exposes `pilot_id`.
+    /// - Applies the viewing club's public altitude filter (`public_altitude_mode` /
+    ///   `public_altitude_min_ft`) via `evaluate_public_altitude` before the nearest-30 cap;
+    ///   does not apply legacy `show_public_tracks`, `public_radius_km`, or `public_flights_cap`.
     /// - Capped at `MAX_NEARBY_PUBLIC_FLIGHTS` (30), nearest first.
     /// - Structured via a `candidate_public_flights` CTE so future club-less public flights
     ///   (`f.club_id IS NULL`) can be added by relaxing one predicate.
@@ -415,7 +419,8 @@ impl ClubDb {
         now: i64,
     ) -> Vec<TailLivePosition> {
         let club_row = sqlx::query(
-            "SELECT show_nearby_public, nearby_public_radius_km, latitude, longitude
+            "SELECT show_nearby_public, nearby_public_radius_km, latitude, longitude,
+                    public_altitude_mode, public_altitude_min_ft
              FROM clubs
              WHERE id = $1",
         )
@@ -447,6 +452,12 @@ impl ClubDb {
         {
             return Vec::new();
         }
+        let altitude_mode = AltitudeMode::parse(
+            &club_row
+                .try_get::<String, _>(4)
+                .unwrap_or_else(|_| "agl".to_string()),
+        );
+        let altitude_min_ft: f64 = club_row.try_get(5).unwrap_or(300.0);
 
         let (raw_min_lat, raw_max_lat, raw_min_lon, raw_max_lon) =
             bbox_for_radius_km(base_lat, base_lon, radius_km);
@@ -534,6 +545,7 @@ impl ClubDb {
         .await
         .unwrap_or_default();
 
+        let dem = self.dem_index();
         let mut scored: Vec<(f64, TailLivePosition)> = rows
             .into_iter()
             .filter_map(|r| {
@@ -557,6 +569,22 @@ impl ClubDb {
                 if dist_km > radius_km {
                     return None;
                 }
+                let fix = crate::live::LiveFix {
+                    t,
+                    lat,
+                    lon,
+                    alt: r.try_get(9).ok().flatten(),
+                    alt_ref: r.try_get(10).ok().flatten(),
+                    speed: r.try_get(11).ok().flatten(),
+                    course: r.try_get(12).ok().flatten(),
+                    accuracy: r.try_get(13).ok().flatten(),
+                };
+                if !matches!(
+                    evaluate_public_altitude(&fix, altitude_mode, altitude_min_ft, &dem),
+                    AltitudeEval::Pass | AltitudeEval::NoDemFallbackMsl
+                ) {
+                    return None;
+                }
                 let effective = TrailMinutes::effective(flight_override, club_default);
                 Some((
                     dist_km,
@@ -565,16 +593,7 @@ impl ClubDb {
                         flight_id,
                         pilot_id: None,
                         pilot_name,
-                        fix: crate::live::LiveFix {
-                            t,
-                            lat,
-                            lon,
-                            alt: r.try_get(9).ok().flatten(),
-                            alt_ref: r.try_get(10).ok().flatten(),
-                            speed: r.try_get(11).ok().flatten(),
-                            course: r.try_get(12).ok().flatten(),
-                            accuracy: r.try_get(13).ok().flatten(),
-                        },
+                        fix,
                         visibility: "public".to_string(),
                         trail_minutes: effective.as_i16(),
                         non_club: true,

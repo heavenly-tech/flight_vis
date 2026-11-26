@@ -1890,3 +1890,576 @@ async fn patch_admin_club_nearby_public_auth_csrf_and_validation() {
     assert_eq!(get_body["showNearbyPublic"], json!(false));
     assert_eq!(get_body["nearbyPublicRadiusKm"], json!(100));
 }
+
+fn make_fixes_with_alt(
+    latest_t: i64,
+    lat: f64,
+    lon: f64,
+    specs: &[(i64, Option<f64>, Option<&str>)],
+) -> Vec<LiveFix> {
+    specs
+        .iter()
+        .enumerate()
+        .map(|(i, &(min_ago, alt, alt_ref))| LiveFix {
+            t: latest_t - min_ago * 60_000,
+            lat: lat + i as f64 * 0.001,
+            lon: lon + i as f64 * 0.001,
+            alt,
+            alt_ref: alt_ref.map(str::to_string),
+            speed: Some(32.0),
+            course: Some(90.0),
+            accuracy: Some(5.0),
+        })
+        .collect()
+}
+
+struct FlightDataEnvGuard {
+    prev: Option<std::ffi::OsString>,
+}
+
+impl FlightDataEnvGuard {
+    fn set(path: &std::path::Path) -> Self {
+        let prev = std::env::var_os("FLIGHT_DATA");
+        std::env::set_var("FLIGHT_DATA", path);
+        Self { prev }
+    }
+
+    fn update(&self, path: &std::path::Path) {
+        std::env::set_var("FLIGHT_DATA", path);
+    }
+}
+
+impl Drop for FlightDataEnvGuard {
+    fn drop(&mut self) {
+        match &self.prev {
+            Some(v) => std::env::set_var("FLIGHT_DATA", v),
+            None => std::env::remove_var("FLIGHT_DATA"),
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn club_view_nearby_public_altitude_filter_msl_alt_ref_missing_and_legacy_ignored() {
+    let db = ClubDb::open_test().await.unwrap();
+    let (_tmp, mut router) = http_stack(db.clone()).await;
+
+    let (club_a, _) = create_live_club(
+        &db,
+        "np-alt-a",
+        "own-npalta@test",
+        Some(("SCTB", -33.456, -70.548)),
+    )
+    .await;
+    let (club_b, _) = create_live_club(
+        &db,
+        "np-alt-b",
+        "own-npaltb@test",
+        Some(("SCEL", -33.393, -70.786)),
+    )
+    .await;
+
+    // Configure Club A's public altitude filter to MSL >= 1500 ft, and set legacy
+    // show_public_tracks = false / tiny legacy radius & cap to verify only the altitude
+    // filter (and NOT legacy show_public_tracks / public_radius_km / public_flights_cap)
+    // governs nearby public flights.
+    sqlx::query(
+        "UPDATE clubs
+         SET public_altitude_mode = 'msl',
+             public_altitude_min_ft = 1500.0,
+             show_public_tracks = FALSE,
+             public_radius_km = 1.0,
+             public_flights_cap = 1
+         WHERE id = $1",
+    )
+    .bind(&club_a)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    let (_adm_a, adm_a_cookie) =
+        seed_member(&db, &club_a, "Admin A", "adm-npalt@test", "admin").await;
+    let (p_own_low, _) = seed_member(&db, &club_a, "Own Low", "ownlow@test", "pilot").await;
+    let (pb_above, _) = seed_member(&db, &club_b, "Above MSL", "pba@test", "pilot").await;
+    let (pb_below, _) = seed_member(&db, &club_b, "Below MSL", "pbb@test", "pilot").await;
+    let (pb_missing, _) = seed_member(&db, &club_b, "No Alt", "pbm@test", "pilot").await;
+    let (pb_hae_pass, _) = seed_member(&db, &club_b, "HAE Pass", "pbh@test", "pilot").await;
+    let (pb_msl_fail, _) = seed_member(&db, &club_b, "MSL Fail", "pbf@test", "pilot").await;
+
+    let now = now_ms();
+    // Own-club flight well below 1500 ft MSL -> exempt from public altitude filter.
+    let (fid_own_low, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &p_own_low,
+        "CC-OWNLO",
+        FlightVisibility::Club,
+        false,
+        None,
+        &make_fixes_with_alt(
+            now,
+            -33.455,
+            -70.548,
+            &[(4, Some(100.0), Some("msl")), (0, Some(100.0), Some("msl"))],
+        ),
+    )
+    .await;
+
+    // Nearby public flight above 1500 ft MSL (600 m = ~1968.5 ft) -> included.
+    let (fid_above_msl, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &pb_above,
+        "CC-ALTUP",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(
+            now,
+            -33.42,
+            -70.548,
+            &[(4, Some(500.0), Some("msl")), (0, Some(600.0), Some("msl"))],
+        ),
+    )
+    .await;
+
+    // Nearby public flight whose earlier fix was above min (800 m) but LATEST fix is below
+    // 1500 ft MSL (300 m = ~984.3 ft) -> excluded.
+    let (fid_below_msl, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &pb_below,
+        "CC-ALTLO",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(
+            now,
+            -33.49,
+            -70.548,
+            &[(4, Some(800.0), Some("msl")), (0, Some(300.0), Some("msl"))],
+        ),
+    )
+    .await;
+
+    // Nearby public flight whose latest fix has missing altitude -> excluded.
+    let (fid_missing_alt, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &pb_missing,
+        "CC-NOALT",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(
+            now,
+            -33.41,
+            -70.548,
+            &[(4, Some(800.0), Some("msl")), (0, None, None)],
+        ),
+    )
+    .await;
+
+    // 440 m HAE at lat -33.40 has undulation ~ -30.06 m -> ~470.06 m MSL (~1542 ft >= 1500 ft)
+    // -> included; proves alt_ref is carried from latest fix.
+    let (fid_hae_pass, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &pb_hae_pass,
+        "CC-HAEOK",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(
+            now,
+            -33.40,
+            -70.548,
+            &[(4, Some(440.0), Some("hae")), (0, Some(440.0), Some("hae"))],
+        ),
+    )
+    .await;
+
+    // Same 440 m with alt_ref = "msl" is ~1443.6 ft < 1500 ft -> excluded.
+    let (fid_msl_fail, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &pb_msl_fail,
+        "CC-MSLLO",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(
+            now,
+            -33.395,
+            -70.548,
+            &[(4, Some(440.0), Some("msl")), (0, Some(440.0), Some("msl"))],
+        ),
+    )
+    .await;
+
+    for map_uri in ["/api/admin/map", "/api/display/map"] {
+        let (st, _, body) = send_req(
+            &mut router,
+            "GET",
+            map_uri,
+            Some(&adm_a_cookie),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{map_uri}: {body}");
+        let ids: HashSet<&str> = body["aircraft"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|x| x["flightId"].as_str())
+            .collect();
+        assert!(
+            ids.contains(fid_own_low.as_str()),
+            "{map_uri} own-club flight must be exempt from public altitude filter"
+        );
+        assert!(
+            ids.contains(fid_above_msl.as_str()),
+            "{map_uri} missing nearby public flight above 1500 ft MSL"
+        );
+        assert!(
+            ids.contains(fid_hae_pass.as_str()),
+            "{map_uri} missing nearby public HAE flight above 1500 ft MSL after undulation"
+        );
+        assert!(
+            !ids.contains(fid_below_msl.as_str()),
+            "{map_uri} leaked nearby public flight below 1500 ft MSL"
+        );
+        assert!(
+            !ids.contains(fid_missing_alt.as_str()),
+            "{map_uri} leaked nearby public flight with missing altitude"
+        );
+        assert!(
+            !ids.contains(fid_msl_fail.as_str()),
+            "{map_uri} leaked nearby public 440 m MSL flight below 1500 ft"
+        );
+    }
+
+    for tr_uri in ["/api/admin/map/trails", "/api/display/map/trails"] {
+        let (st, _, body) = send_req(
+            &mut router,
+            "GET",
+            tr_uri,
+            Some(&adm_a_cookie),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{tr_uri}: {body}");
+        let trails = body["trails"].as_array().unwrap();
+        let ids: HashSet<&str> = trails
+            .iter()
+            .filter_map(|t| t["flightId"].as_str())
+            .collect();
+        assert!(
+            ids.contains(fid_own_low.as_str()),
+            "{tr_uri} own-club trail must be exempt"
+        );
+        assert!(
+            ids.contains(fid_above_msl.as_str()),
+            "{tr_uri} missing trail for nearby public flight above min"
+        );
+        assert!(
+            ids.contains(fid_hae_pass.as_str()),
+            "{tr_uri} missing trail for nearby public HAE flight above min"
+        );
+        assert!(
+            !ids.contains(fid_below_msl.as_str()),
+            "{tr_uri} leaked trail for filtered-out low-altitude flight"
+        );
+        assert!(
+            !ids.contains(fid_missing_alt.as_str()),
+            "{tr_uri} leaked trail for filtered-out missing-altitude flight"
+        );
+        assert!(
+            !ids.contains(fid_msl_fail.as_str()),
+            "{tr_uri} leaked trail for filtered-out 440 m MSL flight"
+        );
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn club_view_nearby_public_altitude_filter_runs_before_nearest_30_cap() {
+    let db = ClubDb::open_test().await.unwrap();
+    let (_tmp, mut router) = http_stack(db.clone()).await;
+
+    let (club_a, _) = create_live_club(
+        &db,
+        "np-altcap-a",
+        "own-npaca@test",
+        Some(("SCTB", -33.456, -70.548)),
+    )
+    .await;
+    let (club_b, _) = create_live_club(
+        &db,
+        "np-altcap-b",
+        "own-npacb@test",
+        Some(("SCEL", -33.393, -70.786)),
+    )
+    .await;
+
+    sqlx::query(
+        "UPDATE clubs
+         SET public_altitude_mode = 'msl',
+             public_altitude_min_ft = 1500.0
+         WHERE id = $1",
+    )
+    .bind(&club_a)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    let (_adm_a, adm_a_cookie) =
+        seed_member(&db, &club_a, "Admin A", "adm-npac@test", "admin").await;
+
+    let now = now_ms();
+    // Seed 30 closer nearby public flights (~1..28 km N of SCTB) below 1500 ft MSL.
+    for i in 0..MAX_NEARBY_PUBLIC_FLIGHTS {
+        let tail = format!("CC-LO{i:02}");
+        let (pid, _) = seed_member(
+            &db,
+            &club_b,
+            &format!("Low {i}"),
+            &format!("npac-lo-{i}@test"),
+            "pilot",
+        )
+        .await;
+        let lat = -33.456 + (i + 1) as f64 * 0.008;
+        seed_live_flight(
+            &db,
+            &club_b,
+            &pid,
+            &tail,
+            FlightVisibility::Public,
+            false,
+            None,
+            &make_fixes_with_alt(
+                now,
+                lat,
+                -70.548,
+                &[(3, Some(300.0), Some("msl")), (0, Some(300.0), Some("msl"))],
+            ),
+        )
+        .await;
+    }
+
+    // Seed 1 farther nearby public flight (~35 km N, still within 50 km) above 1500 ft MSL.
+    let (p_far_high, _) = seed_member(&db, &club_b, "Far High", "npac-hi@test", "pilot").await;
+    let (fid_far_high, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &p_far_high,
+        "CC-FARHI",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(
+            now,
+            -33.14,
+            -70.548,
+            &[(3, Some(800.0), Some("msl")), (0, Some(800.0), Some("msl"))],
+        ),
+    )
+    .await;
+
+    for (uri, field) in [
+        ("/api/admin/map", "aircraft"),
+        ("/api/display/map", "aircraft"),
+        ("/api/admin/map/trails", "trails"),
+        ("/api/display/map/trails", "trails"),
+    ] {
+        let (st, _, body) = send_req(
+            &mut router,
+            "GET",
+            uri,
+            Some(&adm_a_cookie),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{uri}: {body}");
+        let items = body[field].as_array().unwrap();
+        assert_eq!(
+            items.len(),
+            1,
+            "{uri} must drop 30 low flights before cap and keep the farther high flight"
+        );
+        assert_eq!(items[0]["flightId"], json!(fid_far_high));
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn club_view_nearby_public_altitude_filter_agl_with_dem_and_fallback() {
+    let db = ClubDb::open_test().await.unwrap();
+    let (_tmp, mut router) = http_stack(db.clone()).await;
+
+    // Deterministic 600 m flat DEM tile covering (-34..-33, -71..-70) -> N34W071.asc.
+    let dem_root = tempfile::tempdir().unwrap();
+    let dem_dir = dem_root.path().join("dem");
+    std::fs::create_dir_all(&dem_dir).unwrap();
+    std::fs::write(
+        dem_dir.join("N34W071.asc"),
+        "# 600 m flat terrain\n600 600 600\n600 600 600\n600 600 600\n",
+    )
+    .unwrap();
+    let empty_root = tempfile::tempdir().unwrap();
+    let env_guard = FlightDataEnvGuard::set(dem_root.path());
+
+    let (club_a, _) = create_live_club(
+        &db,
+        "np-agl-a",
+        "own-npagla@test",
+        Some(("SCTB", -33.456, -70.548)),
+    )
+    .await;
+    let (club_b, _) = create_live_club(
+        &db,
+        "np-agl-b",
+        "own-npaglb@test",
+        Some(("SCEL", -33.393, -70.786)),
+    )
+    .await;
+
+    sqlx::query(
+        "UPDATE clubs
+         SET public_altitude_mode = 'agl',
+             public_altitude_min_ft = 1000.0
+         WHERE id = $1",
+    )
+    .bind(&club_a)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    let (_adm_a, adm_a_cookie) =
+        seed_member(&db, &club_a, "Admin A", "adm-npagl@test", "admin").await;
+    let (pb_low_agl, _) = seed_member(&db, &club_b, "Low AGL", "pbal@test", "pilot").await;
+    let (pb_high_agl, _) = seed_member(&db, &club_b, "High AGL", "pbah@test", "pilot").await;
+
+    let now = now_ms();
+    // 800 m MSL (~2625 ft MSL) over 600 m terrain = 200 m AGL (~656 ft < 1000 ft AGL) ->
+    // excluded when DEM tile is present, included via NoDemFallbackMsl when DEM is absent.
+    let (fid_low_agl, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &pb_low_agl,
+        "CC-AGLLO",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(
+            now,
+            -33.42,
+            -70.55,
+            &[(3, Some(800.0), Some("msl")), (0, Some(800.0), Some("msl"))],
+        ),
+    )
+    .await;
+
+    // 1000 m MSL over 600 m terrain = 400 m AGL (~1312 ft >= 1000 ft AGL) -> included.
+    let (fid_high_agl, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &pb_high_agl,
+        "CC-AGLHI",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(
+            now,
+            -33.43,
+            -70.55,
+            &[
+                (3, Some(1000.0), Some("msl")),
+                (0, Some(1000.0), Some("msl")),
+            ],
+        ),
+    )
+    .await;
+
+    // 1) With DEM tile present -> AGL check drops fid_low_agl and keeps fid_high_agl on all 4 endpoints.
+    for (uri, field) in [
+        ("/api/admin/map", "aircraft"),
+        ("/api/display/map", "aircraft"),
+        ("/api/admin/map/trails", "trails"),
+        ("/api/display/map/trails", "trails"),
+    ] {
+        let (st, _, body) = send_req(
+            &mut router,
+            "GET",
+            uri,
+            Some(&adm_a_cookie),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{uri}: {body}");
+        let ids: HashSet<&str> = body[field]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|x| x["flightId"].as_str())
+            .collect();
+        assert!(
+            ids.contains(fid_high_agl.as_str()),
+            "{uri} missing flight above 1000 ft AGL"
+        );
+        assert!(
+            !ids.contains(fid_low_agl.as_str()),
+            "{uri} leaked flight below 1000 ft AGL over 600 m DEM"
+        );
+    }
+
+    // 2) Without DEM coverage -> NoDemFallbackMsl compares MSL (~2625 ft >= 1000 ft), keeping both.
+    env_guard.update(empty_root.path());
+    for (uri, field) in [
+        ("/api/admin/map", "aircraft"),
+        ("/api/display/map", "aircraft"),
+        ("/api/admin/map/trails", "trails"),
+        ("/api/display/map/trails", "trails"),
+    ] {
+        let (st, _, body) = send_req(
+            &mut router,
+            "GET",
+            uri,
+            Some(&adm_a_cookie),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{uri}: {body}");
+        let ids: HashSet<&str> = body[field]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|x| x["flightId"].as_str())
+            .collect();
+        assert!(ids.contains(fid_high_agl.as_str()));
+        assert!(
+            ids.contains(fid_low_agl.as_str()),
+            "{uri} must keep flight via NoDemFallbackMsl when DEM tile is absent"
+        );
+    }
+}
