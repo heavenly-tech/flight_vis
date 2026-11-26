@@ -62,6 +62,30 @@ async fn list_clubs(State(state): State<AppState>, headers: HeaderMap) -> impl I
     Json(json!({ "clubs": db.list_all_clubs_admin().await })).into_response()
 }
 
+async fn list_club_tombstones(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_superadmin(&state, &headers).await {
+        return e.into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    match db.list_club_delete_tombstones().await {
+        Ok(tombstones) => Json(json!({ "tombstones": tombstones })).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
 async fn suspend_club(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -231,6 +255,7 @@ async fn post_superadmin_club_slug(
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/superadmin/clubs", get(list_clubs))
+        .route("/api/superadmin/club-tombstones", get(list_club_tombstones))
         .route(
             "/api/superadmin/clubs/{id}/slug",
             post(post_superadmin_club_slug),

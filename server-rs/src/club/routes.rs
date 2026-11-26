@@ -833,7 +833,10 @@ async fn delete_admin_club(
         None => None,
     };
 
-    match db.delete_club(&club_id, &parsed.slug).await {
+    match db
+        .delete_club(&club_id, &parsed.slug, actor_account_id.as_deref(), now)
+        .await
+    {
         Ok(()) => {}
         Err(crate::club::db_club_lifecycle::ClubDeleteError::SlugMismatch) => {
             return (
