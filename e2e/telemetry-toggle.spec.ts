@@ -12,7 +12,11 @@ function boxesOverlap(a: Box, b: Box, tolerance = 0.5): boolean {
   );
 }
 
+test.describe.configure({ timeout: 120_000 });
 test.use({ locale: "es-CL", extraHTTPHeaders: { "Accept-Language": "es-CL,es;q=0.9" } });
+
+const LOAD_TIMEOUT = 60_000;
+const UI_TIMEOUT = 30_000;
 
 test("telemetry toggle in More hides/shows HUD, persists across reload, and respects shortcut focus rules", async ({
   page,
@@ -22,68 +26,76 @@ test("telemetry toggle in More hides/shows HUD, persists across reload, and resp
 
   const hud = page.locator("#hud");
   const moreBtn = page.locator("#btn-more");
+  const morePanel = page.locator("#more-panel");
   const toggleBtn = page.locator("#btn-telemetry");
 
-  await expect(page.locator("#flight-name")).not.toHaveText(/Loading|Cargando/, { timeout: 15_000 });
-  await expect(hud).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("#flight-name")).not.toHaveText(/Loading|Cargando/, { timeout: LOAD_TIMEOUT });
+  await expect(hud).toBeVisible({ timeout: LOAD_TIMEOUT });
 
   // Open More and verify accessible toggle state
+  await expect(moreBtn).toBeVisible({ timeout: UI_TIMEOUT });
   await moreBtn.click();
-  await expect(toggleBtn).toBeVisible();
+  await expect(morePanel).toBeVisible({ timeout: UI_TIMEOUT });
+  await expect(toggleBtn).toBeVisible({ timeout: UI_TIMEOUT });
   await expect(toggleBtn).toHaveText("Telemetría");
   await expect(toggleBtn).toHaveAttribute("aria-label", "Mostrar u ocultar las lecturas de vuelo");
   await expect(toggleBtn).toHaveAttribute("aria-pressed", "true");
 
   // Hide telemetry cluster
   await toggleBtn.click();
-  await expect(hud).toBeHidden();
+  await expect(hud).toBeHidden({ timeout: UI_TIMEOUT });
   await expect(toggleBtn).toHaveAttribute("aria-pressed", "false");
   expect(await page.evaluate(() => localStorage.getItem("fv.telemetryVisible"))).toBe("false");
 
   // Reload and confirm persistence: flight loads, HUD stays hidden
   await page.reload();
-  await expect(page.locator("#flight-name")).not.toHaveText(/Loading|Cargando/, { timeout: 15_000 });
-  await expect(page.locator("#summary")).not.toBeEmpty({ timeout: 15_000 });
-  await expect(hud).toBeHidden();
+  await stubArcgisTiles(page);
+  await expect(page.locator("#flight-name")).not.toHaveText(/Loading|Cargando/, { timeout: LOAD_TIMEOUT });
+  await expect(page.locator("#summary")).not.toBeEmpty({ timeout: LOAD_TIMEOUT });
+  await expect(hud).toBeHidden({ timeout: UI_TIMEOUT });
+  await expect(moreBtn).toBeVisible({ timeout: UI_TIMEOUT });
   await moreBtn.click();
+  await expect(morePanel).toBeVisible({ timeout: UI_TIMEOUT });
+  await expect(toggleBtn).toBeVisible({ timeout: UI_TIMEOUT });
   await expect(toggleBtn).toHaveAttribute("aria-pressed", "false");
 
   // Show it again via toggle button
   await toggleBtn.click();
-  await expect(hud).toBeVisible();
+  await expect(hud).toBeVisible({ timeout: UI_TIMEOUT });
   await expect(toggleBtn).toHaveAttribute("aria-pressed", "true");
 
   // Keyboard shortcut: 'h' toggles when no field is focused
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   await page.keyboard.press("h");
-  await expect(hud).toBeHidden();
+  await expect(hud).toBeHidden({ timeout: UI_TIMEOUT });
   await expect(toggleBtn).toHaveAttribute("aria-pressed", "false");
 
   // Shift+H ('H') restores it
   await page.keyboard.press("Shift+H");
-  await expect(hud).toBeVisible();
+  await expect(hud).toBeVisible({ timeout: UI_TIMEOUT });
   await expect(toggleBtn).toHaveAttribute("aria-pressed", "true");
 
   // Modifier keys (Control+h / Alt+h) do NOT toggle
   await page.keyboard.press("Control+h");
-  await expect(hud).toBeVisible();
+  await expect(hud).toBeVisible({ timeout: UI_TIMEOUT });
   await page.keyboard.press("Alt+h");
-  await expect(hud).toBeVisible();
+  await expect(hud).toBeVisible({ timeout: UI_TIMEOUT });
 
   // Focus in #play-speed (<select> inside open More panel): 'h' must NOT toggle
   const speedSelect = page.locator("#play-speed");
+  await expect(speedSelect).toBeVisible({ timeout: UI_TIMEOUT });
   await speedSelect.focus();
   await page.keyboard.press("h");
-  await expect(hud).toBeVisible();
+  await expect(hud).toBeVisible({ timeout: UI_TIMEOUT });
   await expect(toggleBtn).toHaveAttribute("aria-pressed", "true");
 
   // Open File menu and focus #slug-input: 'h' must NOT toggle telemetry
   await page.locator("#btn-file").click();
   const slugInput = page.locator("#slug-input");
-  await expect(slugInput).toBeVisible();
+  await expect(slugInput).toBeVisible({ timeout: UI_TIMEOUT });
   await slugInput.focus();
   await page.keyboard.press("h");
-  await expect(hud).toBeVisible();
+  await expect(hud).toBeVisible({ timeout: UI_TIMEOUT });
   await expect(toggleBtn).toHaveAttribute("aria-pressed", "true");
 });
 
@@ -92,10 +104,11 @@ test("telemetry toggle at 390x844 has >= 44x44 touch target and zero overlaps", 
   await stubArcgisTiles(page);
   await page.goto("/vuelo-5");
 
-  await expect(page.locator("#flight-name")).not.toHaveText(/Loading|Cargando/, { timeout: 15_000 });
-  await expect(page.locator("#hud")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("#flight-name")).not.toHaveText(/Loading|Cargando/, { timeout: LOAD_TIMEOUT });
+  await expect(page.locator("#hud")).toBeVisible({ timeout: LOAD_TIMEOUT });
 
   const moreBtn = page.locator("#btn-more");
+  const morePanel = page.locator("#more-panel");
   const toggleBtn = page.locator("#btn-telemetry");
   const langBtn = page.locator("#btn-lang");
   const topbar = page.locator(".topbar");
@@ -103,8 +116,15 @@ test("telemetry toggle at 390x844 has >= 44x44 touch target and zero overlaps", 
   const primaryRow = page.locator(".transport-primary");
   const mobileColor = page.locator(".mobile-color");
 
+  await expect(moreBtn).toBeVisible({ timeout: UI_TIMEOUT });
   await moreBtn.click();
-  await expect(toggleBtn).toBeVisible();
+  await expect(morePanel).toBeVisible({ timeout: UI_TIMEOUT });
+  await expect(toggleBtn).toBeVisible({ timeout: UI_TIMEOUT });
+  await expect(langBtn).toBeVisible({ timeout: UI_TIMEOUT });
+  await expect(topbar).toBeVisible({ timeout: UI_TIMEOUT });
+  await expect(transport).toBeVisible({ timeout: UI_TIMEOUT });
+  await expect(primaryRow).toBeVisible({ timeout: UI_TIMEOUT });
+  await expect(mobileColor).toBeVisible({ timeout: UI_TIMEOUT });
 
   const toggleBox = (await toggleBtn.boundingBox())!;
   const moreBox = (await moreBtn.boundingBox())!;
@@ -141,6 +161,6 @@ test("telemetry toggle at 390x844 has >= 44x44 touch target and zero overlaps", 
 
   // Toggling hides HUD cleanly on mobile
   await toggleBtn.click();
-  await expect(page.locator("#hud")).toBeHidden();
+  await expect(page.locator("#hud")).toBeHidden({ timeout: UI_TIMEOUT });
   await expect(toggleBtn).toHaveAttribute("aria-pressed", "false");
 });

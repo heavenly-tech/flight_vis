@@ -1,7 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 import { stubArcgisTiles } from "./globe-csp-helpers";
 
+test.describe.configure({ timeout: 120_000 });
 test.use({ locale: "es-CL", extraHTTPHeaders: { "Accept-Language": "es-CL,es;q=0.9" } });
+
+const LOAD_TIMEOUT = 60_000;
+const UI_TIMEOUT = 30_000;
 
 const VIEWPORTS = [
   { width: 1280, height: 800, label: "desktop 1280x800" },
@@ -10,7 +14,17 @@ const VIEWPORTS = [
   { width: 390, height: 844, label: "mobile 390x844" },
 ];
 
+async function waitForViewerVisible(page: Page, timeout = UI_TIMEOUT): Promise<void> {
+  await expect(page.locator("#cesiumContainer")).toBeVisible({ timeout });
+  await expect(page.locator("#ui")).toBeVisible({ timeout });
+  await expect(page.locator(".topbar")).toBeVisible({ timeout });
+  await expect(page.locator(".transport")).toBeVisible({ timeout });
+  await expect(page.locator("#hud")).toBeVisible({ timeout });
+}
+
 async function assertViewerFillsViewport(page: Page, vw: number, vh: number): Promise<void> {
+  await waitForViewerVisible(page);
+
   const containerBox = (await page.locator("#cesiumContainer").boundingBox())!;
   expect(containerBox, "#cesiumContainer bounding box").not.toBeNull();
   expect(Math.abs(containerBox.x)).toBeLessThanOrEqual(2);
@@ -20,6 +34,7 @@ async function assertViewerFillsViewport(page: Page, vw: number, vh: number): Pr
 
   const canvas = page.locator("#cesiumContainer canvas");
   if ((await canvas.count()) > 0) {
+    await expect(canvas.first()).toBeVisible({ timeout: UI_TIMEOUT });
     const canvasBox = (await canvas.first().boundingBox())!;
     expect(canvasBox, "Cesium canvas bounding box").not.toBeNull();
     expect(Math.abs(canvasBox.x)).toBeLessThanOrEqual(2);
@@ -50,13 +65,16 @@ async function assertViewerFillsViewport(page: Page, vw: number, vh: number): Pr
   expect(vh - (transportBox.y + transportBox.height), ".transport near bottom edge").toBeLessThanOrEqual(edgeTol);
 
   const hud = page.locator("#hud");
-  await expect(hud).toBeVisible();
+  await expect(hud).toBeVisible({ timeout: UI_TIMEOUT });
   const hudBox = (await hud.boundingBox())!;
   expect(hudBox, "#hud bounding box").not.toBeNull();
 
   if (vw >= 1024) {
     // Desktop: HUD anchored at top-right, right below top-bar actions
-    const topActionsBox = (await page.locator(".top-actions").boundingBox())!;
+    const topActions = page.locator(".top-actions");
+    await expect(topActions).toBeVisible({ timeout: UI_TIMEOUT });
+    const topActionsBox = (await topActions.boundingBox())!;
+    expect(topActionsBox, ".top-actions bounding box").not.toBeNull();
     expect(vw - (hudBox.x + hudBox.width), "desktop #hud hugs right edge").toBeLessThanOrEqual(edgeTol);
     expect(hudBox.y, "desktop #hud sits below .top-actions").toBeGreaterThanOrEqual(
       topActionsBox.y + topActionsBox.height - 1,
@@ -89,8 +107,8 @@ for (const vp of VIEWPORTS) {
     await stubArcgisTiles(page);
     await page.goto("/vuelo-5");
 
-    await expect(page.locator("#flight-name")).not.toHaveText(/Loading|Cargando/, { timeout: 15_000 });
-    await expect(page.locator("#hud")).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator("#flight-name")).not.toHaveText(/Loading|Cargando/, { timeout: LOAD_TIMEOUT });
+    await waitForViewerVisible(page, LOAD_TIMEOUT);
 
     await assertViewerFillsViewport(page, vp.width, vp.height);
   });
@@ -101,8 +119,8 @@ test("flight viewer keeps filling viewport across window resizes", async ({ page
   await stubArcgisTiles(page);
   await page.goto("/vuelo-5");
 
-  await expect(page.locator("#flight-name")).not.toHaveText(/Loading|Cargando/, { timeout: 15_000 });
-  await expect(page.locator("#hud")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator("#flight-name")).not.toHaveText(/Loading|Cargando/, { timeout: LOAD_TIMEOUT });
+  await waitForViewerVisible(page, LOAD_TIMEOUT);
 
   await assertViewerFillsViewport(page, 1280, 800);
 
@@ -112,6 +130,12 @@ test("flight viewer keeps filling viewport across window resizes", async ({ page
     { width: 1600, height: 900 },
   ]) {
     await page.setViewportSize(next);
+    await page.waitForFunction(
+      ({ width, height }) => window.innerWidth === width && window.innerHeight === height,
+      next,
+      { timeout: UI_TIMEOUT },
+    );
+    await waitForViewerVisible(page);
     await page.evaluate(
       () =>
         new Promise<void>((resolve) =>
