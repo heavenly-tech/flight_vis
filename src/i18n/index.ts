@@ -182,6 +182,7 @@ const API_ALIASES: Record<string, string> = {
   "db error": "api.dbError",
   "invalid locale": "api.invalidLocale",
   "invalid slug": "api.invalidSlug",
+  "slug mismatch": "adminMap.deleteClubWrongSlug",
   "slug taken": "api.slugTaken",
   unchanged: "api.unchanged",
   locked: "globe.uploadLocked",

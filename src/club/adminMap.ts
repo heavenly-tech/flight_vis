@@ -3,6 +3,7 @@ import { ensureClubAdminOrRedirect } from "./adminGate";
 import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 import { startClubPage } from "./i18nPage";
 import { mountOpenKioskLink, type OpenKioskLinkController } from "./openKioskLink";
+import { safeNextPath } from "./safeNext";
 import {
   extractPublicAircraft,
   normalizeBaseAerodrome,
@@ -45,6 +46,112 @@ type DisplaySessionInfo = {
   fullUrl: string;
   token: string;
 };
+
+export function canConfirmClubDelete(typed: string, liveSlug: string | null): boolean {
+  if (!liveSlug) return false;
+  return typed.trim() === liveSlug;
+}
+
+export type DeleteClubController = {
+  configure: (opts: { isAdmin: boolean; clubSlug: string | null }) => void;
+  updateSlug: (slug: string) => void;
+};
+
+export function mountDeleteClubSection(
+  navigate: (url: string) => void = (url) => window.location.assign(url),
+): DeleteClubController {
+  const section = document.querySelector<HTMLElement>("#club-danger-zone");
+  const expectedEl = document.querySelector<HTMLElement>("#club-delete-slug-expected");
+  const input = document.querySelector<HTMLInputElement>("#club-delete-slug-input");
+  const confirmBtn = document.querySelector<HTMLButtonElement>("#club-delete-confirm");
+  const msgEl = document.querySelector<HTMLParagraphElement>("#club-delete-msg");
+
+  let liveClubSlug: string | null = null;
+  let isAdmin = false;
+  let submitting = false;
+
+  function syncState(): void {
+    if (section) section.hidden = !isAdmin;
+    if (expectedEl) expectedEl.textContent = liveClubSlug ?? "";
+    if (input) input.disabled = submitting;
+    if (confirmBtn) {
+      confirmBtn.disabled =
+        submitting || !isAdmin || !canConfirmClubDelete(input?.value ?? "", liveClubSlug);
+    }
+  }
+
+  input?.addEventListener("input", () => {
+    if (msgEl) msgEl.textContent = "";
+    syncState();
+  });
+
+  confirmBtn?.addEventListener("click", async () => {
+    if (!input || !isAdmin || submitting) return;
+    const slug = input.value.trim();
+    if (!canConfirmClubDelete(slug, liveClubSlug)) {
+      if (msgEl) msgEl.textContent = t("adminMap.deleteClubWrongSlug");
+      syncState();
+      return;
+    }
+    submitting = true;
+    if (msgEl) msgEl.textContent = "";
+    syncState();
+    let navigated = false;
+    try {
+      const res = await fetch("/api/admin/club", {
+        method: "DELETE",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug }),
+      });
+      const payload = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        redirect?: string;
+        error?: string;
+      };
+      if (res.ok) {
+        const dest =
+          typeof payload.redirect === "string" && payload.redirect.trim()
+            ? safeNextPath(payload.redirect)
+            : "/account-clubs.html";
+        navigated = true;
+        navigate(dest);
+        return;
+      }
+      if (msgEl) {
+        const err = payload.error ?? "";
+        if (err === "slug mismatch" || err === "invalid slug") {
+          msgEl.textContent = t("adminMap.deleteClubWrongSlug");
+        } else if (err === "admin only") {
+          msgEl.textContent = t("api.adminOnly");
+        } else {
+          msgEl.textContent = t("adminMap.deleteClubFailed");
+        }
+      }
+    } catch {
+      if (msgEl) msgEl.textContent = t("adminMap.deleteClubFailed");
+    } finally {
+      if (!navigated) {
+        submitting = false;
+        syncState();
+      }
+    }
+  });
+
+  syncState();
+
+  return {
+    configure(opts) {
+      isAdmin = opts.isAdmin;
+      liveClubSlug = opts.clubSlug && opts.clubSlug.length > 0 ? opts.clubSlug : null;
+      syncState();
+    },
+    updateSlug(slug) {
+      liveClubSlug = slug.length > 0 ? slug : null;
+      syncState();
+    },
+  };
+}
 
 function bootAdminMap(): void {
   const mapElMaybe = document.querySelector<HTMLDivElement>("#admin-map");
@@ -89,6 +196,7 @@ function bootAdminMap(): void {
   let lastLiveAircraft: PublicMapAircraft[] = [];
   let lastDisplaySession: DisplaySessionInfo | null = null;
   let kioskLinkCtrl: OpenKioskLinkController | null = null;
+  const deleteClubCtrl = mountDeleteClubSection();
 
   function paintSlugHelp(): void {
     const slug = currentClubSlug || "cas-tobalaba";
@@ -356,6 +464,7 @@ function bootAdminMap(): void {
       currentClubSlug = payload.slug;
       paintSlugHelp();
       kioskLinkCtrl?.updateSlug(payload.slug);
+      deleteClubCtrl.updateSlug(payload.slug);
     }
     if (clubSlugMsg) clubSlugMsg.textContent = slugApiMessage(res, payload);
   });
@@ -423,11 +532,19 @@ function bootAdminMap(): void {
     await startClubPage({ switcher: "#lang-slot" });
     mountAdminNav();
     try {
-      const me = await api<{ clubDefaultLocale?: string; clubSlug?: string }>("/api/club/me");
+      const me = await api<{
+        pilot?: { role?: string } | null;
+        clubDefaultLocale?: string;
+        clubSlug?: string;
+      }>("/api/club/me");
       mountClubLocalePicker(me.clubDefaultLocale ?? "es");
       if (me.clubSlug) currentClubSlug = me.clubSlug;
       if (clubSlugInput) clubSlugInput.value = me.clubSlug ?? "";
       paintSlugHelp();
+      deleteClubCtrl.configure({
+        isAdmin: me.pilot?.role === "admin",
+        clubSlug: me.clubSlug ?? null,
+      });
       kioskLinkCtrl = await mountOpenKioskLink(openKioskSlot, { clubSlug: me.clubSlug ?? null });
 
       const baseRes = await api<{ icao: string | null; lat: number | null; lon: number | null }>(

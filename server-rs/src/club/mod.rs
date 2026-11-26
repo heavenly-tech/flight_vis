@@ -67,6 +67,8 @@ mod club_slug_rename_tests;
 #[cfg(test)]
 mod cross_site_csrf_tests;
 #[cfg(test)]
+mod delete_club_tests;
+#[cfg(test)]
 mod load_test;
 #[cfg(test)]
 mod public_map_tests;

@@ -39,6 +39,13 @@ pub enum ClubSignupError {
     Db,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClubDeleteError {
+    NotFound,
+    SlugMismatch,
+    Db,
+}
+
 impl ClubDb {
     pub async fn club_public_row_by_slug(&self, slug: &str) -> Option<ClubPublicRow> {
         let slug = normalize_slug(slug);
@@ -180,6 +187,370 @@ impl ClubDb {
         .execute(&self.pool)
         .await?;
         Ok(r.rows_affected() > 0)
+    }
+
+    pub async fn pilot_account_id(&self, pilot_id: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT account_id FROM pilots WHERE id = $1")
+            .bind(pilot_id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten()
+            .flatten()
+    }
+
+    /// Pick another active membership on an operational club after a club is deleted.
+    /// Prefers an `admin` membership when multiple operational clubs remain.
+    pub async fn next_operational_membership(
+        &self,
+        account_id: &str,
+    ) -> Option<crate::club::db_account::MembershipRow> {
+        let memberships = self.list_account_memberships(account_id).await;
+        let mut fallback = None;
+        for m in memberships {
+            if !crate::club::membership_status::MembershipStatus::parse(&m.status).allows_club_api()
+            {
+                continue;
+            }
+            if self.club_operational(&m.club_id).await.is_err() {
+                continue;
+            }
+            if m.role == "admin" {
+                return Some(m);
+            }
+            if fallback.is_none() {
+                fallback = Some(m);
+            }
+        }
+        fallback
+    }
+
+    /// Permanently hard-delete a club and all of its club-scoped rows in one Postgres transaction.
+    ///
+    /// Soft vs hard delete:
+    /// - `clubs.suspended_at` is reserved for reversible platform-operator suspension.
+    /// - `clubs.status` only models `live` / `pending`; adding a `deleted` state would require a
+    ///   migration and changes across every operational/signup/session check.
+    /// - Hard-deleting in a single transaction requires no migration, matches
+    ///   `purge_stale_pending_clubs`, and releases the club's slugs once its rows are removed.
+    ///
+    /// Club-scoped tables deleted (in FK-safe child-first order):
+    /// `fixes`, `flight_devices`, `flight_shares`, `flights`, `checkins`,
+    /// `checkin_handoff_tokens` (no FK), `checkouts`, `device_pair_tokens`, `devices`,
+    /// `admin_map_prefs`, `display_sessions`, `access_requests`, `audit_log`,
+    /// `magic_login_tokens` (club/pilot-scoped), `guest_sessions`, `aircraft`, `aircraft_types`,
+    /// `pilot_sessions` (invalidates `fv_club_session`), `webauthn_credentials`,
+    /// `club_memberships` (`account_sessions.active_membership_id` falls back via `ON DELETE SET NULL`),
+    /// `pilots`, `club_slug_history`, `club_slug_registry`, and `clubs`.
+    ///
+    /// Preserved global/email-scoped tables: `accounts`, `account_sessions`, `email_suppressions`,
+    /// `login_attempts`, `magic_send_log`, and all other clubs' rows.
+    ///
+    /// Security: callers must enforce exact JSON `Content-Type`, `csrf::cookie_post_allowed`,
+    /// active-club-only scoping (never a club id from request input), and
+    /// `require_active_club_admin_role`. Re-validates the normalized club slug under `FOR UPDATE`.
+    pub async fn delete_club(
+        &self,
+        club_id: &str,
+        confirm_slug: &str,
+    ) -> Result<(), ClubDeleteError> {
+        let mut tx = self.pool.begin().await.map_err(|_| ClubDeleteError::Db)?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(club_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ClubDeleteError::Db)?;
+
+        let current_slug: Option<String> =
+            sqlx::query_scalar("SELECT slug FROM clubs WHERE id = $1 FOR UPDATE")
+                .bind(club_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|_| ClubDeleteError::Db)?;
+        let Some(current_slug) = current_slug else {
+            let _ = tx.rollback().await;
+            return Err(ClubDeleteError::NotFound);
+        };
+        let expected = normalize_slug(&current_slug);
+        let provided = normalize_slug(confirm_slug);
+        if expected.is_empty() || provided != expected {
+            let _ = tx.rollback().await;
+            return Err(ClubDeleteError::SlugMismatch);
+        }
+
+        // Flight telemetry, device links, shares, and flights (including legacy rows where club_id IS NULL).
+        sqlx::query(
+            "DELETE FROM fixes
+             WHERE flight_id IN (
+                 SELECT id FROM flights
+                 WHERE club_id = $1
+                    OR pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)
+                    OR aircraft_id IN (SELECT id FROM aircraft WHERE club_id = $1)
+             )
+             OR device_id IN (
+                 SELECT id FROM devices WHERE pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)
+             )",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query(
+            "DELETE FROM flight_devices
+             WHERE flight_id IN (
+                 SELECT id FROM flights
+                 WHERE club_id = $1
+                    OR pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)
+                    OR aircraft_id IN (SELECT id FROM aircraft WHERE club_id = $1)
+             )
+             OR device_id IN (
+                 SELECT id FROM devices WHERE pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)
+             )",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query(
+            "DELETE FROM flight_shares
+             WHERE club_id = $1
+                OR flight_id IN (
+                    SELECT id FROM flights
+                    WHERE club_id = $1
+                       OR pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)
+                       OR aircraft_id IN (SELECT id FROM aircraft WHERE club_id = $1)
+                )
+                OR created_by IN (SELECT id FROM pilots WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query(
+            "DELETE FROM flights
+             WHERE club_id = $1
+                OR pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)
+                OR aircraft_id IN (SELECT id FROM aircraft WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        // Check-ins and check-in handoff tokens (checkin_handoff_tokens has no FK).
+        sqlx::query(
+            "DELETE FROM checkins
+             WHERE club_id = $1
+                OR pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)
+                OR device_id IN (
+                    SELECT id FROM devices WHERE pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)
+                )",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query(
+            "DELETE FROM checkin_handoff_tokens
+             WHERE club_id = $1
+                OR pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        // Type ratings / checkouts.
+        sqlx::query(
+            "DELETE FROM checkouts
+             WHERE club_id = $1
+                OR pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)
+                OR type_id IN (SELECT id FROM aircraft_types WHERE club_id = $1)
+                OR aircraft_id IN (SELECT id FROM aircraft WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        // Devices, pairing tokens, and admin map preferences.
+        sqlx::query(
+            "DELETE FROM device_pair_tokens
+             WHERE device_id IN (
+                 SELECT id FROM devices WHERE pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)
+             )",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query(
+            "DELETE FROM devices
+             WHERE pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query(
+            "DELETE FROM admin_map_prefs
+             WHERE pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        // Keep display_sessions deletion isolated so reconciliation with kiosk PRs stays minimal.
+        sqlx::query("DELETE FROM display_sessions WHERE club_id = $1")
+            .bind(club_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ClubDeleteError::Db)?;
+
+        // Access requests and audit log (null out cross-club actor references without deleting other clubs' rows).
+        sqlx::query(
+            "UPDATE access_requests SET decided_by_pilot_id = NULL
+             WHERE club_id <> $1
+               AND decided_by_pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query(
+            "DELETE FROM access_requests
+             WHERE club_id = $1
+                OR pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)
+                OR type_id IN (SELECT id FROM aircraft_types WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query(
+            "UPDATE audit_log SET actor_pilot_id = NULL
+             WHERE club_id <> $1
+               AND actor_pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM audit_log WHERE club_id = $1")
+            .bind(club_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ClubDeleteError::Db)?;
+
+        // Club/pilot-scoped magic tokens and guest sessions.
+        sqlx::query(
+            "DELETE FROM magic_login_tokens
+             WHERE club_id = $1
+                OR pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query(
+            "DELETE FROM guest_sessions
+             WHERE club_id = $1
+                OR guest_pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        // Fleet.
+        sqlx::query("DELETE FROM aircraft WHERE club_id = $1")
+            .bind(club_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM aircraft_types WHERE club_id = $1")
+            .bind(club_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ClubDeleteError::Db)?;
+
+        // Pilot sessions (invalidates fv_club_session server-side), passkeys, memberships, and pilots.
+        sqlx::query(
+            "DELETE FROM pilot_sessions
+             WHERE pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query(
+            "DELETE FROM webauthn_credentials
+             WHERE pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query(
+            "UPDATE account_sessions SET compat_pilot_session = NULL
+             WHERE active_membership_id IN (SELECT id FROM club_memberships WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query(
+            "DELETE FROM club_memberships
+             WHERE club_id = $1
+                OR pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
+        )
+        .bind(club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM pilots WHERE club_id = $1")
+            .bind(club_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ClubDeleteError::Db)?;
+
+        // Slug history/registry and finally the club row itself.
+        sqlx::query("DELETE FROM club_slug_history WHERE club_id = $1")
+            .bind(club_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM club_slug_registry WHERE club_id = $1")
+            .bind(club_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ClubDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM clubs WHERE id = $1")
+            .bind(club_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ClubDeleteError::Db)?;
+
+        tx.commit().await.map_err(|_| ClubDeleteError::Db)?;
+        Ok(())
     }
 
     pub async fn purge_stale_pending_clubs(&self, now: i64) -> Result<u64, DbError> {

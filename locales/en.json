@@ -648,6 +648,12 @@
     "copySelected": "Text selected to copy.",
     "displayUrlLabel": "Club display URL",
     "activationCodeLabel": "Activation code",
-    "noTailsRegistered": "No tails registered yet."
+    "noTailsRegistered": "No tails registered yet.",
+    "deleteClubTitle": "Delete club",
+    "deleteClubWarning": "This action cannot be undone. The club and all of its memberships, aircraft, flights, check-ins, and sessions will be permanently deleted.",
+    "deleteClubConfirmLabel": "To confirm, type the club short name:",
+    "deleteClubButton": "Delete permanently",
+    "deleteClubWrongSlug": "The short name entered does not match this club.",
+    "deleteClubFailed": "Could not delete the club. Please try again."
   }
 }
