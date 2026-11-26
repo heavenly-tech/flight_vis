@@ -2,13 +2,15 @@
 
 use crate::club::{
     auth::new_id,
-    db::{ClubDb, DbError},
+    db::{now_ms, ClubDb, DbError},
     slug::{confusable_slug_skeleton, normalize_slug, validate_slug},
 };
-use sqlx::{postgres::PgTransaction, Row};
+use sqlx::{postgres::PgTransaction, PgExecutor, Row};
 
 pub const MAX_SLUG_RENAMES_PER_CLUB_PER_DAY: i64 = 10;
 pub const MAX_SLUG_HISTORY_PER_CLUB: i64 = 50;
+/// Deleted club slugs (current and historical) remain reserved for this duration.
+pub const CLUB_SLUG_DELETE_COOLDOWN_MS: i64 = 90 * 24 * 60 * 60 * 1000;
 const RENAME_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,79 +67,127 @@ impl ClubDb {
         .flatten()
     }
 
-    async fn slug_taken_in_tx(
-        tx: &mut PgTransaction<'_>,
+    async fn slug_exact_taken<'e, E>(
+        exec: E,
         slug: &str,
         except_club_id: Option<&str>,
-    ) -> Result<bool, sqlx::Error> {
+        now: i64,
+    ) -> Result<bool, sqlx::Error>
+    where
+        E: PgExecutor<'e>,
+    {
         let slug = normalize_slug(slug);
-        let in_registry: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM club_slug_registry
-             WHERE slug = $1 AND ($2::text IS NULL OR club_id <> $2)",
+        let cutoff = now.saturating_sub(CLUB_SLUG_DELETE_COOLDOWN_MS);
+        sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1
+                 FROM club_slug_registry
+                 WHERE slug = $1 AND ($2::text IS NULL OR club_id <> $2)
+                 UNION ALL
+                 SELECT 1
+                 FROM club_delete_tombstone_slugs s
+                 JOIN club_delete_tombstones t ON t.id = s.tombstone_id
+                 WHERE s.slug = $1 AND t.deleted_at > $3
+             )",
         )
         .bind(&slug)
         .bind(except_club_id)
-        .fetch_one(&mut **tx)
-        .await?;
-        Ok(in_registry > 0)
+        .bind(cutoff)
+        .fetch_one(exec)
+        .await
     }
 
-    async fn confusable_taken_in_tx(
-        tx: &mut PgTransaction<'_>,
+    async fn slug_confusable_taken<'e, E>(
+        exec: E,
         slug: &str,
         except_club_id: Option<&str>,
-    ) -> Result<bool, sqlx::Error> {
+        now: i64,
+    ) -> Result<bool, sqlx::Error>
+    where
+        E: PgExecutor<'e>,
+    {
         let skel = confusable_slug_skeleton(slug);
         if skel.is_empty() {
             return Ok(false);
         }
+        let cutoff = now.saturating_sub(CLUB_SLUG_DELETE_COOLDOWN_MS);
         let rows: Vec<String> = sqlx::query_scalar(
-            "SELECT slug FROM club_slug_registry WHERE ($1::text IS NULL OR club_id <> $1)",
+            "SELECT slug FROM club_slug_registry WHERE ($1::text IS NULL OR club_id <> $1)
+             UNION
+             SELECT s.slug
+             FROM club_delete_tombstone_slugs s
+             JOIN club_delete_tombstones t ON t.id = s.tombstone_id
+             WHERE t.deleted_at > $2",
         )
         .bind(except_club_id)
-        .fetch_all(&mut **tx)
-        .await?;
-        Ok(rows.iter().any(|s| {
-            confusable_slug_skeleton(s) == skel && normalize_slug(s) != normalize_slug(slug)
-        }))
-    }
-
-    pub async fn club_slug_globally_taken(
-        &self,
-        slug: &str,
-        except_club_id: Option<&str>,
-    ) -> Result<bool, DbError> {
-        let slug = normalize_slug(slug);
-        let in_registry: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM club_slug_registry
-             WHERE slug = $1 AND ($2::text IS NULL OR club_id <> $2)",
-        )
-        .bind(&slug)
-        .bind(except_club_id)
-        .fetch_one(&self.pool)
-        .await?;
-        if in_registry > 0 {
-            return Ok(true);
-        }
-        self.club_slug_confusable_taken(&slug, except_club_id).await
-    }
-
-    pub async fn club_slug_confusable_taken(
-        &self,
-        slug: &str,
-        except_club_id: Option<&str>,
-    ) -> Result<bool, DbError> {
-        let skel = confusable_slug_skeleton(slug);
-        let rows: Vec<String> = sqlx::query_scalar(
-            "SELECT slug FROM club_slug_registry WHERE ($1::text IS NULL OR club_id <> $1)",
-        )
-        .bind(except_club_id)
-        .fetch_all(&self.pool)
+        .bind(cutoff)
+        .fetch_all(exec)
         .await?;
         let norm = normalize_slug(slug);
         Ok(rows
             .iter()
             .any(|s| confusable_slug_skeleton(s) == skel && normalize_slug(s) != norm))
+    }
+
+    pub(crate) async fn slug_taken_in_tx(
+        tx: &mut PgTransaction<'_>,
+        slug: &str,
+        except_club_id: Option<&str>,
+        now: i64,
+    ) -> Result<bool, sqlx::Error> {
+        Self::slug_exact_taken(&mut **tx, slug, except_club_id, now).await
+    }
+
+    pub(crate) async fn confusable_taken_in_tx(
+        tx: &mut PgTransaction<'_>,
+        slug: &str,
+        except_club_id: Option<&str>,
+        now: i64,
+    ) -> Result<bool, sqlx::Error> {
+        Self::slug_confusable_taken(&mut **tx, slug, except_club_id, now).await
+    }
+
+    pub async fn club_slug_globally_taken_at(
+        &self,
+        slug: &str,
+        except_club_id: Option<&str>,
+        now: i64,
+    ) -> Result<bool, DbError> {
+        let slug = normalize_slug(slug);
+        if Self::slug_exact_taken(&self.pool, &slug, except_club_id, now).await? {
+            return Ok(true);
+        }
+        self.club_slug_confusable_taken_at(&slug, except_club_id, now)
+            .await
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub async fn club_slug_globally_taken(
+        &self,
+        slug: &str,
+        except_club_id: Option<&str>,
+    ) -> Result<bool, DbError> {
+        self.club_slug_globally_taken_at(slug, except_club_id, now_ms())
+            .await
+    }
+
+    pub async fn club_slug_confusable_taken_at(
+        &self,
+        slug: &str,
+        except_club_id: Option<&str>,
+        now: i64,
+    ) -> Result<bool, DbError> {
+        Self::slug_confusable_taken(&self.pool, slug, except_club_id, now).await
+    }
+
+    #[allow(dead_code)]
+    pub async fn club_slug_confusable_taken(
+        &self,
+        slug: &str,
+        except_club_id: Option<&str>,
+    ) -> Result<bool, DbError> {
+        self.club_slug_confusable_taken_at(slug, except_club_id, now_ms())
+            .await
     }
 
     pub async fn rename_club_slug(
@@ -193,10 +243,10 @@ impl ClubDb {
             let _ = tx.rollback().await;
             return Err(ClubSlugRenameError::RateLimited);
         }
-        if Self::slug_taken_in_tx(&mut tx, &new_slug, Some(club_id))
+        if Self::slug_taken_in_tx(&mut tx, &new_slug, Some(club_id), now)
             .await
             .map_err(|_| ClubSlugRenameError::Db)?
-            || Self::confusable_taken_in_tx(&mut tx, &new_slug, Some(club_id))
+            || Self::confusable_taken_in_tx(&mut tx, &new_slug, Some(club_id), now)
                 .await
                 .map_err(|_| ClubSlugRenameError::Db)?
         {
