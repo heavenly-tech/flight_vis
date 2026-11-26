@@ -1,0 +1,193 @@
+/* Admin live map stage, tile markers, tail filter, kiosk card, and settings drawer. */
+
+.admin-map-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.65rem;
+}
+
+.admin-map-header .section-heading {
+  margin: 0;
+}
+
+.admin-base-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(103, 232, 249, 0.15);
+  color: #67e8f9;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.8rem;
+  letter-spacing: 0.05em;
+}
+
+.admin-map-stage {
+  position: relative;
+  width: 100%;
+  height: min(44vh, 22rem);
+  min-height: 15rem;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--stroke, rgba(255, 255, 255, 0.12));
+  background:
+    radial-gradient(circle at center, rgba(103, 232, 249, 0.06) 0%, transparent 65%),
+    linear-gradient(180deg, #0b111b 0%, #121c2a 100%);
+  margin-bottom: 0.9rem;
+}
+
+.admin-map-canvas {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.tile-map-layer {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+}
+
+.tile-map-img {
+  position: absolute;
+  pointer-events: none;
+}
+
+.tile-map-aircraft {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  background: #ff5500;
+  color: #fff;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
+  z-index: 3;
+}
+
+.tile-map-base {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  min-width: 28px;
+  height: 28px;
+  padding: 0 0.35rem;
+  background: #22c55e;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  pointer-events: none;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: #052e16;
+  z-index: 2;
+}
+
+.tile-map-attribution {
+  position: absolute;
+  bottom: 0.5rem;
+  right: 0.5rem;
+  font-size: 0.75rem;
+  opacity: 0.75;
+  background: rgba(0, 0, 0, 0.55);
+  color: #e8ecf1;
+  padding: 0.2rem 0.45rem;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 4;
+}
+
+.live-empty {
+  margin: 0.25rem 0 0;
+  font-size: 0.92rem;
+}
+
+.admin-shell ul.live-list {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.admin-shell ul.live-list:empty {
+  display: none;
+}
+
+.admin-shell ul.live-list li {
+  margin: 0;
+  padding: 0.38rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--stroke, rgba(255, 255, 255, 0.14));
+  font-size: 0.9rem;
+}
+
+.kiosk-session-out {
+  margin-top: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.kiosk-session-out:empty {
+  display: none;
+}
+
+.kiosk-copy-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.kiosk-copy-label {
+  font-size: 0.88rem;
+  color: var(--muted, #9aa6b5);
+}
+
+.kiosk-copy-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.admin-shell input.kiosk-copy-input {
+  flex: 1 1 14rem;
+  min-width: 0;
+  width: auto;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.86rem;
+}
+
+.admin-settings-details {
+  border: 1px solid var(--stroke, rgba(255, 255, 255, 0.12));
+  border-radius: 12px;
+  padding: 0.85rem 1rem;
+  margin: 1rem 0;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.admin-settings-summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 1rem;
+  color: var(--text, #f4f7fb);
+  list-style: revert;
+}
+
+.admin-settings-details[open] .admin-settings-summary {
+  margin-bottom: 0.75rem;
+}
+
+.admin-settings-details > section:last-child {
+  margin-bottom: 0;
+}

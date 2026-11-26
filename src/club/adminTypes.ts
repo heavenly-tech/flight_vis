@@ -48,7 +48,11 @@ export function mountAdminTypes(): AdminTypesController {
     list.replaceChildren(
       ...data.types.map((item) => {
         const li = document.createElement("li");
-        li.textContent = item.code;
+        li.className = "admin-row";
+        const span = document.createElement("span");
+        span.className = "admin-row-text";
+        span.textContent = item.code;
+        li.appendChild(span);
         return li;
       }),
     );

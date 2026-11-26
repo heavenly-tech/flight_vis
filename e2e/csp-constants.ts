@@ -2,12 +2,16 @@ import {
   cspForPath,
   policyKindForPath,
   readHtmlGlobeCsp,
+  readHtmlMapCsp,
   readHtmlStrictCsp,
   HTML_CSP_ROUTE_TABLE,
 } from "../scripts/read-html-csp.mjs";
 
 /** Strict HTML CSP (`server-rs/csp/html-strict.csp`). */
 export const HTML_STRICT_CSP = readHtmlStrictCsp();
+
+/** 2D tile-map HTML CSP (`server-rs/csp/html-map.csp`). */
+export const HTML_MAP_CSP = readHtmlMapCsp();
 
 /** Globe / map HTML CSP (`server-rs/csp/html-globe.csp`). */
 export const HTML_GLOBE_CSP = readHtmlGlobeCsp();

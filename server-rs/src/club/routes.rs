@@ -2578,17 +2578,29 @@ async fn display_map(State(state): State<AppState>, headers: HeaderMap) -> impl 
 
 async fn display_base(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
-        return Json(json!({ "icao": null, "lat": null, "lon": null })).into_response();
+        return Json(json!({ "icao": null, "lat": null, "lon": null, "clubName": null }))
+            .into_response();
     };
     let (club_id, _admin_id) = match require_display_club(db, &headers).await {
         Ok(v) => v,
         Err(e) => return e.into_response(),
     };
+    let club_name = db.club_public_row(&club_id).await.map(|r| r.name);
     match db.club_base_aerodrome(&club_id).await {
-        Ok(base) => {
-            Json(json!({ "icao": base.icao, "lat": base.lat, "lon": base.lon })).into_response()
-        }
-        Err(_) => Json(json!({ "icao": null, "lat": null, "lon": null })).into_response(),
+        Ok(base) => Json(json!({
+            "icao": base.icao,
+            "lat": base.lat,
+            "lon": base.lon,
+            "clubName": club_name,
+        }))
+        .into_response(),
+        Err(_) => Json(json!({
+            "icao": null,
+            "lat": null,
+            "lon": null,
+            "clubName": club_name,
+        }))
+        .into_response(),
     }
 }
 
@@ -2771,33 +2783,33 @@ async fn club_slug_screen_page(
     }
 }
 
-async fn club_globe_screen_page(State(state): State<AppState>) -> impl IntoResponse {
-    serve_dist_html(&state, "club-globe-screen.html").await
+fn redirect_found_with_query(base_path: &str, query: Option<&str>) -> axum::response::Response {
+    let location = match query {
+        Some(q) if !q.is_empty() && !q.bytes().any(|b| b < 0x20 || b == 0x7f) => {
+            format!("{base_path}?{q}")
+        }
+        _ => base_path.to_string(),
+    };
+    (StatusCode::FOUND, [(header::LOCATION, location)], "").into_response()
+}
+
+async fn club_globe_screen_page(uri: axum::http::Uri) -> impl IntoResponse {
+    redirect_found_with_query("/club/screen", uri.query())
 }
 
 async fn club_slug_globe_screen_page(
     State(state): State<AppState>,
+    uri: axum::http::Uri,
     Path(slug): Path<String>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
         return (StatusCode::SERVICE_UNAVAILABLE, "Club disabled").into_response();
     };
-    if db.club_id_for_slug(&slug).await.is_none() {
+    let Some(club_id) = db.club_id_for_slug_any(&slug).await else {
         return (StatusCode::NOT_FOUND, "Club not found").into_response();
-    }
-    serve_dist_html(&state, "club-globe-screen.html").await
-}
-
-async fn serve_dist_html(state: &AppState, name: &str) -> axum::response::Response {
-    let path = state.dist_dir.join(name);
-    match tokio::fs::read_to_string(&path).await {
-        Ok(html) => ([(html_csp_header(name))], Html(html)).into_response(),
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            format!("{name} not built (npm run build)"),
-        )
-            .into_response(),
-    }
+    };
+    let canonical = db.club_slug(&club_id).await.unwrap_or(slug);
+    redirect_found_with_query(&format!("/c/{canonical}/screen"), uri.query())
 }
 
 #[derive(Deserialize)]

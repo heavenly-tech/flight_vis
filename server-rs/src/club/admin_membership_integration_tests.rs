@@ -3,7 +3,7 @@
 use crate::club::{
     auth::hash_password,
     db::{now_ms, ClubDb},
-    db_memberships_admin::{MembershipAdminError, ADMIN_INVITE_PURPOSE},
+    db_memberships_admin::{MembershipAdminError, ADMIN_INVITE_PURPOSE, PILOT_INVITE_PURPOSE},
 };
 use serial_test::serial;
 use sqlx::Row;
@@ -279,4 +279,148 @@ async fn non_admin_invite_promote_403() {
         )
         .await
         .is_err());
+}
+
+#[serial]
+#[tokio::test]
+async fn pilot_invite_and_accept_creates_active_pilot_and_audit() {
+    let db = open_db().await;
+    let club = db.default_club_id().await.unwrap();
+    ensure_live_club(&db, &club).await;
+    let (inviter, _) = insert_admin(&db, &club, "inviter-pilot@test", "Inv").await;
+    let now = now_ms();
+    let raw = db
+        .invite_membership(&club, "newpilot@test", &inviter, "pilot", now)
+        .await
+        .unwrap();
+    assert_eq!(
+        db.peek_magic_token_purpose(&raw).await.as_deref(),
+        Some(PILOT_INVITE_PURPOSE)
+    );
+    let token_id: String = sqlx::query_scalar(
+        "SELECT id FROM magic_login_tokens WHERE lower(email) = 'newpilot@test' AND purpose = $1",
+    )
+    .bind(PILOT_INVITE_PURPOSE)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    let invite_audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint FROM audit_log
+         WHERE club_id = $1 AND actor_pilot_id = $2 AND action = 'invite_pilot'
+           AND entity_type = 'membership' AND entity_id = $3 AND detail = 'pilot'",
+    )
+    .bind(&club)
+    .bind(&inviter)
+    .bind(&token_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(invite_audit_count, 1);
+
+    // Even if invoked through the legacy accept_admin_invite wrapper, role stays pilot.
+    let accept = db.accept_admin_invite(&raw, now).await.unwrap();
+    assert_eq!(accept.club_id, club);
+    assert_eq!(accept.purpose, PILOT_INVITE_PURPOSE);
+    assert_eq!(accept.role, "pilot");
+    let (m_role, m_status, pid, p_role, p_status): (String, String, String, String, String) =
+        sqlx::query_as(
+            "SELECT m.role, m.status, p.id, p.role, p.status
+             FROM club_memberships m
+             JOIN pilots p ON p.id = m.pilot_id
+             WHERE m.id = $1",
+        )
+        .bind(&accept.membership_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(m_role, "pilot");
+    assert_eq!(m_status, "active");
+    assert_eq!(p_role, "pilot");
+    assert_eq!(p_status, "approved");
+
+    let accept_audit_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint FROM audit_log
+         WHERE club_id = $1 AND actor_pilot_id = $2 AND action = 'accept_invite'
+           AND entity_type = 'membership' AND entity_id = $3 AND detail = 'pilot'",
+    )
+    .bind(&club)
+    .bind(&pid)
+    .bind(&accept.membership_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(accept_audit_count, 1);
+}
+
+#[serial]
+#[tokio::test]
+async fn pilot_invite_approves_pending_pilot_and_preserves_existing_admin() {
+    let db = open_db().await;
+    let club = db.default_club_id().await.unwrap();
+    ensure_live_club(&db, &club).await;
+    let (inviter, _) = insert_admin(&db, &club, "inv-pres@test", "Inv").await;
+    let now = now_ms();
+
+    // 1) Pending pilot linked to account -> approved as pilot (not admin).
+    let pending_email = "pending-pilot-inv@test";
+    let pending_acct = db
+        .ensure_account_for_email(pending_email, None, now)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")
+        .bind(now)
+        .bind(&pending_acct)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let _ = db
+        .join_club_with_account(&pending_acct, &club, "Pend", "", now)
+        .await
+        .unwrap();
+    let raw_pend = db
+        .invite_membership(&club, pending_email, &inviter, "pilot", now)
+        .await
+        .unwrap();
+    let acc_pend = db.accept_membership_invite(&raw_pend, now).await.unwrap();
+    assert_eq!(acc_pend.role, "pilot");
+    let (m_role, m_status, p_status): (String, String, String) = sqlx::query_as(
+        "SELECT m.role, m.status, p.status FROM club_memberships m
+         JOIN pilots p ON p.id = m.pilot_id WHERE m.id = $1",
+    )
+    .bind(&acc_pend.membership_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(m_role, "pilot");
+    assert_eq!(m_status, "active");
+    assert_eq!(p_status, "approved");
+
+    // 2) Existing approved admin invited as pilot -> stays admin.
+    let existing_admin = "already-admin-inv@test";
+    let raw_adm = db
+        .invite_membership(&club, existing_admin, &inviter, "admin", now)
+        .await
+        .unwrap();
+    let acc_adm = db.accept_membership_invite(&raw_adm, now).await.unwrap();
+    assert_eq!(acc_adm.role, "admin");
+
+    let raw_demote_try = db
+        .invite_membership(&club, existing_admin, &inviter, "pilot", now)
+        .await
+        .unwrap();
+    let acc_after = db
+        .accept_membership_invite(&raw_demote_try, now)
+        .await
+        .unwrap();
+    assert_eq!(acc_after.role, "admin");
+    let (m_role2, p_role2): (String, String) = sqlx::query_as(
+        "SELECT m.role, p.role FROM club_memberships m
+         JOIN pilots p ON p.id = m.pilot_id WHERE m.id = $1",
+    )
+    .bind(&acc_after.membership_id)
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(m_role2, "admin");
+    assert_eq!(p_role2, "admin");
 }

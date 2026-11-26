@@ -40,6 +40,9 @@ const authProxy: Record<string, string | ProxyOptions> = {
   "/login": api,
   "/login/legacy": api,
   "/club-login.html": api,
+  "/club-globe-screen.html": api,
+  "/club/globe-screen": api,
+  "/club/screen": api,
 };
 
 function liveSpaFallback(): Plugin {
@@ -208,7 +211,6 @@ export default defineConfig({
         clubAdminRequests: path.resolve(root, "club-admin-requests.html"),
         clubAdminCheckinQr: path.resolve(root, "club-admin-checkin-qr.html"),
         clubScreen: path.resolve(root, "club-screen.html"),
-        clubGlobeScreen: path.resolve(root, "club-globe-screen.html"),
         clubCheckinLanding: path.resolve(root, "club-checkin-landing.html"),
         clubCheckinExpired: path.resolve(root, "club-checkin-expired.html"),
         shareFlight: path.resolve(root, "share-flight.html"),

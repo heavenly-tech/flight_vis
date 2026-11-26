@@ -3414,3 +3414,277 @@ async fn account_logout_clears_both_cookies_revokes_only_current_session_and_enf
     assert_eq!(st, StatusCode::OK);
     assert_eq!(me_b["account"]["email"], "b@test");
 }
+
+#[tokio::test]
+#[serial]
+async fn display_base_returns_club_name_scoped_to_display_cookie() {
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let expected_name = fx
+        .club
+        .club_public_row(&club_id)
+        .await
+        .expect("default club row")
+        .name;
+    fx.club
+        .set_club_base_aerodrome(&club_id, "SCTB", -33.456, -70.548)
+        .await
+        .unwrap();
+
+    // Create a second club so we verify scoping returns only the activated club's name.
+    let now = now_ms();
+    let other_slug = format!("other-club-{}", &crate::club::auth::new_id()[..8]);
+    let (_, _) = fx
+        .club
+        .signup_club("Other Flying Club", &other_slug, "other@test", None, now)
+        .await
+        .unwrap();
+
+    // Unauthenticated /api/display/base must still reject with 401.
+    let (st_unauth, _) = call_json(&mut fx.router, "GET", "/api/display/base", None, "").await;
+    assert_eq!(st_unauth, StatusCode::UNAUTHORIZED);
+
+    let pilot_a = fx.pilot_a.clone();
+    let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
+    let (st_sess, sess_body) = call_json(
+        &mut fx.router,
+        "POST",
+        "/api/admin/display-sessions",
+        Some(&admin_cookie),
+        r#"{"label":"kiosk-test"}"#,
+    )
+    .await;
+    assert_eq!(st_sess, StatusCode::OK);
+    let token = sess_body["token"].as_str().expect("display token");
+
+    let act_res = fx
+        .router
+        .call(
+            Request::builder()
+                .method("POST")
+                .uri("/api/display/activate")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "token": token }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(act_res.status(), StatusCode::OK);
+    let display_cookie = extract_cookie_pair(act_res.headers(), crate::club::auth::DISPLAY_COOKIE)
+        .expect("display cookie");
+
+    let (st_base, base_body) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/display/base",
+        Some(&display_cookie),
+        "",
+    )
+    .await;
+    assert_eq!(st_base, StatusCode::OK);
+    assert_eq!(base_body["icao"], "SCTB");
+    assert_eq!(base_body["lat"], -33.456);
+    assert_eq!(base_body["lon"], -70.548);
+    assert_eq!(base_body["clubName"], expected_name);
+}
+
+#[tokio::test]
+#[serial]
+async fn club_globe_screen_routes_redirect_to_club_screen() {
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let slug = fx.club.club_slug(&club_id).await.expect("default slug");
+
+    let cases = [
+        ("/club-globe-screen.html", "/club-screen.html"),
+        (
+            "/club-globe-screen.html?kiosk=1&lang=es",
+            "/club-screen.html?kiosk=1&lang=es",
+        ),
+        ("/club/globe-screen", "/club/screen"),
+        ("/club/globe-screen?kiosk=1", "/club/screen?kiosk=1"),
+        (
+            &format!("/c/{slug}/globe-screen"),
+            &format!("/c/{slug}/screen"),
+        ),
+        (
+            &format!("/c/{slug}/globe-screen?kiosk=1"),
+            &format!("/c/{slug}/screen?kiosk=1"),
+        ),
+    ];
+
+    for (from, expected_loc) in cases {
+        let res = fx
+            .router
+            .call(Request::builder().uri(from).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FOUND, "GET {from}");
+        assert_eq!(
+            res.headers()
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok()),
+            Some(expected_loc),
+            "Location for GET {from}"
+        );
+    }
+
+    let missing = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/c/no-such-club-slug-xyz/globe-screen")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+#[serial]
+async fn club_screen_dynamic_routes_serve_map_csp() {
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let slug = fx.club.club_slug(&club_id).await.expect("default slug");
+    std::fs::create_dir_all(&fx.dist_dir).expect("dist dir");
+    std::fs::write(
+        fx.dist_dir.join("club-screen.html"),
+        "<!doctype html><html lang=\"es-CL\"><body>screen</body></html>",
+    )
+    .expect("write club-screen.html");
+
+    for uri in ["/club/screen".to_string(), format!("/c/{slug}/screen")] {
+        let res = fx
+            .router
+            .call(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "GET {uri}");
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .and_then(|v| v.to_str().ok()),
+            Some(crate::html_csp::HTML_MAP_CSP),
+            "GET {uri} must serve HTML_MAP_CSP"
+        );
+        assert_eq!(
+            res.headers()
+                .get(header::REFERRER_POLICY)
+                .and_then(|v| v.to_str().ok()),
+            Some(crate::html_csp::SENSITIVE_REFERRER_POLICY),
+            "GET {uri} must keep no-referrer"
+        );
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn club_admin_map_redirects_unauthenticated_and_serves_map_csp_for_admin() {
+    let mut fx = setup().await;
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let pilot_a = fx.pilot_a.clone();
+    std::fs::create_dir_all(&fx.dist_dir).expect("dist dir");
+    std::fs::write(
+        fx.dist_dir.join("club-admin-map.html"),
+        "<!doctype html><html lang=\"es-CL\"><body>admin map</body></html>",
+    )
+    .expect("write club-admin-map.html");
+    std::fs::write(
+        fx.dist_dir.join("club-admin-pilots.html"),
+        "<!doctype html><html lang=\"es-CL\"><body>admin pilots</body></html>",
+    )
+    .expect("write club-admin-pilots.html");
+
+    let unauth = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/club-admin-map.html")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        unauth.status(),
+        StatusCode::FOUND,
+        "unauthenticated GET /club-admin-map.html must redirect to login"
+    );
+    let location = unauth
+        .headers()
+        .get(header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(
+        location.starts_with("/login?next="),
+        "expected /login?next= redirect, got {location:?}"
+    );
+    assert!(
+        location.contains("club-admin-map.html"),
+        "expected next param for /club-admin-map.html, got {location:?}"
+    );
+
+    let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
+
+    let admin_map = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/club-admin-map.html")
+                .header(header::COOKIE, admin_cookie.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        admin_map.status(),
+        StatusCode::OK,
+        "authenticated admin GET /club-admin-map.html must succeed"
+    );
+    assert!(
+        admin_map.headers().get(header::LOCATION).is_none(),
+        "authenticated admin GET /club-admin-map.html must not redirect"
+    );
+    assert_eq!(
+        admin_map
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok()),
+        Some(crate::html_csp::HTML_MAP_CSP),
+        "authenticated GET /club-admin-map.html must serve HTML_MAP_CSP"
+    );
+
+    let admin_pilots = fx
+        .router
+        .call(
+            Request::builder()
+                .uri("/club-admin-pilots.html")
+                .header(header::COOKIE, admin_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        admin_pilots.status(),
+        StatusCode::OK,
+        "authenticated admin GET /club-admin-pilots.html must succeed"
+    );
+    assert!(
+        admin_pilots.headers().get(header::LOCATION).is_none(),
+        "authenticated admin GET /club-admin-pilots.html must not redirect"
+    );
+    assert_eq!(
+        admin_pilots
+            .headers()
+            .get(header::CONTENT_SECURITY_POLICY)
+            .and_then(|v| v.to_str().ok()),
+        Some(crate::html_csp::HTML_STRICT_CSP),
+        "authenticated GET /club-admin-pilots.html must serve HTML_STRICT_CSP"
+    );
+}

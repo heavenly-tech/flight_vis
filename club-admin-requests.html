@@ -17,7 +17,14 @@
       <h1><span data-i18n="admin.requests.title">Solicitudes de acceso</span> <span id="badge" class="badge" hidden>0</span></h1>
       <div id="admin-nav"></div>
       <p id="requests-status" role="status" aria-live="polite" hidden></p>
-      <div id="list"></div>
+      <section id="pending-pilots-section">
+        <h2 style="font-size:1rem" data-i18n="admin.requests.pendingPilotsTitle">Pilotos pendientes de aprobación</h2>
+        <ul id="pending-pilots" class="admin-list"></ul>
+      </section>
+      <section id="access-requests-section">
+        <h2 style="font-size:1rem" data-i18n="admin.requests.accessRequestsTitle">Solicitudes de habilitación</h2>
+        <div id="list"></div>
+      </section>
     </main>
     <dialog id="reject-dialog" aria-labelledby="reject-dialog-title">
       <form id="reject-form">

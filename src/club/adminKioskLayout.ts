@@ -1,6 +1,7 @@
 import { ensureClubAdminOrRedirect } from "./adminGate";
 import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 import { startClubPage } from "./i18nPage";
+import { mountOpenKioskLink } from "./openKioskLink";
 import { t } from "../i18n/index";
 import {
   applyLayoutToEl,
@@ -21,6 +22,7 @@ const qrVisible = document.querySelector<HTMLInputElement>("#checkin-qr-visible"
 const qrXInput = document.querySelector<HTMLInputElement>("#qr-x");
 const qrYInput = document.querySelector<HTMLInputElement>("#qr-y");
 const qrSizeInput = document.querySelector<HTMLInputElement>("#qr-size");
+const openKioskSlot = document.querySelector<HTMLDivElement>("#open-kiosk-slot");
 
 let layout: KioskQrLayout = defaultKioskQrLayout(DEFAULT_PREVIEW_ASPECT);
 let savedVisible = true;
@@ -84,7 +86,9 @@ function bindDrag(): void {
     startLayout = { ...layout };
     startX = ev.clientX;
     startY = ev.clientY;
-    (ev.target as HTMLElement).setPointerCapture(ev.pointerId);
+    const captureTarget = ev.target === handle ? handle : qr;
+    captureTarget.setPointerCapture(ev.pointerId);
+    ev.stopPropagation();
     ev.preventDefault();
   };
 
@@ -95,14 +99,14 @@ function bindDrag(): void {
     const rect = frame.getBoundingClientRect();
     const short = Math.min(rect.width, rect.height);
     if (mode === "move") {
-      const left = startLayout.x * rect.width + dx;
-      const top = startLayout.y * rect.height + dy;
+      const left = rect.left + startLayout.x * rect.width + dx;
+      const top = rect.top + startLayout.y * rect.height + dy;
       const side = startLayout.size * short;
       layout = pointerLayoutFromRect(left, top, side);
     } else {
       const side = Math.max(short * 0.18, startSide + Math.max(dx, dy));
-      const left = startLayout.x * rect.width;
-      const top = startLayout.y * rect.height;
+      const left = rect.left + startLayout.x * rect.width;
+      const top = rect.top + startLayout.y * rect.height;
       layout = pointerLayoutFromRect(left, top, side);
     }
     paint();
@@ -218,7 +222,7 @@ void (async () => {
     await requireAdmin();
     bindDrag();
     window.addEventListener("resize", () => paint());
-    await loadLayout();
+    await Promise.all([loadLayout(), mountOpenKioskLink(openKioskSlot)]);
   } catch (e) {
     console.error("[adminKioskLayout] boot failed:", e);
     if (!isClubAdminRedirect(e)) {

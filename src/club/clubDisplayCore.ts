@@ -5,6 +5,7 @@ import {
   computeKioskView,
   latToTileY,
   lonToTileX,
+  type KioskViewPadding,
 } from "./kioskMapView";
 import { t } from "../i18n/index";
 
@@ -20,6 +21,10 @@ export type ClubDisplayOpts = {
   activateBtn: HTMLButtonElement;
   /** When set, a local hide/show toggle is shown (not persisted). */
   localToggleBtn?: HTMLButtonElement;
+  clubNameEl?: HTMLElement;
+  viewAllBtn?: HTMLButtonElement;
+  emptyEl?: HTMLElement;
+  focusDetailEl?: HTMLElement;
   qrEnabled?: () => boolean;
 };
 
@@ -27,15 +32,19 @@ type BaseAerodrome = {
   icao: string | null;
   lat: number | null;
   lon: number | null;
+  clubName?: string | null;
 };
 
 type AircraftPosition = {
   tail: string;
-  pilotName?: string;
+  pilotName?: string | null;
   fix?: {
     lat: number;
     lon: number;
-    alt?: number;
+    alt?: number | null;
+    speed?: number | null;
+    course?: number | null;
+    t?: number;
   } | null;
 };
 
@@ -54,6 +63,11 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     qrEnabled,
   } = opts;
 
+  const clubNameEl = resolveClubNameEl(opts.clubNameEl);
+  const viewAllBtn = resolveViewAllBtn(opts.viewAllBtn);
+  const emptyEl = resolveEmptyEl(opts.emptyEl);
+  const focusDetailEl = resolveFocusDetailEl(opts.focusDetailEl);
+
   let layout: KioskQrLayout = { x: 0.76, y: 0.76, size: 0.22 };
   let clubQrVisible = true;
   let localQrHidden = false;
@@ -64,6 +78,88 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
   let activating = false;
   let base: BaseAerodrome | null = null;
   let mapContainer: HTMLElement | null = null;
+  let lastAircraft: AircraftPosition[] = [];
+  let focusedTail: string | null = null;
+
+  function resolveClubNameEl(provided?: HTMLElement): HTMLElement | null {
+    if (provided) return provided;
+    const existing = viewport.querySelector<HTMLElement>("#club-name");
+    if (existing) return existing;
+    const headerMain = viewport.querySelector<HTMLElement>(".kiosk-header-main");
+    if (!headerMain) return null;
+    const el = document.createElement("p");
+    el.id = "club-name";
+    el.className = "kiosk-club-name";
+    el.hidden = true;
+    headerMain.prepend(el);
+    return el;
+  }
+
+  function resolveViewAllBtn(provided?: HTMLButtonElement): HTMLButtonElement | null {
+    if (provided) return provided;
+    const existing = viewport.querySelector<HTMLButtonElement>("#btn-view-all");
+    if (existing) return existing;
+    const toolbar = viewport.querySelector<HTMLElement>("#toolbar-local");
+    if (!toolbar) return null;
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.id = "btn-view-all";
+    btn.className = "btn-secondary";
+    btn.hidden = true;
+    toolbar.prepend(btn);
+    return btn;
+  }
+
+  function resolveEmptyEl(provided?: HTMLElement): HTMLElement {
+    if (provided) return provided;
+    const existing = viewport.querySelector<HTMLElement>("#map-empty");
+    if (existing) return existing;
+    const el = document.createElement("p");
+    el.id = "map-empty";
+    el.className = "kiosk-empty";
+    el.setAttribute("role", "status");
+    el.setAttribute("aria-live", "polite");
+    el.hidden = true;
+    map.parentElement?.insertBefore(el, map);
+    return el;
+  }
+
+  function resolveFocusDetailEl(provided?: HTMLElement): HTMLElement {
+    if (provided) return provided;
+    const existing = viewport.querySelector<HTMLElement>("#focus-detail");
+    if (existing) return existing;
+    const el = document.createElement("div");
+    el.id = "focus-detail";
+    el.className = "kiosk-focus-detail";
+    el.setAttribute("role", "region");
+    el.setAttribute("aria-live", "polite");
+    el.hidden = true;
+    map.insertAdjacentElement("afterend", el);
+    return el;
+  }
+
+  function syncClubName(): void {
+    if (!clubNameEl) return;
+    const name = typeof base?.clubName === "string" ? base.clubName.trim() : "";
+    if (name) {
+      clubNameEl.textContent = name;
+      clubNameEl.hidden = false;
+    } else {
+      clubNameEl.textContent = "";
+      clubNameEl.hidden = true;
+    }
+  }
+
+  function toggleFocusTail(tail: string): void {
+    focusedTail = focusedTail === tail ? null : tail;
+    renderCurrentState();
+  }
+
+  function clearFocus(): void {
+    if (focusedTail === null) return;
+    focusedTail = null;
+    renderCurrentState();
+  }
 
   async function displaySessionActive(): Promise<boolean> {
     const res = await fetch("/api/display/map", { credentials: "same-origin" });
@@ -127,10 +223,118 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
       : t("kiosk.qrHide");
   }
 
+  function syncViewAllButton(): void {
+    if (!viewAllBtn) return;
+    viewAllBtn.textContent = t("kiosk.viewAll");
+    viewAllBtn.hidden = focusedTail === null;
+  }
+
   async function fetchBase(): Promise<BaseAerodrome | null> {
     const res = await fetch("/api/display/base", { credentials: "same-origin" });
     if (!res.ok) return null;
     return (await res.json()) as BaseAerodrome;
+  }
+
+  function renderAircraftList(aircraft: AircraftPosition[]): void {
+    const activeChipTail =
+      document.activeElement instanceof HTMLButtonElement &&
+      map.contains(document.activeElement)
+        ? document.activeElement.dataset.tail ?? null
+        : null;
+
+    if (aircraft.length === 0) {
+      map.replaceChildren();
+      emptyEl.textContent = t("kiosk.noAircraft");
+      emptyEl.hidden = false;
+      return;
+    }
+
+    emptyEl.hidden = true;
+    map.replaceChildren(
+      ...aircraft.map((row) => {
+        const li = document.createElement("li");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "kiosk-tail-chip";
+        btn.dataset.tail = row.tail;
+        const isFocused = focusedTail === row.tail;
+        btn.setAttribute("aria-pressed", isFocused ? "true" : "false");
+        if (isFocused) btn.classList.add("is-focused");
+        btn.textContent = `${row.tail} · ${row.pilotName ?? "—"}`;
+        btn.addEventListener("click", () => {
+          toggleFocusTail(row.tail);
+        });
+        li.appendChild(btn);
+        return li;
+      }),
+    );
+
+    if (activeChipTail) {
+      const target = Array.from(
+        map.querySelectorAll<HTMLButtonElement>("button[data-tail]"),
+      ).find((b) => b.dataset.tail === activeChipTail);
+      target?.focus({ preventScroll: true });
+    }
+  }
+
+  function renderFocusDetail(aircraft: AircraftPosition[]): void {
+    const focused = focusedTail
+      ? aircraft.find((a) => a.tail === focusedTail) ?? null
+      : null;
+
+    if (!focused) {
+      focusDetailEl.hidden = true;
+      focusDetailEl.replaceChildren();
+      return;
+    }
+
+    focusDetailEl.setAttribute("aria-label", t("kiosk.focusedAircraftAria"));
+    const parts: HTMLElement[] = [];
+
+    const tailEl = document.createElement("strong");
+    tailEl.className = "kiosk-focus-tail";
+    tailEl.textContent = focused.tail;
+    parts.push(tailEl);
+
+    const pilotName =
+      typeof focused.pilotName === "string" && focused.pilotName.trim().length > 0
+        ? focused.pilotName.trim()
+        : null;
+    if (pilotName) {
+      const pilotEl = document.createElement("span");
+      pilotEl.className = "kiosk-focus-item";
+      pilotEl.dataset.detail = "pilot";
+      pilotEl.textContent = pilotName;
+      parts.push(pilotEl);
+    }
+
+    const alt = focused.fix?.alt;
+    if (typeof alt === "number" && Number.isFinite(alt)) {
+      const altEl = document.createElement("span");
+      altEl.className = "kiosk-focus-item";
+      altEl.dataset.detail = "alt";
+      altEl.textContent = `${t("kiosk.detailAltitude")}: ${Math.round(alt)} m`;
+      parts.push(altEl);
+    }
+
+    const speed = focused.fix?.speed;
+    if (typeof speed === "number" && Number.isFinite(speed)) {
+      const spdEl = document.createElement("span");
+      spdEl.className = "kiosk-focus-item";
+      spdEl.dataset.detail = "speed";
+      spdEl.textContent = `${t("kiosk.detailSpeed")}: ${Math.round(speed * 3.6)} km/h`;
+      parts.push(spdEl);
+    }
+
+    focusDetailEl.replaceChildren(...parts);
+    focusDetailEl.hidden = false;
+  }
+
+  function renderCurrentState(): void {
+    renderAircraftList(lastAircraft);
+    renderFocusDetail(lastAircraft);
+    syncViewAllButton();
+    renderTileMap(lastAircraft);
   }
 
   async function refreshMap(): Promise<void> {
@@ -140,22 +344,32 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
       aircraft: AircraftPosition[];
     };
 
-    // Update the text list (existing behavior)
-    map.replaceChildren(
-      ...(data.aircraft ?? []).map((row) => {
-        const li = document.createElement("li");
-        li.textContent = `${row.tail} · ${row.pilotName ?? "—"}`;
-        return li;
-      }),
-    );
+    lastAircraft = data.aircraft ?? [];
+    if (focusedTail !== null && !lastAircraft.some((a) => a.tail === focusedTail)) {
+      focusedTail = null;
+    }
 
-    // Update the tile map
-    renderTileMap(data.aircraft ?? []);
+    renderCurrentState();
+  }
+
+  function getMapViewportPx(): { w: number; h: number } {
+    const rect = (mapContainer ?? mapLayer).getBoundingClientRect();
+    const w = rect.width > 0 ? rect.width : mapLayer.clientWidth || viewport.offsetWidth || 1280;
+    const h = rect.height > 0 ? rect.height : mapLayer.clientHeight || viewport.offsetHeight || 720;
+    return { w, h };
+  }
+
+  function getMapPadding(mapPx: { w: number; h: number }): KioskViewPadding {
+    const barEl = viewport.querySelector<HTMLElement>("#aircraft-bar") ?? map;
+    const barHeight = barEl ? barEl.getBoundingClientRect().height : 0;
+    const topSafe = Math.min(Math.round(mapPx.h * 0.45), Math.max(56, Math.ceil(barHeight) + 48));
+    const sideSafe = Math.min(Math.round(mapPx.w * 0.2), 56);
+    const bottomSafe = Math.min(Math.round(mapPx.h * 0.2), 48);
+    return { top: topSafe, right: sideSafe, bottom: bottomSafe, left: sideSafe };
   }
 
   function renderTileMap(aircraft: AircraftPosition[]): void {
     if (!mapContainer) {
-      // Create the map container if it doesn't exist
       mapContainer = document.createElement("div");
       mapContainer.id = "kiosk-map";
       mapContainer.setAttribute("data-testid", "kiosk-map");
@@ -163,10 +377,10 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
         position: absolute;
         inset: 0;
         overflow: hidden;
+        z-index: 1;
       `;
       mapLayer.prepend(mapContainer);
 
-      // Add attribution
       const attribution = document.createElement("div");
       attribution.style.cssText = `
         position: absolute;
@@ -178,74 +392,86 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
         padding: 0.25rem 0.5rem;
         border-radius: 4px;
         pointer-events: none;
+        z-index: 4;
       `;
       attribution.textContent = "Esri";
       mapContainer.appendChild(attribution);
     }
 
-    // Clear existing tiles and markers
     const existingTiles = mapContainer.querySelectorAll("img[data-tile]");
-    existingTiles.forEach((t) => t.remove());
+    existingTiles.forEach((tile) => tile.remove());
     const existingMarkers = mapContainer.querySelectorAll("[data-marker]");
     existingMarkers.forEach((m) => m.remove());
 
-    const viewportRect = viewport.getBoundingClientRect();
-    const viewportPx = { w: viewportRect.width, h: viewportRect.height };
+    const mapPx = getMapViewportPx();
+    const padding = getMapPadding(mapPx);
 
-    // Get aircraft positions (filter out missing or non-finite coords)
     const aircraftPositions = (aircraft ?? [])
       .filter(
-        (a): a is AircraftPosition & { fix: { lat: number; lon: number; alt?: number } } =>
+        (a): a is AircraftPosition & { fix: { lat: number; lon: number; alt?: number | null; speed?: number | null } } =>
           a.fix != null && Number.isFinite(a.fix.lat) && Number.isFinite(a.fix.lon),
       )
-      .map((a) => ({ lat: a.fix.lat, lon: a.fix.lon, tail: a.tail }));
+      .map((a) => ({
+        lat: a.fix.lat,
+        lon: a.fix.lon,
+        tail: a.tail,
+        pilotName: a.pilotName ?? null,
+      }));
 
-    // Compute view
-    const baseCoords = base && base.lat !== null && base.lon !== null
-      ? { lat: base.lat, lon: base.lon }
+    const baseCoords =
+      base && base.lat !== null && base.lon !== null
+        ? { lat: base.lat, lon: base.lon }
+        : null;
+
+    const focusedPos = focusedTail
+      ? aircraftPositions.find((a) => a.tail === focusedTail) ?? null
       : null;
-    
-    const view = computeKioskView(baseCoords, aircraftPositions, viewportPx);
-    
-    // Update data-view attribute
+
+    const view = computeKioskView(baseCoords, aircraftPositions, mapPx, {
+      focus: focusedPos ? { lat: focusedPos.lat, lon: focusedPos.lon } : null,
+      padding,
+    });
+
     mapContainer.setAttribute("data-view", view.viewType);
-
-    // Render tiles for the visible area
-    renderTiles(view, viewportPx);
-
-    // Render aircraft markers
-    for (const ac of aircraftPositions) {
-      renderAircraftMarker(ac, view);
+    if (focusedTail) {
+      mapContainer.setAttribute("data-focused-tail", focusedTail);
+    } else {
+      mapContainer.removeAttribute("data-focused-tail");
     }
 
-    // Render base aerodrome marker if available
+    renderTiles(view, mapPx);
+
+    for (const ac of aircraftPositions) {
+      renderAircraftMarker(ac, view, mapPx);
+    }
+
     if (base && base.icao && base.lat !== null && base.lon !== null) {
-      renderBaseMarker({ lat: base.lat, lon: base.lon, icao: base.icao }, view);
+      renderBaseMarker({ lat: base.lat, lon: base.lon, icao: base.icao }, view, mapPx);
     }
   }
 
-  function renderTiles(view: ReturnType<typeof computeKioskView>, viewportPx: { w: number; h: number }): void {
+  function renderTiles(
+    view: ReturnType<typeof computeKioskView>,
+    viewportPx: { w: number; h: number },
+  ): void {
     const zoom = Math.round(view.zoom);
     const tileSize = 256;
-    
-    // Remove previous tiles containers
+
     const existingContainers = mapContainer?.querySelectorAll("[data-tiles]");
     existingContainers?.forEach((c) => c.remove());
-    
-    // Calculate tile range
+
     const centerX = lonToTileX(view.centerLon, zoom);
     const centerY = latToTileY(view.centerLat, zoom);
-    
+
     const scale = Math.pow(2, view.zoom - zoom);
-    const halfWidthTiles = (viewportPx.w / tileSize) / scale / 2;
-    const halfHeightTiles = (viewportPx.h / tileSize) / scale / 2;
-    
+    const halfWidthTiles = viewportPx.w / tileSize / scale / 2;
+    const halfHeightTiles = viewportPx.h / tileSize / scale / 2;
+
     const minX = Math.floor(centerX - halfWidthTiles);
     const maxX = Math.ceil(centerX + halfWidthTiles);
     const minY = Math.floor(centerY - halfHeightTiles);
     const maxY = Math.ceil(centerY + halfHeightTiles);
-    
-    // Create a container for tiles
+
     const tilesContainer = document.createElement("div");
     tilesContainer.setAttribute("data-tiles", "");
     tilesContainer.style.cssText = `
@@ -256,13 +482,12 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     `;
 
     const worldSize = Math.pow(2, zoom);
-    
+
     for (let x = minX; x <= maxX; x++) {
       for (let y = minY; y <= maxY; y++) {
-        // Wrap x modulo world size, clamp y to valid range
         const wrappedX = ((x % worldSize) + worldSize) % worldSize;
         const clampedY = Math.max(0, Math.min(y, worldSize - 1));
-        
+
         const tile = document.createElement("img");
         tile.setAttribute("data-tile", "");
         tile.src = `https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${zoom}/${clampedY}/${wrappedX}`;
@@ -282,7 +507,11 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     mapContainer?.appendChild(tilesContainer);
   }
 
-  function renderAircraftMarker(ac: { lat: number; lon: number; tail: string }, view: ReturnType<typeof computeKioskView>): void {
+  function renderAircraftMarker(
+    ac: { lat: number; lon: number; tail: string; pilotName: string | null },
+    view: ReturnType<typeof computeKioskView>,
+    mapPx: { w: number; h: number },
+  ): void {
     const zoom = view.zoom;
     const tileSize = 256;
 
@@ -291,61 +520,66 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
 
     const centerX = lonToTileX(view.centerLon, zoom);
     const centerY = latToTileY(view.centerLat, zoom);
-    
-    const marker = document.createElement("div");
+
+    const isFocused = focusedTail === ac.tail;
+    const marker = document.createElement("button");
+    marker.type = "button";
+    marker.className = isFocused ? "kiosk-map-aircraft is-focused" : "kiosk-map-aircraft";
     marker.setAttribute("data-marker", "aircraft");
     marker.setAttribute("data-tail", ac.tail);
-    marker.style.cssText = `
-      position: absolute;
-      left: ${(x - centerX) * tileSize + viewport.offsetWidth / 2}px;
-      top: ${(y - centerY) * tileSize + viewport.offsetHeight / 2}px;
-      transform: translate(-50%, -100%);
-      background: #ff5500;
-      color: #fff;
-      padding: 0.25rem 0.5rem;
-      border-radius: 4px;
-      font-size: 0.85rem;
-      font-weight: 600;
-      white-space: nowrap;
-      pointer-events: none;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.5);
-    `;
+    marker.setAttribute("aria-pressed", isFocused ? "true" : "false");
+    marker.style.left = `${(x - centerX) * tileSize + mapPx.w / 2}px`;
+    marker.style.top = `${(y - centerY) * tileSize + mapPx.h / 2}px`;
+    marker.style.pointerEvents = "auto";
+    marker.style.cursor = "pointer";
     marker.textContent = ac.tail;
+    if (ac.pilotName) {
+      marker.title = `${ac.tail} · ${ac.pilotName}`;
+    }
+    marker.addEventListener("click", () => {
+      toggleFocusTail(ac.tail);
+    });
     mapContainer?.appendChild(marker);
   }
 
-  function renderBaseMarker(base: { lat: number; lon: number; icao: string }, view: ReturnType<typeof computeKioskView>): void {
+  function renderBaseMarker(
+    basePos: { lat: number; lon: number; icao: string },
+    view: ReturnType<typeof computeKioskView>,
+    mapPx: { w: number; h: number },
+  ): void {
     const zoom = view.zoom;
     const tileSize = 256;
 
-    const x = lonToTileX(base.lon, zoom);
-    const y = latToTileY(base.lat, zoom);
+    const x = lonToTileX(basePos.lon, zoom);
+    const y = latToTileY(basePos.lat, zoom);
 
     const centerX = lonToTileX(view.centerLon, zoom);
     const centerY = latToTileY(view.centerLat, zoom);
-    
+
     const marker = document.createElement("div");
     marker.setAttribute("data-marker", "base");
     marker.style.cssText = `
       position: absolute;
-      left: ${(x - centerX) * tileSize + viewport.offsetWidth / 2}px;
-      top: ${(y - centerY) * tileSize + viewport.offsetHeight / 2}px;
+      left: ${(x - centerX) * tileSize + mapPx.w / 2}px;
+      top: ${(y - centerY) * tileSize + mapPx.h / 2}px;
       transform: translate(-50%, -50%);
-      width: 24px;
-      height: 24px;
-      background: #00ff00;
+      min-width: 28px;
+      height: 28px;
+      padding: 0 0.35rem;
+      background: #22c55e;
       border: 2px solid #fff;
-      border-radius: 50%;
+      border-radius: 999px;
       pointer-events: none;
       box-shadow: 0 2px 4px rgba(0,0,0,0.5);
       display: flex;
       align-items: center;
       justify-content: center;
       font-size: 0.65rem;
-      font-weight: 600;
-      color: #000;
+      font-weight: 700;
+      color: #052e16;
+      z-index: 2;
     `;
-    marker.textContent = base.icao;
+    marker.textContent = basePos.icao;
     mapContainer?.appendChild(marker);
   }
 
@@ -390,7 +624,9 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
       localToggleBtn.hidden = false;
       syncLocalToggleLabel();
     }
+    syncViewAllButton();
     base = await fetchBase();
+    syncClubName();
     await fetchLayout();
     statusEl.textContent = t("kiosk.qrRotateHint", { seconds: String(CHECKIN_STEP_SEC) });
     await refreshMap();
@@ -417,7 +653,7 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
   window.addEventListener("resize", () => {
     paintQr();
     if (mapContainer) {
-      void refreshMap();
+      renderTileMap(lastAircraft);
     }
   });
 
@@ -443,6 +679,10 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     syncLocalToggleLabel();
     paintQr();
     if (showQr()) refreshQrImage();
+  });
+
+  viewAllBtn?.addEventListener("click", () => {
+    clearFocus();
   });
 
   void (async () => {

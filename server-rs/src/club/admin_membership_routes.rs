@@ -84,6 +84,8 @@ async fn list_memberships_admin(
 #[derive(Deserialize)]
 struct InviteAdminBody {
     email: String,
+    #[serde(default)]
+    role: Option<String>,
 }
 
 async fn invite_admin(
@@ -106,6 +108,19 @@ async fn invite_admin(
         )
             .into_response();
     };
+    let (role, purpose, template) = match body.role.as_deref().map(str::trim) {
+        None | Some("admin") => (
+            "admin",
+            crate::club::db_memberships_admin::ADMIN_INVITE_PURPOSE,
+            "adminInvite",
+        ),
+        Some("pilot") => (
+            "pilot",
+            crate::club::db_memberships_admin::PILOT_INVITE_PURPOSE,
+            "pilotInvite",
+        ),
+        Some(_) => return Json(json!({ "ok": true })).into_response(),
+    };
     let email = body.email.trim();
     if email.is_empty() || !email.contains('@') {
         return Json(json!({ "ok": true })).into_response();
@@ -114,23 +129,18 @@ async fn invite_admin(
     let ip = client_ip.0;
     if db.magic_send_allowed(email, &ip, now).await && state.mailer.allow_send(email, &ip) {
         if let Ok(token) = db
-            .invite_admin_membership(&club_id, email, &inviter, now)
+            .invite_membership(&club_id, email, &inviter, role, now)
             .await
         {
             let _ = db.log_magic_send(email, &ip, now).await;
             let url = format!(
-                "{}/api/account/auth/magic?purpose=admin_invite&token={token}",
+                "{}/api/account/auth/magic?purpose={purpose}&token={token}",
                 state.mailer.public_url.trim_end_matches('/')
             );
             let loc = auth::parse_display_cookie(&headers).unwrap_or_else(|| "es".to_string());
             let _ = state
                 .mailer
-                .send_localized(
-                    email,
-                    &loc,
-                    "adminInvite",
-                    &[("minutes", "15"), ("url", &url)],
-                )
+                .send_localized(email, &loc, template, &[("minutes", "15"), ("url", &url)])
                 .await;
         }
     }

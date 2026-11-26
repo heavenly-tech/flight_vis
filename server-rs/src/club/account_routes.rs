@@ -633,14 +633,15 @@ async fn get_account_magic(
     let Some(token) = q.get("token") else {
         return (StatusCode::BAD_REQUEST, "missing token").into_response();
     };
-    let purpose = if let Some(p) = q.get("purpose") {
-        p.clone()
-    } else if let Some(db) = club_db(&state) {
-        db.peek_magic_token_purpose(token)
+    let purpose = if let Some(db) = club_db(&state) {
+        db.peek_magic_token_purpose(token.trim())
             .await
+            .or_else(|| q.get("purpose").cloned())
             .unwrap_or_else(|| "account_signup".to_string())
     } else {
-        "account_signup".to_string()
+        q.get("purpose")
+            .cloned()
+            .unwrap_or_else(|| "account_signup".to_string())
     };
     let token_e = account_magic_html_escape(token);
     let purpose_e = account_magic_html_escape(&purpose);
@@ -733,8 +734,12 @@ async fn account_magic_consume(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     let now = now_ms();
-    if purpose == crate::club::db_memberships_admin::ADMIN_INVITE_PURPOSE {
-        match db.accept_admin_invite(&token, now).await {
+    if matches!(
+        purpose,
+        crate::club::db_memberships_admin::ADMIN_INVITE_PURPOSE
+            | crate::club::db_memberships_admin::PILOT_INVITE_PURPOSE
+    ) {
+        match db.accept_membership_invite(&token, now).await {
             Ok(accept) => {
                 let session_id = db
                     .create_account_session_auth(
@@ -746,14 +751,17 @@ async fn account_magic_consume(
                     .await
                     .unwrap_or_default();
                 let cookie = auth::set_account_session_cookie(&session_id, is_secure(&headers));
+                let location =
+                    if accept.purpose == crate::club::db_memberships_admin::ADMIN_INVITE_PURPOSE {
+                        "/club-admin-pilots.html"
+                    } else {
+                        "/account-clubs.html"
+                    };
                 (
                     StatusCode::FOUND,
                     [
                         (axum::http::header::SET_COOKIE, cookie),
-                        (
-                            axum::http::header::LOCATION,
-                            "/club-admin-pilots.html".to_string(),
-                        ),
+                        (axum::http::header::LOCATION, location.to_string()),
                     ],
                 )
                     .into_response()

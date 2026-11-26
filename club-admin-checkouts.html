@@ -15,7 +15,7 @@
       <div id="lang-slot" class="lang-bar"></div>
       <h1 data-i18n="nav.checkouts">Habilitaciones</h1>
       <div id="admin-nav"></div>
-      <form id="form" class="admin-form-stack">
+      <form id="form" class="admin-form-grid">
         <div class="field">
           <label for="pilot" data-i18n="admin.checkouts.pilotLabel">Piloto</label>
           <select id="pilot" name="pilot_id" required></select>
@@ -32,6 +32,7 @@
           <label for="expires_at" data-i18n="admin.checkouts.expiresLabel">Vence (opcional)</label>
           <input id="expires_at" name="expires_at" type="date" />
         </div>
+        <p id="pending-pilot-warning" class="admin-warning admin-form-full" role="alert" hidden></p>
         <button type="submit" class="btn-primary" data-i18n="admin.checkouts.add">Agregar habilitación</button>
       </form>
       <p id="checkouts-status" role="status" aria-live="polite" hidden></p>

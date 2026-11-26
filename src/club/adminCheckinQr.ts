@@ -2,6 +2,7 @@ import { isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon"
 import { ADMIN_PHONE_QR_TIMEOUT_MS } from "./adminPhoneQr";
 import { CHECKIN_STEP_SEC } from "./checkinStep";
 import { startClubPage } from "./i18nPage";
+import { mountOpenKioskLink } from "./openKioskLink";
 import { t } from "../i18n/index";
 
 const qrPanel = document.querySelector<HTMLDivElement>("#qr-panel")!;
@@ -9,6 +10,7 @@ const qrImg = document.querySelector<HTMLImageElement>("#qr-img")!;
 const btnShow = document.querySelector<HTMLButtonElement>("#btn-show-qr")!;
 const btnHide = document.querySelector<HTMLButtonElement>("#btn-hide-qr")!;
 const status = document.querySelector<HTMLParagraphElement>("#status")!;
+const openKioskSlot = document.querySelector<HTMLDivElement>("#open-kiosk-slot");
 
 declare global {
   interface Window {
@@ -94,6 +96,7 @@ void (async () => {
     mountAdminNav();
     window.__fvClubCheckinQrBoot = "gate";
     await requireAdmin();
+    await mountOpenKioskLink(openKioskSlot);
     btnShow.removeAttribute("disabled");
     btnShow.disabled = false;
     document.body.dataset.checkinQrReady = "1";

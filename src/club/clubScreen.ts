@@ -13,4 +13,8 @@ mountClubDisplayScreen({
   activateToken: document.querySelector<HTMLInputElement>("#activate-token")!,
   activateBtn: document.querySelector<HTMLButtonElement>("#btn-activate")!,
   localToggleBtn: document.querySelector<HTMLButtonElement>("#btn-local-qr") ?? undefined,
+  clubNameEl: document.querySelector<HTMLElement>("#club-name") ?? undefined,
+  viewAllBtn: document.querySelector<HTMLButtonElement>("#btn-view-all") ?? undefined,
+  emptyEl: document.querySelector<HTMLElement>("#map-empty") ?? undefined,
+  focusDetailEl: document.querySelector<HTMLElement>("#focus-detail") ?? undefined,
 });
