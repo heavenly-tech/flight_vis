@@ -389,7 +389,10 @@
       "signedInAs": "Administrador: {name}",
       "empty": "Aún no hay tipos de aeronave registrados.",
       "saveFailed": "No se pudo guardar el tipo de aeronave."
-    }
+    },
+    "trailTitle": "Estela",
+    "trailHelp": "Minutos de estela que se muestran detrás de cada avión. Cada piloto puede cambiarlo para su vuelo.",
+    "trailSaved": "Estela predeterminada guardada."
   },
   "kiosk": {
     "screenTitle": "Pantalla de registro del club",
@@ -641,5 +644,10 @@
     "deleteClubButton": "Eliminar definitivamente",
     "deleteClubWrongSlug": "El nombre corto ingresado no coincide con este club.",
     "deleteClubFailed": "No se pudo eliminar el club. Intenta nuevamente."
+  },
+  "trail": {
+    "off": "No",
+    "minutes": "{minutes} min",
+    "all": "Todo"
   }
 }

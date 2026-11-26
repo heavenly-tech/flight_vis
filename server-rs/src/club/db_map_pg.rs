@@ -271,6 +271,7 @@ impl ClubDb {
                 pilot_name: r.try_get(3).ok()?,
                 visibility: r.try_get(4).ok()?,
                 club_id: r.try_get(5).ok()?,
+                trail_minutes: crate::club::trail::DEFAULT_TRAIL_MINUTES,
                 fix: crate::live::LiveFix {
                     t: r.try_get(6).ok()?,
                     lat: r.try_get(7).ok()?,

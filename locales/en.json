@@ -389,7 +389,10 @@
       "signedInAs": "Admin: {name}",
       "empty": "No aircraft types registered yet.",
       "saveFailed": "Could not save aircraft type."
-    }
+    },
+    "trailTitle": "Trail",
+    "trailHelp": "Minutes of trail shown behind each aircraft. Each pilot can override it for their own flight.",
+    "trailSaved": "Default trail saved."
   },
   "kiosk": {
     "screenTitle": "Club check-in screen",
@@ -641,5 +644,10 @@
     "deleteClubButton": "Delete permanently",
     "deleteClubWrongSlug": "The short name entered does not match this club.",
     "deleteClubFailed": "Could not delete the club. Please try again."
+  },
+  "trail": {
+    "off": "Off",
+    "minutes": "{minutes} min",
+    "all": "All"
   }
 }

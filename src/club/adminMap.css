@@ -155,6 +155,51 @@
   margin-bottom: 0;
 }
 
+.trail-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: 0.55rem 0 0.35rem;
+}
+
+.admin-shell button.trail-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0.38rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid var(--stroke, rgba(255, 255, 255, 0.18));
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text, #f4f7fb);
+  font: 600 0.88rem Outfit, system-ui, sans-serif;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.admin-shell button.trail-chip:hover:not(:disabled):not([aria-pressed="true"]) {
+  border-color: rgba(103, 232, 249, 0.6);
+  background: rgba(103, 232, 249, 0.12);
+}
+
+.admin-shell button.trail-chip[aria-pressed="true"],
+.admin-shell button.trail-chip.active {
+  background: #ecebff;
+  color: #15132a;
+  border-color: transparent;
+}
+
+.admin-shell button.trail-chip[aria-pressed="true"]:hover:not(:disabled) {
+  background: #ffffff;
+  color: #15132a;
+  border-color: transparent;
+}
+
+.admin-shell button.trail-chip:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .admin-shell section.danger-zone {
   border-color: rgba(248, 113, 113, 0.55);
   background: rgba(239, 68, 68, 0.08);

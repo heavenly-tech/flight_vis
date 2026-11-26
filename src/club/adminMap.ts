@@ -3,6 +3,15 @@ import { ensureClubAdminOrRedirect } from "./adminGate";
 import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 import { startClubPage } from "./i18nPage";
 import { notifyKioskRefetch } from "./kioskSync";
+import {
+  ALLOWED_TRAIL_MINUTES,
+  DEFAULT_TRAIL_MINUTES,
+  parseTrailMinutes,
+  parseTrailsPayload,
+  trailOptionI18n,
+  type FlightTrail,
+  type TrailMinutes,
+} from "./liveTrail";
 import { mountOpenKioskLink, type OpenKioskLinkController } from "./openKioskLink";
 import { safeNextPath } from "./safeNext";
 import {
@@ -120,6 +129,109 @@ export function mountDeleteClubSection(
   };
 }
 
+export type ClubTrailSettingController = {
+  configure: (opts: { isAdmin: boolean; trailMinutes: TrailMinutes }) => void;
+  relocalize: () => void;
+};
+
+export function mountClubTrailSetting(
+  onSaved: () => void = () => {},
+): ClubTrailSettingController {
+  const chipsContainer = document.querySelector<HTMLDivElement>("#club-trail-chips");
+  const msgEl = document.querySelector<HTMLParagraphElement>("#club-trail-msg");
+
+  let isAdmin = false;
+  let currentValue: TrailMinutes = DEFAULT_TRAIL_MINUTES;
+  let saving = false;
+
+  function chipLabel(value: TrailMinutes): string {
+    const { key, params } = trailOptionI18n(value);
+    return t(key, params);
+  }
+
+  function renderChips(): void {
+    if (!chipsContainer) return;
+    chipsContainer.setAttribute("aria-label", t("admin.trailTitle"));
+    chipsContainer.replaceChildren(
+      ...ALLOWED_TRAIL_MINUTES.map((value) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        const isSelected = value === currentValue;
+        btn.className = isSelected ? "chip trail-chip active" : "chip trail-chip";
+        btn.dataset.trailValue = String(value);
+        btn.setAttribute("aria-pressed", isSelected ? "true" : "false");
+        btn.disabled = saving || !isAdmin;
+        btn.textContent = chipLabel(value);
+        btn.addEventListener("click", () => {
+          void selectValue(value);
+        });
+        return btn;
+      }),
+    );
+  }
+
+  async function selectValue(nextValue: TrailMinutes): Promise<void> {
+    if (!isAdmin || saving || nextValue === currentValue) return;
+    const previous = currentValue;
+    currentValue = nextValue;
+    saving = true;
+    if (msgEl) {
+      msgEl.setAttribute("role", "status");
+      msgEl.textContent = t("admin.saving");
+    }
+    renderChips();
+    try {
+      const res = await fetch("/api/admin/club/trail", {
+        method: "PATCH",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trailMinutes: nextValue }),
+      });
+      const payload = (await res.json().catch(() => ({}))) as {
+        trailMinutes?: unknown;
+        error?: string;
+      };
+      if (res.ok) {
+        currentValue = parseTrailMinutes(payload.trailMinutes, nextValue);
+        if (msgEl) {
+          msgEl.setAttribute("role", "status");
+          msgEl.textContent = t("admin.trailSaved");
+        }
+        onSaved();
+      } else {
+        currentValue = previous;
+        if (msgEl) {
+          msgEl.setAttribute("role", "alert");
+          msgEl.textContent =
+            payload.error === "admin only" ? t("api.adminOnly") : t("api.dbError");
+        }
+      }
+    } catch {
+      currentValue = previous;
+      if (msgEl) {
+        msgEl.setAttribute("role", "alert");
+        msgEl.textContent = t("api.dbError");
+      }
+    } finally {
+      saving = false;
+      renderChips();
+    }
+  }
+
+  renderChips();
+
+  return {
+    configure(opts) {
+      isAdmin = opts.isAdmin;
+      currentValue = parseTrailMinutes(opts.trailMinutes, DEFAULT_TRAIL_MINUTES);
+      renderChips();
+    },
+    relocalize() {
+      renderChips();
+    },
+  };
+}
+
 function bootAdminMap(): void {
   const mapElMaybe = document.querySelector<HTMLDivElement>("#admin-map");
   const baseBadgeEl = document.querySelector<HTMLSpanElement>("#admin-base-badge");
@@ -156,8 +268,13 @@ function bootAdminMap(): void {
   let currentClubSlug = "cas-tobalaba";
   let currentBase: NormalizedBase | null = null;
   let lastLiveAircraft: PublicMapAircraft[] = [];
+  let lastLiveTrails: FlightTrail[] = [];
   let kioskLinkCtrl: OpenKioskLinkController | null = null;
   const deleteClubCtrl = mountDeleteClubSection();
+  const trailCtrl = mountClubTrailSetting(() => {
+    notifyKioskRefetch();
+    void refreshLiveMap();
+  });
 
   function paintSlugHelp(): void {
     const slug = currentClubSlug || "cas-tobalaba";
@@ -183,6 +300,8 @@ function bootAdminMap(): void {
     renderClubTileMap(mapEl, {
       base: currentBase,
       aircraft: lastLiveAircraft,
+      trails: lastLiveTrails,
+      trailLineWidthPx: 3,
     });
   }
 
@@ -232,10 +351,17 @@ function bootAdminMap(): void {
     );
   }
 
-  /** Polled every 5 seconds: refreshes live aircraft list and 2D map markers only. */
+  /** Polled every 5 seconds: refreshes live aircraft list, 2D map markers, and live trails. */
   async function refreshLiveMap(): Promise<void> {
-    const live = await api<{ aircraft: unknown }>("/api/admin/map");
+    const [live, trailsRes] = await Promise.all([
+      api<{ aircraft: unknown }>("/api/admin/map"),
+      fetch("/api/admin/map/trails", { credentials: "same-origin" }).catch(() => null),
+    ]);
     lastLiveAircraft = extractPublicAircraft(live.aircraft);
+    lastLiveTrails =
+      trailsRes && trailsRes.ok
+        ? parseTrailsPayload(await trailsRes.json().catch(() => null))
+        : [];
     paintLiveMap();
     paintLiveList();
   }
@@ -383,6 +509,7 @@ function bootAdminMap(): void {
   window.addEventListener("fv-locale-change", () => {
     paintSlugHelp();
     paintLiveList();
+    trailCtrl.relocalize();
   });
 
   void (async () => {
@@ -393,15 +520,21 @@ function bootAdminMap(): void {
       const me = await api<{
         pilot?: { role?: string } | null;
         clubDefaultLocale?: string;
+        clubTrailMinutesDefault?: number;
         clubSlug?: string;
       }>("/api/club/me");
       mountClubLocalePicker(me.clubDefaultLocale ?? "es");
       if (me.clubSlug) currentClubSlug = me.clubSlug;
       if (clubSlugInput) clubSlugInput.value = me.clubSlug ?? "";
       paintSlugHelp();
+      const isAdmin = me.pilot?.role === "admin";
       deleteClubCtrl.configure({
-        isAdmin: me.pilot?.role === "admin",
+        isAdmin,
         clubSlug: me.clubSlug ?? null,
+      });
+      trailCtrl.configure({
+        isAdmin,
+        trailMinutes: parseTrailMinutes(me.clubTrailMinutesDefault, DEFAULT_TRAIL_MINUTES),
       });
       kioskLinkCtrl = await mountOpenKioskLink(openKioskSlot, { clubSlug: me.clubSlug ?? null });
 

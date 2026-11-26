@@ -4,6 +4,18 @@
  * ~15 km view, fallback when no base, fit to active flights + base).
  */
 import { computeKioskView, latToTileY, lonToTileX } from "./kioskMapView";
+import {
+  DEFAULT_TRAIL_MINUTES,
+  DEFAULT_TRAIL_RGB,
+  isValidTrailMinutes,
+  matchTrailForAircraft,
+  parseTrailMinutes,
+  prepareTrailPoints,
+  renderTrailsOverlay,
+  type FlightTrail,
+  type RenderTrailItem,
+  type TrailMinutes,
+} from "./liveTrail";
 
 const TILE_SIZE = 256;
 const MIN_TILE_ZOOM = 3;
@@ -23,8 +35,11 @@ export type NormalizedBase = {
 
 export type RawPublicAircraft = {
   tail?: unknown;
+  flightId?: unknown;
   pilotName?: unknown;
+  trailMinutes?: unknown;
   fix?: {
+    t?: unknown;
     lat?: unknown;
     lon?: unknown;
     alt?: unknown;
@@ -33,9 +48,12 @@ export type RawPublicAircraft = {
 
 export type PublicMapAircraft = {
   tail: string;
+  flightId?: string;
   pilotName?: string;
   lat: number | null;
   lon: number | null;
+  fixT?: number;
+  trailMinutes?: TrailMinutes;
 };
 
 export type PublicMapPayload = {
@@ -104,12 +122,22 @@ export function extractPublicAircraft(rows: unknown): PublicMapAircraft[] {
       rawLat <= 90 &&
       rawLon >= -180 &&
       rawLon <= 180;
-    out.push({
+    const entry: PublicMapAircraft = {
       tail: item.tail.trim(),
       pilotName,
       lat: hasCoords ? rawLat : null,
       lon: hasCoords ? rawLon : null,
-    });
+    };
+    if (typeof item.flightId === "string" && item.flightId.trim().length > 0) {
+      entry.flightId = item.flightId.trim();
+    }
+    if (typeof item.fix?.t === "number" && Number.isFinite(item.fix.t)) {
+      entry.fixT = item.fix.t;
+    }
+    if (isValidTrailMinutes(item.trailMinutes)) {
+      entry.trailMinutes = item.trailMinutes;
+    }
+    out.push(entry);
   }
   return out;
 }
@@ -198,6 +226,8 @@ export function renderClubTileMap(
   opts: {
     base: NormalizedBase | null;
     aircraft: PublicMapAircraft[];
+    trails?: readonly FlightTrail[];
+    trailLineWidthPx?: number;
     viewportPx?: { w: number; h: number };
   },
 ): ReturnType<typeof computeKioskView> {
@@ -212,11 +242,20 @@ export function renderClubTileMap(
       a.lat !== null && a.lon !== null && Number.isFinite(a.lat) && Number.isFinite(a.lon),
   );
   const baseCoords = opts.base ? { lat: opts.base.lat, lon: opts.base.lon } : null;
-  const view = computeKioskView(baseCoords, validAircraft, viewportPx);
+  const view = computeKioskView(
+    baseCoords,
+    validAircraft,
+    viewportPx,
+    validAircraft.length > 0
+      ? { padding: { top: 44, right: 56, bottom: 24, left: 56 } }
+      : undefined,
+  );
 
   container.setAttribute("data-view", view.viewType);
 
-  container.querySelectorAll("[data-tiles], [data-marker]").forEach((el) => el.remove());
+  container
+    .querySelectorAll("[data-tiles], [data-marker], [data-trails-canvas], [data-trails-layer]")
+    .forEach((el) => el.remove());
 
   const grid = computeTileGrid(view, viewportPx);
   const tilesContainer = document.createElement("div");
@@ -237,6 +276,38 @@ export function renderClubTileMap(
     tilesContainer.appendChild(img);
   }
   container.prepend(tilesContainer);
+
+  if (opts.trails && opts.trails.length > 0 && validAircraft.length > 0) {
+    const trailItems: RenderTrailItem[] = [];
+    for (const ac of validAircraft) {
+      const matched = matchTrailForAircraft(opts.trails, ac);
+      if (!matched) continue;
+      const effectiveMinutes = parseTrailMinutes(
+        ac.trailMinutes ?? matched.trailMinutes,
+        DEFAULT_TRAIL_MINUTES,
+      );
+      const pts = prepareTrailPoints(matched.points, effectiveMinutes, {
+        t: ac.fixT,
+        lat: ac.lat,
+        lon: ac.lon,
+      });
+      if (pts.length >= 2) {
+        trailItems.push({
+          flightId: matched.flightId || ac.flightId || "",
+          tail: ac.tail,
+          trailMinutes: effectiveMinutes,
+          points: pts,
+          rgb: DEFAULT_TRAIL_RGB,
+        });
+      }
+    }
+    renderTrailsOverlay(container, {
+      viewportPx,
+      lineWidthPx: opts.trailLineWidthPx ?? 3,
+      items: trailItems,
+      project: (lat, lon) => projectPointToPx(lat, lon, view, viewportPx),
+    });
+  }
 
   for (const ac of validAircraft) {
     const pos = projectPointToPx(ac.lat, ac.lon, view, viewportPx);

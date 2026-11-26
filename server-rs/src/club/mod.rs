@@ -43,6 +43,7 @@ pub(crate) mod slug_redirect;
 pub(crate) mod sse_limit;
 pub(crate) mod superadmin;
 mod superadmin_routes;
+pub(crate) mod trail;
 mod visibility;
 pub mod webauthn;
 
@@ -70,6 +71,8 @@ mod cross_site_csrf_tests;
 mod delete_club_tests;
 #[cfg(test)]
 mod kiosk_account_session_tests;
+#[cfg(test)]
+mod live_trail_tests;
 #[cfg(test)]
 mod load_test;
 #[cfg(test)]

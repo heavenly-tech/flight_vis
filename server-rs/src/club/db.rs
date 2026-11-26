@@ -523,6 +523,7 @@ impl ClubDb {
         Ok(out)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_flight_atomic(
         &self,
         pilot_id: &str,
@@ -530,6 +531,7 @@ impl ClubDb {
         tail: &str,
         visibility: FlightVisibility,
         show_pilot_name_public: bool,
+        trail_minutes: Option<crate::club::trail::TrailMinutes>,
         now: i64,
     ) -> Result<String, StartFlightError> {
         let mut tx = self
@@ -628,8 +630,8 @@ impl ClubDb {
             }
             let flight_id = new_id();
             sqlx::query(
-                "INSERT INTO flights (id, pilot_id, aircraft_id, club_id, status, started_at, visibility, show_pilot_name_public)
-                 VALUES ($1, $2, $3, $4, 'active', $5, $6, $7)",
+                "INSERT INTO flights (id, pilot_id, aircraft_id, club_id, status, started_at, visibility, show_pilot_name_public, trail_minutes)
+                 VALUES ($1, $2, $3, $4, 'active', $5, $6, $7, $8)",
             )
             .bind(&flight_id)
             .bind(pilot_id)
@@ -638,6 +640,7 @@ impl ClubDb {
             .bind(now)
             .bind(visibility.as_str())
             .bind(show_pilot_name_public)
+            .bind(trail_minutes.map(crate::club::trail::TrailMinutes::as_i16))
             .execute(&mut *tx)
             .await
             .map_err(|_| StartFlightError::NoTail)?;
@@ -658,6 +661,30 @@ impl ClubDb {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_flight_with_trail(
+        &self,
+        pilot_id: &str,
+        device_id: &str,
+        tail: &str,
+        visibility: FlightVisibility,
+        show_pilot_name_public: bool,
+        trail_minutes: Option<crate::club::trail::TrailMinutes>,
+        now: i64,
+    ) -> Result<String, StartFlightError> {
+        self.start_flight_atomic(
+            pilot_id,
+            device_id,
+            tail,
+            visibility,
+            show_pilot_name_public,
+            trail_minutes,
+            now,
+        )
+        .await
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn start_flight(
         &self,
         pilot_id: &str,
@@ -667,12 +694,13 @@ impl ClubDb {
         show_pilot_name_public: bool,
         now: i64,
     ) -> Result<String, StartFlightError> {
-        self.start_flight_atomic(
+        self.start_flight_with_trail(
             pilot_id,
             device_id,
             tail,
             visibility,
             show_pilot_name_public,
+            None,
             now,
         )
         .await
@@ -901,6 +929,7 @@ impl ClubDb {
         .flatten()
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn append_fix(
         &self,
         flight_id: &str,
@@ -1066,10 +1095,12 @@ impl ClubDb {
 
     pub(crate) async fn latest_device_fixes(&self) -> Vec<DeviceFix> {
         let rows = sqlx::query(
-            "SELECT f.id, a.tail, f.pilot_id, p.name, f.visibility, f.club_id,
-                    fx.t_ms, fx.lat, fx.lon, fx.alt, fx.speed, fx.course, fx.accuracy
+            "SELECT f.id, a.tail, f.pilot_id, p.name, f.visibility, COALESCE(f.club_id, a.club_id),
+                    fx.t_ms, fx.lat, fx.lon, fx.alt, fx.speed, fx.course, fx.accuracy,
+                    COALESCE(f.trail_minutes, c.trail_minutes_default)
              FROM flights f
              JOIN aircraft a ON a.id = f.aircraft_id
+             JOIN clubs c ON c.id = COALESCE(f.club_id, a.club_id)
              JOIN pilots p ON p.id = f.pilot_id
              JOIN fixes fx ON fx.flight_id = f.id
              WHERE f.status = 'active'
@@ -1082,6 +1113,12 @@ impl ClubDb {
         .unwrap_or_default();
         rows.into_iter()
             .filter_map(|r| {
+                let raw_trail: i16 = r
+                    .try_get(13)
+                    .unwrap_or(crate::club::trail::DEFAULT_TRAIL_MINUTES);
+                let trail_minutes = crate::club::trail::TrailMinutes::from_i16(raw_trail)
+                    .unwrap_or(crate::club::trail::TrailMinutes::Min5)
+                    .as_i16();
                 Some(DeviceFix {
                     flight_id: r.try_get(0).ok()?,
                     tail: r.try_get(1).ok()?,
@@ -1089,6 +1126,7 @@ impl ClubDb {
                     pilot_name: r.try_get(3).ok()?,
                     visibility: r.try_get(4).ok()?,
                     club_id: r.try_get(5).ok()?,
+                    trail_minutes,
                     fix: LiveFix {
                         t: r.try_get(6).ok()?,
                         lat: r.try_get(7).ok()?,
@@ -2039,6 +2077,7 @@ impl ClubDb {
             .await?;
         let seed_flight_err =
             |e: StartFlightError| DbError::protocol(format!("seed_demo flight: {e:?}"));
+        let started_t = t - 20 * 60_000;
         let pub_id = self
             .start_flight(
                 &pilot_id,
@@ -2046,7 +2085,7 @@ impl ClubDb {
                 "N101",
                 FlightVisibility::Public,
                 true,
-                t,
+                started_t,
             )
             .await
             .map_err(seed_flight_err)?;
@@ -2057,28 +2096,51 @@ impl ClubDb {
                 "N202",
                 FlightVisibility::Club,
                 false,
-                t,
+                started_t,
             )
             .await
             .map_err(seed_flight_err)?;
-        let fix = |offset: i64, lat: f64| LiveFix {
-            t: t + offset,
-            lat,
-            lon: -70.6,
-            alt: Some(900.0),
-            alt_ref: None,
-            speed: Some(28.0),
-            course: Some(120.0),
-            accuracy: Some(6.0),
-        };
-        self.append_fix(&pub_id, &dev_pilot, &fix(100, -33.40))
-            .await?;
-        self.append_fix(&pub_id, &dev_pilot, &fix(200, -33.39))
-            .await?;
-        self.append_fix(&club_f, &dev_admin, &fix(150, -33.38))
-            .await?;
-        self.append_fix(&club_f, &dev_admin, &fix(250, -33.37))
-            .await?;
+        let mut pub_fixes = Vec::with_capacity(21);
+        let mut club_fixes = Vec::with_capacity(21);
+        for i in 0..=20i64 {
+            let frac = i as f64 / 20.0;
+            let arc = (frac * std::f64::consts::PI).sin();
+            let fix_t = started_t + i * 60_000;
+            pub_fixes.push(LiveFix {
+                t: fix_t,
+                lat: -33.448 + frac * 0.055 + arc * 0.012,
+                lon: -70.540 + frac * 0.048 - arc * 0.010,
+                alt: Some(900.0 + i as f64 * 15.0),
+                alt_ref: None,
+                speed: Some(32.0),
+                course: Some(45.0),
+                accuracy: Some(6.0),
+            });
+            club_fixes.push(LiveFix {
+                t: fix_t,
+                lat: -33.464 - frac * 0.055 - arc * 0.014,
+                lon: -70.556 - frac * 0.052 + arc * 0.012,
+                alt: Some(950.0 + i as f64 * 12.0),
+                alt_ref: None,
+                speed: Some(30.0),
+                course: Some(225.0),
+                accuracy: Some(6.0),
+            });
+        }
+        self.append_fixes(&pub_id, &dev_pilot, &pub_fixes).await?;
+        self.append_fixes(&club_f, &dev_admin, &club_fixes).await?;
+        let base = self.club_base_aerodrome(&club_id).await?;
+        if base.icao.is_none() || base.lat.is_none() || base.lon.is_none() {
+            let (icao, lat, lon) = crate::club::db_kiosk_pg::validate_base_aerodrome(
+                Some("SCTB"),
+                Some(-33.456),
+                Some(-70.548),
+            )
+            .unwrap();
+            let _ = self
+                .set_club_base_aerodrome(&club_id, &icao, lat, lon)
+                .await;
+        }
         self.ensure_e2e_join_club(t).await?;
         Ok(())
     }
