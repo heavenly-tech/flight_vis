@@ -2,17 +2,27 @@
 
 use crate::club::auth::{self, hash_password, new_id};
 use crate::club::db::now_ms;
+use crate::club::db_club_lifecycle::{ClubDeleteError, ClubSignupError, PENDING_CLUB_TTL_MS};
+use crate::club::db_club_slug::{ClubSlugRenameError, CLUB_SLUG_DELETE_COOLDOWN_MS};
 use crate::club::ClubDb;
 use axum::body::{to_bytes, Body};
 use axum::http::{header, HeaderMap, Request, StatusCode};
 use serial_test::serial;
+use std::collections::{BTreeSet, HashSet};
 use tower::Service;
 
 async fn http_stack(db: ClubDb) -> (axum::Router, ClubDb) {
+    http_stack_with_superadmins(db, HashSet::new()).await
+}
+
+async fn http_stack_with_superadmins(
+    db: ClubDb,
+    superadmin_emails: HashSet<String>,
+) -> (axum::Router, ClubDb) {
     use crate::{
         auth::Auth, build_router, device_auth::DeviceAuth, live::LiveEngine, store::Store, AppState,
     };
-    use std::{collections::HashSet, sync::Arc};
+    use std::sync::Arc;
     let data_dir = tempfile::tempdir().unwrap();
     let dist_dir = data_dir.path().join("dist");
     let (video_queue, _) = tokio::sync::mpsc::channel(4);
@@ -32,7 +42,7 @@ async fn http_stack(db: ClubDb) -> (axum::Router, ClubDb) {
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: Arc::new(crate::club::sse_limit::SseLimiter::default()),
-        superadmin_emails: HashSet::new(),
+        superadmin_emails,
     };
     (build_router(state), db)
 }
@@ -679,7 +689,7 @@ async fn admin_delete_club_cascades_all_scoped_rows_and_clears_cookies() {
     assert_eq!(
         count(
             "SELECT COUNT(*)::bigint FROM accounts WHERE id = $1",
-            account_id
+            account_id.clone()
         )
         .await,
         1
@@ -709,9 +719,45 @@ async fn admin_delete_club_cascades_all_scoped_rows_and_clears_cookies() {
         1
     );
 
-    // Deleted slugs are released and reusable.
-    assert!(!db.club_slug_globally_taken(&new_slug, None).await.unwrap());
-    assert!(!db.club_slug_globally_taken(&orig_slug, None).await.unwrap());
+    // Tombstone records club id, name, actor account, timestamp, and both current + historical slugs.
+    let tombstones = db.list_club_delete_tombstones().await.unwrap();
+    assert_eq!(tombstones.len(), 1);
+    let tomb = &tombstones[0];
+    assert_eq!(tomb.club_id, club_id);
+    assert_eq!(tomb.name, "Club del-a");
+    assert_eq!(tomb.actor_account_id.as_deref(), Some(account_id.as_str()));
+    assert!(tomb.deleted_at >= now);
+    let mut expected_slugs = vec![orig_slug.clone(), new_slug.clone()];
+    expected_slugs.sort();
+    assert_eq!(tomb.slugs, expected_slugs);
+
+    // Deleted current and historical slugs stay blocked during the cooldown window.
+    assert!(db
+        .club_slug_globally_taken_at(&new_slug, None, tomb.deleted_at)
+        .await
+        .unwrap());
+    assert!(db
+        .club_slug_globally_taken_at(&orig_slug, None, tomb.deleted_at)
+        .await
+        .unwrap());
+    assert!(db.club_slug_globally_taken(&new_slug, None).await.unwrap());
+    assert!(db.club_slug_globally_taken(&orig_slug, None).await.unwrap());
+    assert!(!db
+        .club_slug_globally_taken_at(
+            &new_slug,
+            None,
+            tomb.deleted_at + CLUB_SLUG_DELETE_COOLDOWN_MS,
+        )
+        .await
+        .unwrap());
+    assert!(!db
+        .club_slug_globally_taken_at(
+            &orig_slug,
+            None,
+            tomb.deleted_at + CLUB_SLUG_DELETE_COOLDOWN_MS,
+        )
+        .await
+        .unwrap());
 }
 
 #[tokio::test]
@@ -1105,4 +1151,505 @@ async fn post_delete_switches_active_club_and_leaves_other_club_untouched() {
             .await
             .unwrap();
     assert_eq!(cross_audit_actor, None);
+}
+
+#[tokio::test]
+#[serial]
+async fn delete_club_tombstone_atomic_write_and_rollback() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let (club_id, orig_slug) = create_live_club(&db, "atom", "atom-owner@test").await;
+    let (admin_pid, account_id, _) = club_admin_ids(&db, &club_id).await;
+
+    let mid_slug = format!("atom-mid-{}", &new_id()[..6]);
+    let final_slug = format!("atom-final-{}", &new_id()[..6]);
+    db.rename_club_slug(&club_id, &mid_slug, Some(&admin_pid), now + 1)
+        .await
+        .unwrap();
+    db.rename_club_slug(&club_id, &final_slug, Some(&admin_pid), now + 2)
+        .await
+        .unwrap();
+
+    // Install a temporary BEFORE DELETE trigger on `clubs` (runs after the tombstone INSERT).
+    sqlx::query("DROP TRIGGER IF EXISTS trg_test_fail_club_delete ON clubs")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "CREATE OR REPLACE FUNCTION test_fail_club_delete() RETURNS trigger AS $$
+         BEGIN
+             RAISE EXCEPTION 'forced club delete failure';
+         END;
+         $$ LANGUAGE plpgsql",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "CREATE TRIGGER trg_test_fail_club_delete
+         BEFORE DELETE ON clubs
+         FOR EACH ROW EXECUTE FUNCTION test_fail_club_delete()",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    let deleted_at = now + 5_000;
+    let failed = db
+        .delete_club(&club_id, &final_slug, Some(&account_id), deleted_at)
+        .await;
+
+    // Always clean up the trigger and helper function before asserting.
+    sqlx::query("DROP TRIGGER IF EXISTS trg_test_fail_club_delete ON clubs")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    sqlx::query("DROP FUNCTION IF EXISTS test_fail_club_delete()")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+    assert_eq!(failed, Err(ClubDeleteError::Db));
+    // Rollback must preserve the club + slug history and commit zero tombstone rows.
+    assert!(db.club_public_row(&club_id).await.is_some());
+    let hist_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM club_slug_history WHERE club_id = $1")
+            .bind(&club_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(hist_count, 2);
+    let tomb_count: i64 = sqlx::query_scalar("SELECT COUNT(*)::bigint FROM club_delete_tombstones")
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(tomb_count, 0);
+    let tomb_slug_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*)::bigint FROM club_delete_tombstone_slugs")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(tomb_slug_count, 0);
+
+    // Without the failing trigger, delete succeeds and atomically records all current + historical slugs.
+    db.delete_club(&club_id, &final_slug, Some(&account_id), deleted_at)
+        .await
+        .unwrap();
+    assert!(db.club_public_row(&club_id).await.is_none());
+
+    let tombstones = db.list_club_delete_tombstones().await.unwrap();
+    assert_eq!(tombstones.len(), 1);
+    let tomb = &tombstones[0];
+    assert_eq!(tomb.club_id, club_id);
+    assert_eq!(tomb.name, "Club atom");
+    assert_eq!(tomb.actor_account_id.as_deref(), Some(account_id.as_str()));
+    assert_eq!(tomb.deleted_at, deleted_at);
+    let mut expected_slugs = vec![orig_slug, mid_slug, final_slug];
+    expected_slugs.sort();
+    assert_eq!(tomb.slugs, expected_slugs);
+
+    // Passing actor_account_id = None is permitted and stores NULL.
+    let (club2, slug2) = create_live_club(&db, "nullactor", "nullactor@test").await;
+    db.delete_club(&club2, &slug2, None, deleted_at + 10)
+        .await
+        .unwrap();
+    let tombstones = db.list_club_delete_tombstones().await.unwrap();
+    assert_eq!(tombstones.len(), 2);
+    let tomb2 = tombstones.iter().find(|t| t.club_id == club2).unwrap();
+    assert_eq!(tomb2.actor_account_id, None);
+    assert_eq!(tomb2.slugs, vec![slug2]);
+}
+
+#[tokio::test]
+#[serial]
+async fn deleted_slugs_and_confusables_blocked_during_cooldown() {
+    let db = ClubDb::open_test().await.unwrap();
+    let t0 = now_ms();
+    let suffix = &new_id()[..6];
+    let orig_slug = format!("cas-{suffix}");
+    let curr_slug = format!("sol-{suffix}");
+    let orig_confusable = format!("ca5-{suffix}");
+    let curr_confusable = format!("5ol-{suffix}");
+
+    let (club_a, tok_a) = db
+        .signup_club("Club Cooldown A", &orig_slug, "cool-a@test", None, t0)
+        .await
+        .unwrap();
+    db.try_consume_magic_club_verify(&tok_a, t0).await.unwrap();
+    let (admin_a_pid, account_a_id, _) = club_admin_ids(&db, &club_a).await;
+    db.rename_club_slug(&club_a, &curr_slug, Some(&admin_a_pid), t0 + 1)
+        .await
+        .unwrap();
+
+    let (club_b, _slug_b) = create_live_club(&db, "live-b", "cool-b@test").await;
+    let (admin_b_pid, _, _) = club_admin_ids(&db, &club_b).await;
+    let admin_b_cookie = format!(
+        "fv_club_session={}",
+        db.create_pilot_session(&admin_b_pid, t0).await.unwrap()
+    );
+
+    // Verified allowlisted superadmin for HTTP superadmin rename check.
+    let default_id = db.default_club_id().await.unwrap();
+    let super_email = "super-cool@test".to_string();
+    let super_pid = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, email_verified_at, created_at)
+         VALUES ($1, $2, 'Super Cool', $3, '', 'approved', 'pilot', '', $4, $4)",
+    )
+    .bind(&super_pid)
+    .bind(&default_id)
+    .bind(&super_email)
+    .bind(t0)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let super_cookie = format!(
+        "fv_club_session={}",
+        db.create_pilot_session(&super_pid, t0).await.unwrap()
+    );
+
+    // Delete club A at t0 + 100.
+    let del_at = t0 + 100;
+    db.delete_club(&club_a, &curr_slug, Some(&account_a_id), del_at)
+        .await
+        .unwrap();
+
+    // Still inside cooldown (1 second before expiry).
+    let t_within = del_at + CLUB_SLUG_DELETE_COOLDOWN_MS - 1_000;
+    for candidate in [&curr_slug, &orig_slug, &curr_confusable, &orig_confusable] {
+        assert!(
+            db.club_slug_globally_taken_at(candidate, None, t_within)
+                .await
+                .unwrap(),
+            "expected {candidate} blocked during cooldown"
+        );
+        assert_eq!(
+            db.signup_club("New Club", candidate, "new-signup@test", None, t_within)
+                .await,
+            Err(ClubSignupError::SlugTaken),
+            "signup_club should return SlugTaken for {candidate}"
+        );
+        assert_eq!(
+            db.rename_club_slug(&club_b, candidate, Some(&admin_b_pid), t_within)
+                .await,
+            Err(ClubSlugRenameError::Taken),
+            "rename_club_slug should return Taken for {candidate}"
+        );
+    }
+
+    // HTTP club-admin and superadmin rename return identical 409 + {"error":"slug taken"}.
+    let mut allow = HashSet::new();
+    allow.insert(super_email);
+    let (mut router, _db) = http_stack_with_superadmins(db, allow).await;
+
+    for candidate in [&curr_slug, &orig_slug, &curr_confusable] {
+        let (st, _, body) = send(
+            &mut router,
+            Request::builder()
+                .method("POST")
+                .uri("/api/admin/club/slug")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("sec-fetch-site", "same-origin")
+                .header(header::COOKIE, &admin_b_cookie)
+                .body(Body::from(format!(r#"{{"slug":"{candidate}"}}"#)))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CONFLICT, "admin rename {candidate}: {body}");
+        assert_eq!(body["error"], "slug taken");
+    }
+
+    for candidate in [&curr_slug, &orig_slug] {
+        let (st, _, body) = send(
+            &mut router,
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/superadmin/clubs/{club_b}/slug"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("sec-fetch-site", "same-origin")
+                .header(header::COOKIE, &super_cookie)
+                .body(Body::from(format!(r#"{{"slug":"{candidate}"}}"#)))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            st,
+            StatusCode::CONFLICT,
+            "superadmin rename {candidate}: {body}"
+        );
+        assert_eq!(body["error"], "slug taken");
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn deleted_slug_reusable_after_cooldown_and_re_tombstoned_on_second_delete() {
+    let db = ClubDb::open_test().await.unwrap();
+    let t0 = now_ms();
+    let suffix = &new_id()[..6];
+    let orig_slug = format!("reuse-o-{suffix}");
+    let curr_slug = format!("reuse-c-{suffix}");
+
+    let (club_a, tok_a) = db
+        .signup_club("Reuse A", &orig_slug, "reuse-a@test", None, t0)
+        .await
+        .unwrap();
+    db.try_consume_magic_club_verify(&tok_a, t0).await.unwrap();
+    let (admin_a_pid, account_a_id, _) = club_admin_ids(&db, &club_a).await;
+    db.rename_club_slug(&club_a, &curr_slug, Some(&admin_a_pid), t0 + 1)
+        .await
+        .unwrap();
+
+    let (club_b, _slug_b) = create_live_club(&db, "reuse-b", "reuse-b@test").await;
+
+    // Delete club A at t0 + 100.
+    let del1_at = t0 + 100;
+    db.delete_club(&club_a, &curr_slug, Some(&account_a_id), del1_at)
+        .await
+        .unwrap();
+
+    // Right at cooldown expiry: deleted_at > now - cooldown is false -> reusable.
+    let t_after = del1_at + CLUB_SLUG_DELETE_COOLDOWN_MS;
+    assert!(!db
+        .club_slug_globally_taken_at(&curr_slug, None, t_after)
+        .await
+        .unwrap());
+    assert!(!db
+        .club_slug_globally_taken_at(&orig_slug, None, t_after)
+        .await
+        .unwrap());
+
+    // Self-serve signup reuses the previously deleted current slug.
+    let (club_c, tok_c) = db
+        .signup_club("Reuse C", &curr_slug, "reuse-c@test", None, t_after)
+        .await
+        .unwrap();
+    db.try_consume_magic_club_verify(&tok_c, t_after)
+        .await
+        .unwrap();
+    let (_, account_c_id, _) = club_admin_ids(&db, &club_c).await;
+
+    // Another live club renames into the previously deleted historical slug.
+    db.rename_club_slug(&club_b, &orig_slug, None, t_after)
+        .await
+        .unwrap();
+    assert_eq!(
+        db.club_slug(&club_b).await.as_deref(),
+        Some(orig_slug.as_str())
+    );
+
+    // Deleting the reused club writes a second tombstone for the same slug and starts a fresh cooldown.
+    let del2_at = t_after + 10_000;
+    db.delete_club(&club_c, &curr_slug, Some(&account_c_id), del2_at)
+        .await
+        .unwrap();
+
+    let tombstones = db.list_club_delete_tombstones().await.unwrap();
+    assert_eq!(tombstones.len(), 2);
+    assert_eq!(tombstones[0].club_id, club_c);
+    assert_eq!(tombstones[0].deleted_at, del2_at);
+    assert_eq!(tombstones[0].slugs, vec![curr_slug.clone()]);
+    assert_eq!(tombstones[1].club_id, club_a);
+    assert_eq!(tombstones[1].deleted_at, del1_at);
+
+    let t_fresh_within = del2_at + CLUB_SLUG_DELETE_COOLDOWN_MS - 1_000;
+    assert!(db
+        .club_slug_globally_taken_at(&curr_slug, None, t_fresh_within)
+        .await
+        .unwrap());
+    assert_eq!(
+        db.signup_club("Reuse D", &curr_slug, "reuse-d@test", None, t_fresh_within)
+            .await,
+        Err(ClubSignupError::SlugTaken)
+    );
+    assert_eq!(
+        db.rename_club_slug(&club_b, &curr_slug, None, t_fresh_within)
+            .await,
+        Err(ClubSlugRenameError::Taken)
+    );
+    assert!(!db
+        .club_slug_globally_taken_at(&curr_slug, None, del2_at + CLUB_SLUG_DELETE_COOLDOWN_MS)
+        .await
+        .unwrap());
+
+    // Unverified stale pending club purge must NOT write a tombstone and frees its slug immediately.
+    let pending_slug = format!("pend-{}", &new_id()[..8]);
+    let (pending_id, _) = db
+        .signup_club("Pending Only", &pending_slug, "pend@test", None, t0)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE clubs SET created_at = $1 WHERE id = $2")
+        .bind(t0 - PENDING_CLUB_TTL_MS - 60_000)
+        .bind(&pending_id)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let purged = db.purge_stale_pending_clubs(t0).await.unwrap();
+    assert_eq!(purged, 1);
+    assert_eq!(db.list_club_delete_tombstones().await.unwrap().len(), 2);
+    assert!(!db
+        .club_slug_globally_taken_at(&pending_slug, None, t0)
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+#[serial]
+async fn superadmin_club_tombstones_authz_and_payload() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let (club_a, orig_slug) = create_live_club(&db, "tomb-a", "tomb-a@test").await;
+    let (admin_a_pid, account_a_id, _) = club_admin_ids(&db, &club_a).await;
+    let renamed_slug = format!("tomb-a-new-{}", &new_id()[..6]);
+    db.rename_club_slug(&club_a, &renamed_slug, Some(&admin_a_pid), now + 1)
+        .await
+        .unwrap();
+    let deleted_at = now + 2_000;
+    db.delete_club(&club_a, &renamed_slug, Some(&account_a_id), deleted_at)
+        .await
+        .unwrap();
+
+    // Non-superadmin identities on another live club.
+    let (club_b, _) = create_live_club(&db, "tomb-b", "tomb-b@test").await;
+    let (admin_b_pid, admin_b_acct, admin_b_mem) = club_admin_ids(&db, &club_b).await;
+    let admin_b_cookie = format!(
+        "fv_account_session={}; fv_club_session={}",
+        db.create_account_session(&admin_b_acct, Some(&admin_b_mem), now)
+            .await
+            .unwrap(),
+        db.create_pilot_session(&admin_b_pid, now).await.unwrap()
+    );
+    let (_, _, pilot_cookie) =
+        seed_member_with_session(&db, &club_b, "tomb-pilot@test", "pilot").await;
+    let (_, _, staff_cookie) =
+        seed_member_with_session(&db, &club_b, "tomb-staff@test", "staff").await;
+
+    // Verified allowlisted superadmin (matches verified_allowlisted_superadmin_lists_clubs).
+    let default_id = db.default_club_id().await.unwrap();
+    let super_email = "super-tomb@test".to_string();
+    let super_pid = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, email_verified_at, created_at)
+         VALUES ($1, $2, 'Super Tomb', $3, '', 'approved', 'pilot', '', $4, $4)",
+    )
+    .bind(&super_pid)
+    .bind(&default_id)
+    .bind(&super_email)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let allowlisted_super_cookie = format!(
+        "fv_club_session={}",
+        db.create_pilot_session(&super_pid, now).await.unwrap()
+    );
+
+    // Account platform superadmin (`accounts.global_role = 'superadmin'`).
+    let acct_super_id = new_id();
+    sqlx::query(
+        "INSERT INTO accounts (id, email, global_role, email_verified_at, created_at)
+         VALUES ($1, 'acct-super-tomb@test', 'superadmin', $2, $2)",
+    )
+    .bind(&acct_super_id)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let acct_super_cookie = format!(
+        "fv_account_session={}",
+        db.create_account_session(&acct_super_id, None, now)
+            .await
+            .unwrap()
+    );
+
+    let mut emails = HashSet::new();
+    emails.insert(super_email);
+    let (mut router, _db) = http_stack_with_superadmins(db, emails).await;
+
+    // Anonymous, club admin, staff, and ordinary pilot are all forbidden.
+    for (label, cookie) in [
+        ("anonymous", None),
+        ("club_admin", Some(admin_b_cookie.as_str())),
+        ("staff", Some(staff_cookie.as_str())),
+        ("pilot", Some(pilot_cookie.as_str())),
+    ] {
+        let mut req = Request::builder()
+            .method("GET")
+            .uri("/api/superadmin/club-tombstones");
+        if let Some(c) = cookie {
+            req = req.header(header::COOKIE, c);
+        }
+        let (st, _, body) = send(&mut router, req.body(Body::empty()).unwrap()).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{label}: {body}");
+        assert_eq!(body["error"], "forbidden");
+    }
+
+    // Both allowlisted superadmin and account platform superadmin get 200 and see the tombstone.
+    let mut expected_slugs = vec![orig_slug, renamed_slug];
+    expected_slugs.sort();
+    let expected_keys: BTreeSet<&str> = [
+        "id",
+        "clubId",
+        "name",
+        "slugs",
+        "actorAccountId",
+        "deletedAt",
+    ]
+    .into_iter()
+    .collect();
+
+    for (label, cookie) in [
+        ("allowlisted_superadmin", allowlisted_super_cookie.as_str()),
+        ("account_superadmin", acct_super_cookie.as_str()),
+    ] {
+        let (st, _, body) = send(
+            &mut router,
+            Request::builder()
+                .method("GET")
+                .uri("/api/superadmin/club-tombstones")
+                .header(header::COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{label}: {body}");
+        let items = body["tombstones"].as_array().expect("tombstones array");
+        assert_eq!(items.len(), 1);
+        let obj = items[0].as_object().expect("tombstone object");
+        let keys: BTreeSet<&str> = obj.keys().map(String::as_str).collect();
+        assert_eq!(keys, expected_keys, "no extra PII fields on tombstone");
+        assert_eq!(obj["clubId"], club_a);
+        assert_eq!(obj["name"], "Club tomb-a");
+        assert_eq!(obj["actorAccountId"], account_a_id);
+        assert_eq!(obj["deletedAt"], deleted_at);
+        let got_slugs: Vec<String> = obj["slugs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(got_slugs, expected_slugs);
+    }
+
+    // Public club listing does not expose tombstones or deleted clubs.
+    let (pub_st, _, pub_body) = send(
+        &mut router,
+        Request::builder()
+            .method("GET")
+            .uri("/api/clubs/public")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(pub_st, StatusCode::OK);
+    assert!(pub_body.get("tombstones").is_none());
+    let pub_slugs: Vec<&str> = pub_body["clubs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["slug"].as_str())
+        .collect();
+    assert!(!pub_slugs
+        .iter()
+        .any(|s| expected_slugs.iter().any(|e| e == s)));
 }
