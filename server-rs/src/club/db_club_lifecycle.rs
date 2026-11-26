@@ -5,12 +5,25 @@ use crate::club::{
     db::{ClubDb, DbError},
     slug::{normalize_slug, validate_slug},
 };
-use sqlx::Row;
+use serde::Serialize;
+use sqlx::{postgres::PgTransaction, Row};
+use std::collections::BTreeSet;
 
 pub const CLUB_SIGNUP_PURPOSE: &str = "club_verify";
 const MAGIC_TTL_MS: i64 = 15 * 60 * 1000;
 /// Unverified self-serve clubs older than this are purged so the slug can be reused.
 pub const PENDING_CLUB_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClubDeleteTombstone {
+    pub id: String,
+    pub club_id: String,
+    pub name: String,
+    pub slugs: Vec<String>,
+    pub actor_account_id: Option<String>,
+    pub deleted_at: i64,
+}
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
@@ -128,6 +141,38 @@ impl ClubDb {
             .collect()
     }
 
+    pub async fn list_club_delete_tombstones(&self) -> Result<Vec<ClubDeleteTombstone>, DbError> {
+        let rows = sqlx::query(
+            "SELECT t.id,
+                    t.club_id,
+                    t.club_name,
+                    t.actor_account_id,
+                    t.deleted_at,
+                    COALESCE(
+                        ARRAY_AGG(s.slug ORDER BY s.slug ASC) FILTER (WHERE s.slug IS NOT NULL),
+                        ARRAY[]::text[]
+                    ) AS slugs
+             FROM club_delete_tombstones t
+             LEFT JOIN club_delete_tombstone_slugs s ON s.tombstone_id = t.id
+             GROUP BY t.id, t.club_id, t.club_name, t.actor_account_id, t.deleted_at
+             ORDER BY t.deleted_at DESC, t.id DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            out.push(ClubDeleteTombstone {
+                id: r.try_get(0)?,
+                club_id: r.try_get(1)?,
+                name: r.try_get(2)?,
+                actor_account_id: r.try_get(3)?,
+                deleted_at: r.try_get(4)?,
+                slugs: r.try_get(5)?,
+            });
+        }
+        Ok(out)
+    }
+
     pub async fn set_club_suspended(&self, club_id: &str, now: i64) -> Result<bool, DbError> {
         let mut tx = self.pool.begin().await?;
         let r = sqlx::query(
@@ -219,12 +264,19 @@ impl ClubDb {
 
     /// Permanently hard-delete a club and all of its club-scoped rows in one Postgres transaction.
     ///
+    /// Before deleting any club-scoped rows, inserts a platform-level tombstone
+    /// (`club_delete_tombstones` + `club_delete_tombstone_slugs`) recording the club id, name,
+    /// current + historical slugs, actor account id, and deletion timestamp. Those slugs remain
+    /// blocked from re-registration, rename, and confusable lookalikes for
+    /// [`crate::club::db_club_slug::CLUB_SLUG_DELETE_COOLDOWN_MS`] (90 days), unlike `purge_stale_pending_clubs` which
+    /// releases unverified pending slugs immediately without writing a tombstone.
+    ///
     /// Soft vs hard delete:
     /// - `clubs.suspended_at` is reserved for reversible platform-operator suspension.
-    /// - `clubs.status` only models `live` / `pending`; adding a `deleted` state would require a
-    ///   migration and changes across every operational/signup/session check.
-    /// - Hard-deleting in a single transaction requires no migration, matches
-    ///   `purge_stale_pending_clubs`, and releases the club's slugs once its rows are removed.
+    /// - `clubs.status` only models `live` / `pending`; adding a `deleted` state would require
+    ///   changes across every operational/signup/session check.
+    /// - Hard-deleting in a single transaction with an atomic tombstone cleans up club PII while
+    ///   preserving a platform audit record and slug cooldown.
     ///
     /// Club-scoped tables deleted (in FK-safe child-first order):
     /// `fixes`, `flight_devices`, `flight_shares`, `flights`, `checkins`,
@@ -235,8 +287,9 @@ impl ClubDb {
     /// `club_memberships` (`account_sessions.active_membership_id` falls back via `ON DELETE SET NULL`),
     /// `pilots`, `club_slug_history`, `club_slug_registry`, and `clubs`.
     ///
-    /// Preserved global/email-scoped tables: `accounts`, `account_sessions`, `email_suppressions`,
-    /// `login_attempts`, `magic_send_log`, and all other clubs' rows.
+    /// Preserved global/platform tables: `accounts`, `account_sessions`, `email_suppressions`,
+    /// `login_attempts`, `magic_send_log`, `club_delete_tombstones`,
+    /// `club_delete_tombstone_slugs`, and all other clubs' rows.
     ///
     /// Security: callers must enforce exact JSON `Content-Type`, `csrf::cookie_post_allowed`,
     /// active-club-only scoping (never a club id from request input), and
@@ -245,29 +298,93 @@ impl ClubDb {
         &self,
         club_id: &str,
         confirm_slug: &str,
+        actor_account_id: Option<&str>,
+        now: i64,
     ) -> Result<(), ClubDeleteError> {
         let mut tx = self.pool.begin().await.map_err(|_| ClubDeleteError::Db)?;
+        match Self::delete_club_in_tx(&mut tx, club_id, confirm_slug, actor_account_id, now).await {
+            Ok(()) => {
+                tx.commit().await.map_err(|_| ClubDeleteError::Db)?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = tx.rollback().await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn delete_club_in_tx(
+        tx: &mut PgTransaction<'_>,
+        club_id: &str,
+        confirm_slug: &str,
+        actor_account_id: Option<&str>,
+        now: i64,
+    ) -> Result<(), ClubDeleteError> {
         sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
             .bind(club_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|_| ClubDeleteError::Db)?;
 
-        let current_slug: Option<String> =
-            sqlx::query_scalar("SELECT slug FROM clubs WHERE id = $1 FOR UPDATE")
-                .bind(club_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|_| ClubDeleteError::Db)?;
-        let Some(current_slug) = current_slug else {
-            let _ = tx.rollback().await;
+        let club_row = sqlx::query("SELECT slug, name FROM clubs WHERE id = $1 FOR UPDATE")
+            .bind(club_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|_| ClubDeleteError::Db)?;
+        let Some(club_row) = club_row else {
             return Err(ClubDeleteError::NotFound);
         };
+        let current_slug: String = club_row.try_get(0).map_err(|_| ClubDeleteError::Db)?;
+        let club_name: String = club_row.try_get(1).map_err(|_| ClubDeleteError::Db)?;
         let expected = normalize_slug(&current_slug);
         let provided = normalize_slug(confirm_slug);
         if expected.is_empty() || provided != expected {
-            let _ = tx.rollback().await;
             return Err(ClubDeleteError::SlugMismatch);
+        }
+
+        // Collect current + historical slugs and record platform tombstone before any DELETE.
+        let historical_slugs: Vec<String> = sqlx::query_scalar(
+            "SELECT old_slug FROM club_slug_history WHERE club_id = $1 ORDER BY old_slug ASC",
+        )
+        .bind(club_id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        let mut tombstone_slugs = BTreeSet::new();
+        tombstone_slugs.insert(expected);
+        for old in historical_slugs {
+            let norm = normalize_slug(&old);
+            if !norm.is_empty() {
+                tombstone_slugs.insert(norm);
+            }
+        }
+
+        let tombstone_id = new_id();
+        sqlx::query(
+            "INSERT INTO club_delete_tombstones (id, club_id, club_name, actor_account_id, deleted_at)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(&tombstone_id)
+        .bind(club_id)
+        .bind(&club_name)
+        .bind(actor_account_id)
+        .bind(now)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| ClubDeleteError::Db)?;
+
+        for slug in &tombstone_slugs {
+            sqlx::query(
+                "INSERT INTO club_delete_tombstone_slugs (tombstone_id, slug)
+                 VALUES ($1, $2)",
+            )
+            .bind(&tombstone_id)
+            .bind(slug)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| ClubDeleteError::Db)?;
         }
 
         // Flight telemetry, device links, shares, and flights (including legacy rows where club_id IS NULL).
@@ -284,7 +401,7 @@ impl ClubDb {
              )",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -301,7 +418,7 @@ impl ClubDb {
              )",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -317,7 +434,7 @@ impl ClubDb {
                 OR created_by IN (SELECT id FROM pilots WHERE club_id = $1)",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -328,7 +445,7 @@ impl ClubDb {
                 OR aircraft_id IN (SELECT id FROM aircraft WHERE club_id = $1)",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -342,7 +459,7 @@ impl ClubDb {
                 )",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -352,7 +469,7 @@ impl ClubDb {
                 OR pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -365,7 +482,7 @@ impl ClubDb {
                 OR aircraft_id IN (SELECT id FROM aircraft WHERE club_id = $1)",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -377,7 +494,7 @@ impl ClubDb {
              )",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -386,7 +503,7 @@ impl ClubDb {
              WHERE pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -395,7 +512,7 @@ impl ClubDb {
              WHERE pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -406,7 +523,7 @@ impl ClubDb {
                AND decided_by_pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -417,7 +534,7 @@ impl ClubDb {
                 OR type_id IN (SELECT id FROM aircraft_types WHERE club_id = $1)",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -427,13 +544,13 @@ impl ClubDb {
                AND actor_pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
         sqlx::query("DELETE FROM audit_log WHERE club_id = $1")
             .bind(club_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|_| ClubDeleteError::Db)?;
 
@@ -444,7 +561,7 @@ impl ClubDb {
                 OR pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -454,20 +571,20 @@ impl ClubDb {
                 OR guest_pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
         // Fleet.
         sqlx::query("DELETE FROM aircraft WHERE club_id = $1")
             .bind(club_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|_| ClubDeleteError::Db)?;
 
         sqlx::query("DELETE FROM aircraft_types WHERE club_id = $1")
             .bind(club_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|_| ClubDeleteError::Db)?;
 
@@ -477,7 +594,7 @@ impl ClubDb {
              WHERE pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -486,7 +603,7 @@ impl ClubDb {
              WHERE pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -495,7 +612,7 @@ impl ClubDb {
              WHERE active_membership_id IN (SELECT id FROM club_memberships WHERE club_id = $1)",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
@@ -505,36 +622,35 @@ impl ClubDb {
                 OR pilot_id IN (SELECT id FROM pilots WHERE club_id = $1)",
         )
         .bind(club_id)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
 
         sqlx::query("DELETE FROM pilots WHERE club_id = $1")
             .bind(club_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|_| ClubDeleteError::Db)?;
 
         // Slug history/registry and finally the club row itself.
         sqlx::query("DELETE FROM club_slug_history WHERE club_id = $1")
             .bind(club_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|_| ClubDeleteError::Db)?;
 
         sqlx::query("DELETE FROM club_slug_registry WHERE club_id = $1")
             .bind(club_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|_| ClubDeleteError::Db)?;
 
         sqlx::query("DELETE FROM clubs WHERE id = $1")
             .bind(club_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .map_err(|_| ClubDeleteError::Db)?;
 
-        tx.commit().await.map_err(|_| ClubDeleteError::Db)?;
         Ok(())
     }
 
@@ -586,7 +702,7 @@ impl ClubDb {
             return Err(ClubSignupError::InvalidSlug);
         }
         if self
-            .club_slug_globally_taken(&slug, None)
+            .club_slug_globally_taken_at(&slug, None, now)
             .await
             .map_err(|_| ClubSignupError::Db)?
         {
@@ -605,6 +721,16 @@ impl ClubDb {
             .filter(|s| !s.is_empty())
             .map(|s| s.to_ascii_uppercase());
         let mut tx = self.pool.begin().await.map_err(|_| ClubSignupError::Db)?;
+        if Self::slug_taken_in_tx(&mut tx, &slug, None, now)
+            .await
+            .map_err(|_| ClubSignupError::Db)?
+            || Self::confusable_taken_in_tx(&mut tx, &slug, None, now)
+                .await
+                .map_err(|_| ClubSignupError::Db)?
+        {
+            let _ = tx.rollback().await;
+            return Err(ClubSignupError::SlugTaken);
+        }
         let ins = sqlx::query(
             "INSERT INTO clubs (id, name, slug, created_at, status, contact_email, aerodrome_icao,
              checkin_window_hours, latitude, longitude)

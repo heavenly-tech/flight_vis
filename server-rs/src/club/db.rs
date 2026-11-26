@@ -159,6 +159,7 @@ impl ClubDb {
              webauthn_credentials, email_suppressions, audit_log, access_requests, checkins, \
              device_pair_tokens, flight_devices, fixes, flights, devices, checkouts, pilot_sessions, \
              account_sessions, club_memberships, admin_map_prefs, pilots, accounts, \
+             club_delete_tombstone_slugs, club_delete_tombstones, \
              club_slug_registry, club_slug_history, aircraft, aircraft_types, clubs RESTART IDENTITY CASCADE",
         )
         .execute(&self.pool)
