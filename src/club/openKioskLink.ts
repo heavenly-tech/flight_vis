@@ -61,7 +61,7 @@ export async function mountOpenKioskLink(
 
   if (!currentHref && opts?.clubSlug === undefined) {
     try {
-      const me = await api<{ clubSlug?: string | null }>("/api/club/me");
+      const me = await api<{ clubSlug?: string | null; email_verified?: boolean }>("/api/club/me");
       currentHref = clubScreenPath(me.clubSlug);
     } catch {
       currentHref = null;

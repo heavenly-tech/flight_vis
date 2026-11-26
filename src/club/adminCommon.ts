@@ -13,6 +13,7 @@ export interface PendingCounts {
 export interface ClubMeSummary {
   clubName?: string | null;
   clubSlug?: string | null;
+  email_verified?: boolean;
 }
 
 let adminNavLocaleBound = false;

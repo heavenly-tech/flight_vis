@@ -1053,15 +1053,47 @@ impl ClubDb {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    /// Whether `pilot_id` is a non-guest pilot with a verified email.
+    ///
+    /// Returns `true` iff the pilot row exists, is not a guest (`pilots.status <> 'guest'`
+    /// and has no active unclaimed `guest_sessions` row), and either `pilots.email_verified_at`
+    /// or its linked `accounts.email_verified_at` is non-NULL.
     pub async fn pilot_email_verified(&self, pilot_id: &str) -> bool {
-        sqlx::query_scalar::<_, Option<i64>>("SELECT email_verified_at FROM pilots WHERE id = $1")
-            .bind(pilot_id)
-            .fetch_optional(&self.pool)
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|t| t.is_some())
+        let now = now_ms();
+        let row = sqlx::query(
+            "SELECT p.status,
+                    p.email_verified_at,
+                    a.email_verified_at,
+                    EXISTS(
+                        SELECT 1 FROM guest_sessions gs
+                        WHERE gs.guest_pilot_id = p.id
+                          AND gs.claimed_at IS NULL
+                          AND gs.expires_at > $2
+                    )
+             FROM pilots p
+             LEFT JOIN accounts a ON a.id = p.account_id
+             WHERE p.id = $1",
+        )
+        .bind(pilot_id)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten();
+        let Some(row) = row else {
+            return false;
+        };
+        let status: String = row.try_get(0).ok().unwrap_or_default();
+        if status == "guest" {
+            return false;
+        }
+        let has_active_guest_session: bool = row.try_get(3).ok().unwrap_or(false);
+        if has_active_guest_session {
+            return false;
+        }
+        let pilot_verified: Option<i64> = row.try_get(1).ok().flatten();
+        let account_verified: Option<i64> = row.try_get(2).ok().flatten();
+        pilot_verified.is_some() || account_verified.is_some()
     }
 
     pub async fn fixes_for_flight(&self, flight_id: &str) -> Vec<LiveFix> {
