@@ -12,7 +12,12 @@ use crate::{
     club::{
         auth::{hash_password, new_id},
         db::now_ms,
-        pilot_live_trails::{LiveTrailsLayers, PILOT_LIVE_TRAILS_MAX_FLIGHTS},
+        geo::haversine_km,
+        pilot_live_trails::{
+            LiveTrailsLayers, LiveTrailsQuery, PublicArea,
+            PILOT_LIVE_TRAILS_DEFAULT_PUBLIC_RADIUS_KM, PILOT_LIVE_TRAILS_MAX_FLIGHTS,
+            PILOT_LIVE_TRAILS_MAX_PUBLIC_RADIUS_KM, PILOT_LIVE_TRAILS_MIN_PUBLIC_RADIUS_KM,
+        },
         trail::{MAX_NEARBY_PUBLIC_FLIGHTS, MAX_TRAIL_POINTS, MAX_TRAIL_WINDOW_MIN},
         visibility::FlightVisibility,
         ClubDb,
@@ -592,14 +597,18 @@ async fn pilot_live_trails_isolation_visibility_dedup_and_own_exclusion() {
             body["caps"]["maxWindowMinutes"],
             json!(MAX_TRAIL_WINDOW_MIN)
         );
+        assert!(
+            body.get("publicArea").is_none(),
+            "club-only response must omit publicArea"
+        );
     }
 
-    // 2) layers=club,public: Club C public now included with layer="public";
+    // 2) layers=club,public: Club C public (~102 km from SCTB, within radius_km=150) now included with layer="public";
     // Club A public appears ONCE with layer="club"; private & Club C club-only still excluded; own still excluded!
     let (st, _, body) = send_req(
         &mut router,
         "GET",
-        "/api/me/live-trails?layers=club,public",
+        "/api/me/live-trails?layers=club,public&lat=-33.456&lon=-70.548&radius_km=150",
         None,
         Some(&caller_a_bearer),
         None,
@@ -609,6 +618,10 @@ async fn pilot_live_trails_isolation_visibility_dedup_and_own_exclusion() {
     )
     .await;
     assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["publicArea"],
+        json!({ "lat": -33.456, "lon": -70.548, "radiusKm": 150.0 })
+    );
     let flights = body["flights"].as_array().unwrap();
     let count_a_pub = flights
         .iter()
@@ -730,12 +743,12 @@ async fn pilot_live_trails_membership_states_suspended_club_and_null_club_id() {
     // Suspend club_susp
     db.set_club_suspended(&club_susp, now).await.unwrap();
 
-    // 1) Active viewer in Club A with layers=club,public:
+    // 1) Active viewer in Club A with layers=club,public (50 km covers both Club A and suspended Club S):
     //    NEVER sees suspended club's public flight; NEVER sees NULL club_id flight.
     let (st, _, body) = send_req(
         &mut router,
         "GET",
-        "/api/me/live-trails?layers=club,public",
+        "/api/me/live-trails?layers=club,public&lat=-33.456&lon=-70.548&radius_km=50",
         Some(&active_cookie),
         None,
         None,
@@ -786,7 +799,7 @@ async fn pilot_live_trails_membership_states_suspended_club_and_null_club_id() {
     let (st, _, body_both) = send_req(
         &mut router,
         "GET",
-        "/api/me/live-trails?layers=club,public",
+        "/api/me/live-trails?layers=club,public&lat=-33.456&lon=-70.548",
         Some(&no_mem_cookie),
         None,
         None,
@@ -2460,6 +2473,740 @@ async fn club_view_nearby_public_altitude_filter_agl_with_dem_and_fallback() {
         assert!(
             ids.contains(fid_low_agl.as_str()),
             "{uri} must keep flight via NoDemFallbackMsl when DEM tile is absent"
+        );
+    }
+}
+
+#[test]
+fn live_trails_query_parser_validates_public_location_and_radius() {
+    // Club-only ignores coordinates and radius (even malformed values)
+    for ok_club in [
+        None,
+        Some("layers=club"),
+        Some("layers=club&lat=-33.456&lon=-70.548"),
+        Some("layers=club&lat=999&lon=abc&radius_km=NaN"),
+    ] {
+        let parsed = LiveTrailsQuery::parse_query(ok_club).expect("club-only query must succeed");
+        assert_eq!(parsed.layers, LiveTrailsLayers::CLUB_ONLY);
+        assert!(parsed.public_area.is_none());
+    }
+
+    // Default radius = 20 km when omitted
+    let def = LiveTrailsQuery::parse_query(Some("layers=public&lat=-33.456&lon=-70.548")).unwrap();
+    assert_eq!(
+        def.public_area,
+        Some(PublicArea {
+            lat: -33.456,
+            lon: -70.548,
+            radius_km: PILOT_LIVE_TRAILS_DEFAULT_PUBLIC_RADIUS_KM,
+        })
+    );
+
+    // Server-side clamping to 5..=500
+    let low = LiveTrailsQuery::parse_query(Some("layers=public&lat=0&lon=0&radius_km=1")).unwrap();
+    assert_eq!(
+        low.public_area.unwrap().radius_km,
+        PILOT_LIVE_TRAILS_MIN_PUBLIC_RADIUS_KM
+    );
+    let neg = LiveTrailsQuery::parse_query(Some("layers=public&lat=-0.0&lon=-0.0&radius_km=-10"))
+        .unwrap();
+    assert_eq!(
+        neg.public_area,
+        Some(PublicArea {
+            lat: 0.0,
+            lon: 0.0,
+            radius_km: PILOT_LIVE_TRAILS_MIN_PUBLIC_RADIUS_KM,
+        })
+    );
+    let high =
+        LiveTrailsQuery::parse_query(Some("layers=club,public&lat=90&lon=-180&radius_km=9999"))
+            .unwrap();
+    assert_eq!(
+        high.public_area.unwrap().radius_km,
+        PILOT_LIVE_TRAILS_MAX_PUBLIC_RADIUS_KM
+    );
+
+    // Invalid / missing location when public is requested -> "invalid location"
+    for bad_loc in [
+        "layers=public",
+        "layers=club,public",
+        "layers=public&lat=-33.456",
+        "layers=public&lon=-70.548",
+        "layers=public&lat=91&lon=-70.548",
+        "layers=public&lat=-91&lon=-70.548",
+        "layers=public&lat=-33.456&lon=181",
+        "layers=public&lat=-33.456&lon=-181",
+        "layers=public&lat=NaN&lon=-70.548",
+        "layers=public&lat=inf&lon=-70.548",
+        "layers=public&lat=-33.456&lon=-inf",
+        "layers=public&lat=abc&lon=-70.548",
+        "layers=public&lat=&lon=-70.548",
+        "layers=public&lat=0&lat=1&lon=0",
+    ] {
+        assert_eq!(
+            LiveTrailsQuery::parse_query(Some(bad_loc)),
+            Err("invalid location"),
+            "expected invalid location for `{bad_loc}`"
+        );
+    }
+
+    // Invalid radius_km -> "invalid radius_km"
+    for bad_radius in [
+        "layers=public&lat=0&lon=0&radius_km=abc",
+        "layers=public&lat=0&lon=0&radius_km=NaN",
+        "layers=public&lat=0&lon=0&radius_km=inf",
+        "layers=public&lat=0&lon=0&radius_km=-inf",
+        "layers=public&lat=0&lon=0&radius_km=",
+        "layers=public&lat=0&lon=0&radius_km=10&radius_km=20",
+    ] {
+        assert_eq!(
+            LiveTrailsQuery::parse_query(Some(bad_radius)),
+            Err("invalid radius_km"),
+            "expected invalid radius_km for `{bad_radius}`"
+        );
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn pilot_live_trails_public_layer_geo_radius_clamping_validation_and_etag() {
+    let db = ClubDb::open_test().await.unwrap();
+    let (_tmp, mut router) = http_stack(db.clone()).await;
+
+    let center_lat = -33.456;
+    let center_lon = -70.548;
+
+    let (club_a, _) = create_live_club(
+        &db,
+        "plt-geo-a",
+        "own-pga@test",
+        Some(("SCTB", center_lat, center_lon)),
+    )
+    .await;
+    let (club_b, _) = create_live_club(
+        &db,
+        "plt-geo-b",
+        "own-pgb@test",
+        Some(("SCEL", -33.393, -70.786)),
+    )
+    .await;
+
+    let (_viewer_a, viewer_cookie) =
+        seed_member(&db, &club_a, "Geo Viewer", "pga-v@test", "pilot").await;
+    let (peer_a_far, _) = seed_member(&db, &club_a, "Far Club Peer", "pga-far@test", "pilot").await;
+
+    let now = now_ms();
+    let exact_fix = |lat: f64, lon: f64, t: i64| LiveFix {
+        t,
+        lat,
+        lon,
+        alt: Some(1200.0),
+        alt_ref: Some("msl".to_string()),
+        speed: Some(32.0),
+        course: Some(0.0),
+        accuracy: Some(5.0),
+    };
+
+    // Own-club peer > 600 km away: club layer is NOT geo-filtered, so it always appears on layers=club.
+    let (fid_club_far, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &peer_a_far,
+        "CC-CLFAR",
+        FlightVisibility::Club,
+        false,
+        None,
+        &[exact_fix(-27.0, center_lon, now)],
+    )
+    .await;
+
+    // Seed public flights from Club B at exact distances north of (center_lat, center_lon):
+    // 1 deg lat ≈ 111.1949 km.
+    let specs: [(&str, &str, f64, f64, f64, f64); 6] = [
+        ("CC-D004", "pg-d4@test", -33.4200, center_lon, 3.9, 4.1),
+        ("CC-D006", "pg-d6@test", -33.4020, center_lon, 5.9, 6.1),
+        ("CC-D019", "pg-d19@test", -33.2850, center_lon, 18.9, 19.2),
+        ("CC-D021", "pg-d21@test", -33.2670, center_lon, 20.9, 21.2),
+        (
+            "CC-D499",
+            "pg-d499@test",
+            -28.9685,
+            center_lon,
+            498.5,
+            499.5,
+        ),
+        (
+            "CC-D501",
+            "pg-d501@test",
+            -28.9505,
+            center_lon,
+            500.5,
+            501.5,
+        ),
+    ];
+    let mut fids_by_tail = std::collections::HashMap::new();
+    for (tail, email, lat, lon, min_d, max_d) in specs {
+        let d = haversine_km(center_lat, center_lon, lat, lon);
+        assert!(
+            (min_d..=max_d).contains(&d),
+            "{tail} expected in {min_d}..={max_d} km, got {d:.3} km"
+        );
+        let (pid, _) = seed_member(&db, &club_b, tail, email, "pilot").await;
+        let (fid, _) = seed_live_flight(
+            &db,
+            &club_b,
+            &pid,
+            tail,
+            FlightVisibility::Public,
+            false,
+            None,
+            &[exact_fix(lat, lon, now - 60_000), exact_fix(lat, lon, now)],
+        )
+        .await;
+        fids_by_tail.insert(tail, fid);
+    }
+
+    // Flight whose earlier fix was AT center (0 km), but LATEST fix moved ~28.5 km away (> 20 km).
+    let (p_moved, _) = seed_member(&db, &club_b, "Moved Out", "pg-mv@test", "pilot").await;
+    let moved_lat = -33.200;
+    assert!(haversine_km(center_lat, center_lon, moved_lat, center_lon) > 25.0);
+    let (fid_moved_out, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &p_moved,
+        "CC-MVOUT",
+        FlightVisibility::Public,
+        false,
+        None,
+        &[
+            exact_fix(center_lat, center_lon, now - 120_000),
+            exact_fix(moved_lat, center_lon, now),
+        ],
+    )
+    .await;
+
+    // Diagonal bounding-box corner: inside 20 km SQL lat/lon bbox, but great-circle distance ~22.6 km > 20 km!
+    let corner_lat = -33.312;
+    let corner_lon = -70.375;
+    let corner_dist = haversine_km(center_lat, center_lon, corner_lat, corner_lon);
+    assert!(
+        corner_dist > 21.0 && corner_dist < 24.0,
+        "corner_dist={corner_dist}"
+    );
+    let (p_corner, _) = seed_member(&db, &club_b, "Corner", "pg-cn@test", "pilot").await;
+    let (fid_corner, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &p_corner,
+        "CC-CRNR",
+        FlightVisibility::Public,
+        false,
+        None,
+        &[exact_fix(corner_lat, corner_lon, now)],
+    )
+    .await;
+
+    // 1) Missing or invalid lat/lon when public is requested -> 400 {"error":"invalid location"}
+    for bad_loc_uri in [
+        "/api/me/live-trails?layers=public",
+        "/api/me/live-trails?layers=club,public",
+        "/api/me/live-trails?layers=public&lat=-33.456",
+        "/api/me/live-trails?layers=public&lon=-70.548",
+        "/api/me/live-trails?layers=public&lat=91&lon=-70.548",
+        "/api/me/live-trails?layers=public&lat=-91&lon=-70.548",
+        "/api/me/live-trails?layers=public&lat=-33.456&lon=181",
+        "/api/me/live-trails?layers=public&lat=-33.456&lon=-181",
+        "/api/me/live-trails?layers=public&lat=NaN&lon=-70.548",
+        "/api/me/live-trails?layers=public&lat=inf&lon=-70.548",
+    ] {
+        let (st, _, body) = send_req(
+            &mut router,
+            "GET",
+            bad_loc_uri,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "uri={bad_loc_uri} body={body}");
+        assert_eq!(
+            body,
+            json!({ "error": "invalid location" }),
+            "uri={bad_loc_uri}"
+        );
+    }
+
+    // Invalid radius_km -> 400
+    for bad_rad_uri in [
+        "/api/me/live-trails?layers=public&lat=-33.456&lon=-70.548&radius_km=abc",
+        "/api/me/live-trails?layers=public&lat=-33.456&lon=-70.548&radius_km=NaN",
+        "/api/me/live-trails?layers=public&lat=-33.456&lon=-70.548&radius_km=inf",
+    ] {
+        let (st, _, body) = send_req(
+            &mut router,
+            "GET",
+            bad_rad_uri,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "uri={bad_rad_uri} body={body}");
+        assert!(body.get("error").and_then(Value::as_str).is_some());
+    }
+
+    // 2) layers=club works without coordinates AND ignores coordinates when sent (never 400)
+    for club_uri in [
+        "/api/me/live-trails",
+        "/api/me/live-trails?layers=club",
+        "/api/me/live-trails?layers=club&lat=91&lon=abc&radius_km=NaN",
+    ] {
+        let (st, _, body) = send_req(
+            &mut router,
+            "GET",
+            club_uri,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "uri={club_uri} body={body}");
+        assert!(body.get("publicArea").is_none());
+        let ids: HashSet<&str> = body["flights"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|f| f["flightId"].as_str())
+            .collect();
+        assert!(
+            ids.contains(fid_club_far.as_str()),
+            "club layer must stay unfiltered"
+        );
+        assert!(
+            !ids.contains(fids_by_tail["CC-D004"].as_str()),
+            "club-only must never leak public flights"
+        );
+    }
+
+    // 3) Default radius (20 km when omitted): shows 4, 6, 19 km; hides 21, 499, 501, moved_out, corner
+    let (st, headers_def, body_def) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=public&lat=-33.456&lon=-70.548",
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body_def}");
+    assert_eq!(
+        body_def["publicArea"],
+        json!({ "lat": center_lat, "lon": center_lon, "radiusKm": 20.0 })
+    );
+    let ids_def: HashSet<&str> = body_def["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["flightId"].as_str())
+        .collect();
+    assert!(ids_def.contains(fids_by_tail["CC-D004"].as_str()));
+    assert!(ids_def.contains(fids_by_tail["CC-D006"].as_str()));
+    assert!(ids_def.contains(fids_by_tail["CC-D019"].as_str()));
+    assert!(!ids_def.contains(fids_by_tail["CC-D021"].as_str()));
+    assert!(!ids_def.contains(fids_by_tail["CC-D499"].as_str()));
+    assert!(!ids_def.contains(fids_by_tail["CC-D501"].as_str()));
+    assert!(
+        !ids_def.contains(fid_moved_out.as_str()),
+        "latest fix outside 20 km must be hidden"
+    );
+    assert!(
+        !ids_def.contains(fid_corner.as_str()),
+        "bbox corner outside 20 km circle must be hidden by exact haversine"
+    );
+
+    // 4) Lower clamping: radius_km=1 behaves as 5 km (4 km shown, 6 km hidden)
+    let (st, headers_r1, body_r1) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=public&lat=-33.456&lon=-70.548&radius_km=1",
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body_r1}");
+    assert_eq!(
+        body_r1["publicArea"],
+        json!({ "lat": center_lat, "lon": center_lon, "radiusKm": 5.0 })
+    );
+    let ids_r1: HashSet<&str> = body_r1["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["flightId"].as_str())
+        .collect();
+    assert!(ids_r1.contains(fids_by_tail["CC-D004"].as_str()));
+    assert!(!ids_r1.contains(fids_by_tail["CC-D006"].as_str()));
+
+    // 5) Upper clamping: radius_km=9999 behaves as 500 km (499 km shown, 501 km hidden)
+    let (st, _, body_r9999) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=public&lat=-33.456&lon=-70.548&radius_km=9999",
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body_r9999}");
+    assert_eq!(
+        body_r9999["publicArea"],
+        json!({ "lat": center_lat, "lon": center_lon, "radiusKm": 500.0 })
+    );
+    let ids_r9999: HashSet<&str> = body_r9999["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["flightId"].as_str())
+        .collect();
+    assert!(ids_r9999.contains(fids_by_tail["CC-D499"].as_str()));
+    assert!(!ids_r9999.contains(fids_by_tail["CC-D501"].as_str()));
+
+    // 6) ETag incorporates (lat, lon, effective radius_km):
+    //    - radius_km=1 and radius_km=5 share ETag -> 304
+    //    - omitted radius_km and radius_km=20 share ETag -> 304
+    //    - different radius (10 vs 15, same flights!) or different lat produces a different ETag
+    let etag_def = headers_def
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let etag_r1 = headers_r1
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let (st_304_def, _, _) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=public&lat=-33.456&lon=-70.548&radius_km=20",
+        Some(&viewer_cookie),
+        None,
+        Some(&etag_def),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_304_def, StatusCode::NOT_MODIFIED);
+
+    let (st_304_r5, _, _) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=public&lat=-33.456&lon=-70.548&radius_km=5",
+        Some(&viewer_cookie),
+        None,
+        Some(&etag_r1),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_304_r5, StatusCode::NOT_MODIFIED);
+
+    let (st_r10, h_r10, _) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=public&lat=-33.456&lon=-70.548&radius_km=10",
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_r10, StatusCode::OK);
+    let etag_r10 = h_r10
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    let (st_r15, h_r15, _) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=public&lat=-33.456&lon=-70.548&radius_km=15",
+        Some(&viewer_cookie),
+        None,
+        Some(&etag_r10),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        st_r15,
+        StatusCode::OK,
+        "different radius_km must not 304 against old ETag"
+    );
+    let etag_r15 = h_r15
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(etag_r10, etag_r15);
+
+    let (st_shifted, h_shifted, _) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=public&lat=-33.455&lon=-70.548&radius_km=10",
+        Some(&viewer_cookie),
+        None,
+        Some(&etag_r10),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        st_shifted,
+        StatusCode::OK,
+        "different lat/lon must not 304 against old ETag"
+    );
+    assert_ne!(
+        h_shifted.get(header::ETAG).unwrap().to_str().unwrap(),
+        etag_r10
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn pilot_live_trails_public_layer_handles_antimeridian_wrap() {
+    let db = ClubDb::open_test().await.unwrap();
+    let (_tmp, mut router) = http_stack(db.clone()).await;
+
+    let (club_a, _) = create_live_club(&db, "plt-am-a", "own-ama@test", None).await;
+    let (club_b, _) = create_live_club(&db, "plt-am-b", "own-amb@test", None).await;
+    let (_viewer, viewer_cookie) =
+        seed_member(&db, &club_a, "AM Viewer", "am-v@test", "pilot").await;
+    let (p_across, _) = seed_member(&db, &club_b, "Across AM", "am-in@test", "pilot").await;
+    let (p_far, _) = seed_member(&db, &club_b, "Far AM", "am-out@test", "pilot").await;
+
+    let now = now_ms();
+    let fix_at = |lat: f64, lon: f64| LiveFix {
+        t: now,
+        lat,
+        lon,
+        alt: Some(1200.0),
+        alt_ref: Some("msl".to_string()),
+        speed: Some(32.0),
+        course: Some(90.0),
+        accuracy: Some(5.0),
+    };
+
+    // Query at (0.0, 179.95), radius 20 km:
+    // - (0.0, -179.95) is ~11.1 km east across the antimeridian -> INCLUDED
+    // - (0.0, 179.50) is ~50.0 km west -> EXCLUDED
+    let (fid_across, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &p_across,
+        "CC-AM01",
+        FlightVisibility::Public,
+        false,
+        None,
+        &[fix_at(0.0, -179.95)],
+    )
+    .await;
+    let (fid_far, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &p_far,
+        "CC-AM02",
+        FlightVisibility::Public,
+        false,
+        None,
+        &[fix_at(0.0, 179.50)],
+    )
+    .await;
+
+    let (st, _, body) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=public&lat=0&lon=179.95&radius_km=20",
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let ids: HashSet<&str> = body["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["flightId"].as_str())
+        .collect();
+    assert!(
+        ids.contains(fid_across.as_str()),
+        "flight 11 km across antimeridian must be returned"
+    );
+    assert!(
+        !ids.contains(fid_far.as_str()),
+        "flight 50 km away must be excluded"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn club_view_nearby_public_hides_ground_taxi_at_terrain_default_agl() {
+    let db = ClubDb::open_test().await.unwrap();
+    let (_tmp, mut router) = http_stack(db.clone()).await;
+
+    // Deterministic 600 m flat DEM tile covering (-34..-33, -71..-70) -> N34W071.asc.
+    let dem_root = tempfile::tempdir().unwrap();
+    let dem_dir = dem_root.path().join("dem");
+    std::fs::create_dir_all(&dem_dir).unwrap();
+    std::fs::write(
+        dem_dir.join("N34W071.asc"),
+        "# 600 m flat terrain\n600 600 600\n600 600 600\n600 600 600\n",
+    )
+    .unwrap();
+    let _env_guard = FlightDataEnvGuard::set(dem_root.path());
+
+    // Leave club_a at DB defaults (public_altitude_mode = 'agl', public_altitude_min_ft = 300.0).
+    let (club_a, _) = create_live_club(
+        &db,
+        "np-taxi-a",
+        "own-nptxa@test",
+        Some(("SCTB", -33.456, -70.548)),
+    )
+    .await;
+    let (club_b, _) = create_live_club(
+        &db,
+        "np-taxi-b",
+        "own-nptxb@test",
+        Some(("SCEL", -33.393, -70.786)),
+    )
+    .await;
+
+    let (_adm_a, adm_a_cookie) =
+        seed_member(&db, &club_a, "Admin A", "adm-nptx@test", "admin").await;
+    let (pb_taxi, _) = seed_member(&db, &club_b, "Ground Taxi", "pbtx@test", "pilot").await;
+    let (pb_air, _) = seed_member(&db, &club_b, "Airborne", "pbair@test", "pilot").await;
+
+    let now = now_ms();
+    // Nearby public flight from Club B at terrain level: 600 m MSL over 600 m DEM = 0 ft AGL, speed 5 m/s.
+    let taxi_fixes = vec![
+        LiveFix {
+            t: now - 120_000,
+            lat: -33.420,
+            lon: -70.550,
+            alt: Some(600.0),
+            alt_ref: Some("msl".to_string()),
+            speed: Some(5.0),
+            course: Some(90.0),
+            accuracy: Some(5.0),
+        },
+        LiveFix {
+            t: now,
+            lat: -33.421,
+            lon: -70.551,
+            alt: Some(600.0),
+            alt_ref: Some("msl".to_string()),
+            speed: Some(5.0),
+            course: Some(90.0),
+            accuracy: Some(5.0),
+        },
+    ];
+    let (fid_taxi, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &pb_taxi,
+        "CC-TAXI0",
+        FlightVisibility::Public,
+        false,
+        None,
+        &taxi_fixes,
+    )
+    .await;
+
+    // Control airborne nearby public flight: 800 m MSL over 600 m DEM = 200 m (~656 ft >= default 300 ft AGL).
+    let (fid_air, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &pb_air,
+        "CC-AIR01",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(
+            now,
+            -33.430,
+            -70.550,
+            &[(2, Some(800.0), Some("msl")), (0, Some(800.0), Some("msl"))],
+        ),
+    )
+    .await;
+
+    for (uri, field) in [
+        ("/api/admin/map", "aircraft"),
+        ("/api/display/map", "aircraft"),
+        ("/api/admin/map/trails", "trails"),
+        ("/api/display/map/trails", "trails"),
+    ] {
+        let (st, _, body) = send_req(
+            &mut router,
+            "GET",
+            uri,
+            Some(&adm_a_cookie),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{uri}: {body}");
+        let ids: HashSet<&str> = body[field]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|x| x["flightId"].as_str())
+            .collect();
+        assert!(
+            !ids.contains(fid_taxi.as_str()),
+            "{uri} must hide nearby public ground/taxi flight at 0 ft AGL under default AGL mode"
+        );
+        assert!(
+            ids.contains(fid_air.as_str()),
+            "{uri} must show airborne nearby public flight above default 300 ft AGL"
         );
     }
 }

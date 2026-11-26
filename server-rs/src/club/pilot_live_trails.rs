@@ -1,4 +1,4 @@
-//! Authenticated pilot live-trails endpoint (`GET /api/me/live-trails?layers=club,public`).
+//! Authenticated pilot live-trails endpoint (`GET /api/me/live-trails`).
 //!
 //! Security & scoping contract:
 //! - Accepts the same pilot credentials used by the Android app (`Authorization: Bearer <device_token>`
@@ -9,20 +9,28 @@
 //!   ACTIVE membership (`club_memberships.status IN ('active', 'approved')`) and the club is
 //!   operational (`status = 'live'`, `email_verified_at IS NOT NULL`, `suspended_at IS NULL`).
 //!   Callers with no active membership receive zero club rows.
-//! - Public layer is queried ONLY when `layers` explicitly includes `public`. Returns live `public`
-//!   flights from operational non-suspended clubs. Flights with `club_id IS NULL` are excluded for
-//!   now (club-less support is a separate follow-up).
+//! - Public layer is queried ONLY when `layers` explicitly includes `public` AND is NEVER a global
+//!   feed: requests including `public` MUST supply finite `lat` (`[-90, 90]`) and `lon`
+//!   (`[-180, 180]`), and may supply optional finite `radius_km` (default 20 km, clamped to
+//!   `5..=500` km). Public candidates are prefiltered in SQL by a spherical-cap bounding box on
+//!   each flight's latest fix (skipping the longitude prefilter when the box crosses the
+//!   antimeridian or covers a pole) and filtered in Rust by exact great-circle distance
+//!   `haversine_km(lat, lon, latest_lat, latest_lon) <= radius_km` before applying the 50-flight
+//!   cap. Flights with `club_id IS NULL` are excluded for now (club-less support is a separate
+//!   follow-up). When `public` is requested, the response includes `"publicArea": {"lat","lon","radiusKm"}`.
+//!   When only `club` is requested, `lat`/`lon`/`radius_km` are ignored and `"publicArea"` is omitted.
 //! - Flights qualifying for both layers are returned once with `layer = "club"`.
 //! - Caller's own flights (matching any `pilot_id` of the caller's account, or `owner_account_id`)
 //!   are always excluded. `private` flights are never returned.
 //! - Off (`trailMinutes = 0`) flights are still returned with their latest point only so the mobile
 //!   app can render a marker without a trail polyline.
-//! - Weak ETag (`W/"..."`) over `(layers, [(flight_id, layer, latest_fix_t, effective_trail_minutes)])`
+//! - Weak ETag (`W/"..."`) over `(layers, publicArea?, [(flight_id, layer, latest_fix_t, effective_trail_minutes)])`
 //!   allows `304 Not Modified` short-circuiting before querying the historical `fixes` batch.
 
 use crate::club::{
     auth::{self, parse_session_cookie},
     db::{now_ms, ClubDb},
+    geo::{haversine_km, safe_bbox_for_radius_km},
     routes::{bearer_token, club_db},
     trail::{
         window_and_downsample_trail_with_alt, TrailMinutes, TrailPointWithAlt,
@@ -44,6 +52,12 @@ use std::collections::{HashMap, HashSet};
 
 /// Maximum flights returned by `GET /api/me/live-trails` (most recent `last_fix_at` first).
 pub const PILOT_LIVE_TRAILS_MAX_FLIGHTS: usize = MAX_TRAIL_FLIGHTS;
+/// Default search radius (km) for the `public` layer when `radius_km` is omitted.
+pub const PILOT_LIVE_TRAILS_DEFAULT_PUBLIC_RADIUS_KM: f64 = 20.0;
+/// Minimum server-clamped search radius (km) for the `public` layer.
+pub const PILOT_LIVE_TRAILS_MIN_PUBLIC_RADIUS_KM: f64 = 5.0;
+/// Maximum server-clamped search radius (km) for the `public` layer.
+pub const PILOT_LIVE_TRAILS_MAX_PUBLIC_RADIUS_KM: f64 = 500.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveTrailsLayers {
@@ -113,6 +127,116 @@ impl LiveTrailsLayers {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicArea {
+    pub lat: f64,
+    pub lon: f64,
+    pub radius_km: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LiveTrailsQuery {
+    pub layers: LiveTrailsLayers,
+    pub public_area: Option<PublicArea>,
+}
+
+fn normalize_zero(v: f64) -> f64 {
+    if v == 0.0 {
+        0.0
+    } else {
+        v
+    }
+}
+
+impl LiveTrailsQuery {
+    /// Parses `layers`, plus required `lat`/`lon` and optional `radius_km` whenever `layers`
+    /// includes `public`. When only `club` is requested, coordinate and radius params are ignored.
+    pub fn parse_query(raw_query: Option<&str>) -> Result<Self, &'static str> {
+        let layers = LiveTrailsLayers::parse_query(raw_query)?;
+        if !layers.public {
+            return Ok(Self {
+                layers,
+                public_area: None,
+            });
+        }
+
+        let Some(query) = raw_query else {
+            return Err("invalid location");
+        };
+
+        let mut lat_raw: Option<String> = None;
+        let mut lon_raw: Option<String> = None;
+        let mut radius_raw: Option<String> = None;
+
+        for (k, v) in url::form_urlencoded::parse(query.as_bytes()) {
+            match k.as_ref() {
+                "lat" => {
+                    if lat_raw.is_some() {
+                        return Err("invalid location");
+                    }
+                    lat_raw = Some(v.into_owned());
+                }
+                "lon" => {
+                    if lon_raw.is_some() {
+                        return Err("invalid location");
+                    }
+                    lon_raw = Some(v.into_owned());
+                }
+                "radius_km" => {
+                    if radius_raw.is_some() {
+                        return Err("invalid radius_km");
+                    }
+                    radius_raw = Some(v.into_owned());
+                }
+                _ => {}
+            }
+        }
+
+        let (Some(lat_s), Some(lon_s)) = (lat_raw, lon_raw) else {
+            return Err("invalid location");
+        };
+        let Ok(lat) = lat_s.parse::<f64>() else {
+            return Err("invalid location");
+        };
+        let Ok(lon) = lon_s.parse::<f64>() else {
+            return Err("invalid location");
+        };
+        if !lat.is_finite()
+            || !lon.is_finite()
+            || !(-90.0..=90.0).contains(&lat)
+            || !(-180.0..=180.0).contains(&lon)
+        {
+            return Err("invalid location");
+        }
+
+        let radius_km = match radius_raw {
+            None => PILOT_LIVE_TRAILS_DEFAULT_PUBLIC_RADIUS_KM,
+            Some(ref r_s) => {
+                let Ok(r) = r_s.parse::<f64>() else {
+                    return Err("invalid radius_km");
+                };
+                if !r.is_finite() {
+                    return Err("invalid radius_km");
+                }
+                r.clamp(
+                    PILOT_LIVE_TRAILS_MIN_PUBLIC_RADIUS_KM,
+                    PILOT_LIVE_TRAILS_MAX_PUBLIC_RADIUS_KM,
+                )
+            }
+        };
+
+        Ok(Self {
+            layers,
+            public_area: Some(PublicArea {
+                lat: normalize_zero(lat),
+                lon: normalize_zero(lon),
+                radius_km,
+            }),
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LiveTrailsCaller {
     pub account_id: Option<String>,
@@ -179,13 +303,28 @@ struct PilotLiveTrailsCaps {
 struct PilotLiveTrailsResponse {
     flights: Vec<PilotLiveTrailFlight>,
     caps: PilotLiveTrailsCaps,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    public_area: Option<PublicArea>,
 }
 
-fn compute_weak_etag(layers: LiveTrailsLayers, candidates: &[CandidateLiveFlight]) -> String {
+fn compute_weak_etag(
+    layers: LiveTrailsLayers,
+    public_area: Option<PublicArea>,
+    candidates: &[CandidateLiveFlight],
+) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"fv-me-live-trails-v1\n");
     hasher.update(layers.canonical_str().as_bytes());
     hasher.update(b"\n");
+    if let Some(area) = public_area {
+        hasher.update(b"area|");
+        hasher.update(area.lat.to_bits().to_le_bytes());
+        hasher.update(b"|");
+        hasher.update(area.lon.to_bits().to_le_bytes());
+        hasher.update(b"|");
+        hasher.update(area.radius_km.to_bits().to_le_bytes());
+        hasher.update(b"\n");
+    }
     for c in candidates {
         hasher.update(c.flight_id.as_bytes());
         hasher.update(b"|");
@@ -416,7 +555,15 @@ impl ClubDb {
         caller: &LiveTrailsCaller,
         exclude_club_ids: &[String],
         live_cutoff_ms: i64,
+        area: PublicArea,
     ) -> Vec<CandidateLiveFlight> {
+        let (min_lat, max_lat, lon_range) =
+            safe_bbox_for_radius_km(area.lat, area.lon, area.radius_km);
+        let (min_lon, max_lon) = match lon_range {
+            Some((lo, hi)) => (Some(lo), Some(hi)),
+            None => (None, None),
+        };
+
         let rows = sqlx::query(
             "SELECT f.id,
                     a.tail,
@@ -451,19 +598,33 @@ impl ClubDb {
                AND NOT (f.pilot_id = ANY($3::text[]))
                AND ($4::text IS NULL OR f.owner_account_id IS DISTINCT FROM $4)
                AND a.tail IS NOT NULL
-             ORDER BY f.last_fix_at DESC, f.id ASC
-             LIMIT $5",
+               AND fx.lat BETWEEN $5 AND $6
+               AND ($7::double precision IS NULL OR fx.lon BETWEEN $7 AND $8)
+             ORDER BY f.last_fix_at DESC, f.id ASC",
         )
         .bind(live_cutoff_ms)
         .bind(exclude_club_ids)
         .bind(&caller.own_pilot_ids)
         .bind(caller.account_id.as_deref())
-        .bind(PILOT_LIVE_TRAILS_MAX_FLIGHTS as i64)
+        .bind(min_lat)
+        .bind(max_lat)
+        .bind(min_lon)
+        .bind(max_lon)
         .fetch_all(&self.pool)
         .await
         .unwrap_or_default();
 
-        rows_to_candidates(rows, TrailLayer::Public)
+        let mut filtered: Vec<CandidateLiveFlight> = rows_to_candidates(rows, TrailLayer::Public)
+            .into_iter()
+            .filter(|c| {
+                c.latest_lat.is_finite()
+                    && c.latest_lon.is_finite()
+                    && haversine_km(area.lat, area.lon, c.latest_lat, c.latest_lon)
+                        <= area.radius_km
+            })
+            .collect();
+        filtered.truncate(PILOT_LIVE_TRAILS_MAX_FLIGHTS);
+        filtered
     }
 
     async fn batch_fixes_with_alt(
@@ -558,12 +719,14 @@ pub(crate) async fn get_me_live_trails(
     headers: HeaderMap,
     uri: Uri,
 ) -> impl IntoResponse {
-    let layers = match LiveTrailsLayers::parse_query(uri.query()) {
-        Ok(l) => l,
+    let query = match LiveTrailsQuery::parse_query(uri.query()) {
+        Ok(q) => q,
         Err(msg) => {
             return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
         }
     };
+    let layers = query.layers;
+    let public_area = query.public_area;
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -601,15 +764,16 @@ pub(crate) async fn get_me_live_trails(
         }
     }
 
-    // Public flights are queried ONLY when `public` is explicitly requested.
-    if layers.public {
+    // Public flights are queried ONLY when `public` is explicitly requested,
+    // strictly bounded to `public_area` (never a global feed).
+    if let Some(area) = public_area {
         let exclude_clubs: &[String] = if layers.club {
             &caller.active_club_ids
         } else {
             &[]
         };
         for c in db
-            .query_public_layer_live_flights(&caller, exclude_clubs, live_cutoff_ms)
+            .query_public_layer_live_flights(&caller, exclude_clubs, live_cutoff_ms, area)
             .await
         {
             if seen_ids.insert(c.flight_id.clone()) {
@@ -625,7 +789,7 @@ pub(crate) async fn get_me_live_trails(
     });
     candidates.truncate(PILOT_LIVE_TRAILS_MAX_FLIGHTS);
 
-    let etag = compute_weak_etag(layers, &candidates);
+    let etag = compute_weak_etag(layers, public_area, &candidates);
     if if_none_match_matches(&headers, &etag) {
         return (
             StatusCode::NOT_MODIFIED,
@@ -679,6 +843,7 @@ pub(crate) async fn get_me_live_trails(
             max_points_per_flight: MAX_TRAIL_POINTS,
             max_window_minutes: MAX_TRAIL_WINDOW_MIN,
         },
+        public_area,
     };
 
     (
