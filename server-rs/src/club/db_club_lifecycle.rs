@@ -160,14 +160,6 @@ impl ClubDb {
         .bind(club_id)
         .execute(&mut *tx)
         .await?;
-        sqlx::query(
-            "UPDATE display_sessions SET revoked_at = $1
-             WHERE club_id = $2 AND revoked_at IS NULL",
-        )
-        .bind(now)
-        .bind(club_id)
-        .execute(&mut *tx)
-        .await?;
         tx.commit().await?;
         Ok(true)
     }

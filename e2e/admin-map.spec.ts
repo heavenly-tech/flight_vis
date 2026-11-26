@@ -51,7 +51,7 @@ test.describe("admin live map, tail filter persistence, and kiosk links", () => 
 
       // Updated tailFilterHint copy
       await expect(page.locator('[data-i18n="admin.tailFilterHint"]')).toHaveText(
-        "Las matrículas seleccionadas filtran esta vista y la pantalla del club que actives.",
+        "Las matrículas seleccionadas filtran esta vista y la pantalla del club.",
       );
 
       // Live 2D map renders at the top with tiles
@@ -71,7 +71,8 @@ test.describe("admin live map, tail filter persistence, and kiosk links", () => 
       await expect(liveEmpty).toHaveText("No hay aeronaves en vuelo en este momento.");
       await expect(page.locator("#live li")).toHaveCount(0);
 
-      // Section ordering: map -> tail filter -> kiosk card -> collapsed settings details
+      // Section ordering: map -> tail filter -> collapsed settings details (no display token card)
+      await expect(page.locator("#kiosk-card")).toHaveCount(0);
       const settingsDetails = page.locator("#club-settings");
       await expect(settingsDetails).toBeVisible();
       await expect(settingsDetails).not.toHaveAttribute("open", "");
@@ -79,11 +80,9 @@ test.describe("admin live map, tail filter persistence, and kiosk links", () => 
 
       const mapSectionBox = (await page.locator("#live-map-section").boundingBox())!;
       const tailsSectionBox = (await page.locator("#tail-filter-section").boundingBox())!;
-      const kioskCardBox = (await page.locator("#kiosk-card").boundingBox())!;
       const settingsBox = (await settingsDetails.boundingBox())!;
       expect(mapSectionBox.y).toBeLessThan(tailsSectionBox.y);
-      expect(tailsSectionBox.y).toBeLessThan(kioskCardBox.y);
-      expect(kioskCardBox.y).toBeLessThan(settingsBox.y);
+      expect(tailsSectionBox.y).toBeLessThan(settingsBox.y);
 
       // Tail checkboxes load and quick buttons work
       const checkboxes = page.locator('#ticks input[type="checkbox"]');
@@ -129,7 +128,7 @@ test.describe("admin live map, tail filter persistence, and kiosk links", () => 
     }
   });
 
-  test("kiosk card activates display with copy buttons, feedback, and Abrir pantalla link", async ({
+  test("renders live aircraft marker, Abrir pantalla del club link, and no activation token UI", async ({
     page,
   }) => {
     const login = await page.request.post("/api/club/login", {
@@ -161,7 +160,7 @@ test.describe("admin live map, tail filter persistence, and kiosk links", () => 
     await expect(page.locator("#live li")).toHaveText(["N101 · Demo Pilot"]);
     await expect(page.locator("#live-empty")).toBeHidden();
 
-    // Top "Abrir pantalla del club" link
+    // Top "Abrir pantalla del club" link opens /c/demo/screen in a new window with rel=noopener
     const topKioskLink = page.locator("a[data-open-kiosk-link]");
     await expect(topKioskLink).toBeVisible();
     await expect(topKioskLink).toHaveText("Abrir pantalla del club");
@@ -169,36 +168,10 @@ test.describe("admin live map, tail filter persistence, and kiosk links", () => 
     await expect(topKioskLink).toHaveAttribute("target", "_blank");
     await expect(topKioskLink).toHaveAttribute("rel", "noopener");
 
-    // Dedicated kiosk card activation
-    await expect(page.locator("#kiosk-card h2")).toHaveText("Pantalla del club (kiosco)");
-    await page.locator("#btn-kiosk").click();
-
-    const urlInput = page.locator("#kiosk-display-url");
-    const tokenInput = page.locator("#kiosk-display-token");
-    await expect(urlInput).toBeVisible({ timeout: 10_000 });
-    await expect(tokenInput).toBeVisible();
-
-    const displayUrl = await urlInput.inputValue();
-    const tokenVal = await tokenInput.inputValue();
-    expect(displayUrl).toContain("/c/demo/screen");
-    expect(tokenVal.length).toBeGreaterThan(8);
-
-    const openDisplayLink = page.locator("#kiosk-open-session");
-    await expect(openDisplayLink).toBeVisible();
-    await expect(openDisplayLink).toHaveText("Abrir pantalla");
-    await expect(openDisplayLink).toHaveAttribute("href", displayUrl);
-    await expect(openDisplayLink).toHaveAttribute("target", "_blank");
-    await expect(openDisplayLink).toHaveAttribute("rel", "noopener");
-
-    // Copy code button shows "Copiado" feedback in role="status"
-    const copyStatus = page.locator("#kiosk-copy-status");
-    await expect(copyStatus).toHaveAttribute("role", "status");
-    await page.locator("#btn-copy-kiosk-code").click();
-    await expect(copyStatus).toHaveText("Copiado");
-
-    // Copy link button also shows "Copiado" feedback
-    await page.locator("#btn-copy-kiosk-url").click();
-    await expect(copyStatus).toHaveText("Copiado");
+    // Display activation token UI is completely gone
+    await expect(page.locator("#kiosk-card")).toHaveCount(0);
+    await expect(page.locator("#btn-kiosk")).toHaveCount(0);
+    await expect(page.locator("#kiosk-display-token")).toHaveCount(0);
   });
 
   test("Abrir pantalla del club link appears on kiosk layout and checkin QR admin pages", async ({

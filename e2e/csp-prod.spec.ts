@@ -128,11 +128,9 @@ test.describe("production CSP (release server)", () => {
   });
 
   test("map CSP on tile-map pages while login remains strict", async ({ page, request }) => {
-    for (const path of ["/club-screen.html", "/public-map.html"]) {
-      const res = await request.get(path);
-      expect(res.ok(), path).toBeTruthy();
-      assertMapCsp(res.headers()["content-security-policy"] ?? "", path);
-    }
+    const pubRes = await request.get("/public-map.html");
+    expect(pubRes.ok(), "/public-map.html").toBeTruthy();
+    assertMapCsp(pubRes.headers()["content-security-policy"] ?? "", "/public-map.html");
 
     const loginRes = await request.get("/login.html");
     expect(loginRes.ok(), "/login.html").toBeTruthy();
@@ -140,28 +138,26 @@ test.describe("production CSP (release server)", () => {
     assertStrictCsp(loginCsp, "/login.html");
     expect(loginCsp).not.toContain("services.arcgisonline.com");
 
-    const unauthAdminMapRes = await request.get("/club-admin-map.html", { maxRedirects: 0 });
-    expect(unauthAdminMapRes.status(), "unauthenticated /club-admin-map.html").toBe(302);
-    expect(
-      unauthAdminMapRes.headers()["location"] ?? "",
-      "unauthenticated /club-admin-map.html redirect",
-    ).toMatch(/^\/login\?next=/);
+    for (const gatedPath of ["/club-admin-map.html", "/club-screen.html"]) {
+      const unauthRes = await request.get(gatedPath, { maxRedirects: 0 });
+      expect(unauthRes.status(), `unauthenticated ${gatedPath}`).toBe(302);
+      expect(
+        unauthRes.headers()["location"] ?? "",
+        `unauthenticated ${gatedPath} redirect`,
+      ).toMatch(/^\/login\?next=/);
+    }
 
     const login = await page.request.post("/api/club/login", {
       data: { email: "admin@demo.test", password: "password12" },
     });
     expect(login.ok(), "POST /api/club/login").toBeTruthy();
 
-    const adminMapRes = await page.request.get("/club-admin-map.html", { maxRedirects: 0 });
-    expect(adminMapRes.status(), "/club-admin-map.html").toBe(200);
-    expect(
-      adminMapRes.headers()["location"],
-      "/club-admin-map.html must not redirect",
-    ).toBeUndefined();
-    assertMapCsp(
-      adminMapRes.headers()["content-security-policy"] ?? "",
-      "/club-admin-map.html",
-    );
+    for (const mapPath of ["/club-admin-map.html", "/club-screen.html"]) {
+      const res = await page.request.get(mapPath, { maxRedirects: 0 });
+      expect(res.status(), mapPath).toBe(200);
+      expect(res.headers()["location"], `${mapPath} must not redirect`).toBeUndefined();
+      assertMapCsp(res.headers()["content-security-policy"] ?? "", mapPath);
+    }
 
     const adminPilotsRes = await page.request.get("/club-admin-pilots.html", { maxRedirects: 0 });
     expect(adminPilotsRes.status(), "/club-admin-pilots.html").toBe(200);
@@ -195,15 +191,13 @@ test.describe("production CSP (release server)", () => {
     }
   });
 
-  test("dynamic club and share HTML headers", async ({ request }) => {
+  test("dynamic club and share HTML headers", async ({ page, request }) => {
     const demoToken = "00000000-0000-0000-0000-000000000001";
     const rows: { path: string; csp: "strict" | "map" | "globe"; noReferrer?: boolean }[] = [
       { path: "/c/demo", csp: "strict", noReferrer: true },
       { path: "/c/demo/registro", csp: "strict", noReferrer: true },
       { path: `/c/demo/q/${demoToken}`, csp: "strict", noReferrer: true },
       { path: "/s/share-e2e-token", csp: "globe", noReferrer: true },
-      { path: "/club/screen", csp: "map", noReferrer: true },
-      { path: "/c/demo/screen", csp: "map", noReferrer: true },
     ];
     for (const row of rows) {
       const res = await request.get(row.path);
@@ -213,6 +207,24 @@ test.describe("production CSP (release server)", () => {
       else if (row.csp === "map") assertMapCsp(csp, row.path);
       else assertGlobeCsp(csp, row.path);
       if (row.noReferrer) expectNoReferrer(res.headers(), row.path);
+    }
+
+    for (const screenPath of ["/club/screen", "/c/demo/screen"]) {
+      const unauth = await request.get(screenPath, { maxRedirects: 0 });
+      expect(unauth.status(), `unauth ${screenPath}`).toBe(302);
+      expect(unauth.headers()["location"] ?? "").toMatch(/^\/login\?next=/);
+    }
+
+    const login = await page.request.post("/api/club/login", {
+      data: { email: "admin@demo.test", password: "password12" },
+    });
+    expect(login.ok(), "POST /api/club/login").toBeTruthy();
+
+    for (const screenPath of ["/club/screen", "/c/demo/screen"]) {
+      const res = await page.request.get(screenPath, { maxRedirects: 0 });
+      expect(res.status(), screenPath).toBe(200);
+      assertMapCsp(res.headers()["content-security-policy"] ?? "", screenPath);
+      expectNoReferrer(res.headers(), screenPath);
     }
   });
 

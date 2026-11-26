@@ -286,7 +286,7 @@ async fn send_account_magic_link(
     let public_url = state.mailer.public_url.trim_end_matches('/').to_string();
     let loc = locale
         .map(str::to_string)
-        .or_else(|| auth::parse_display_cookie(headers))
+        .or_else(|| auth::parse_fv_locale_cookie(headers))
         .unwrap_or_else(|| "es".to_string());
     let db = db.clone();
     tokio::spawn(async move {

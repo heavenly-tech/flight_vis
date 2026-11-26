@@ -1,6 +1,6 @@
 use crate::club::{
     access_request::AccessRequestError,
-    auth::{self, parse_display_cookie, parse_session_cookie},
+    auth::{self, parse_session_cookie},
     db::{
         now_ms, AdminPendingCounts, ApprovePilotCheckout, CheckinReject, CheckoutError, ClubDb,
         DeleteError, DeviceRegisterError, EndError, PatchError, RegisterError, StartFlightError,
@@ -39,6 +39,22 @@ pub(crate) fn is_secure(headers: &HeaderMap) -> bool {
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok());
     crate::auth::is_secure_request(forwarded)
+}
+
+pub(crate) async fn session_pilot(
+    db: &ClubDb,
+    headers: &HeaderMap,
+    now: i64,
+) -> Option<crate::club::db::PilotRow> {
+    if let Some(acct_sess) = auth::parse_account_session_cookie(headers) {
+        if let Some((_, Some(mem_id))) = db.account_from_session(&acct_sess, now).await {
+            if let Some(pilot) = db.pilot_for_active_membership(&mem_id).await {
+                return Some(pilot);
+            }
+        }
+    }
+    let session = parse_session_cookie(headers)?;
+    db.pilot_from_session(&session, now).await
 }
 
 pub(crate) async fn viewer(state: &AppState, headers: &HeaderMap) -> Viewer {
@@ -541,9 +557,8 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
     let Some(db) = club_db(&state) else {
         return Json(json!({ "pilot": null })).into_response();
     };
-    let session = parse_session_cookie(&headers);
     let now = now_ms();
-    let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
+    let pilot = session_pilot(db, &headers, now).await;
     match pilot {
         Some(p) => {
             if db.club_operational(&p.club_id).await.is_err() {
@@ -2318,32 +2333,58 @@ fn expires_at_iso_utc(ms: i64) -> Option<String> {
         .ok()
 }
 
-async fn display_context(headers: &HeaderMap, db: &ClubDb) -> Option<(String, String)> {
-    let raw = parse_display_cookie(headers)?;
-    db.resolve_display_session(&raw)
-        .await
-        .map(|(_id, club_id, admin_id)| (club_id, admin_id))
-}
+type KioskAdminErr = (StatusCode, Json<serde_json::Value>);
 
-type DisplayClubErr = (StatusCode, Json<serde_json::Value>);
-
-async fn require_display_club(
+/// Club-screen APIs require an authenticated club admin (or platform superadmin)
+/// via the normal account/club session, scoped to the session's active club.
+async fn require_kiosk_admin(
+    state: &AppState,
     db: &ClubDb,
     headers: &HeaderMap,
-) -> Result<(String, String), DisplayClubErr> {
-    let Some((club_id, admin_id)) = display_context(headers, db).await else {
-        return Err((
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "display session required" })),
-        ));
-    };
-    if db.club_operational(&club_id).await.is_err() {
+) -> Result<(String, String), KioskAdminErr> {
+    let v = viewer(state, headers).await;
+    let club_id = require_club_admin_scope(db, &v).await?;
+    let Viewer::Pilot { id: admin_id, .. } = v else {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(json!({ "error": "club unavailable" })),
+            Json(json!({ "error": "admin only" })),
         ));
-    }
+    };
     Ok((club_id, admin_id))
+}
+
+async fn kiosk_admin_still_valid(
+    db: &ClubDb,
+    club_id: &str,
+    acct_sess: Option<&str>,
+    club_sess: Option<&str>,
+) -> bool {
+    let now = now_ms();
+    let mut pilot = None;
+    if let Some(s) = acct_sess {
+        if let Some((_, Some(mem_id))) = db.account_from_session(s, now).await {
+            if let Some(p) = db.pilot_for_active_membership(&mem_id).await {
+                if db.club_operational(&p.club_id).await.is_ok() {
+                    pilot = Some(p);
+                }
+            }
+        }
+    }
+    if pilot.is_none() {
+        if let Some(s) = club_sess {
+            pilot = db.pilot_from_session(s, now).await;
+        }
+    }
+    let Some(p) = pilot else {
+        return false;
+    };
+    if p.club_id != club_id {
+        return false;
+    }
+    let v = db.viewer_from_pilot_row(&p).await;
+    require_club_admin_scope(db, &v)
+        .await
+        .is_ok_and(|cid| cid == club_id)
 }
 
 #[derive(Deserialize)]
@@ -2500,15 +2541,9 @@ fn checkin_reason(status: StatusCode, reason: &str) -> axum::response::Response 
         .into_response()
 }
 
-#[derive(Deserialize)]
-struct DisplayActivateBody {
-    token: String,
-}
-
-async fn display_activate(
+async fn display_checkin_qr(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(body): Json<DisplayActivateBody>,
 ) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
         return (
@@ -2517,31 +2552,7 @@ async fn display_activate(
         )
             .into_response();
     };
-    let token = body.token.trim();
-    let Some(_ctx) = db.resolve_display_session(token).await else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "invalid display token" })),
-        )
-            .into_response();
-    };
-    let cookie = auth::set_display_cookie(token, is_secure(&headers));
-    (
-        StatusCode::OK,
-        [(header::SET_COOKIE, cookie)],
-        Json(json!({ "ok": true })),
-    )
-        .into_response()
-}
-
-async fn display_checkin_qr(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    let Some(db) = club_db(&state) else {
-        return Json(json!({ "error": "club disabled" })).into_response();
-    };
-    let (club_id, _admin) = match require_display_club(db, &headers).await {
+    let (club_id, _admin) = match require_kiosk_admin(&state, db, &headers).await {
         Ok(v) => v,
         Err(e) => return e.into_response(),
     };
@@ -2568,7 +2579,7 @@ async fn display_map(State(state): State<AppState>, headers: HeaderMap) -> impl 
     let Some(db) = club_db(&state) else {
         return Json(json!({ "aircraft": [] })).into_response();
     };
-    let (club_id, admin_id) = match require_display_club(db, &headers).await {
+    let (club_id, admin_id) = match require_kiosk_admin(&state, db, &headers).await {
         Ok(v) => v,
         Err(e) => return e.into_response(),
     };
@@ -2581,7 +2592,7 @@ async fn display_base(State(state): State<AppState>, headers: HeaderMap) -> impl
         return Json(json!({ "icao": null, "lat": null, "lon": null, "clubName": null }))
             .into_response();
     };
-    let (club_id, _admin_id) = match require_display_club(db, &headers).await {
+    let (club_id, _admin_id) = match require_kiosk_admin(&state, db, &headers).await {
         Ok(v) => v,
         Err(e) => return e.into_response(),
     };
@@ -2604,112 +2615,6 @@ async fn display_base(State(state): State<AppState>, headers: HeaderMap) -> impl
     }
 }
 
-#[derive(Deserialize, Default)]
-struct DisplaySessionBody {
-    label: String,
-}
-
-async fn admin_create_display(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(body): Json<DisplaySessionBody>,
-) -> impl IntoResponse {
-    let v = viewer(&state, &headers).await;
-    let Some(db) = club_db(&state) else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "club disabled" })),
-        )
-            .into_response();
-    };
-    let club_id = match require_club_admin_scope(db, &v).await {
-        Ok(c) => c,
-        Err(e) => return e.into_response(),
-    };
-    let Viewer::Pilot { id, .. } = v else {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    };
-    let screen_url = db
-        .club_slug(&club_id)
-        .await
-        .map(|slug| format!("/c/{slug}/screen"))
-        .unwrap_or_else(|| "/club/screen".to_string());
-    match db.create_display_session(&id, body.label.trim()).await {
-        Ok((session_id, token)) => Json(json!({
-            "id": session_id,
-            "token": token,
-            "screenUrl": screen_url,
-        }))
-        .into_response(),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "db error" })),
-        )
-            .into_response(),
-    }
-}
-
-async fn admin_list_display(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
-    let v = viewer(&state, &headers).await;
-    let Some(db) = club_db(&state) else {
-        return Json(json!({ "sessions": [] })).into_response();
-    };
-    let _club_id = match require_club_admin_scope(db, &v).await {
-        Ok(c) => c,
-        Err(e) => return e.into_response(),
-    };
-    let Viewer::Pilot { id, .. } = v else {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    };
-    Json(json!({ "sessions": db.list_display_sessions(&id).await })).into_response()
-}
-
-async fn admin_revoke_display(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Path(session_id): Path<String>,
-) -> impl IntoResponse {
-    let v = viewer(&state, &headers).await;
-    let Some(db) = club_db(&state) else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "club disabled" })),
-        )
-            .into_response();
-    };
-    let _club_id = match require_club_admin_scope(db, &v).await {
-        Ok(c) => c,
-        Err(e) => return e.into_response(),
-    };
-    let Viewer::Pilot { id, .. } = v else {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    };
-    match db.revoke_display_session(&id, &session_id).await {
-        Ok(true) => Json(json!({ "ok": true })).into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response(),
-        Err(_) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "db error" })),
-        )
-            .into_response(),
-    }
-}
-
 fn html_csp_header(dist_html: &str) -> (header::HeaderName, &'static str) {
     (
         header::CONTENT_SECURITY_POLICY,
@@ -2718,7 +2623,22 @@ fn html_csp_header(dist_html: &str) -> (header::HeaderName, &'static str) {
     )
 }
 
-async fn club_screen_page(State(state): State<AppState>) -> impl IntoResponse {
+fn kiosk_login_redirect(next_path: &str, query: Option<&str>) -> axum::response::Response {
+    let candidate = match query {
+        Some(q) if !q.is_empty() => format!("{next_path}?{q}"),
+        _ => next_path.to_string(),
+    };
+    let safe = crate::auth::safe_next(&candidate);
+    let next = if safe == "/" {
+        "/club-screen.html".to_string()
+    } else {
+        safe
+    };
+    let location = format!("/login?next={}", crate::url_encode(&next));
+    (StatusCode::FOUND, [(header::LOCATION, location)], "").into_response()
+}
+
+async fn serve_club_screen_html(state: &AppState) -> axum::response::Response {
     let path = state.dist_dir.join("club-screen.html");
     match tokio::fs::read_to_string(&path).await {
         Ok(html) => (
@@ -2728,6 +2648,7 @@ async fn club_screen_page(State(state): State<AppState>) -> impl IntoResponse {
                     header::REFERRER_POLICY,
                     crate::html_csp::SENSITIVE_REFERRER_POLICY,
                 ),
+                (header::CACHE_CONTROL, "no-store"),
             ],
             Html(html),
         )
@@ -2740,8 +2661,112 @@ async fn club_screen_page(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+async fn gate_club_screen_response(
+    state: &AppState,
+    headers: &HeaderMap,
+    next_path: &str,
+    query: Option<&str>,
+) -> axum::response::Response {
+    let Some(db) = club_db(state) else {
+        return (StatusCode::SERVICE_UNAVAILABLE, "Club disabled").into_response();
+    };
+    let v = viewer(state, headers).await;
+    if matches!(v, Viewer::Anonymous) {
+        return kiosk_login_redirect(next_path, query);
+    }
+    match require_club_admin_scope(db, &v).await {
+        Ok(_club_id) => serve_club_screen_html(state).await,
+        Err((StatusCode::UNAUTHORIZED, _)) => kiosk_login_redirect(next_path, query),
+        Err(_) => (StatusCode::FORBIDDEN, "Admin only").into_response(),
+    }
+}
+
+/// Gate `/club-screen.html` (and normalized path variants) in the static fallback.
+pub(crate) async fn club_screen_html_gate(
+    state: &AppState,
+    headers: &HeaderMap,
+    path: &str,
+    query: Option<&str>,
+) -> Option<axum::response::Response> {
+    let normalized =
+        crate::static_files::normalize_url_path(path).unwrap_or_else(|| path.trim().to_string());
+    if normalized != "/club-screen.html" {
+        return None;
+    }
+    state.club.as_ref()?;
+    Some(gate_club_screen_response(state, headers, "/club-screen.html", query).await)
+}
+
+/// Sliding session renewal middleware: extends `expires_at` in place and refreshes
+/// `Set-Cookie` (keeping the SAME session id) at most once per `SESSION_RENEW_THROTTLE_SEC`.
+pub(crate) async fn sliding_session_renewal(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let acct_sess = auth::parse_account_session_cookie(req.headers());
+    let club_sess = parse_session_cookie(req.headers());
+    let secure = is_secure(req.headers());
+    let mut res = next.run(req).await;
+    if acct_sess.is_none() && club_sess.is_none() {
+        return res;
+    }
+    if !(res.status().is_success() || res.status().is_redirection()) {
+        return res;
+    }
+    let Some(db) = club_db(&state) else {
+        return res;
+    };
+    let existing_set_cookies: Vec<String> = res
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok().map(String::from))
+        .collect();
+    let has_cookie = |prefix: &str| existing_set_cookies.iter().any(|c| c.starts_with(prefix));
+    let now = now_ms();
+    let acct_prefix = format!("{}=", auth::ACCOUNT_COOKIE);
+    if let Some(raw) = acct_sess.as_deref() {
+        if !has_cookie(&acct_prefix)
+            && db
+                .maybe_renew_account_session(raw, now)
+                .await
+                .unwrap_or(false)
+        {
+            let cookie = auth::set_account_session_cookie(raw, secure);
+            if let Ok(val) = cookie.parse() {
+                res.headers_mut().append(header::SET_COOKIE, val);
+            }
+        }
+    }
+    let club_prefix = format!("{}=", auth::COOKIE);
+    if let Some(raw) = club_sess.as_deref() {
+        if !has_cookie(&club_prefix)
+            && db
+                .maybe_renew_pilot_session(raw, now)
+                .await
+                .unwrap_or(false)
+        {
+            let cookie = auth::set_session_cookie(raw, secure);
+            if let Ok(val) = cookie.parse() {
+                res.headers_mut().append(header::SET_COOKIE, val);
+            }
+        }
+    }
+    res
+}
+
+async fn club_screen_page(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> impl IntoResponse {
+    gate_club_screen_response(&state, &headers, "/club-screen.html", uri.query()).await
+}
+
 async fn club_slug_screen_page(
     State(state): State<AppState>,
+    headers: HeaderMap,
     method: axum::http::Method,
     uri: axum::http::Uri,
     Path(slug): Path<String>,
@@ -2759,28 +2784,37 @@ async fn club_slug_screen_page(
     {
         return resp;
     }
-    if db.club_id_for_slug_any(&slug).await.is_none() {
+    let slug_next = if !slug.is_empty()
+        && !slug.contains('/')
+        && !slug.contains('\\')
+        && !slug.contains("..")
+    {
+        let candidate = format!("/c/{slug}/screen");
+        let checked = crate::auth::safe_next(&candidate);
+        if checked.starts_with("/c/") {
+            checked
+        } else {
+            "/club-screen.html".to_string()
+        }
+    } else {
+        "/club-screen.html".to_string()
+    };
+    let v = viewer(&state, &headers).await;
+    if matches!(v, Viewer::Anonymous) {
+        return kiosk_login_redirect(&slug_next, uri.query());
+    }
+    let active_club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err((StatusCode::UNAUTHORIZED, _)) => return kiosk_login_redirect(&slug_next, uri.query()),
+        Err(_) => return (StatusCode::FORBIDDEN, "Admin only").into_response(),
+    };
+    let Some(path_club_id) = db.club_id_for_slug(&slug).await else {
         return (StatusCode::NOT_FOUND, "Club not found").into_response();
+    };
+    if path_club_id != active_club_id {
+        return (StatusCode::FORBIDDEN, "Forbidden").into_response();
     }
-    let path = state.dist_dir.join("club-screen.html");
-    match tokio::fs::read_to_string(&path).await {
-        Ok(html) => (
-            [
-                html_csp_header("club-screen.html"),
-                (
-                    header::REFERRER_POLICY,
-                    crate::html_csp::SENSITIVE_REFERRER_POLICY,
-                ),
-            ],
-            Html(html),
-        )
-            .into_response(),
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            "Club screen page not built (npm run build)",
-        )
-            .into_response(),
-    }
+    serve_club_screen_html(&state).await
 }
 
 fn redirect_found_with_query(base_path: &str, query: Option<&str>) -> axum::response::Response {
@@ -3060,7 +3094,7 @@ async fn display_kiosk_layout(
         )
             .into_response();
     };
-    let (club_id, _admin) = match require_display_club(db, &headers).await {
+    let (club_id, _admin) = match require_kiosk_admin(&state, db, &headers).await {
         Ok(v) => v,
         Err(e) => return e.into_response(),
     };
@@ -3086,17 +3120,21 @@ async fn display_kiosk_layout_stream(
         )
             .into_response();
     };
-    let (club_id, _admin) = match require_display_club(&db, &headers).await {
+    let (club_id, _admin) = match require_kiosk_admin(&state, &db, &headers).await {
         Ok(v) => v,
         Err(e) => return e.into_response(),
     };
+    let acct_sess = auth::parse_account_session_cookie(&headers);
+    let club_sess = parse_session_cookie(&headers);
     let _ = db.ensure_kiosk_qr_defaults(&club_id).await;
     let club_id2 = club_id.clone();
     let stream = stream::unfold(
-        (db, club_id2, 0i64),
-        move |(db, club_id, mut last_rev)| async move {
+        (db, club_id2, acct_sess, club_sess, 0i64),
+        move |(db, club_id, acct_sess, club_sess, mut last_rev)| async move {
             tokio::time::sleep(Duration::from_secs(2)).await;
-            if db.club_operational(&club_id).await.is_err() {
+            if !kiosk_admin_still_valid(&db, &club_id, acct_sess.as_deref(), club_sess.as_deref())
+                .await
+            {
                 return None;
             }
             let layout = match db.kiosk_qr_layout(&club_id).await {
@@ -3106,7 +3144,7 @@ async fn display_kiosk_layout_stream(
             if layout.rev == last_rev {
                 return Some((
                     Ok::<_, Infallible>(Event::default().comment("ping")),
-                    (db, club_id, last_rev),
+                    (db, club_id, acct_sess, club_sess, last_rev),
                 ));
             }
             last_rev = layout.rev;
@@ -3116,7 +3154,7 @@ async fn display_kiosk_layout_stream(
             };
             Some((
                 Ok(Event::default().event("layout").data(payload)),
-                (db, club_id, last_rev),
+                (db, club_id, acct_sess, club_sess, last_rev),
             ))
         },
     );
@@ -3171,7 +3209,7 @@ async fn club_screen_qr_svg(
     let Some(db) = club_db(&state) else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let (club_id, _admin) = match require_display_club(db, &headers).await {
+    let (club_id, _admin) = match require_kiosk_admin(&state, db, &headers).await {
         Ok(v) => v,
         Err(e) => return e.into_response(),
     };
@@ -3262,7 +3300,6 @@ pub fn router() -> Router<AppState> {
         .route("/c/{slug}/screen", get(club_slug_screen_page))
         .route("/c/{slug}/globe-screen", get(club_slug_globe_screen_page))
         .route("/api/checkin", post(post_checkin))
-        .route("/api/display/activate", post(display_activate))
         .route("/api/display/checkin-qr", get(display_checkin_qr))
         .route("/api/club/screen/qr.svg", get(club_screen_qr_svg))
         .route("/api/devices/pair/{id}/qr.svg", get(device_pair_qr_svg))
@@ -3289,14 +3326,6 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/admin/checkin-qr/consumed",
             get(admin_checkin_consumed_since),
-        )
-        .route(
-            "/api/admin/display-sessions",
-            get(admin_list_display).post(admin_create_display),
-        )
-        .route(
-            "/api/admin/display-sessions/{id}/revoke",
-            post(admin_revoke_display),
         )
         .route("/api/club/register", post(register))
         .route("/api/club/login", post(club_login))

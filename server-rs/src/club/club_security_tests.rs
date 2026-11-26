@@ -287,7 +287,7 @@ async fn superadmin_allowlist_requires_verified_approved() {
 
 #[tokio::test]
 #[serial]
-async fn suspend_revokes_device_and_display_tokens() {
+async fn suspend_revokes_device_and_pilot_sessions() {
     let db = ClubDb::open_test().await.unwrap();
     let now = now_ms();
     let slug = format!("revoke-{}", &new_id()[..8]);
@@ -305,10 +305,8 @@ async fn suspend_revokes_device_and_display_tokens() {
     .unwrap();
     let (device_id, dev_tok) = db.create_device(&admin, "phone").await.unwrap();
     let sess = db.create_pilot_session(&admin, now).await.unwrap();
-    let (_disp_id, disp_tok) = db.create_display_session(&admin, "kiosk").await.unwrap();
     db.set_club_suspended(&club_id, now).await.unwrap();
     assert!(db.resolve_device_token(&dev_tok).await.is_none());
-    assert!(db.resolve_display_session(&disp_tok).await.is_none());
     assert!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pilot_sessions WHERE id = $1")
             .bind(&sess)
@@ -851,7 +849,7 @@ async fn prod_admin_admin_api_200_after_membership_backfill() {
         .and_then(|v| v.to_str().ok())
         .unwrap()
         .to_string();
-    for uri in ["/api/admin/pilots", "/api/admin/display-sessions"] {
+    for uri in ["/api/admin/pilots", "/api/display/map"] {
         let res = router
             .call(
                 Request::builder()
@@ -1113,7 +1111,7 @@ async fn pending_admin_pilot_admin_api_403() {
         superadmin_emails: Default::default(),
     };
     let mut router = build_router(state);
-    for uri in ["/api/admin/pilots", "/api/admin/display-sessions"] {
+    for uri in ["/api/admin/pilots", "/api/display/map"] {
         let res = router
             .call(
                 Request::builder()

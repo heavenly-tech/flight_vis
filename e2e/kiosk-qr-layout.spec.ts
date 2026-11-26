@@ -22,7 +22,7 @@ test("kiosk layout uses decorative inline QR placeholder with no 401 request, st
 
   await page.goto("/club-admin-kiosk-layout.html", { waitUntil: "networkidle" });
 
-  // No request to display-only /api/club/screen/qr.svg
+  // No request to /api/club/screen/qr.svg from the layout editor
   expect(screenQrRequests).toEqual([]);
   await expect(page.locator("#preview-qr img")).toHaveCount(0);
 

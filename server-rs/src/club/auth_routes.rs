@@ -49,7 +49,7 @@ pub async fn post_magic_link(
                 .locale
                 .as_deref()
                 .map(str::to_string)
-                .or_else(|| auth::parse_display_cookie(&headers))
+                .or_else(|| auth::parse_fv_locale_cookie(&headers))
                 .unwrap_or_else(|| "es".to_string());
             state
                 .mailer

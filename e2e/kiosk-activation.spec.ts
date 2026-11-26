@@ -6,21 +6,19 @@ test.use({
   extraHTTPHeaders: { "Accept-Language": "es" },
 });
 
-test("kiosk activation starts polling and reveals QR toggle with no reload", async ({
+test("signed-out user is redirected from club-screen to login", async ({ page }) => {
+  await page.goto("/club-screen.html", { waitUntil: "load" });
+  await expect(page).toHaveURL(/\/login\?/);
+  expect(new URL(page.url()).searchParams.get("next")).toBe("/club-screen.html");
+});
+
+test("signed-in admin sees kiosk immediately, polls aircraft with no reload, and has no activation form", async ({
   page,
-  request,
 }) => {
-  const login = await request.post("/api/club/login", {
+  const login = await page.request.post("/api/club/login", {
     data: { email: "admin@demo.test", password: "password12" },
   });
   expect(login.ok()).toBeTruthy();
-
-  const created = await request.post("/api/admin/display-sessions", {
-    data: { label: "E2E Kiosk Activation" },
-  });
-  expect(created.ok()).toBeTruthy();
-  const { token } = (await created.json()) as { token: string };
-  expect(token).toBeTruthy();
 
   await stubArcgisTiles(page);
 
@@ -49,9 +47,10 @@ test("kiosk activation starts polling and reveals QR toggle with no reload", asy
   await page.goto("/club-screen.html", { waitUntil: "networkidle" });
 
   await expect(page.locator("html")).toHaveAttribute("lang", "es-CL");
-  await expect(page.locator("#activate")).toBeVisible();
-  await expect(page.locator("#btn-local-qr")).toBeHidden();
-  await expect(page.locator('label[for="activate-token"]')).toBeVisible();
+  await expect(page.locator("#activate")).toHaveCount(0);
+  await expect(page.locator("#activate-token")).toHaveCount(0);
+  await expect(page.locator("#btn-local-qr")).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator("#status-bar")).toContainText(/rota cada \d+ segundos/i);
 
   const headingBox = await page.locator(".kiosk-header h2").boundingBox();
   const statusBox = await page.locator("#status-bar").boundingBox();
@@ -67,20 +66,10 @@ test("kiosk activation starts polling and reveals QR toggle with no reload", asy
     expect(horizontalOverlap && verticalOverlap).toBe(false);
   }
 
-  const labelText = (await page.locator('label[for="activate-token"]').textContent())?.trim();
-  const initialStatus = (await page.locator("#status-bar").textContent())?.trim();
-  expect(initialStatus).not.toBe(labelText);
-
   await page.evaluate(() => {
     (window as unknown as { __fvNoReload?: string }).__fvNoReload = "same-doc";
   });
 
-  await page.locator("#activate-token").fill(token);
-  await page.locator("#activate-token").press("Enter");
-
-  await expect(page.locator("#activate")).toBeHidden({ timeout: 10_000 });
-  await expect(page.locator("#btn-local-qr")).toBeVisible({ timeout: 10_000 });
-  await expect(page.locator("#status-bar")).toContainText(/rota cada \d+ segundos/i);
   await expect(page.locator("#map")).toContainText("CC-AAA · Piloto Uno");
   const kioskMap = page.locator('[data-testid="kiosk-map"]');
   await expect(kioskMap).toBeVisible({ timeout: 10_000 });

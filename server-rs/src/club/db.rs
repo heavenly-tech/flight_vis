@@ -158,7 +158,7 @@ impl ClubDb {
             "TRUNCATE TABLE login_attempts, magic_send_log, guest_sessions, magic_login_tokens, \
              webauthn_credentials, email_suppressions, audit_log, access_requests, checkins, \
              device_pair_tokens, flight_devices, fixes, flights, devices, checkouts, pilot_sessions, \
-             account_sessions, club_memberships, admin_map_prefs, display_sessions, pilots, accounts, \
+             account_sessions, club_memberships, admin_map_prefs, pilots, accounts, \
              club_slug_registry, club_slug_history, aircraft, aircraft_types, clubs RESTART IDENTITY CASCADE",
         )
         .execute(&self.pool)
@@ -325,6 +325,53 @@ impl ClubDb {
             role: row.try_get(6).ok()?,
             locale: row.try_get(7).ok()?,
         })
+    }
+
+    /// Sliding renewal for active `pilot_sessions` (`fv_club_session`), keeping the same
+    /// session id and throttling DB writes to at most once every `SESSION_RENEW_THROTTLE_SEC`.
+    pub async fn maybe_renew_pilot_session(
+        &self,
+        session_id: &str,
+        now: i64,
+    ) -> Result<bool, DbError> {
+        let session_db_id = auth::digest_token(session_id);
+        let new_exp = now + auth::SESSION_TTL_SEC * 1000;
+        let renew_before = new_exp - auth::SESSION_RENEW_THROTTLE_SEC * 1000;
+        let row = sqlx::query(
+            "SELECT s.expires_at, c.suspended_at, a.suspended_at
+             FROM pilot_sessions s
+             JOIN pilots p ON p.id = s.pilot_id
+             JOIN clubs c ON c.id = p.club_id
+             LEFT JOIN accounts a ON a.id = p.account_id
+             WHERE s.id = $1",
+        )
+        .bind(&session_db_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let expires_at: i64 = row.try_get(0)?;
+        let club_suspended: Option<i64> = row.try_get(1).ok().flatten();
+        let acct_suspended: Option<i64> = row.try_get(2).ok().flatten();
+        if club_suspended.is_some()
+            || acct_suspended.is_some()
+            || expires_at <= now
+            || expires_at > renew_before
+        {
+            return Ok(false);
+        }
+        let updated = sqlx::query(
+            "UPDATE pilot_sessions SET expires_at = $1
+             WHERE id = $2 AND expires_at > $3 AND expires_at <= $4",
+        )
+        .bind(new_exp)
+        .bind(&session_db_id)
+        .bind(now)
+        .bind(renew_before)
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() > 0)
     }
 
     pub async fn viewer_from_pilot_row(&self, pilot: &PilotRow) -> Viewer {
@@ -1912,96 +1959,6 @@ impl ClubDb {
         Ok((club_id, pilot_id, device_id))
     }
 
-    pub async fn create_display_session(
-        &self,
-        admin_id: &str,
-        label: &str,
-    ) -> Result<(String, String), DbError> {
-        let club_id = self.pilot_club_id(admin_id).await?;
-        let token = new_device_token();
-        let hash = digest_token(&token);
-        let id = new_id();
-        let now = now_ms();
-        let expires_at = now + 90 * 24 * 3600 * 1000;
-        sqlx::query(
-            "INSERT INTO display_sessions (id, club_id, created_by_pilot_id, token_hash, label, created_at, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(&id)
-        .bind(&club_id)
-        .bind(admin_id)
-        .bind(&hash)
-        .bind(label)
-        .bind(now)
-        .bind(expires_at)
-        .execute(&self.pool)
-        .await?;
-        Ok((id, token))
-    }
-
-    pub async fn revoke_display_session(
-        &self,
-        admin_id: &str,
-        session_id: &str,
-    ) -> Result<bool, DbError> {
-        let club_id = self.pilot_club_id(admin_id).await?;
-        let updated = sqlx::query(
-            "UPDATE display_sessions SET revoked_at = $1
-             WHERE id = $2 AND club_id = $3 AND created_by_pilot_id = $4 AND revoked_at IS NULL",
-        )
-        .bind(now_ms())
-        .bind(session_id)
-        .bind(&club_id)
-        .bind(admin_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(updated.rows_affected() > 0)
-    }
-
-    pub async fn resolve_display_session(&self, token: &str) -> Option<(String, String, String)> {
-        let hash = digest_token(token);
-        let now = now_ms();
-        let row = sqlx::query(
-            "SELECT id, club_id, created_by_pilot_id, expires_at FROM display_sessions
-             WHERE token_hash = $1 AND revoked_at IS NULL",
-        )
-        .bind(hash)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()??;
-        let expires_at: Option<i64> = row.try_get(3).ok().flatten();
-        if expires_at.is_some_and(|exp| now > exp) {
-            return None;
-        }
-        Some((
-            row.try_get(0).ok()?,
-            row.try_get(1).ok()?,
-            row.try_get(2).ok()?,
-        ))
-    }
-
-    pub async fn list_display_sessions(&self, admin_id: &str) -> Vec<DisplaySessionRow> {
-        let rows = sqlx::query(
-            "SELECT id, label, created_at, revoked_at FROM display_sessions
-             WHERE created_by_pilot_id = $1 ORDER BY created_at DESC",
-        )
-        .bind(admin_id)
-        .fetch_all(&self.pool)
-        .await
-        .unwrap_or_default();
-        rows.into_iter()
-            .filter_map(|r| {
-                let revoked_at: Option<i64> = r.try_get(3).ok()?;
-                Some(DisplaySessionRow {
-                    id: r.try_get(0).ok()?,
-                    label: r.try_get(1).ok()?,
-                    created_at: r.try_get(2).ok()?,
-                    revoked: revoked_at.is_some(),
-                })
-            })
-            .collect()
-    }
-
     pub async fn display_map(
         &self,
         display_club_id: &str,
@@ -2212,14 +2169,6 @@ pub enum CheckinReject {
     ExpiredClaim,
     UsedClaim,
     ClubMismatch,
-}
-
-#[derive(Debug, Serialize)]
-pub struct DisplaySessionRow {
-    pub id: String,
-    pub label: String,
-    pub created_at: i64,
-    pub revoked: bool,
 }
 
 #[derive(Debug)]
