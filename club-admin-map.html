@@ -122,6 +122,31 @@
           ></div>
           <p id="club-trail-msg" class="status-msg" role="status" aria-live="polite"></p>
         </section>
+        <section id="club-nearby-public">
+          <h2 class="section-heading" data-i18n="admin.nearbyPublicTitle"></h2>
+          <p id="club-nearby-public-help" class="muted" data-i18n="admin.nearbyPublicHelp"></p>
+          <div class="nearby-public-controls">
+            <label class="nearby-public-toggle-label" for="club-nearby-public-toggle">
+              <input
+                id="club-nearby-public-toggle"
+                type="checkbox"
+                data-testid="club-nearby-public-toggle"
+              />
+              <span data-i18n="admin.nearbyPublicToggle"></span>
+            </label>
+            <div class="field nearby-public-radius-field">
+              <label for="club-nearby-public-radius" data-i18n="admin.nearbyPublicRadius"></label>
+              <select id="club-nearby-public-radius" data-testid="club-nearby-public-radius">
+                <option value="10">10 km</option>
+                <option value="25">25 km</option>
+                <option value="50" selected>50 km</option>
+                <option value="100">100 km</option>
+                <option value="200">200 km</option>
+              </select>
+            </div>
+          </div>
+          <p id="club-nearby-public-msg" class="status-msg" role="status" aria-live="polite"></p>
+        </section>
         <section id="club-danger-zone" class="danger-zone" hidden>
           <h2 class="section-heading danger-zone-heading" data-i18n="adminMap.deleteClubTitle"></h2>
           <p class="danger-zone-warning" data-i18n="adminMap.deleteClubWarning"></p>

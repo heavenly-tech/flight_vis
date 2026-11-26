@@ -12,6 +12,7 @@
     "home": "Inicio",
     "language": "Idioma",
     "copied": "Copiado",
+    "otherClub": "Fuera del club",
     "backPilot": "← Piloto",
     "backHome": "← Volver a flight_vis"
   },
@@ -392,7 +393,13 @@
     },
     "trailTitle": "Estela",
     "trailHelp": "Minutos de estela que se muestran detrás de cada avión. Cada piloto puede cambiarlo para su vuelo.",
-    "trailSaved": "Estela predeterminada guardada."
+    "trailSaved": "Estela predeterminada guardada.",
+    "nearbyPublicTitle": "Vuelos públicos cercanos",
+    "nearbyPublicHelp": "Incluye vuelos públicos en vivo de otros clubes cerca de tu aeródromo base, con un estilo diferenciado en este mapa y en la pantalla del club.",
+    "nearbyPublicToggle": "Mostrar vuelos públicos cercanos de otros clubes",
+    "nearbyPublicRadius": "Radio de búsqueda",
+    "nearbyPublicRadiusOption": "{km} km",
+    "nearbyPublicSaved": "Configuración de vuelos cercanos guardada."
   },
   "kiosk": {
     "screenTitle": "Pantalla de registro del club",

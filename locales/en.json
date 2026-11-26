@@ -12,6 +12,7 @@
     "home": "Home",
     "language": "Language",
     "copied": "Copied",
+    "otherClub": "Other club",
     "backPilot": "← Pilot",
     "backHome": "← Back to flight_vis"
   },
@@ -392,7 +393,13 @@
     },
     "trailTitle": "Trail",
     "trailHelp": "Minutes of trail shown behind each aircraft. Each pilot can override it for their own flight.",
-    "trailSaved": "Default trail saved."
+    "trailSaved": "Default trail saved.",
+    "nearbyPublicTitle": "Nearby public flights",
+    "nearbyPublicHelp": "Includes live public flights from other clubs near your base aerodrome, shown in a muted style on this map and the club screen.",
+    "nearbyPublicToggle": "Show nearby public flights from other clubs",
+    "nearbyPublicRadius": "Search radius",
+    "nearbyPublicRadiusOption": "{km} km",
+    "nearbyPublicSaved": "Nearby public flights setting saved."
   },
   "kiosk": {
     "screenTitle": "Club check-in screen",

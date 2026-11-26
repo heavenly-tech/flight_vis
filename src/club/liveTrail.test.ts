@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mountClubTrailSetting } from "./adminMap";
+import { mountClubNearbyPublicSetting, mountClubTrailSetting } from "./adminMap";
 import {
   ALLOWED_TRAIL_MINUTES,
   buildTrailSegments,
@@ -18,7 +18,7 @@ import {
   trailOptionI18n,
   type TrailPoint,
 } from "./liveTrail";
-import { renderClubTileMap } from "./tileMapRenderer";
+import { extractPublicAircraft, renderClubTileMap } from "./tileMapRenderer";
 import { initI18n } from "../i18n/index";
 
 const root = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
@@ -297,5 +297,139 @@ describe("club trail chip setting control", () => {
         .querySelector('#club-trail-chips button[data-trail-value="5"]')
         ?.getAttribute("aria-pressed"),
     ).toBe("true");
+  });
+});
+
+describe("nearby public flights rendering and settings control", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    document.body.innerHTML = "";
+  });
+
+  function mountClubSettingsHtml(locale: "es" | "en" = "es"): void {
+    initI18n({ stored: locale });
+    const html = fs.readFileSync(path.join(root, "club-admin-map.html"), "utf8");
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const details = doc.querySelector("#club-settings");
+    expect(details).not.toBeNull();
+    document.body.appendChild(document.importNode(details!, true));
+  }
+
+  it("parses nonClub flag and renders muted non-club marker, badge, and trail metadata", () => {
+    initI18n({ stored: "es" });
+    const now = 1_700_000_000_000;
+    const aircraft = extractPublicAircraft([
+      {
+        tail: "N101",
+        flightId: "f-own",
+        trailMinutes: 5,
+        fix: { t: now, lat: -33.45, lon: -70.54 },
+      },
+      {
+        tail: "CC-EXT",
+        flightId: "f-ext",
+        trailMinutes: 10,
+        nonClub: true,
+        fix: { t: now, lat: -33.42, lon: -70.51 },
+      },
+    ]);
+    expect(aircraft[0].nonClub).toBeUndefined();
+    expect(aircraft[1].nonClub).toBe(true);
+
+    const trails = parseTrailsPayload({
+      trails: [
+        {
+          flightId: "f-ext",
+          tail: "CC-EXT",
+          trailMinutes: 10,
+          nonClub: true,
+          points: [
+            [now - 120_000, -33.43, -70.52],
+            [now, -33.42, -70.51],
+          ],
+        },
+      ],
+    });
+    expect(trails[0].nonClub).toBe(true);
+
+    const container = document.createElement("div");
+    renderClubTileMap(container, {
+      base: { icao: "SCTB", lat: -33.456, lon: -70.548 },
+      aircraft,
+      trails,
+      viewportPx: { w: 800, h: 450 },
+    });
+
+    const extMarker = container.querySelector('[data-marker="aircraft"][data-tail="CC-EXT"]');
+    expect(extMarker?.getAttribute("data-non-club")).toBe("true");
+    expect(extMarker?.classList.contains("is-non-club")).toBe(true);
+    expect(extMarker?.querySelector('[data-non-club-label="true"]')?.textContent).toBe(
+      "Fuera del club",
+    );
+
+    const ownMarker = container.querySelector('[data-marker="aircraft"][data-tail="N101"]');
+    expect(ownMarker?.getAttribute("data-non-club")).toBeNull();
+
+    const extTrail = container.querySelector('[data-testid="live-trail"][data-trail-tail="CC-EXT"]');
+    expect(extTrail?.getAttribute("data-non-club")).toBe("true");
+  });
+
+  it("toggles nearby public setting, changes radius, calls onSaved, and reverts on failure", async () => {
+    mountClubSettingsHtml("es");
+    const onSaved = vi.fn();
+    const ctrl = mountClubNearbyPublicSetting(onSaved);
+
+    const toggle = document.querySelector<HTMLInputElement>("#club-nearby-public-toggle")!;
+    const radius = document.querySelector<HTMLSelectElement>("#club-nearby-public-radius")!;
+    const msg = document.querySelector<HTMLParagraphElement>("#club-nearby-public-msg")!;
+
+    expect(toggle.disabled).toBe(true);
+    expect(radius.disabled).toBe(true);
+
+    ctrl.configure({ isAdmin: true, showNearbyPublic: true, nearbyPublicRadiusKm: 50 });
+    expect(toggle.disabled).toBe(false);
+    expect(toggle.checked).toBe(true);
+    expect(radius.disabled).toBe(false);
+    expect(radius.value).toBe("50");
+
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        showNearbyPublic: boolean;
+        nearbyPublicRadiusKm: number;
+      };
+      return {
+        ok: true,
+        json: async () => body,
+      };
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    toggle.checked = false;
+    toggle.dispatchEvent(new Event("change"));
+
+    await vi.waitFor(() => expect(onSaved).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/club/nearby-public", {
+      method: "PATCH",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ showNearbyPublic: false, nearbyPublicRadiusKm: 50 }),
+    });
+    expect(radius.disabled).toBe(true);
+    expect(msg.textContent).toBe("Configuración de vuelos cercanos guardada.");
+
+    // Failed PATCH reverts toggle
+    globalThis.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 403,
+      json: async () => ({ error: "admin only" }),
+    })) as unknown as typeof fetch;
+
+    toggle.checked = true;
+    toggle.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => expect(msg.getAttribute("role")).toBe("alert"));
+    expect(toggle.checked).toBe(false);
+    expect(onSaved).toHaveBeenCalledTimes(1);
   });
 });

@@ -1432,3 +1432,61 @@ dialog h2 {
   pointer-events: none;
   z-index: 2;
 }
+
+.tile-map-aircraft.is-non-club,
+.kiosk-map-aircraft.is-non-club {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: rgba(71, 85, 105, 0.9);
+  color: #e2e8f0;
+  border: 1.5px dashed rgba(203, 213, 225, 0.78);
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.45);
+  z-index: 2;
+}
+
+.kiosk-map-aircraft.is-non-club:hover {
+  background: rgba(100, 116, 139, 0.94);
+}
+
+.kiosk-map-aircraft.is-non-club.is-focused,
+.kiosk-map-aircraft.is-non-club[aria-pressed="true"] {
+  background: #334155;
+  border-style: solid;
+  border-color: #94a3b8;
+  color: #f8fafc;
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.4), 0 4px 12px rgba(0, 0, 0, 0.65);
+  z-index: 5;
+}
+
+.non-club-tag {
+  display: inline-block;
+  padding: 0.08rem 0.38rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.52);
+  color: #cbd5e1;
+  font-size: 0.72em;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
+.kiosk-tail-chip.is-non-club {
+  border-style: dashed;
+  border-color: rgba(148, 163, 184, 0.52);
+  background: rgba(30, 41, 59, 0.8);
+  color: #cbd5e1;
+}
+
+.kiosk-tail-chip.is-non-club:hover {
+  border-color: rgba(203, 213, 225, 0.78);
+  background: rgba(51, 65, 85, 0.9);
+}
+
+.kiosk-non-club-badge {
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px dashed rgba(148, 163, 184, 0.6);
+  background: rgba(51, 65, 85, 0.55);
+  color: #cbd5e1;
+  font-size: 0.82rem;
+}

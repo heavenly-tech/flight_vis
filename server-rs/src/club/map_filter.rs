@@ -185,7 +185,7 @@ mod tests {
             TailLivePosition {
                 tail: "FAR".into(),
                 flight_id: "1".into(),
-                pilot_id: "p".into(),
+                pilot_id: Some("p".into()),
                 pilot_name: None,
                 fix: LiveFix {
                     t: 0,
@@ -199,11 +199,12 @@ mod tests {
                 },
                 visibility: "public".into(),
                 trail_minutes: 5,
+                non_club: false,
             },
             TailLivePosition {
                 tail: "NEAR".into(),
                 flight_id: "2".into(),
-                pilot_id: "p".into(),
+                pilot_id: Some("p".into()),
                 pilot_name: None,
                 fix: LiveFix {
                     t: 0,
@@ -217,6 +218,7 @@ mod tests {
                 },
                 visibility: "public".into(),
                 trail_minutes: 5,
+                non_club: false,
             },
         ];
         let capped = apply_public_cap(pos, 1, center);

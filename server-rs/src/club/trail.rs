@@ -1,4 +1,4 @@
-//! Live aircraft trail settings, windowing/downsampling, and bounded DB queries.
+//! Live aircraft trail settings, windowing/downsampling, nearby-public settings, and bounded DB queries.
 
 use crate::club::{
     db::{ClubDb, DbError},
@@ -22,8 +22,21 @@ pub const ALLOWED_TRAIL_MINUTES: [i16; 7] = [TRAIL_OFF, 2, 5, 10, 15, 30, TRAIL_
 pub const MAX_TRAIL_WINDOW_MIN: i64 = 120;
 /// Maximum points returned per flight after even-by-time downsampling (preserving first and last).
 pub const MAX_TRAIL_POINTS: usize = 300;
-/// Maximum number of live flights returned in a single `/trails` response.
+/// Maximum number of live flights returned in a single `/trails` or `/api/me/live-trails` response.
 pub const MAX_TRAIL_FLIGHTS: usize = 50;
+/// Maximum age of a flight's latest fix to count as live for pilot live trails and nearby public flights (10 min).
+pub const LIVE_FIX_MAX_AGE_MS: i64 = 10 * 60 * 1000;
+
+/// Default toggle for showing nearby public flights from other clubs on the club view.
+pub const DEFAULT_SHOW_NEARBY_PUBLIC: bool = true;
+/// Default search radius (km) around the club's base aerodrome for nearby public flights.
+pub const DEFAULT_NEARBY_PUBLIC_RADIUS_KM: i16 = 50;
+/// Minimum allowed nearby public search radius (km).
+pub const MIN_NEARBY_PUBLIC_RADIUS_KM: i16 = 5;
+/// Maximum allowed nearby public search radius (km).
+pub const MAX_NEARBY_PUBLIC_RADIUS_KM: i16 = 500;
+/// Maximum number of nearby public flights from other clubs included on the club view (nearest first).
+pub const MAX_NEARBY_PUBLIC_FLIGHTS: usize = 30;
 
 const MS_PER_MIN: i64 = 60_000;
 
@@ -103,6 +116,36 @@ impl TrailMinutes {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClubNearbyPublicSettings {
+    pub show_nearby_public: bool,
+    pub nearby_public_radius_km: i16,
+}
+
+impl Default for ClubNearbyPublicSettings {
+    fn default() -> Self {
+        Self {
+            show_nearby_public: DEFAULT_SHOW_NEARBY_PUBLIC,
+            nearby_public_radius_km: DEFAULT_NEARBY_PUBLIC_RADIUS_KM,
+        }
+    }
+}
+
+/// Strictly validates a JSON integer for `nearbyPublicRadiusKm` (5..=500).
+pub fn parse_nearby_public_radius_km(value: &serde_json::Value) -> Result<i16, &'static str> {
+    let Some(n) = value.as_i64() else {
+        return Err("invalid nearbyPublicRadiusKm");
+    };
+    let Ok(km) = i16::try_from(n) else {
+        return Err("invalid nearbyPublicRadiusKm");
+    };
+    if !(MIN_NEARBY_PUBLIC_RADIUS_KM..=MAX_NEARBY_PUBLIC_RADIUS_KM).contains(&km) {
+        return Err("invalid nearbyPublicRadiusKm");
+    }
+    Ok(km)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlightTrailError {
     NotFound,
@@ -117,19 +160,25 @@ pub struct FlightTrail {
     pub flight_id: String,
     pub tail: String,
     pub trail_minutes: i16,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub non_club: bool,
     pub points: Vec<(i64, f64, f64)>,
 }
 
-/// Filters, time-windows, and evenly downsamples `(t_ms, lat, lon)` fixes to at most `max_points`.
+/// `(t_ms, lat, lon, alt_m)` point tuple used for live pilot trail responses.
+pub type TrailPointWithAlt = (i64, f64, f64, Option<f64>);
+
+/// Shared core windowing & even-by-time downsampling for `(t_ms, lat, lon, alt)` points.
 ///
 /// - `TrailMinutes::Off` always returns an empty vector.
 /// - `TrailMinutes::All` caps the lookback window at `MAX_TRAIL_WINDOW_MIN` (120 min) from the latest fix.
-/// - When downsampling, picks points evenly by timestamp while preserving the first and last points.
-pub fn window_and_downsample_trail(
-    raw_points: &[(i64, f64, f64)],
+/// - Sanitizes non-finite altitudes to `None` and drops non-finite or out-of-range coordinates.
+/// - Preserves the first and last points in the window when downsampling to `max_points`.
+pub fn window_and_downsample_trail_with_alt(
+    raw_points: &[TrailPointWithAlt],
     trail_minutes: TrailMinutes,
     max_points: usize,
-) -> Vec<(i64, f64, f64)> {
+) -> Vec<TrailPointWithAlt> {
     let Some(window_ms) = trail_minutes.window_ms() else {
         return Vec::new();
     };
@@ -137,15 +186,16 @@ pub fn window_and_downsample_trail(
         return Vec::new();
     }
 
-    let mut clean: Vec<(i64, f64, f64)> = raw_points
+    let mut clean: Vec<(i64, f64, f64, Option<f64>)> = raw_points
         .iter()
         .copied()
-        .filter(|&(_, lat, lon)| {
+        .filter(|&(_, lat, lon, _)| {
             lat.is_finite()
                 && lon.is_finite()
                 && (-90.0..=90.0).contains(&lat)
                 && (-180.0..=180.0).contains(&lon)
         })
+        .map(|(t, lat, lon, alt)| (t, lat, lon, alt.filter(|a| a.is_finite())))
         .collect();
     if clean.is_empty() {
         return Vec::new();
@@ -154,7 +204,7 @@ pub fn window_and_downsample_trail(
     clean.sort_by_key(|p| p.0);
 
     // Deduplicate identical timestamps, keeping the latest record for a given t_ms.
-    let mut deduped: Vec<(i64, f64, f64)> = Vec::with_capacity(clean.len());
+    let mut deduped: Vec<(i64, f64, f64, Option<f64>)> = Vec::with_capacity(clean.len());
     for pt in clean {
         if let Some(last) = deduped.last_mut() {
             if last.0 == pt.0 {
@@ -213,6 +263,22 @@ pub fn window_and_downsample_trail(
     out
 }
 
+/// Filters, time-windows, and evenly downsamples `(t_ms, lat, lon)` fixes to at most `max_points`.
+pub fn window_and_downsample_trail(
+    raw_points: &[(i64, f64, f64)],
+    trail_minutes: TrailMinutes,
+    max_points: usize,
+) -> Vec<(i64, f64, f64)> {
+    let with_alt: Vec<(i64, f64, f64, Option<f64>)> = raw_points
+        .iter()
+        .map(|&(t, lat, lon)| (t, lat, lon, None))
+        .collect();
+    window_and_downsample_trail_with_alt(&with_alt, trail_minutes, max_points)
+        .into_iter()
+        .map(|(t, lat, lon, _)| (t, lat, lon))
+        .collect()
+}
+
 impl ClubDb {
     pub async fn club_trail_minutes_default(&self, club_id: &str) -> Result<TrailMinutes, DbError> {
         let raw: i16 = sqlx::query_scalar("SELECT trail_minutes_default FROM clubs WHERE id = $1")
@@ -233,6 +299,53 @@ impl ClubDb {
             .execute(&self.pool)
             .await?;
         Ok(value)
+    }
+
+    pub async fn club_nearby_public_settings(
+        &self,
+        club_id: &str,
+    ) -> Result<ClubNearbyPublicSettings, DbError> {
+        let row = sqlx::query(
+            "SELECT show_nearby_public, nearby_public_radius_km FROM clubs WHERE id = $1",
+        )
+        .bind(club_id)
+        .fetch_one(&self.pool)
+        .await?;
+        let show: bool = row.try_get(0).unwrap_or(DEFAULT_SHOW_NEARBY_PUBLIC);
+        let radius: i16 = row.try_get(1).unwrap_or(DEFAULT_NEARBY_PUBLIC_RADIUS_KM);
+        Ok(ClubNearbyPublicSettings {
+            show_nearby_public: show,
+            nearby_public_radius_km: radius
+                .clamp(MIN_NEARBY_PUBLIC_RADIUS_KM, MAX_NEARBY_PUBLIC_RADIUS_KM),
+        })
+    }
+
+    pub async fn set_club_nearby_public_settings(
+        &self,
+        club_id: &str,
+        show_nearby_public: Option<bool>,
+        radius_km: Option<i16>,
+    ) -> Result<ClubNearbyPublicSettings, DbError> {
+        let current = self.club_nearby_public_settings(club_id).await?;
+        let next_show = show_nearby_public.unwrap_or(current.show_nearby_public);
+        let next_radius = radius_km.unwrap_or(current.nearby_public_radius_km);
+        if !(MIN_NEARBY_PUBLIC_RADIUS_KM..=MAX_NEARBY_PUBLIC_RADIUS_KM).contains(&next_radius) {
+            return Err(DbError::protocol("invalid nearbyPublicRadiusKm"));
+        }
+        sqlx::query(
+            "UPDATE clubs
+             SET show_nearby_public = $1, nearby_public_radius_km = $2
+             WHERE id = $3",
+        )
+        .bind(next_show)
+        .bind(next_radius)
+        .bind(club_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(ClubNearbyPublicSettings {
+            show_nearby_public: next_show,
+            nearby_public_radius_km: next_radius,
+        })
     }
 
     pub async fn set_flight_trail_minutes(
@@ -279,17 +392,31 @@ impl ClubDb {
         Ok((value, effective))
     }
 
-    /// Queries bounded recent fixes for the exact server-scoped `positions` list (capped at `MAX_TRAIL_FLIGHTS`).
+    /// Queries bounded recent fixes for the exact server-scoped `positions` list
+    /// (own-club flights capped at `MAX_TRAIL_FLIGHTS`, nearby non-club flights capped at `MAX_NEARBY_PUBLIC_FLIGHTS`).
     pub async fn trails_for_positions(&self, positions: &[TailLivePosition]) -> Vec<FlightTrail> {
         if positions.is_empty() {
             return Vec::new();
         }
-        let capped = &positions[..positions.len().min(MAX_TRAIL_FLIGHTS)];
+        let mut selected: Vec<&TailLivePosition> = Vec::with_capacity(positions.len());
+        let mut club_count = 0usize;
+        let mut non_club_count = 0usize;
+        for pos in positions {
+            if pos.non_club {
+                if non_club_count < MAX_NEARBY_PUBLIC_FLIGHTS {
+                    non_club_count += 1;
+                    selected.push(pos);
+                }
+            } else if club_count < MAX_TRAIL_FLIGHTS {
+                club_count += 1;
+                selected.push(pos);
+            }
+        }
 
         let mut query_flight_ids: Vec<String> = Vec::new();
         let mut query_cutoffs: Vec<i64> = Vec::new();
 
-        for pos in capped {
+        for pos in &selected {
             let effective = TrailMinutes::from_i16(pos.trail_minutes).unwrap_or(TrailMinutes::Min5);
             if let Some(window_ms) = effective.window_ms() {
                 query_flight_ids.push(pos.flight_id.clone());
@@ -324,8 +451,8 @@ impl ClubDb {
             }
         }
 
-        capped
-            .iter()
+        selected
+            .into_iter()
             .map(|pos| {
                 let effective =
                     TrailMinutes::from_i16(pos.trail_minutes).unwrap_or(TrailMinutes::Min5);
@@ -342,6 +469,7 @@ impl ClubDb {
                     flight_id: pos.flight_id.clone(),
                     tail: pos.tail.clone(),
                     trail_minutes: effective.as_i16(),
+                    non_club: pos.non_club,
                     points,
                 }
             })
