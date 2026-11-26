@@ -3078,54 +3078,118 @@ async fn account_logout_clears_both_cookies_revokes_only_current_session_and_enf
             .expect("account session cookie")
     }
 
-    // 1. Idempotent with no cookies -> 200 {"ok":true} and clears both cookies.
-    let empty_logout = fx
-        .router
-        .call(
-            Request::builder()
-                .method("POST")
-                .uri("/api/account/logout")
-                .header("sec-fetch-site", "same-origin")
-                .header("x-forwarded-proto", "https")
-                .body(Body::empty())
+    async fn legacy_logout_clear_cookie(
+        router: &mut axum::Router,
+        forwarded_proto: Option<&str>,
+    ) -> String {
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("/logout")
+            .header(header::ACCEPT, "application/json");
+        if let Some(proto) = forwarded_proto {
+            req = req.header("x-forwarded-proto", proto);
+        }
+        let res = router.call(req.body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        res.headers()
+            .get(header::SET_COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from)
+            .expect("legacy logout Set-Cookie")
+    }
+
+    fn apply_set_cookies(
+        jar: &mut std::collections::BTreeMap<String, String>,
+        set_cookies: &[String],
+    ) {
+        for raw in set_cookies {
+            let mut parts = raw.split(';').map(str::trim);
+            let Some(pair) = parts.next() else {
+                continue;
+            };
+            let Some((name, value)) = pair.split_once('=') else {
+                continue;
+            };
+            let expired = parts.any(|attr| attr.eq_ignore_ascii_case("Max-Age=0"));
+            if expired || value.is_empty() {
+                jar.remove(name);
+            } else {
+                jar.insert(name.to_string(), value.to_string());
+            }
+        }
+    }
+
+    fn jar_header(jar: &std::collections::BTreeMap<String, String>) -> Option<String> {
+        if jar.is_empty() {
+            None
+        } else {
+            Some(
+                jar.iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )
+        }
+    }
+
+    // 1. Idempotent with no cookies -> 200 {"ok":true}, no Location, and clears account, club,
+    //    and legacy fv_session cookies with exact attribute parity to POST /logout.
+    for forwarded_proto in ["https", "https, http"] {
+        let expected_legacy_clear =
+            legacy_logout_clear_cookie(&mut fx.router, Some(forwarded_proto)).await;
+        assert_eq!(
+            expected_legacy_clear,
+            "fv_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax; Secure"
+        );
+        let empty_logout = fx
+            .router
+            .call(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/account/logout")
+                    .header("sec-fetch-site", "same-origin")
+                    .header("x-forwarded-proto", forwarded_proto)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(empty_logout.status(), StatusCode::OK);
+        assert!(empty_logout.headers().get(header::LOCATION).is_none());
+        let set_cookies: Vec<String> = empty_logout
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok().map(String::from))
+            .collect();
+        assert!(
+            set_cookies
+                .iter()
+                .any(|c| c.starts_with("fv_account_session=;")
+                    && c.contains("Max-Age=0")
+                    && c.contains("Secure")),
+            "missing account clear cookie: {set_cookies:?}"
+        );
+        assert!(
+            set_cookies
+                .iter()
+                .any(|c| c.starts_with("fv_club_session=;")
+                    && c.contains("Max-Age=0")
+                    && c.contains("Secure")),
+            "missing club clear cookie: {set_cookies:?}"
+        );
+        assert!(
+            set_cookies.iter().any(|c| c == &expected_legacy_clear),
+            "missing legacy fv_session clear matching POST /logout ({expected_legacy_clear}): {set_cookies:?}"
+        );
+        let empty_body: serde_json::Value = serde_json::from_slice(
+            &to_bytes(empty_logout.into_body(), usize::MAX)
+                .await
                 .unwrap(),
         )
-        .await
         .unwrap();
-    assert_eq!(empty_logout.status(), StatusCode::OK);
-    let set_cookies: Vec<String> = empty_logout
-        .headers()
-        .get_all(header::SET_COOKIE)
-        .iter()
-        .filter_map(|v| v.to_str().ok().map(String::from))
-        .collect();
-    assert!(
-        set_cookies
-            .iter()
-            .any(|c| c.starts_with("fv_account_session=;")
-                && c.contains("Max-Age=0")
-                && c.contains("Secure")),
-        "missing account clear cookie: {set_cookies:?}"
-    );
-    assert!(
-        set_cookies
-            .iter()
-            .any(|c| c.starts_with("fv_club_session=;")
-                && c.contains("Max-Age=0")
-                && c.contains("Secure")),
-        "missing club clear cookie: {set_cookies:?}"
-    );
-    assert!(
-        !set_cookies.iter().any(|c| c.starts_with("fv_session=")),
-        "must not clear legacy fv_session cookie: {set_cookies:?}"
-    );
-    let empty_body: serde_json::Value = serde_json::from_slice(
-        &to_bytes(empty_logout.into_body(), usize::MAX)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(empty_body, serde_json::json!({ "ok": true }));
+        assert_eq!(empty_body, serde_json::json!({ "ok": true }));
+    }
 
     // 2. Create two sessions for account A (sess1 + sess2), switch sess1 into club, plus session for account B and a legacy fv_session.
     let acct_a_sess1 = login_account(&mut fx.router, "a@test").await;
@@ -3184,7 +3248,24 @@ async fn account_logout_clears_both_cookies_revokes_only_current_session_and_enf
     let legacy_cookie =
         extract_cookie_pair(legacy_res.headers(), "fv_session").expect("legacy fv_session");
 
-    let combined_a1 = format!("{acct_a_sess1}; {club_a_sess1}; {legacy_cookie}");
+    let mut jar = std::collections::BTreeMap::new();
+    for pair in [&acct_a_sess1, &club_a_sess1, &legacy_cookie] {
+        let (k, v) = pair.split_once('=').expect("cookie pair");
+        jar.insert(k.to_string(), v.to_string());
+    }
+    let combined_a1 = jar_header(&jar).expect("combined cookie jar");
+
+    let (st, auth_before) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/auth/me",
+        Some(&combined_a1),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(auth_before["authenticated"], true);
+    assert_eq!(auth_before["legacyAuthenticated"], true);
 
     // 3. CSRF rejection with a foreign Origin must return 403 and keep sessions alive.
     let csrf_res = fx
@@ -3202,6 +3283,7 @@ async fn account_logout_clears_both_cookies_revokes_only_current_session_and_enf
         .await
         .unwrap();
     assert_eq!(csrf_res.status(), StatusCode::FORBIDDEN);
+    assert!(csrf_res.headers().get(header::SET_COOKIE).is_none());
     let (st, _) = call_json(
         &mut fx.router,
         "GET",
@@ -3222,7 +3304,13 @@ async fn account_logout_clears_both_cookies_revokes_only_current_session_and_enf
     assert_eq!(st, StatusCode::OK);
     assert!(!club_me_before["pilot"].is_null());
 
-    // 4. Legitimate logout revokes sess1 (account + club) and clears both cookies, leaving sess2, account B, and legacy fv_session untouched.
+    // 4. Legitimate logout revokes sess1 (account + club) and clears account, club, and legacy
+    //    fv_session cookies (matching POST /logout), leaving sess2 and account B untouched.
+    let expected_legacy_clear_http = legacy_logout_clear_cookie(&mut fx.router, None).await;
+    assert_eq!(
+        expected_legacy_clear_http,
+        "fv_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"
+    );
     let logout_res = fx
         .router
         .call(
@@ -3237,6 +3325,7 @@ async fn account_logout_clears_both_cookies_revokes_only_current_session_and_enf
         .await
         .unwrap();
     assert_eq!(logout_res.status(), StatusCode::OK);
+    assert!(logout_res.headers().get(header::LOCATION).is_none());
     let logout_cookies: Vec<String> = logout_res
         .headers()
         .get_all(header::SET_COOKIE)
@@ -3249,11 +3338,36 @@ async fn account_logout_clears_both_cookies_revokes_only_current_session_and_enf
     assert!(logout_cookies
         .iter()
         .any(|c| c.starts_with("fv_club_session=;") && c.contains("Max-Age=0")));
-    assert!(!logout_cookies.iter().any(|c| c.starts_with("fv_session=")));
+    assert!(
+        logout_cookies
+            .iter()
+            .any(|c| c == &expected_legacy_clear_http),
+        "missing legacy fv_session clear matching POST /logout ({expected_legacy_clear_http}): {logout_cookies:?}"
+    );
     let logout_body: serde_json::Value =
         serde_json::from_slice(&to_bytes(logout_res.into_body(), usize::MAX).await.unwrap())
             .unwrap();
     assert_eq!(logout_body, serde_json::json!({ "ok": true }));
+
+    // A client honoring Set-Cookie drops fv_account_session, fv_club_session, and fv_session,
+    // so /api/auth/me no longer authenticates (neither overall nor legacy).
+    apply_set_cookies(&mut jar, &logout_cookies);
+    assert!(!jar.contains_key("fv_session"));
+    assert!(!jar.contains_key("fv_account_session"));
+    assert!(!jar.contains_key("fv_club_session"));
+    let jar_after = jar_header(&jar);
+    let (st, auth_after) = call_json(
+        &mut fx.router,
+        "GET",
+        "/api/auth/me",
+        jar_after.as_deref(),
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(auth_after["legacyAuthenticated"], false);
+    assert_eq!(auth_after["authenticated"], false);
+    assert_eq!(auth_after["canManageLibrary"], false);
 
     // sess1 account session is now 401 and club session is anonymous.
     let (st, _) = call_json(
@@ -3299,16 +3413,4 @@ async fn account_logout_clears_both_cookies_revokes_only_current_session_and_enf
     .await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(me_b["account"]["email"], "b@test");
-
-    // Legacy fv_session is still valid.
-    let (st, legacy_me) = call_json(
-        &mut fx.router,
-        "GET",
-        "/api/auth/me",
-        Some(&legacy_cookie),
-        "",
-    )
-    .await;
-    assert_eq!(st, StatusCode::OK);
-    assert_eq!(legacy_me["authenticated"], true);
 }

@@ -1,3 +1,4 @@
+use super::routes::is_secure;
 use crate::club::{
     auth,
     db::{now_ms, ClubDb},
@@ -18,13 +19,6 @@ use std::collections::HashMap;
 
 fn club_db(state: &AppState) -> Option<&ClubDb> {
     state.club.as_ref()
-}
-
-fn is_secure(headers: &HeaderMap) -> bool {
-    headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|p| p.eq_ignore_ascii_case("https"))
 }
 
 async fn signup_available() -> impl IntoResponse {
@@ -422,11 +416,14 @@ async fn account_logout(State(state): State<AppState>, headers: HeaderMap) -> im
     let secure = is_secure(&headers);
     let clear_account = auth::clear_account_session_cookie(secure);
     let clear_club = auth::clear_session_cookie(secure);
+    let clear_legacy = crate::auth::clear_cookie_header(secure);
     let mut res = (StatusCode::OK, Json(json!({ "ok": true }))).into_response();
     res.headers_mut()
         .append(header::SET_COOKIE, clear_account.parse().expect("cookie"));
     res.headers_mut()
         .append(header::SET_COOKIE, clear_club.parse().expect("cookie"));
+    res.headers_mut()
+        .append(header::SET_COOKIE, clear_legacy.parse().expect("cookie"));
     res
 }
 

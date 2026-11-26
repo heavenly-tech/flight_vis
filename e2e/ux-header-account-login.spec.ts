@@ -178,3 +178,82 @@ test("at 390px admin nav is a single horizontally scrollable row with no page ov
   expect(metrics.navHeight).toBeLessThanOrEqual(firstHeight + 24);
   expect(metrics.navHeight).toBeLessThanOrEqual(56);
 });
+
+test("Cerrar sesión from admin header also clears legacy fv_session cookie", async ({ page }) => {
+  await loginAdminWithAccountSession(page);
+
+  // Capture the exact Set-Cookie emitted by legacy POST /logout for attribute parity.
+  const legacyLogoutProbe = await page.request.post("/logout", {
+    headers: { Accept: "application/json" },
+  });
+  expect(legacyLogoutProbe.ok()).toBeTruthy();
+  const expectedLegacyClear = legacyLogoutProbe
+    .headersArray()
+    .filter((h) => h.name.toLowerCase() === "set-cookie")
+    .map((h) => h.value)
+    .find((v) => v.startsWith("fv_session=;"));
+  expect(expectedLegacyClear).toBeTruthy();
+
+  await page.goto("/club-admin-types.html", { waitUntil: "networkidle" });
+
+  // Obtain a real legacy fv_session when FLIGHT_VIS_PASSWORD is configured on the server;
+  // otherwise (default dev-ui/CI server where FLIGHT_VIS_PASSWORD is unset), seed a browser
+  // fv_session cookie so Set-Cookie parity and browser cookie eviction are still verified.
+  // The full signed POST /login -> legacyAuthenticated=true -> logout -> false flow is also
+  // covered unconditionally by cargo test in server-rs/src/club/api_tests.rs.
+  const authBefore = (await (await page.request.get("/api/auth/me")).json()) as {
+    configured?: boolean;
+    legacyAuthenticated?: boolean;
+  };
+  const legacyPassword = process.env.FLIGHT_VIS_PASSWORD?.trim();
+  if (authBefore.configured && legacyPassword) {
+    const legacyLogin = await page.request.post("/login", {
+      headers: { Accept: "application/json" },
+      data: { password: legacyPassword },
+    });
+    expect(legacyLogin.ok()).toBeTruthy();
+    const withLegacy = (await (await page.request.get("/api/auth/me")).json()) as {
+      legacyAuthenticated?: boolean;
+    };
+    expect(withLegacy.legacyAuthenticated).toBe(true);
+  } else {
+    const origin = new URL(page.url()).origin;
+    await page.context().addCookies([
+      {
+        name: "fv_session",
+        value: "v1.9999999999.e2e-sentinel",
+        url: origin,
+        httpOnly: true,
+        sameSite: "Lax",
+      },
+    ]);
+  }
+
+  expect((await page.context().cookies()).some((c) => c.name === "fv_session")).toBe(true);
+
+  const [logoutRes] = await Promise.all([
+    page.waitForResponse(
+      (res) => res.url().includes("/api/account/logout") && res.request().method() === "POST",
+    ),
+    page.waitForURL(/\/login/),
+    page.locator("#admin-header-logout").click(),
+  ]);
+  expect(logoutRes.status()).toBe(200);
+
+  const setCookies = (await logoutRes.headersArray())
+    .filter((h) => h.name.toLowerCase() === "set-cookie")
+    .map((h) => h.value);
+  expect(setCookies).toContain(expectedLegacyClear);
+
+  const cookiesAfter = await page.context().cookies();
+  expect(cookiesAfter.some((c) => c.name === "fv_session")).toBe(false);
+  expect(cookiesAfter.some((c) => c.name === "fv_account_session")).toBe(false);
+  expect(cookiesAfter.some((c) => c.name === "fv_club_session")).toBe(false);
+
+  const authAfter = (await (await page.request.get("/api/auth/me")).json()) as {
+    authenticated?: boolean;
+    legacyAuthenticated?: boolean;
+  };
+  expect(authAfter.authenticated).toBe(false);
+  expect(authAfter.legacyAuthenticated).toBe(false);
+});
