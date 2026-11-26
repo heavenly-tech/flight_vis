@@ -133,8 +133,6 @@ describe("root HTML accessibility and shared styling audit", () => {
         "#club-slug-msg",
         "#club-base-msg",
         "#club-delete-msg",
-        "#kiosk-url",
-        "#kiosk-copy-status",
         "#tails-msg",
         "#live-empty",
       ],

@@ -137,7 +137,7 @@ async fn invite_admin(
                 "{}/api/account/auth/magic?purpose={purpose}&token={token}",
                 state.mailer.public_url.trim_end_matches('/')
             );
-            let loc = auth::parse_display_cookie(&headers).unwrap_or_else(|| "es".to_string());
+            let loc = auth::parse_fv_locale_cookie(&headers).unwrap_or_else(|| "es".to_string());
             let _ = state
                 .mailer
                 .send_localized(email, &loc, template, &[("minutes", "15"), ("url", &url)])

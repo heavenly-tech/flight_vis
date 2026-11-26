@@ -8,29 +8,17 @@ test.use({
   extraHTTPHeaders: { "Accept-Language": "es" },
 });
 
-async function activateKioskSession(page: import("@playwright/test").Page) {
+async function loginDemoAdmin(page: import("@playwright/test").Page) {
   const login = await page.request.post("/api/club/login", {
     data: { email: "admin@demo.test", password: "password12" },
   });
   expect(login.ok()).toBeTruthy();
-
-  const displayRes = await page.request.post("/api/admin/display-sessions", {
-    data: { label: "e2e" },
-  });
-  expect(displayRes.ok()).toBeTruthy();
-  const { token } = (await displayRes.json()) as { token: string };
-
-  const activateRes = await page.request.post("/api/display/activate", {
-    data: { token },
-  });
-  expect(activateRes.ok()).toBeTruthy();
-  return token;
 }
 
 test("kiosk screen shows map with base view, club name, and empty state when no aircraft", async ({
   page,
 }) => {
-  await activateKioskSession(page);
+  await loginDemoAdmin(page);
   await stubArcgisTiles(page);
 
   await page.route("**/api/display/map", async (route) => {
@@ -43,7 +31,7 @@ test("kiosk screen shows map with base view, club name, and empty state when no 
 
   await page.goto("/club-screen.html");
 
-  await expect(page.locator("#activate")).toBeHidden({ timeout: 10_000 });
+  await expect(page.locator("#activate")).toHaveCount(0);
   await expect(page.locator("#club-name")).toBeVisible({ timeout: 10_000 });
   await expect(page.locator("#club-name")).not.toHaveText("");
 
@@ -60,24 +48,21 @@ test("kiosk screen shows map with base view, club name, and empty state when no 
 });
 
 test("legacy club-globe-screen URLs redirect to club-screen", async ({ page }) => {
+  await loginDemoAdmin(page);
   await stubArcgisTiles(page);
 
   await page.goto("/club-globe-screen.html");
   await expect(page).toHaveURL(/\/club-screen\.html$/);
   await expect(page.locator(".kiosk-header h2")).toHaveText("Aeronaves en vivo");
-
-  const tokenInput = page.locator("#activate-token");
-  await expect(tokenInput).toHaveAttribute("type", "text");
-  await expect(tokenInput).toHaveAttribute("autocomplete", "off");
-  await expect(tokenInput).toHaveAttribute("spellcheck", "false");
-  await expect(tokenInput).toHaveAttribute("placeholder", "Pega el código aquí");
+  await expect(page.locator("#activate")).toHaveCount(0);
+  await expect(page.locator("#activate-token")).toHaveCount(0);
 });
 
 test("kiosk at 390x844 clamps QR inside viewport, focuses tail on tap, shows details, and resets with Ver todas", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await activateKioskSession(page);
+  await loginDemoAdmin(page);
   await stubArcgisTiles(page);
 
   // Stub wide 16:9 default layout to verify 390px clamping does not clip QR off the right edge.
@@ -127,7 +112,7 @@ test("kiosk at 390x844 clamps QR inside viewport, focuses tail on tap, shows det
 
   await page.goto("/club-screen.html");
 
-  await expect(page.locator("#activate")).toBeHidden({ timeout: 10_000 });
+  await expect(page.locator("#activate")).toHaveCount(0);
   await expect(page.locator("#club-name")).toHaveText("Club Aéreo de Santiago");
   await expect(page.locator("#map-empty")).toBeHidden();
 
@@ -254,7 +239,7 @@ test("admin cannot set invalid base aerodrome", async ({ page }) => {
 });
 
 test("display base endpoint returns club base and clubName", async ({ page }) => {
-  await activateKioskSession(page);
+  await loginDemoAdmin(page);
 
   const baseRes = await page.request.get("/api/display/base");
   expect(baseRes.ok()).toBeTruthy();

@@ -366,19 +366,16 @@ async fn server_qr_svg_endpoints() {
     assert!(svg.contains("<svg"));
     assert!(!svg.contains("qrserver"));
 
-    let (_sess, display_token) = fx
-        .club
-        .create_display_session(&fx.pilot_a, "kiosk")
-        .await
-        .unwrap();
-    let display_cookie = format!("{}={}", crate::club::auth::DISPLAY_COOKIE, display_token);
+    let club_id = fx.club.default_club_id().await.unwrap();
+    let pilot_a = fx.pilot_a.clone();
+    let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
 
     let screen_qr = fx
         .router
         .call(
             Request::builder()
                 .uri("/api/club/screen/qr.svg")
-                .header(header::COOKIE, display_cookie)
+                .header(header::COOKIE, admin_cookie)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -411,19 +408,15 @@ async fn club_screen_qr_encodes_https_app_link_not_intent() {
         .execute(&fx.club.pool)
         .await
         .unwrap();
-    let (_sess, display_token) = fx
-        .club
-        .create_display_session(&fx.pilot_a, "kiosk")
-        .await
-        .unwrap();
-    let display_cookie = format!("{}={}", crate::club::auth::DISPLAY_COOKIE, display_token);
+    let pilot_a = fx.pilot_a.clone();
+    let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
     let res = fx
         .router
         .call(
             Request::builder()
                 .uri("/api/club/screen/qr.svg")
                 .header(header::HOST, "flight.heavenly.cl")
-                .header(header::COOKIE, display_cookie)
+                .header(header::COOKIE, admin_cookie)
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -619,22 +612,12 @@ async fn kiosk_layout_admin_clamps_and_display_sse_rev() {
     assert!(size <= 0.5 + 1e-9);
     let rev1 = layout.get("rev").and_then(|v| v.as_i64()).unwrap();
 
-    let (session_id, display_token) = fx
-        .club
-        .create_display_session(&fx.pilot_a, "k")
-        .await
-        .unwrap();
-    let _ = session_id;
-    let display_cookie = format!(
-        "{}={display_token}; Path=/",
-        crate::club::auth::DISPLAY_COOKIE
-    );
     let disp = fx
         .router
         .call(
             Request::builder()
                 .uri("/api/display/kiosk-layout")
-                .header(header::COOKIE, display_cookie.clone())
+                .header(header::COOKIE, cookie.clone())
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1486,21 +1469,12 @@ async fn kiosk_checkin_qr_visible_admin_can_set_and_display_reads() {
         Some(false)
     );
 
-    let (_sid, display_token) = fx
-        .club
-        .create_display_session(&fx.pilot_a, "kiosk")
-        .await
-        .unwrap();
-    let display_cookie = format!(
-        "{}={display_token}; Path=/",
-        crate::club::auth::DISPLAY_COOKIE
-    );
     let disp = fx
         .router
         .call(
             Request::builder()
                 .uri("/api/display/kiosk-layout")
-                .header(header::COOKIE, display_cookie.clone())
+                .header(header::COOKIE, admin_cookie.clone())
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1521,7 +1495,7 @@ async fn kiosk_checkin_qr_visible_admin_can_set_and_display_reads() {
         .call(
             Request::builder()
                 .uri("/api/club/screen/qr.svg")
-                .header(header::COOKIE, display_cookie)
+                .header(header::COOKIE, admin_cookie.clone())
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2450,7 +2424,9 @@ async fn signup_with_club_magic_link_creates_pending_request_enforces_access_and
         "/api/me/tails",
         "/api/admin/pilots",
         "/api/admin/memberships",
-        "/api/admin/display-sessions",
+        "/api/display/map",
+        "/api/display/base",
+        "/api/club/screen/qr.svg",
     ] {
         let (st, _) = call_json(&mut fx.router, "GET", denied_uri, Some(&acct_cookie), "").await;
         assert!(
@@ -3446,40 +3422,12 @@ async fn display_base_returns_club_name_scoped_to_display_cookie() {
 
     let pilot_a = fx.pilot_a.clone();
     let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
-    let (st_sess, sess_body) = call_json(
-        &mut fx.router,
-        "POST",
-        "/api/admin/display-sessions",
-        Some(&admin_cookie),
-        r#"{"label":"kiosk-test"}"#,
-    )
-    .await;
-    assert_eq!(st_sess, StatusCode::OK);
-    let token = sess_body["token"].as_str().expect("display token");
-
-    let act_res = fx
-        .router
-        .call(
-            Request::builder()
-                .method("POST")
-                .uri("/api/display/activate")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(
-                    serde_json::json!({ "token": token }).to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(act_res.status(), StatusCode::OK);
-    let display_cookie = extract_cookie_pair(act_res.headers(), crate::club::auth::DISPLAY_COOKIE)
-        .expect("display cookie");
 
     let (st_base, base_body) = call_json(
         &mut fx.router,
         "GET",
         "/api/display/base",
-        Some(&display_cookie),
+        Some(&admin_cookie),
         "",
     )
     .await;
@@ -3550,6 +3498,8 @@ async fn club_screen_dynamic_routes_serve_map_csp() {
     let mut fx = setup().await;
     let club_id = fx.club.default_club_id().await.unwrap();
     let slug = fx.club.club_slug(&club_id).await.expect("default slug");
+    let pilot_a = fx.pilot_a.clone();
+    let admin_cookie = make_admin(&mut fx, &pilot_a, &club_id, "a@test").await;
     std::fs::create_dir_all(&fx.dist_dir).expect("dist dir");
     std::fs::write(
         fx.dist_dir.join("club-screen.html"),
@@ -3557,13 +3507,39 @@ async fn club_screen_dynamic_routes_serve_map_csp() {
     )
     .expect("write club-screen.html");
 
-    for uri in ["/club/screen".to_string(), format!("/c/{slug}/screen")] {
-        let res = fx
+    for uri in [
+        "/club-screen.html".to_string(),
+        "/club/screen".to_string(),
+        format!("/c/{slug}/screen"),
+    ] {
+        let unauth = fx
             .router
             .call(Request::builder().uri(&uri).body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(res.status(), StatusCode::OK, "GET {uri}");
+        assert_eq!(unauth.status(), StatusCode::FOUND, "unauth GET {uri}");
+        let loc = unauth
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        assert!(
+            loc.starts_with("/login?next="),
+            "unauth GET {uri} must redirect to login, got {loc}"
+        );
+
+        let res = fx
+            .router
+            .call(
+                Request::builder()
+                    .uri(&uri)
+                    .header(header::COOKIE, &admin_cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "admin GET {uri}");
         assert_eq!(
             res.headers()
                 .get(header::CONTENT_SECURITY_POLICY)

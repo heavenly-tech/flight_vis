@@ -1,4 +1,4 @@
-/* Admin live map stage, tile markers, tail filter, kiosk card, and settings drawer. */
+/* Admin live map stage, tile markers, tail filter, and settings drawer. */
 
 .admin-map-header {
   display: flex;
@@ -129,43 +129,6 @@
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--stroke, rgba(255, 255, 255, 0.14));
   font-size: 0.9rem;
-}
-
-.kiosk-session-out {
-  margin-top: 0.85rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-}
-
-.kiosk-session-out:empty {
-  display: none;
-}
-
-.kiosk-copy-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-
-.kiosk-copy-label {
-  font-size: 0.88rem;
-  color: var(--muted, #9aa6b5);
-}
-
-.kiosk-copy-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.admin-shell input.kiosk-copy-input {
-  flex: 1 1 14rem;
-  min-width: 0;
-  width: auto;
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: 0.86rem;
 }
 
 .admin-settings-details {

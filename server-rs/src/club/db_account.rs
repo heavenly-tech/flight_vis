@@ -811,6 +811,47 @@ impl ClubDb {
         Some((acct, mem))
     }
 
+    /// Sliding renewal for active `account_sessions` (`fv_account_session`): extends
+    /// `expires_at` in place without rotating the session id or altering `created_at`,
+    /// throttled to at most once every `SESSION_RENEW_THROTTLE_SEC`.
+    pub async fn maybe_renew_account_session(
+        &self,
+        session_id: &str,
+        now: i64,
+    ) -> Result<bool, DbError> {
+        let session_db_id = digest_token(session_id);
+        let new_exp = now + SESSION_TTL_SEC * 1000;
+        let renew_before = new_exp - auth::SESSION_RENEW_THROTTLE_SEC * 1000;
+        let row = sqlx::query(
+            "SELECT s.expires_at, a.suspended_at
+             FROM account_sessions s
+             JOIN accounts a ON a.id = s.account_id
+             WHERE s.id = $1",
+        )
+        .bind(&session_db_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let expires_at: i64 = row.try_get(0)?;
+        let suspended_at: Option<i64> = row.try_get(1).ok().flatten();
+        if suspended_at.is_some() || expires_at <= now || expires_at > renew_before {
+            return Ok(false);
+        }
+        let updated = sqlx::query(
+            "UPDATE account_sessions SET expires_at = $1
+             WHERE id = $2 AND expires_at > $3 AND expires_at <= $4",
+        )
+        .bind(new_exp)
+        .bind(&session_db_id)
+        .bind(now)
+        .bind(renew_before)
+        .execute(&self.pool)
+        .await?;
+        Ok(updated.rows_affected() > 0)
+    }
+
     pub async fn set_active_membership(
         &self,
         account_session_id: &str,

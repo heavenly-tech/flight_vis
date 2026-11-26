@@ -2,6 +2,7 @@ import "./adminMap.css";
 import { ensureClubAdminOrRedirect } from "./adminGate";
 import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 import { startClubPage } from "./i18nPage";
+import { notifyKioskRefetch } from "./kioskSync";
 import { mountOpenKioskLink, type OpenKioskLinkController } from "./openKioskLink";
 import { safeNextPath } from "./safeNext";
 import {
@@ -12,40 +13,6 @@ import {
   type PublicMapAircraft,
 } from "./tileMapRenderer";
 import { bundledLocaleIds, localeLabel, t } from "../i18n/index";
-
-export type CopyResult = "copied" | "selected";
-
-export async function copyTextWithFallback(
-  text: string,
-  input: HTMLInputElement,
-): Promise<CopyResult> {
-  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
-    try {
-      await navigator.clipboard.writeText(text);
-      return "copied";
-    } catch {
-      // Fall through to input selection + execCommand fallback.
-    }
-  }
-  input.focus();
-  input.select();
-  if (typeof input.setSelectionRange === "function") {
-    input.setSelectionRange(0, text.length);
-  }
-  try {
-    if (typeof document.execCommand === "function" && document.execCommand("copy")) {
-      return "copied";
-    }
-  } catch {
-    // Selection-only fallback below.
-  }
-  return "selected";
-}
-
-type DisplaySessionInfo = {
-  fullUrl: string;
-  token: string;
-};
 
 export function canConfirmClubDelete(typed: string, liveSlug: string | null): boolean {
   if (!liveSlug) return false;
@@ -163,9 +130,6 @@ function bootAdminMap(): void {
   const tailsNoneBtn = document.querySelector<HTMLButtonElement>("#btn-tails-none");
   const saveMaybe = document.querySelector<HTMLButtonElement>("#save");
   const tailsMsg = document.querySelector<HTMLParagraphElement>("#tails-msg");
-  const kioskMaybe = document.querySelector<HTMLButtonElement>("#btn-kiosk");
-  const kioskOutMaybe = document.querySelector<HTMLDivElement>("#kiosk-url");
-  const kioskCopyStatus = document.querySelector<HTMLParagraphElement>("#kiosk-copy-status");
   const openKioskSlot = document.querySelector<HTMLDivElement>("#open-kiosk-slot");
   const clubLocaleSelect = document.querySelector<HTMLSelectElement>("#club-locale-select");
   const clubLocaleHelp = document.querySelector<HTMLParagraphElement>("#club-locale-help");
@@ -181,20 +145,17 @@ function bootAdminMap(): void {
   const clubBaseSave = document.querySelector<HTMLButtonElement>("#club-base-save");
   const clubBaseMsg = document.querySelector<HTMLParagraphElement>("#club-base-msg");
 
-  if (!mapElMaybe || !listMaybe || !ticksMaybe || !saveMaybe || !kioskMaybe || !kioskOutMaybe) {
+  if (!mapElMaybe || !listMaybe || !ticksMaybe || !saveMaybe) {
     return;
   }
   const mapEl: HTMLDivElement = mapElMaybe;
   const list: HTMLUListElement = listMaybe;
   const ticks: HTMLDivElement = ticksMaybe;
   const save: HTMLButtonElement = saveMaybe;
-  const kiosk: HTMLButtonElement = kioskMaybe;
-  const kioskOut: HTMLDivElement = kioskOutMaybe;
 
   let currentClubSlug = "cas-tobalaba";
   let currentBase: NormalizedBase | null = null;
   let lastLiveAircraft: PublicMapAircraft[] = [];
-  let lastDisplaySession: DisplaySessionInfo | null = null;
   let kioskLinkCtrl: OpenKioskLinkController | null = null;
   const deleteClubCtrl = mountDeleteClubSection();
 
@@ -279,89 +240,6 @@ function bootAdminMap(): void {
     paintLiveList();
   }
 
-  function setCopyFeedback(result: CopyResult): void {
-    if (!kioskCopyStatus) return;
-    kioskCopyStatus.setAttribute("role", "status");
-    kioskCopyStatus.textContent =
-      result === "copied" ? t("common.copied") : t("adminMap.copySelected");
-  }
-
-  function renderDisplaySession(info: DisplaySessionInfo): void {
-    const urlGroup = document.createElement("div");
-    urlGroup.className = "kiosk-copy-group";
-
-    const urlLabel = document.createElement("label");
-    urlLabel.className = "kiosk-copy-label";
-    urlLabel.htmlFor = "kiosk-display-url";
-    urlLabel.textContent = t("admin.kioskOpenUrl");
-
-    const urlRow = document.createElement("div");
-    urlRow.className = "kiosk-copy-row";
-
-    const urlInput = document.createElement("input");
-    urlInput.id = "kiosk-display-url";
-    urlInput.type = "text";
-    urlInput.readOnly = true;
-    urlInput.className = "kiosk-copy-input";
-    urlInput.value = info.fullUrl;
-    urlInput.setAttribute("aria-label", t("adminMap.displayUrlLabel"));
-
-    const copyUrlBtn = document.createElement("button");
-    copyUrlBtn.type = "button";
-    copyUrlBtn.id = "btn-copy-kiosk-url";
-    copyUrlBtn.className = "btn-secondary";
-    copyUrlBtn.textContent = t("adminMap.copyLink");
-    copyUrlBtn.addEventListener("click", async () => {
-      const result = await copyTextWithFallback(info.fullUrl, urlInput);
-      setCopyFeedback(result);
-    });
-
-    const openLink = document.createElement("a");
-    openLink.id = "kiosk-open-session";
-    openLink.className = "btn-secondary";
-    openLink.href = info.fullUrl;
-    openLink.target = "_blank";
-    openLink.rel = "noopener";
-    openLink.textContent = t("adminMap.openDisplay");
-
-    urlRow.append(urlInput, copyUrlBtn, openLink);
-    urlGroup.append(urlLabel, urlRow);
-
-    const codeGroup = document.createElement("div");
-    codeGroup.className = "kiosk-copy-group";
-
-    const codeLabel = document.createElement("label");
-    codeLabel.className = "kiosk-copy-label";
-    codeLabel.htmlFor = "kiosk-display-token";
-    codeLabel.textContent = t("admin.kioskActivationToken");
-
-    const codeRow = document.createElement("div");
-    codeRow.className = "kiosk-copy-row";
-
-    const codeInput = document.createElement("input");
-    codeInput.id = "kiosk-display-token";
-    codeInput.type = "text";
-    codeInput.readOnly = true;
-    codeInput.className = "kiosk-copy-input";
-    codeInput.value = info.token;
-    codeInput.setAttribute("aria-label", t("adminMap.activationCodeLabel"));
-
-    const copyCodeBtn = document.createElement("button");
-    copyCodeBtn.type = "button";
-    copyCodeBtn.id = "btn-copy-kiosk-code";
-    copyCodeBtn.className = "btn-secondary";
-    copyCodeBtn.textContent = t("adminMap.copyCode");
-    copyCodeBtn.addEventListener("click", async () => {
-      const result = await copyTextWithFallback(info.token, codeInput);
-      setCopyFeedback(result);
-    });
-
-    codeRow.append(codeInput, copyCodeBtn);
-    codeGroup.append(codeLabel, codeRow);
-
-    kioskOut.replaceChildren(urlGroup, codeGroup);
-  }
-
   function mountClubLocalePicker(current?: string): void {
     if (!clubLocaleSelect) return;
     clubLocaleSelect.replaceChildren(
@@ -395,26 +273,6 @@ function bootAdminMap(): void {
     clearTailsMessage();
   });
 
-  kiosk.addEventListener("click", async () => {
-    if (kioskCopyStatus) kioskCopyStatus.textContent = "";
-    try {
-      const body = await api<{ screenUrl: string; token: string }>("/api/admin/display-sessions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ label: "Kiosk" }),
-      });
-      lastDisplaySession = {
-        fullUrl: `${location.origin}${body.screenUrl}`,
-        token: body.token,
-      };
-      renderDisplaySession(lastDisplaySession);
-    } catch (e) {
-      console.error("[adminMap] create display session failed:", e);
-      lastDisplaySession = null;
-      kioskOut.textContent = t("api.genericError");
-    }
-  });
-
   save.addEventListener("click", async () => {
     save.disabled = true;
     try {
@@ -424,6 +282,7 @@ function bootAdminMap(): void {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tails }),
       });
+      notifyKioskRefetch();
       await Promise.all([loadTails(), refreshLiveMap()]);
       if (tailsMsg) {
         tailsMsg.setAttribute("role", "status");
@@ -465,6 +324,7 @@ function bootAdminMap(): void {
       paintSlugHelp();
       kioskLinkCtrl?.updateSlug(payload.slug);
       deleteClubCtrl.updateSlug(payload.slug);
+      notifyKioskRefetch();
     }
     if (clubSlugMsg) clubSlugMsg.textContent = slugApiMessage(res, payload);
   });
@@ -507,6 +367,7 @@ function bootAdminMap(): void {
       currentBase = normalizeBaseAerodrome(data);
       paintBaseBadge();
       paintLiveMap();
+      notifyKioskRefetch();
     } else {
       const payload = (await res.json().catch(() => ({}))) as { error?: string };
       if (clubBaseMsg) {
@@ -522,9 +383,6 @@ function bootAdminMap(): void {
   window.addEventListener("fv-locale-change", () => {
     paintSlugHelp();
     paintLiveList();
-    if (lastDisplaySession) {
-      renderDisplaySession(lastDisplaySession);
-    }
   });
 
   void (async () => {

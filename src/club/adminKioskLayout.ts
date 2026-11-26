@@ -1,6 +1,7 @@
 import { ensureClubAdminOrRedirect } from "./adminGate";
 import { api, isClubAdminRedirect, mountAdminNav, requireAdmin } from "./adminCommon";
 import { startClubPage } from "./i18nPage";
+import { notifyKioskRefetch } from "./kioskSync";
 import { mountOpenKioskLink } from "./openKioskLink";
 import { t } from "../i18n/index";
 import {
@@ -172,6 +173,7 @@ saveBtn.addEventListener("click", async () => {
     layout = updated;
     savedVisible = layout.checkinQrVisible !== false;
     paint();
+    notifyKioskRefetch();
     saveStatus.textContent = t("admin.saved");
   } catch (e) {
     console.error("[adminKioskLayout] save failed:", e);
@@ -194,6 +196,7 @@ resetBtn.addEventListener("click", async () => {
     });
     savedVisible = layout.checkinQrVisible !== false;
     paint();
+    notifyKioskRefetch();
     saveStatus.textContent = t("admin.resetDone");
   } catch (e) {
     console.error("[adminKioskLayout] reset failed:", e);

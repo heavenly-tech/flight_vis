@@ -69,6 +69,8 @@ mod cross_site_csrf_tests;
 #[cfg(test)]
 mod delete_club_tests;
 #[cfg(test)]
+mod kiosk_account_session_tests;
+#[cfg(test)]
 mod load_test;
 #[cfg(test)]
 mod public_map_tests;
@@ -77,4 +79,5 @@ pub use auth::parse_account_session_cookie;
 pub use auth::parse_session_cookie;
 pub use contract_routes::router as contract_router;
 pub use db::{now_ms, ClubDb};
+pub(crate) use routes::{club_screen_html_gate, session_pilot, sliding_session_renewal};
 pub use routes::{patch_club_flight_by_id, post_club_flight_start, router};

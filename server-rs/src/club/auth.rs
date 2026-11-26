@@ -13,9 +13,11 @@ pub const SIGNUP_NONCE_COOKIE: &str = "__Host-fv_account_signup_nonce";
 pub const ACCOUNT_PASSWORD_MAX_CHARS: usize = 128;
 /// bcrypt only uses the first 72 bytes; reject longer UTF-8 passwords for parity.
 pub const ACCOUNT_PASSWORD_MAX_BYTES: usize = 72;
-pub const DISPLAY_COOKIE: &str = "fv_club_display";
 pub const LOCALE_COOKIE: &str = "fv_locale";
 pub const SESSION_TTL_SEC: i64 = 12 * 3600;
+/// Sliding session renewal throttle: avoid writing `expires_at` / re-issuing `Set-Cookie`
+/// more often than once every 5 minutes per active session.
+pub const SESSION_RENEW_THROTTLE_SEC: i64 = 5 * 60;
 
 /// Argon2 hash of a fixed password; verified on failed login lookups for timing parity.
 #[allow(dead_code)]
@@ -82,44 +84,6 @@ pub fn parse_fv_locale_cookie(headers: &HeaderMap) -> Option<String> {
         }
     }
     None
-}
-
-pub fn parse_display_cookie(headers: &HeaderMap) -> Option<String> {
-    let header = headers
-        .get(axum::http::header::COOKIE)
-        .and_then(|v| v.to_str().ok())?;
-    for part in header.split(';') {
-        let part = part.trim();
-        let mut kv = part.splitn(2, '=');
-        let (Some(name), Some(value)) = (kv.next(), kv.next()) else {
-            continue;
-        };
-        if name == DISPLAY_COOKIE {
-            let value = value.trim();
-            if !value.is_empty() {
-                return Some(value.to_string());
-            }
-        }
-    }
-    None
-}
-
-pub fn set_display_cookie(token: &str, secure: bool) -> String {
-    let mut cookie = format!("{DISPLAY_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax");
-    if secure {
-        cookie.push_str("; Secure");
-    }
-    cookie.push_str("; Max-Age=31536000");
-    cookie
-}
-
-#[allow(dead_code)]
-pub fn clear_display_cookie(secure: bool) -> String {
-    let mut cookie = format!("{DISPLAY_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0");
-    if secure {
-        cookie.push_str("; Secure");
-    }
-    cookie
 }
 
 pub fn parse_account_session_cookie(headers: &HeaderMap) -> Option<String> {
