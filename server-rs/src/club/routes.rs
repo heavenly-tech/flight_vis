@@ -852,7 +852,6 @@ async fn delete_admin_club(
     }
 
     let secure = is_secure(&headers);
-    let clear_display = auth::clear_display_cookie(secure);
 
     if let Some((sess, account_id)) = acting_account {
         if let Some(next_mem) = db.next_operational_membership(&account_id).await {
@@ -877,8 +876,6 @@ async fn delete_admin_club(
                     resp.headers_mut()
                         .append(header::SET_COOKIE, clear_club.parse().expect("cookie"));
                 }
-                resp.headers_mut()
-                    .append(header::SET_COOKIE, clear_display.parse().expect("cookie"));
                 return resp;
             }
         }
@@ -895,8 +892,6 @@ async fn delete_admin_club(
         .into_response();
     resp.headers_mut()
         .append(header::SET_COOKIE, clear_club.parse().expect("cookie"));
-    resp.headers_mut()
-        .append(header::SET_COOKIE, clear_display.parse().expect("cookie"));
     resp
 }
 

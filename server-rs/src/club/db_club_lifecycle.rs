@@ -229,7 +229,7 @@ impl ClubDb {
     /// Club-scoped tables deleted (in FK-safe child-first order):
     /// `fixes`, `flight_devices`, `flight_shares`, `flights`, `checkins`,
     /// `checkin_handoff_tokens` (no FK), `checkouts`, `device_pair_tokens`, `devices`,
-    /// `admin_map_prefs`, `display_sessions`, `access_requests`, `audit_log`,
+    /// `admin_map_prefs`, `access_requests`, `audit_log`,
     /// `magic_login_tokens` (club/pilot-scoped), `guest_sessions`, `aircraft`, `aircraft_types`,
     /// `pilot_sessions` (invalidates `fv_club_session`), `webauthn_credentials`,
     /// `club_memberships` (`account_sessions.active_membership_id` falls back via `ON DELETE SET NULL`),
@@ -398,13 +398,6 @@ impl ClubDb {
         .execute(&mut *tx)
         .await
         .map_err(|_| ClubDeleteError::Db)?;
-
-        // Keep display_sessions deletion isolated so reconciliation with kiosk PRs stays minimal.
-        sqlx::query("DELETE FROM display_sessions WHERE club_id = $1")
-            .bind(club_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|_| ClubDeleteError::Db)?;
 
         // Access requests and audit log (null out cross-club actor references without deleting other clubs' rows).
         sqlx::query(

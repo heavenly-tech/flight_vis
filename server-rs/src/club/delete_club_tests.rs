@@ -122,7 +122,6 @@ struct SeededClubData {
     device_id: String,
     flight_id: String,
     checkout_id: String,
-    display_id: String,
     checkin_id: String,
     handoff_id: String,
     access_req_id: String,
@@ -239,11 +238,6 @@ async fn seed_rich_club_rows(
     .execute(&db.pool)
     .await
     .unwrap();
-
-    let (display_id, _display_tok) = db
-        .create_display_session(admin_pilot_id, "Kiosk")
-        .await
-        .unwrap();
 
     let checkin_id = new_id();
     sqlx::query(
@@ -369,7 +363,6 @@ async fn seed_rich_club_rows(
         device_id,
         flight_id,
         checkout_id,
-        display_id,
         checkin_id,
         handoff_id,
         access_req_id,
@@ -457,7 +450,7 @@ async fn admin_delete_club_cascades_all_scoped_rows_and_clears_cookies() {
             .header("sec-fetch-site", "same-origin")
             .header(
                 header::COOKIE,
-                format!("fv_account_session={acct_sess}; fv_club_session={pilot_sess}; fv_club_display=fake-disp"),
+                format!("fv_account_session={acct_sess}; fv_club_session={pilot_sess}"),
             )
             .body(Body::from(format!(r#"{{"slug":"{new_slug}"}}"#)))
             .unwrap(),
@@ -475,12 +468,6 @@ async fn admin_delete_club_cascades_all_scoped_rows_and_clears_cookies() {
             .iter()
             .any(|c| c.starts_with("fv_club_session=;") && c.contains("Max-Age=0")),
         "expected fv_club_session cleared: {cookies:?}"
-    );
-    assert!(
-        cookies
-            .iter()
-            .any(|c| c.starts_with("fv_club_display=;") && c.contains("Max-Age=0")),
-        "expected fv_club_display cleared: {cookies:?}"
     );
     assert!(
         !cookies.iter().any(|c| c.starts_with("fv_account_session=")),
@@ -590,14 +577,6 @@ async fn admin_delete_club_cascades_all_scoped_rows_and_clears_cookies() {
         count(
             "SELECT COUNT(*)::bigint FROM flight_shares WHERE id = $1",
             seeded.share_id
-        )
-        .await,
-        0
-    );
-    assert_eq!(
-        count(
-            "SELECT COUNT(*)::bigint FROM display_sessions WHERE id = $1",
-            seeded.display_id
         )
         .await,
         0
@@ -1037,11 +1016,8 @@ async fn post_delete_switches_active_club_and_leaves_other_club_untouched() {
     assert_eq!(resolved_pilot.id, admin_b_pid);
     assert_eq!(resolved_pilot.club_id, club_b);
 
-    // Old Club A pilot session is gone, display cookie cleared with Secure.
+    // Old Club A pilot session is gone.
     assert!(db.pilot_from_session(&old_club_sess, now).await.is_none());
-    assert!(cookies.iter().any(|c| {
-        c.starts_with("fv_club_display=;") && c.contains("Max-Age=0") && c.contains("Secure")
-    }));
 
     // Club A is deleted, while ALL of Club B's rows remain untouched.
     assert!(db.club_public_row(&club_a).await.is_none());
@@ -1099,14 +1075,6 @@ async fn post_delete_switches_active_club_and_leaves_other_club_untouched() {
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*)::bigint FROM checkouts WHERE id = $1")
             .bind(&seeded_b.checkout_id)
-            .fetch_one(&db.pool)
-            .await
-            .unwrap(),
-        1
-    );
-    assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*)::bigint FROM display_sessions WHERE id = $1")
-            .bind(&seeded_b.display_id)
             .fetch_one(&db.pool)
             .await
             .unwrap(),
