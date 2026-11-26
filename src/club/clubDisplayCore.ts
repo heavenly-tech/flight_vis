@@ -7,6 +7,8 @@ import {
   lonToTileX,
   type KioskViewPadding,
 } from "./kioskMapView";
+import { subscribeKioskSignals } from "./kioskSync";
+import { clubStaffLoginRedirectUrl } from "./safeNext";
 import { t } from "../i18n/index";
 
 export type ClubDisplayOpts = {
@@ -16,9 +18,6 @@ export type ClubDisplayOpts = {
   mapLayer: HTMLElement;
   map: HTMLUListElement;
   viewport: HTMLDivElement;
-  activatePanel: HTMLDivElement;
-  activateToken: HTMLInputElement;
-  activateBtn: HTMLButtonElement;
   /** When set, a local hide/show toggle is shown (not persisted). */
   localToggleBtn?: HTMLButtonElement;
   clubNameEl?: HTMLElement;
@@ -26,6 +25,8 @@ export type ClubDisplayOpts = {
   emptyEl?: HTMLElement;
   focusDetailEl?: HTMLElement;
   qrEnabled?: () => boolean;
+  /** Override login redirect navigation (for unit tests). */
+  onRedirectToLogin?: (url: string) => void;
 };
 
 type BaseAerodrome = {
@@ -56,12 +57,12 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     mapLayer,
     map,
     viewport,
-    activatePanel,
-    activateToken,
-    activateBtn,
     localToggleBtn,
     qrEnabled,
   } = opts;
+  const onRedirectToLogin =
+    opts.onRedirectToLogin ?? ((url: string) => window.location.replace(url));
+  const kioskLoginUrl = clubStaffLoginRedirectUrl("/club-screen.html");
 
   const clubNameEl = resolveClubNameEl(opts.clubNameEl);
   const viewAllBtn = resolveViewAllBtn(opts.viewAllBtn);
@@ -74,12 +75,39 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
   let qrStepTimer: number | undefined;
   let layoutPollTimer: number | undefined;
   let mapPollTimer: number | undefined;
+  let sseReconnectTimer: number | undefined;
+  let refetchDebounceTimer: number | undefined;
+  let layoutSource: EventSource | null = null;
+  let unsubscribeSignals: (() => void) | null = null;
   let activeLoopStarted = false;
-  let activating = false;
+  let sessionEnded = false;
   let base: BaseAerodrome | null = null;
   let mapContainer: HTMLElement | null = null;
   let lastAircraft: AircraftPosition[] = [];
   let focusedTail: string | null = null;
+
+  function redirectToLoginOnce(): void {
+    if (sessionEnded) return;
+    sessionEnded = true;
+    window.clearInterval(qrStepTimer);
+    window.clearInterval(layoutPollTimer);
+    window.clearInterval(mapPollTimer);
+    window.clearTimeout(sseReconnectTimer);
+    window.clearTimeout(refetchDebounceTimer);
+    if (layoutSource) {
+      layoutSource.close();
+      layoutSource = null;
+    }
+    if (unsubscribeSignals) {
+      unsubscribeSignals();
+      unsubscribeSignals = null;
+    }
+    onRedirectToLogin(kioskLoginUrl);
+  }
+
+  function isAuthFailure(status: number): boolean {
+    return status === 401 || status === 403;
+  }
 
   function resolveClubNameEl(provided?: HTMLElement): HTMLElement | null {
     if (provided) return provided;
@@ -161,38 +189,15 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     renderCurrentState();
   }
 
-  async function displaySessionActive(): Promise<boolean> {
-    const res = await fetch("/api/display/map", { credentials: "same-origin" });
-    return res.ok;
-  }
-
-  async function activateDisplay(): Promise<boolean> {
-    const token = activateToken.value.trim();
-    if (!token) return false;
-    const res = await fetch("/api/display/activate", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
-    });
-    if (!res.ok) {
-      statusEl.textContent = t("kiosk.invalidToken");
-      return false;
-    }
-    activatePanel.hidden = true;
-    statusEl.textContent = t("kiosk.activated");
-    return true;
-  }
-
   function startQrRefreshLoop(): void {
     window.clearInterval(qrStepTimer);
     qrStepTimer = window.setInterval(() => {
-      if (showQr()) refreshQrImage();
+      if (!sessionEnded && showQr()) refreshQrImage();
     }, CHECKIN_STEP_SEC * 1000);
   }
 
   function refreshQrImage(): void {
-    if (!showQr()) return;
+    if (sessionEnded || !showQr()) return;
     qr.src = `/api/club/screen/qr.svg?t=${Date.now()}`;
   }
 
@@ -229,10 +234,17 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     viewAllBtn.hidden = focusedTail === null;
   }
 
-  async function fetchBase(): Promise<BaseAerodrome | null> {
+  async function refreshBase(): Promise<boolean> {
+    if (sessionEnded) return false;
     const res = await fetch("/api/display/base", { credentials: "same-origin" });
-    if (!res.ok) return null;
-    return (await res.json()) as BaseAerodrome;
+    if (isAuthFailure(res.status)) {
+      redirectToLoginOnce();
+      return false;
+    }
+    if (!res.ok) return false;
+    base = (await res.json()) as BaseAerodrome;
+    syncClubName();
+    return true;
   }
 
   function renderAircraftList(aircraft: AircraftPosition[]): void {
@@ -338,11 +350,17 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
   }
 
   async function refreshMap(): Promise<void> {
+    if (sessionEnded) return;
     const res = await fetch("/api/display/map", { credentials: "same-origin" });
+    if (isAuthFailure(res.status)) {
+      redirectToLoginOnce();
+      return;
+    }
     if (!res.ok) return;
     const data = (await res.json()) as {
       aircraft: AircraftPosition[];
     };
+    if (sessionEnded) return;
 
     lastAircraft = data.aircraft ?? [];
     if (focusedTail !== null && !lastAircraft.some((a) => a.tail === focusedTail)) {
@@ -584,9 +602,15 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
   }
 
   async function fetchLayout(): Promise<void> {
+    if (sessionEnded) return;
     const res = await fetch("/api/display/kiosk-layout", { credentials: "same-origin" });
+    if (isAuthFailure(res.status)) {
+      redirectToLoginOnce();
+      return;
+    }
     if (!res.ok) return;
     layout = (await res.json()) as KioskQrLayout;
+    if (sessionEnded) return;
     if (typeof layout.checkinQrVisible === "boolean") {
       clubQrVisible = layout.checkinQrVisible;
     }
@@ -595,10 +619,17 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
   }
 
   function watchLayoutStream(): void {
+    if (sessionEnded) return;
+    if (layoutSource) {
+      layoutSource.close();
+      layoutSource = null;
+    }
     const source = new EventSource("/api/display/kiosk-layout/stream", {
       withCredentials: true,
     });
+    layoutSource = source;
     source.addEventListener("layout", (ev) => {
+      if (sessionEnded) return;
       try {
         layout = JSON.parse((ev as MessageEvent).data) as KioskQrLayout;
         if (typeof layout.checkinQrVisible === "boolean") {
@@ -612,24 +643,53 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     });
     source.onerror = () => {
       source.close();
-      window.setTimeout(watchLayoutStream, 3000);
+      if (layoutSource === source) layoutSource = null;
+      if (sessionEnded) return;
+      void fetchLayout().then(() => {
+        if (!sessionEnded) {
+          window.clearTimeout(sseReconnectTimer);
+          sseReconnectTimer = window.setTimeout(watchLayoutStream, 3000);
+        }
+      });
     };
   }
 
+  async function refetchAll(): Promise<void> {
+    if (sessionEnded) return;
+    await Promise.all([
+      refreshBase().then(() => {
+        if (!sessionEnded) return refreshMap();
+      }),
+      fetchLayout(),
+    ]);
+    if (!sessionEnded && showQr()) {
+      refreshQrImage();
+    }
+  }
+
+  function scheduleImmediateRefetch(): void {
+    if (sessionEnded) return;
+    window.clearTimeout(refetchDebounceTimer);
+    refetchDebounceTimer = window.setTimeout(() => {
+      void refetchAll();
+    }, 40);
+  }
+
   async function startActiveLoop(): Promise<void> {
-    if (activeLoopStarted) return;
+    if (activeLoopStarted || sessionEnded) return;
     activeLoopStarted = true;
-    activatePanel.hidden = true;
+    await refreshBase();
+    if (sessionEnded) return;
+    await fetchLayout();
+    if (sessionEnded) return;
     if (localToggleBtn) {
       localToggleBtn.hidden = false;
       syncLocalToggleLabel();
     }
     syncViewAllButton();
-    base = await fetchBase();
-    syncClubName();
-    await fetchLayout();
     statusEl.textContent = t("kiosk.qrRotateHint", { seconds: String(CHECKIN_STEP_SEC) });
     await refreshMap();
+    if (sessionEnded) return;
     watchLayoutStream();
     window.clearInterval(layoutPollTimer);
     layoutPollTimer = window.setInterval(() => void fetchLayout(), 8000);
@@ -638,43 +698,16 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     mapPollTimer = window.setInterval(() => void refreshMap(), 5000);
   }
 
-  async function handleActivate(): Promise<void> {
-    if (activating) return;
-    activating = true;
-    try {
-      if (await activateDisplay()) {
-        await startActiveLoop();
-      }
-    } finally {
-      activating = false;
-    }
-  }
-
   window.addEventListener("resize", () => {
+    if (sessionEnded) return;
     paintQr();
     if (mapContainer) {
       renderTileMap(lastAircraft);
     }
   });
 
-  const activateForm = activateToken.form ?? activateBtn.closest("form");
-  if (activateForm) {
-    activateForm.addEventListener("submit", (ev) => {
-      ev.preventDefault();
-      void handleActivate();
-    });
-    if (activateBtn.type === "button") {
-      activateBtn.addEventListener("click", () => {
-        void handleActivate();
-      });
-    }
-  } else {
-    activateBtn.addEventListener("click", () => {
-      void handleActivate();
-    });
-  }
-
   localToggleBtn?.addEventListener("click", () => {
+    if (sessionEnded) return;
     localQrHidden = !localQrHidden;
     syncLocalToggleLabel();
     paintQr();
@@ -682,16 +715,23 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
   });
 
   viewAllBtn?.addEventListener("click", () => {
+    if (sessionEnded) return;
     clearFocus();
+  });
+
+  unsubscribeSignals = subscribeKioskSignals((signal) => {
+    if (signal === "logout") {
+      redirectToLoginOnce();
+      return;
+    }
+    if (signal === "refetch") {
+      scheduleImmediateRefetch();
+    }
   });
 
   void (async () => {
     await startClubPage();
-    if (!(await displaySessionActive())) {
-      activatePanel.hidden = false;
-      statusEl.textContent = t("kiosk.awaitingActivation");
-      return;
-    }
+    if (sessionEnded) return;
     await startActiveLoop();
   })();
 }

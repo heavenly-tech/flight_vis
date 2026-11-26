@@ -1,4 +1,5 @@
 import { startClubPage } from "./i18nPage";
+import { notifyKioskLogout } from "./kioskSync";
 import { t } from "../i18n/index";
 
 const who = document.querySelector<HTMLParagraphElement>("#who")!;
@@ -123,6 +124,7 @@ newDeviceBtn.addEventListener("click", async () => {
 
 logoutBtn?.addEventListener("click", async () => {
   await api("/api/club/logout", { method: "POST" });
+  notifyKioskLogout();
   location.href = "/login?mode=pilot";
 });
 

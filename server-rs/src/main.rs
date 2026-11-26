@@ -271,9 +271,8 @@ async fn club_admin_login_redirect(
         return None;
     }
     let db = state.club.as_ref()?;
-    let session = club::parse_session_cookie(headers);
     let now = club::now_ms();
-    let (_viewer, pilot) = db.viewer_with_pilot(session.as_deref(), now).await;
+    let pilot = club::session_pilot(db, headers, now).await;
     if pilot
         .as_ref()
         .is_some_and(|p| p.role == "admin" || p.role == "staff")
@@ -305,6 +304,17 @@ async fn fallback(
         {
             return Ok(resp);
         }
+    }
+    let norm_path = static_files::normalize_url_path(uri.path());
+    if norm_path
+        .as_deref()
+        .is_some_and(|p| p == "/api" || p.starts_with("/api/"))
+    {
+        return Ok((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response());
+    }
+    if let Some(resp) = club::club_screen_html_gate(&state, &headers, uri.path(), uri.query()).await
+    {
+        return Ok(resp);
     }
     if let Some(resp) = club_admin_login_redirect(&state, &headers, uri.path(), uri.query()).await {
         return Ok(resp);
@@ -562,7 +572,7 @@ fn redirect_found(location: &str) -> impl IntoResponse {
     )
 }
 
-fn url_encode(input: &str) -> String {
+pub(crate) fn url_encode(input: &str) -> String {
     let mut out = String::new();
     for b in input.bytes() {
         if b.is_ascii_alphanumeric()
@@ -918,6 +928,10 @@ fn build_router(state: AppState) -> Router {
         .merge(video::router())
         .merge(live::router().layer(DefaultBodyLimit::max(256 * 1024)))
         .fallback(fallback)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            club::sliding_session_renewal,
+        ))
         .with_state(state)
 }
 

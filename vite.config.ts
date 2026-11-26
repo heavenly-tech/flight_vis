@@ -69,16 +69,55 @@ function clubAdminHtmlGateMiddleware(
     const method = req.method ?? "GET";
     const raw = req.url ?? "";
     const pathOnly = normalizeUrlPath(raw.split("?")[0] ?? "");
-    if (
-      (method !== "GET" && method !== "HEAD") ||
-      !pathOnly ||
-      !/^\/club-admin-[^/]+\.html$/.test(pathOnly)
-    ) {
+    const isAdminHtml = Boolean(pathOnly && /^\/club-admin-[^/]+\.html$/.test(pathOnly));
+    const isKioskHtml = pathOnly === "/club-screen.html";
+    if ((method !== "GET" && method !== "HEAD") || !pathOnly || (!isAdminHtml && !isKioskHtml)) {
       next();
       return;
     }
-    const search = raw.includes("?") ? raw.slice(raw.indexOf("?")) : "";
+    const rawSearch = raw.includes("?") ? raw.slice(raw.indexOf("?")) : "";
+    let decodedSearch = rawSearch;
+    try {
+      decodedSearch = decodeURIComponent(rawSearch);
+    } catch {
+      decodedSearch = rawSearch;
+    }
+    const unsafeSearch =
+      /[\x00-\x1f\x7f\\]/.test(rawSearch) ||
+      /[\x00-\x1f\x7f\\]/.test(decodedSearch) ||
+      rawSearch.includes("://") ||
+      decodedSearch.includes("://");
+    const search = unsafeSearch ? "" : rawSearch;
     const cookie = req.headers.cookie ?? "";
+    if (isKioskHtml) {
+      void fetch(`${apiOrigin}/api/display/base`, { headers: { cookie } })
+        .then((resp) => {
+          if (resp.status === 200) {
+            next();
+            return;
+          }
+          if (resp.status === 403) {
+            res.statusCode = 403;
+            res.end("Admin only");
+            return;
+          }
+          res.statusCode = 302;
+          res.setHeader(
+            "Location",
+            `/login?next=${encodeURIComponent(pathOnly + search)}`,
+          );
+          res.end();
+        })
+        .catch(() => {
+          res.statusCode = 302;
+          res.setHeader(
+            "Location",
+            `/login?next=${encodeURIComponent(pathOnly + search)}`,
+          );
+          res.end();
+        });
+      return;
+    }
     const allowStaff = async (): Promise<boolean> => {
       const accountMe = await fetch(`${apiOrigin}/api/account/me`, {
         headers: { cookie },

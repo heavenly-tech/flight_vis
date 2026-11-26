@@ -152,10 +152,11 @@ describe("adminCommon header and navigation helpers", () => {
     });
   });
 
-  it("performAccountLogout POSTs /api/account/logout with same-origin credentials and redirects to /login", async () => {
+  it("performAccountLogout POSTs /api/account/logout, broadcasts logout signal, and redirects to /login", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const navSpy = vi.fn();
+    localStorage.clear();
 
     await performAccountLogout(navSpy);
 
@@ -163,6 +164,7 @@ describe("adminCommon header and navigation helpers", () => {
       method: "POST",
       credentials: "same-origin",
     });
+    expect(localStorage.getItem("fv-kiosk-sync")).toMatch(/^logout:\d+:/);
     expect(navSpy).toHaveBeenCalledWith("/login");
   });
 });

@@ -192,20 +192,6 @@
         box-shadow: 0 0 0 3px rgba(103, 232, 249, 0.4), 0 4px 12px rgba(0, 0, 0, 0.65);
         z-index: 5;
       }
-      #activate {
-        position: absolute;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: rgba(0, 0, 0, 0.75);
-        z-index: 10;
-      }
-      #activate[hidden] { display: none; }
-      #activate-inner { max-width: 28rem; width: 100%; padding: 1.5rem; box-sizing: border-box; }
-      .activate-label { display: block; margin-bottom: 0.75rem; opacity: 0.85; }
-      .activate-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-      #activate-token { flex: 1; min-width: 12rem; font: inherit; }
       #qr-wrap {
         position: absolute;
         z-index: 5;
@@ -264,24 +250,6 @@
       </section>
       <div id="qr-wrap" hidden>
         <img id="qr" data-i18n-alt="kiosk.qrAlt" alt="Código QR de registro" width="256" height="256" />
-      </div>
-      <div id="activate" hidden>
-        <form id="activate-inner" class="auth-card">
-          <label for="activate-token" class="activate-label" data-i18n="kiosk.pasteToken">Pega el código de activación desde el mapa de administración.</label>
-          <div class="activate-row">
-            <input
-              id="activate-token"
-              name="token"
-              type="text"
-              autocomplete="off"
-              spellcheck="false"
-              data-i18n-placeholder="kiosk.pasteTokenPlaceholder"
-              placeholder="Pega el código aquí"
-              required
-            />
-            <button type="submit" id="btn-activate" class="btn-primary" data-i18n="kiosk.activate">Activar pantalla</button>
-          </div>
-        </form>
       </div>
     </div>
     <script type="module" src="/src/club/clubScreen.ts"></script>

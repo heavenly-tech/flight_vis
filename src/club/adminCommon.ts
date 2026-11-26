@@ -1,4 +1,5 @@
 import { t } from "../i18n/index";
+import { notifyKioskLogout } from "./kioskSync";
 import { redirectToClubLogin } from "./safeNext";
 
 /** Set when `requireAdmin` sends the browser to club login. Admin pages should `await ensureClubAdminOrRedirect()` from `./adminGate` first (PR #20 matrix/import/audit too). */
@@ -145,6 +146,7 @@ export async function performAccountLogout(
   } catch {
     /* still redirect to login */
   }
+  notifyKioskLogout();
   navigate("/login");
 }
 

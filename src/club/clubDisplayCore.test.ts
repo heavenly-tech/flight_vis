@@ -4,18 +4,22 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHECKIN_STEP_SEC } from "./checkinStep";
 import { mountClubDisplayScreen } from "./clubDisplayCore";
+import { KIOSK_SYNC_STORAGE_KEY } from "./kioskSync";
 import { initI18n, t } from "../i18n/index";
 
 class StubEventSource {
   static instances: StubEventSource[] = [];
   url: string;
   onerror: (() => void) | null = null;
+  closed = false;
   constructor(url: string) {
     this.url = url;
     StubEventSource.instances.push(this);
   }
   addEventListener(): void {}
-  close(): void {}
+  close(): void {
+    this.closed = true;
+  }
 }
 
 function buildKioskDom() {
@@ -32,13 +36,6 @@ function buildKioskDom() {
       </header>
       <section id="map-layer"><ul id="map"></ul></section>
       <div id="qr-wrap" hidden><img id="qr" alt="" /></div>
-      <div id="activate" hidden>
-        <form id="activate-inner">
-          <label for="activate-token" data-i18n="kiosk.pasteToken"></label>
-          <input id="activate-token" type="password" />
-          <button type="submit" id="btn-activate" data-i18n="kiosk.activate"></button>
-        </form>
-      </div>
     </div>
   `;
   return {
@@ -48,19 +45,16 @@ function buildKioskDom() {
     mapLayer: document.querySelector<HTMLElement>("#map-layer")!,
     map: document.querySelector<HTMLUListElement>("#map")!,
     viewport: document.querySelector<HTMLDivElement>("#viewport")!,
-    activatePanel: document.querySelector<HTMLDivElement>("#activate")!,
-    activateForm: document.querySelector<HTMLFormElement>("#activate-inner")!,
-    activateToken: document.querySelector<HTMLInputElement>("#activate-token")!,
-    activateBtn: document.querySelector<HTMLButtonElement>("#btn-activate")!,
     localToggleBtn: document.querySelector<HTMLButtonElement>("#btn-local-qr")!,
   };
 }
 
-describe("mountClubDisplayScreen activation loop", () => {
+describe("mountClubDisplayScreen session-authenticated loop", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     StubEventSource.instances = [];
     vi.stubGlobal("EventSource", StubEventSource);
+    vi.stubGlobal("BroadcastChannel", undefined);
     initI18n({ stored: "es" });
   });
 
@@ -70,39 +64,26 @@ describe("mountClubDisplayScreen activation loop", () => {
     document.body.innerHTML = "";
   });
 
-  it("starts polling, shows QR toggle, and updates status immediately on form submit with no reload", async () => {
+  it("loads base, layout, QR, and map immediately via session cookies and refetches on sync signal", async () => {
     const dom = buildKioskDom();
-    let activated = false;
+    const redirectSpy = vi.fn();
     let mapPollCount = 0;
     let baseFetchCount = 0;
+    let layoutFetchCount = 0;
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url === "/api/club/i18n/context") {
         return new Response(JSON.stringify({ resolvedLocale: "es" }), { status: 200 });
       }
-      if (url === "/api/display/activate") {
-        activated = true;
-        return new Response(JSON.stringify({ ok: true }), { status: 200 });
-      }
       if (url === "/api/display/base") {
-        if (!activated) {
-          return new Response(JSON.stringify({ error: "display session required" }), {
-            status: 401,
-          });
-        }
         baseFetchCount += 1;
         return new Response(
-          JSON.stringify({ icao: "SCTB", lat: -33.456, lon: -70.548 }),
+          JSON.stringify({ icao: "SCTB", lat: -33.456, lon: -70.548, clubName: "Club Demo" }),
           { status: 200 },
         );
       }
       if (url === "/api/display/map") {
-        if (!activated) {
-          return new Response(JSON.stringify({ error: "display session required" }), {
-            status: 401,
-          });
-        }
         mapPollCount += 1;
         const aircraft =
           mapPollCount === 1
@@ -118,6 +99,7 @@ describe("mountClubDisplayScreen activation loop", () => {
         return new Response(JSON.stringify({ aircraft }), { status: 200 });
       }
       if (url === "/api/display/kiosk-layout") {
+        layoutFetchCount += 1;
         return new Response(
           JSON.stringify({ x: 0.76, y: 0.76, size: 0.22, checkinQrVisible: true }),
           { status: 200 },
@@ -127,25 +109,18 @@ describe("mountClubDisplayScreen activation loop", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    mountClubDisplayScreen(dom);
+    mountClubDisplayScreen({ ...dom, onRedirectToLogin: redirectSpy });
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(dom.activatePanel.hidden).toBe(false);
-    expect(dom.localToggleBtn.hidden).toBe(true);
-    expect(dom.statusEl.textContent).toBe(t("kiosk.awaitingActivation"));
-    expect(dom.statusEl.textContent).not.toBe(t("kiosk.pasteToken"));
-
-    dom.activateToken.value = "secret-display-token";
-    dom.activateForm.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(dom.activatePanel.hidden).toBe(true);
+    expect(redirectSpy).not.toHaveBeenCalled();
     expect(dom.localToggleBtn.hidden).toBe(false);
     expect(dom.localToggleBtn.textContent).toBe(t("kiosk.qrHide"));
     expect(dom.statusEl.textContent).toBe(
       t("kiosk.qrRotateHint", { seconds: String(CHECKIN_STEP_SEC) }),
     );
     expect(baseFetchCount).toBe(1);
+    expect(layoutFetchCount).toBe(1);
+    expect(mapPollCount).toBe(1);
     const kioskMap = dom.mapLayer.querySelector<HTMLElement>('[data-testid="kiosk-map"]');
     expect(kioskMap).not.toBeNull();
     expect(kioskMap?.getAttribute("data-view")).toBe("base");
@@ -155,16 +130,131 @@ describe("mountClubDisplayScreen activation loop", () => {
     expect(dom.map.textContent).toContain("CC-AAA · Piloto Uno");
     expect(StubEventSource.instances).toHaveLength(1);
 
-    await vi.advanceTimersByTimeAsync(5000);
-    expect(mapPollCount).toBeGreaterThanOrEqual(2);
+    // Cross-window refetch signal triggers immediate refetch without waiting for 5s poll.
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: KIOSK_SYNC_STORAGE_KEY,
+        newValue: "refetch:1234:1-abc",
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(baseFetchCount).toBe(2);
+    expect(layoutFetchCount).toBe(2);
+    expect(mapPollCount).toBe(2);
     expect(dom.map.querySelectorAll("li")).toHaveLength(2);
     expect(dom.map.textContent).toContain("CC-BBB · Piloto Dos");
     expect(kioskMap?.getAttribute("data-view")).toBe("flights");
     expect(kioskMap?.querySelector('[data-marker="aircraft"][data-tail="CC-BBB"]')).not.toBeNull();
   });
 
+  it("redirects to login once on 401 and stops all polling loops with no error loop", async () => {
+    const dom = buildKioskDom();
+    const redirectSpy = vi.fn();
+    let authorized = true;
+    let mapCallsAfter401 = 0;
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/club/i18n/context") {
+        return new Response(JSON.stringify({ resolvedLocale: "es" }), { status: 200 });
+      }
+      if (!authorized) {
+        if (url === "/api/display/map") mapCallsAfter401 += 1;
+        return new Response(JSON.stringify({ error: "unauthorized" }), { status: 401 });
+      }
+      if (url === "/api/display/base") {
+        return new Response(JSON.stringify({ icao: "SCTB", lat: -33.456, lon: -70.548 }), {
+          status: 200,
+        });
+      }
+      if (url === "/api/display/kiosk-layout") {
+        return new Response(
+          JSON.stringify({ x: 0.76, y: 0.76, size: 0.22, checkinQrVisible: true }),
+          { status: 200 },
+        );
+      }
+      if (url === "/api/display/map") {
+        return new Response(JSON.stringify({ aircraft: [] }), { status: 200 });
+      }
+      return new Response("{}", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mountClubDisplayScreen({ ...dom, onRedirectToLogin: redirectSpy });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(redirectSpy).not.toHaveBeenCalled();
+
+    authorized = false;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(redirectSpy).toHaveBeenCalledTimes(1);
+    expect(redirectSpy).toHaveBeenCalledWith("/login?next=%2Fclub-screen.html");
+    expect(StubEventSource.instances[0]?.closed).toBe(true);
+
+    // Further timer ticks or logout pings must NOT re-redirect or keep polling.
+    const callsAtRedirect = mapCallsAfter401;
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: KIOSK_SYNC_STORAGE_KEY,
+        newValue: "logout:999:2-xyz",
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(redirectSpy).toHaveBeenCalledTimes(1);
+    expect(mapCallsAfter401).toBe(callsAtRedirect);
+  });
+
+  it("redirects to login once on logout signal from admin window", async () => {
+    const dom = buildKioskDom();
+    const redirectSpy = vi.fn();
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/club/i18n/context") {
+        return new Response(JSON.stringify({ resolvedLocale: "es" }), { status: 200 });
+      }
+      if (url === "/api/display/base") {
+        return new Response(JSON.stringify({ icao: "SCTB", lat: -33.456, lon: -70.548 }), {
+          status: 200,
+        });
+      }
+      if (url === "/api/display/kiosk-layout") {
+        return new Response(
+          JSON.stringify({ x: 0.76, y: 0.76, size: 0.22, checkinQrVisible: true }),
+          { status: 200 },
+        );
+      }
+      if (url === "/api/display/map") {
+        return new Response(JSON.stringify({ aircraft: [] }), { status: 200 });
+      }
+      return new Response("{}", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mountClubDisplayScreen({ ...dom, onRedirectToLogin: redirectSpy });
+    await vi.advanceTimersByTimeAsync(0);
+
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: KIOSK_SYNC_STORAGE_KEY,
+        newValue: "logout:100:1-a",
+      }),
+    );
+    window.dispatchEvent(
+      new StorageEvent("storage", {
+        key: KIOSK_SYNC_STORAGE_KEY,
+        newValue: "logout:101:2-b",
+      }),
+    );
+
+    expect(redirectSpy).toHaveBeenCalledTimes(1);
+    expect(redirectSpy).toHaveBeenCalledWith("/login?next=%2Fclub-screen.html");
+    expect(StubEventSource.instances[0]?.closed).toBe(true);
+  });
+
   it("renders clubName, empty state, tail focus via button or marker, detail strip, auto-drop, and Ver todas reset", async () => {
     const dom = buildKioskDom();
+    const redirectSpy = vi.fn();
     let pollStep = 0;
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
@@ -191,11 +281,11 @@ describe("mountClubDisplayScreen activation loop", () => {
       }
       if (url === "/api/display/map") {
         pollStep += 1;
-        // 1 = displaySessionActive check, 2 = initial empty poll, 3 = 2 aircraft, 4 = CC-AAA moved, 5 = CC-AAA gone
-        if (pollStep <= 2) {
+        // 1 = initial empty poll, 2 = 2 aircraft, 3 = CC-AAA moved, 4 = CC-AAA gone
+        if (pollStep === 1) {
           return new Response(JSON.stringify({ aircraft: [] }), { status: 200 });
         }
-        if (pollStep === 3) {
+        if (pollStep === 2) {
           return new Response(
             JSON.stringify({
               aircraft: [
@@ -213,7 +303,7 @@ describe("mountClubDisplayScreen activation loop", () => {
             { status: 200 },
           );
         }
-        if (pollStep === 4) {
+        if (pollStep === 3) {
           return new Response(
             JSON.stringify({
               aircraft: [
@@ -247,7 +337,7 @@ describe("mountClubDisplayScreen activation loop", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    mountClubDisplayScreen(dom);
+    mountClubDisplayScreen({ ...dom, onRedirectToLogin: redirectSpy });
     await vi.advanceTimersByTimeAsync(0);
 
     // Club name shown in header
@@ -318,7 +408,7 @@ describe("mountClubDisplayScreen activation loop", () => {
     expect(viewAllBtn.hidden).toBe(true);
     expect(focusDetail.hidden).toBe(true);
 
-    // Focus CC-AAA again, then let poll 5 drop CC-AAA -> focus automatically clears
+    // Focus CC-AAA again, then let poll 4 drop CC-AAA -> focus automatically clears
     dom.map.querySelector<HTMLButtonElement>('button[data-tail="CC-AAA"]')?.click();
     expect(kioskMap.getAttribute("data-focused-tail")).toBe("CC-AAA");
     await vi.advanceTimersByTimeAsync(5000);
@@ -328,15 +418,14 @@ describe("mountClubDisplayScreen activation loop", () => {
     expect(focusDetail.hidden).toBe(true);
   });
 
-  it("club-screen.html uses visible text input with autocomplete=off, spellcheck=false, and i18n placeholder", () => {
+  it("club-screen.html has no token activation form and keeps strict CSP markup", () => {
     const root = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
     const html = fs.readFileSync(path.join(root, "club-screen.html"), "utf8");
     const doc = new DOMParser().parseFromString(html, "text/html");
-    const input = doc.querySelector<HTMLInputElement>("#activate-token");
-    expect(input).not.toBeNull();
-    expect(input?.getAttribute("type")).toBe("text");
-    expect(input?.getAttribute("autocomplete")).toBe("off");
-    expect(input?.getAttribute("spellcheck")).toBe("false");
-    expect(input?.getAttribute("data-i18n-placeholder")).toBe("kiosk.pasteTokenPlaceholder");
+    expect(doc.querySelector("#activate")).toBeNull();
+    expect(doc.querySelector("#activate-token")).toBeNull();
+    expect(doc.querySelector("#btn-activate")).toBeNull();
+    expect(doc.querySelector("#map-layer")).not.toBeNull();
+    expect(doc.querySelector("#qr-wrap")).not.toBeNull();
   });
 });
