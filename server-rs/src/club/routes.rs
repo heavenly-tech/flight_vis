@@ -7,7 +7,10 @@ use crate::club::{
         MAX_DEVICES_PER_PILOT,
     },
     map::TailLivePosition,
-    trail::{FlightTrailError, TrailMinutes, DEFAULT_TRAIL_MINUTES},
+    trail::{
+        parse_nearby_public_radius_km, ClubNearbyPublicSettings, FlightTrailError, TrailMinutes,
+        DEFAULT_TRAIL_MINUTES,
+    },
     visibility::{FlightVisibility, PilotStatus, Viewer},
 };
 use crate::{AppState, ClientIp, SHARE_LOOKUP_MAX_ATTEMPTS};
@@ -578,6 +581,10 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
                 .await
                 .map(TrailMinutes::as_i16)
                 .unwrap_or(DEFAULT_TRAIL_MINUTES);
+            let club_nearby_public = db
+                .club_nearby_public_settings(&p.club_id)
+                .await
+                .unwrap_or_default();
             let club_slug = db.club_slug(&p.club_id).await.unwrap_or_default();
             let club_name = db.club_name(&p.club_id).await.unwrap_or_default();
             Json(json!({
@@ -592,6 +599,8 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
                 },
                 "clubDefaultLocale": club_default,
                 "clubTrailMinutesDefault": club_trail_default,
+                "clubShowNearbyPublic": club_nearby_public.show_nearby_public,
+                "clubNearbyPublicRadiusKm": club_nearby_public.nearby_public_radius_km,
                 "clubSlug": club_slug,
                 "clubName": club_name,
             }))
@@ -1063,7 +1072,7 @@ async fn patch_admin_club_trail(
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
-    let parsed: serde_json::Value = match serde_json::from_slice(&body) {
+    let parsed: serde_json::Value = match serde_json::from_slice::<serde_json::Value>(&body) {
         Ok(val) => val,
         Err(_) => {
             return (
@@ -1091,6 +1100,121 @@ async fn patch_admin_club_trail(
         .await
     {
         Ok(val) => Json(json!({ "trailMinutes": val.as_i16() })).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn get_admin_club_nearby_public(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let v = viewer(&state, &headers).await;
+    let club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    match db.club_nearby_public_settings(&club_id).await {
+        Ok(ClubNearbyPublicSettings {
+            show_nearby_public,
+            nearby_public_radius_km,
+        }) => Json(json!({
+            "showNearbyPublic": show_nearby_public,
+            "nearbyPublicRadiusKm": nearby_public_radius_km,
+        }))
+        .into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn patch_admin_club_nearby_public(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
+    if let Err(status) = super::csrf::exact_json_content_type(&headers) {
+        return (status, Json(json!({ "error": "unsupported media type" }))).into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let v = viewer(&state, &headers).await;
+    let club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    let parsed: serde_json::Value = match serde_json::from_slice::<serde_json::Value>(&body) {
+        Ok(val) if val.is_object() => val,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid json" })),
+            )
+                .into_response();
+        }
+    };
+    let show_nearby_public = match parsed.get("showNearbyPublic") {
+        None => None,
+        Some(v) => match v.as_bool() {
+            Some(b) => Some(b),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "invalid showNearbyPublic" })),
+                )
+                    .into_response();
+            }
+        },
+    };
+    let radius_km = match parsed.get("nearbyPublicRadiusKm") {
+        None => None,
+        Some(v) => match parse_nearby_public_radius_km(v) {
+            Ok(km) => Some(km),
+            Err(msg) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
+            }
+        },
+    };
+    if show_nearby_public.is_none() && radius_km.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "missing settings" })),
+        )
+            .into_response();
+    }
+    match db
+        .set_club_nearby_public_settings(&club_id, show_nearby_public, radius_km)
+        .await
+    {
+        Ok(ClubNearbyPublicSettings {
+            show_nearby_public,
+            nearby_public_radius_km,
+        }) => Json(json!({
+            "showNearbyPublic": show_nearby_public,
+            "nearbyPublicRadiusKm": nearby_public_radius_km,
+        }))
+        .into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "db error" })),
@@ -1144,7 +1268,7 @@ fn parse_visibility(raw: Option<&str>) -> Result<FlightVisibility, &'static str>
     }
 }
 
-fn bearer_token(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<String> {
     let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let token = value.strip_prefix("Bearer ")?.trim();
     if token.is_empty() {
@@ -1440,7 +1564,7 @@ async fn patch_club_flight_trail(
         id
     };
 
-    let parsed: serde_json::Value = match serde_json::from_slice(&body) {
+    let parsed: serde_json::Value = match serde_json::from_slice::<serde_json::Value>(&body) {
         Ok(val) => val,
         Err(_) => {
             return (
@@ -3773,9 +3897,17 @@ pub fn router() -> Router<AppState> {
             "/api/admin/club/trail",
             axum::routing::get(get_admin_club_trail).patch(patch_admin_club_trail),
         )
+        .route(
+            "/api/admin/club/nearby-public",
+            axum::routing::get(get_admin_club_nearby_public).patch(patch_admin_club_nearby_public),
+        )
         .route("/api/admin/club/slug", post(post_admin_club_slug))
         .route("/api/admin/club", axum::routing::delete(delete_admin_club))
         .route("/api/me/tails", get(me_tails))
+        .route(
+            "/api/me/live-trails",
+            get(crate::club::pilot_live_trails::get_me_live_trails),
+        )
         .route("/api/me/flights", get(my_flights))
         .route(
             "/api/me/flights/{id}",

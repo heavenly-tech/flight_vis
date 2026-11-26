@@ -1,0 +1,1892 @@
+//! Integration & unit tests for:
+//! - Part 1: `GET /api/me/live-trails?layers=club,public` (auth, isolation, visibility,
+//!   membership lifecycle, club suspension, multi-club own-flight exclusion, effective trail
+//!   minutes, Off latest-point-only, caps, validation, weak ETag/304).
+//! - Part 2: Club nearby public flights (`GET/PATCH /api/admin/club/nearby-public`,
+//!   `/api/admin/map`, `/api/admin/map/trails`, `/api/display/map`, `/api/display/map/trails`,
+//!   toggle, radius, base requirement, visibility/suspension isolation, cap, admin auth + CSRF).
+
+use crate::{
+    auth::Auth,
+    build_router,
+    club::{
+        auth::{hash_password, new_id},
+        db::now_ms,
+        pilot_live_trails::{LiveTrailsLayers, PILOT_LIVE_TRAILS_MAX_FLIGHTS},
+        trail::{MAX_NEARBY_PUBLIC_FLIGHTS, MAX_TRAIL_POINTS, MAX_TRAIL_WINDOW_MIN},
+        visibility::FlightVisibility,
+        ClubDb,
+    },
+    device_auth::DeviceAuth,
+    live::{LiveEngine, LiveFix},
+    store::Store,
+    AppState,
+};
+use axum::{
+    body::{to_bytes, Body},
+    http::{header, HeaderMap, Request, StatusCode},
+};
+use serde_json::{json, Value};
+use serial_test::serial;
+use std::{collections::HashSet, sync::Arc};
+use tower::Service;
+
+// ---------------------------------------------------------------------------
+// Fixtures & HTTP helpers
+// ---------------------------------------------------------------------------
+
+async fn http_stack(db: ClubDb) -> (tempfile::TempDir, axum::Router) {
+    let data_dir = tempfile::tempdir().unwrap();
+    let dist_dir = data_dir.path().join("dist");
+    let (video_queue, _) = tokio::sync::mpsc::channel(4);
+    let state = AppState {
+        dist_dir,
+        auth: Auth::with_password("x"),
+        device_auth: DeviceAuth::empty(),
+        live: Arc::new(LiveEngine::new(data_dir.path())),
+        store: Store::new(data_dir.path()),
+        club: Some(db),
+        video_queue,
+        login_throttle: crate::LoginThrottle::default(),
+        device_register_throttle: crate::LoginThrottle::default(),
+        share_lookup_throttle: crate::LoginThrottle::default(),
+        account_password_throttle: crate::LoginThrottle::default(),
+        account_password_account_throttle: crate::LoginThrottle::default(),
+        mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
+        webauthn: None,
+        sse_limiter: Arc::new(crate::club::sse_limit::SseLimiter::default()),
+        superadmin_emails: HashSet::new(),
+    };
+    (data_dir, build_router(state))
+}
+
+async fn create_live_club(
+    db: &ClubDb,
+    prefix: &str,
+    owner_email: &str,
+    base: Option<(&str, f64, f64)>,
+) -> (String, String) {
+    let now = now_ms();
+    let slug = format!("{prefix}-{}", &new_id()[..8]);
+    let (club_id, token) = db
+        .signup_club(
+            &format!("Club {prefix}"),
+            &slug,
+            owner_email,
+            base.map(|b| b.0),
+            now,
+        )
+        .await
+        .expect("signup_club");
+    db.try_consume_magic_club_verify(&token, now)
+        .await
+        .expect("verify club");
+    match base {
+        Some((icao, lat, lon)) => {
+            db.set_club_base_aerodrome(&club_id, icao, lat, lon)
+                .await
+                .expect("set base");
+        }
+        None => {
+            sqlx::query(
+                "UPDATE clubs SET aerodrome_icao = NULL, latitude = NULL, longitude = NULL WHERE id = $1",
+            )
+            .bind(&club_id)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+        }
+    }
+    (club_id, slug)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn seed_member_with_status(
+    db: &ClubDb,
+    club_id: &str,
+    name: &str,
+    email: &str,
+    role: &str,
+    pilot_status: &str,
+    membership_status: &str,
+    account_id: Option<&str>,
+) -> (String, String) {
+    let now = now_ms();
+    let hash = hash_password("password12").unwrap();
+    let pilot_id = new_id();
+    sqlx::query(
+        "INSERT INTO pilots (id, club_id, name, email, license_no, status, role, password_hash, email_verified_at, created_at, account_id)
+         VALUES ($1, $2, $3, $4, '', $5, $6, $7, $8, $8, $9)",
+    )
+    .bind(&pilot_id)
+    .bind(club_id)
+    .bind(name)
+    .bind(email)
+    .bind(pilot_status)
+    .bind(role)
+    .bind(&hash)
+    .bind(now)
+    .bind(account_id)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    db.ensure_membership_row(&pilot_id, club_id, role, membership_status)
+        .await
+        .unwrap();
+    let sess = db.create_pilot_session(&pilot_id, now).await.unwrap();
+    (pilot_id, format!("fv_club_session={sess}"))
+}
+
+async fn seed_member(
+    db: &ClubDb,
+    club_id: &str,
+    name: &str,
+    email: &str,
+    role: &str,
+) -> (String, String) {
+    seed_member_with_status(db, club_id, name, email, role, "approved", "active", None).await
+}
+
+async fn seed_account_session(db: &ClubDb, email: &str) -> (String, String) {
+    let now = now_ms();
+    let acct_id = new_id();
+    sqlx::query(
+        "INSERT INTO accounts (id, email, password_hash, email_verified_at, global_role, created_at)
+         VALUES ($1, $2, NULL, $3, '', $3)",
+    )
+    .bind(&acct_id)
+    .bind(email)
+    .bind(now)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let sess = db
+        .create_account_session_auth(&acct_id, None, now, "magic")
+        .await
+        .unwrap();
+    (acct_id, format!("fv_account_session={sess}"))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn seed_live_flight(
+    db: &ClubDb,
+    club_id: &str,
+    pilot_id: &str,
+    tail: &str,
+    visibility: FlightVisibility,
+    show_pilot_name_public: bool,
+    trail_override: Option<crate::club::trail::TrailMinutes>,
+    fixes: &[LiveFix],
+) -> (String, String) {
+    let now = now_ms();
+    db.upsert_type(club_id, "C152").await.unwrap();
+    db.upsert_aircraft(club_id, tail, "C152", true)
+        .await
+        .unwrap();
+    db.add_checkout(pilot_id, "C152", None, None).await.unwrap();
+    let (dev_id, dev_tok) = db.create_device(pilot_id, "phone").await.unwrap();
+    db.issue_open_checkin(pilot_id, &dev_id, club_id, now)
+        .await
+        .unwrap();
+    let fid = db
+        .start_flight_with_trail(
+            pilot_id,
+            &dev_id,
+            tail,
+            visibility,
+            show_pilot_name_public,
+            trail_override,
+            now - 10_000,
+        )
+        .await
+        .expect("start_flight_with_trail");
+    db.append_fixes(&fid, &dev_id, fixes)
+        .await
+        .expect("append_fixes");
+    (fid, dev_tok)
+}
+
+fn make_fixes(latest_t: i64, lat: f64, lon: f64, minutes_back: &[i64]) -> Vec<LiveFix> {
+    minutes_back
+        .iter()
+        .enumerate()
+        .map(|(i, &min_ago)| LiveFix {
+            t: latest_t - min_ago * 60_000,
+            lat: lat + i as f64 * 0.001,
+            lon: lon + i as f64 * 0.001,
+            alt: Some(900.0 + i as f64 * 10.0),
+            alt_ref: Some("wgs84_ellipsoid".to_string()),
+            speed: Some(32.0),
+            course: Some(90.0),
+            accuracy: Some(5.0),
+        })
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_req(
+    router: &mut axum::Router,
+    method: &str,
+    uri: &str,
+    cookie: Option<&str>,
+    bearer: Option<&str>,
+    if_none_match: Option<&str>,
+    origin: Option<&str>,
+    content_type: Option<&str>,
+    body: Option<Value>,
+) -> (StatusCode, HeaderMap, Value) {
+    let mut b = Request::builder().method(method).uri(uri);
+    if let Some(c) = cookie {
+        b = b.header(header::COOKIE, c);
+    }
+    if let Some(t) = bearer {
+        b = b.header(header::AUTHORIZATION, format!("Bearer {t}"));
+    }
+    if let Some(inm) = if_none_match {
+        b = b.header(header::IF_NONE_MATCH, inm);
+    }
+    if let Some(o) = origin {
+        b = b
+            .header(header::ORIGIN, o)
+            .header(header::HOST, "127.0.0.1:8080");
+    }
+    let req = if let Some(json_body) = body {
+        b.header(
+            header::CONTENT_TYPE,
+            content_type.unwrap_or("application/json"),
+        )
+        .body(Body::from(json_body.to_string()))
+        .unwrap()
+    } else {
+        if let Some(ct) = content_type {
+            b = b.header(header::CONTENT_TYPE, ct);
+        }
+        b.body(Body::empty()).unwrap()
+    };
+    let res = router.call(req).await.unwrap();
+    let status = res.status();
+    let headers = res.headers().clone();
+    let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+    let parsed = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+    };
+    (status, headers, parsed)
+}
+
+// ---------------------------------------------------------------------------
+// PART 1 — Unit test for layers query parser
+// ---------------------------------------------------------------------------
+
+#[test]
+fn layers_query_parser_validates_strictly() {
+    assert_eq!(
+        LiveTrailsLayers::parse_query(None),
+        Ok(LiveTrailsLayers::CLUB_ONLY)
+    );
+    assert_eq!(
+        LiveTrailsLayers::parse_query(Some("other=1")),
+        Ok(LiveTrailsLayers::CLUB_ONLY)
+    );
+    assert_eq!(
+        LiveTrailsLayers::parse_query(Some("layers=club")),
+        Ok(LiveTrailsLayers {
+            club: true,
+            public: false
+        })
+    );
+    assert_eq!(
+        LiveTrailsLayers::parse_query(Some("layers=public")),
+        Ok(LiveTrailsLayers {
+            club: false,
+            public: true
+        })
+    );
+    assert_eq!(
+        LiveTrailsLayers::parse_query(Some("layers=club,public")),
+        Ok(LiveTrailsLayers {
+            club: true,
+            public: true
+        })
+    );
+    assert_eq!(
+        LiveTrailsLayers::parse_query(Some("layers=public,club")),
+        Ok(LiveTrailsLayers {
+            club: true,
+            public: true
+        })
+    );
+
+    for bad in [
+        "layers=",
+        "layers=,",
+        "layers=club,",
+        "layers=,public",
+        "layers=club,,public",
+        "layers=club,club",
+        "layers=public,public",
+        "layers=private",
+        "layers=club,private",
+        "layers=CLUB",
+        "layers=club&layers=public",
+        "layers=foo",
+    ] {
+        assert!(
+            LiveTrailsLayers::parse_query(Some(bad)).is_err(),
+            "expected error for query `{bad}`"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PART 1 — Tests 1, 2, 4, 5: cross-club isolation, private never returned,
+// public layer opt-in & deduplication, own flight excluded (single & multi-club)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[serial]
+async fn pilot_live_trails_isolation_visibility_dedup_and_own_exclusion() {
+    let db = ClubDb::open_test().await.unwrap();
+    let (_tmp, mut router) = http_stack(db.clone()).await;
+
+    let (club_a, _) = create_live_club(
+        &db,
+        "plt-a",
+        "own-plt-a@test",
+        Some(("SCTB", -33.456, -70.548)),
+    )
+    .await;
+    let (club_b, _) = create_live_club(
+        &db,
+        "plt-b",
+        "own-plt-b@test",
+        Some(("SCEL", -33.393, -70.786)),
+    )
+    .await;
+
+    // Multi-club caller account with active pilots in Club A AND Club B
+    let (caller_acct, _) = seed_account_session(&db, "multi-caller@test").await;
+    let (caller_a, caller_a_cookie) = seed_member_with_status(
+        &db,
+        &club_a,
+        "Caller A",
+        "multi-caller@test",
+        "pilot",
+        "approved",
+        "active",
+        Some(&caller_acct),
+    )
+    .await;
+    let (caller_b, _) = seed_member_with_status(
+        &db,
+        &club_b,
+        "Caller B",
+        "multi-caller@test",
+        "pilot",
+        "approved",
+        "active",
+        Some(&caller_acct),
+    )
+    .await;
+
+    // Other pilots in Club A and Club B
+    let (peer_a_club, _) = seed_member(&db, &club_a, "Peer A Club", "pac@test", "pilot").await;
+    let (peer_a_pub, _) = seed_member(&db, &club_a, "Peer A Pub", "pap@test", "pilot").await;
+    let (peer_a_priv, _) = seed_member(&db, &club_a, "Peer A Priv", "papr@test", "pilot").await;
+
+    // Club C: caller is NOT a member of Club C
+    let (club_c, _) = create_live_club(
+        &db,
+        "plt-c",
+        "own-plt-c@test",
+        Some(("SCVM", -32.95, -71.48)),
+    )
+    .await;
+    let (peer_c_club, _) = seed_member(&db, &club_c, "Peer C Club", "pcc@test", "pilot").await;
+    let (peer_c_pub, _) = seed_member(&db, &club_c, "Peer C Pub", "pcp@test", "pilot").await;
+    let (peer_c_priv, _) = seed_member(&db, &club_c, "Peer C Priv", "pcpr@test", "pilot").await;
+
+    let now = now_ms();
+    // Caller's OWN flights (in Club A and in Club B via same account) — BOTH must be excluded!
+    let (fid_own_a, caller_a_bearer) = seed_live_flight(
+        &db,
+        &club_a,
+        &caller_a,
+        "CC-OWNA",
+        FlightVisibility::Public,
+        true,
+        None,
+        &make_fixes(now, -33.45, -70.55, &[2, 0]),
+    )
+    .await;
+    let (fid_own_b, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &caller_b,
+        "CC-OWNB",
+        FlightVisibility::Public,
+        true,
+        None,
+        &make_fixes(now, -33.40, -70.78, &[2, 0]),
+    )
+    .await;
+
+    // Peer flights in Club A
+    let (fid_a_club, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &peer_a_club,
+        "CC-ACLUB",
+        FlightVisibility::Club,
+        true,
+        None,
+        &make_fixes(now, -33.46, -70.54, &[3, 0]),
+    )
+    .await;
+    let (fid_a_pub, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &peer_a_pub,
+        "CC-APUB",
+        FlightVisibility::Public,
+        true,
+        None,
+        &make_fixes(now, -33.47, -70.53, &[3, 0]),
+    )
+    .await;
+    let (fid_a_priv, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &peer_a_priv,
+        "CC-APRIV",
+        FlightVisibility::Private,
+        true,
+        None,
+        &make_fixes(now, -33.48, -70.52, &[3, 0]),
+    )
+    .await;
+
+    // Peer flights in Club C (non-member club)
+    let (fid_c_club, _) = seed_live_flight(
+        &db,
+        &club_c,
+        &peer_c_club,
+        "CC-CCLUB",
+        FlightVisibility::Club,
+        true,
+        None,
+        &make_fixes(now, -32.95, -71.48, &[3, 0]),
+    )
+    .await;
+    let (fid_c_pub, _) = seed_live_flight(
+        &db,
+        &club_c,
+        &peer_c_pub,
+        "CC-CPUB",
+        FlightVisibility::Public,
+        true,
+        None,
+        &make_fixes(now, -32.96, -71.47, &[3, 0]),
+    )
+    .await;
+    let (fid_c_priv, _) = seed_live_flight(
+        &db,
+        &club_c,
+        &peer_c_priv,
+        "CC-CPRIV",
+        FlightVisibility::Private,
+        true,
+        None,
+        &make_fixes(now, -32.97, -71.46, &[3, 0]),
+    )
+    .await;
+
+    // 1) Default (no layers param) AND layers=club: only Club A's club+public peer flights!
+    // Never own flights (neither Club A nor Club B), never private, never Club C (club or public).
+    for (uri, cookie, bearer) in [
+        ("/api/me/live-trails", Some(caller_a_cookie.as_str()), None),
+        ("/api/me/live-trails", None, Some(caller_a_bearer.as_str())),
+        (
+            "/api/me/live-trails?layers=club",
+            Some(caller_a_cookie.as_str()),
+            Some(caller_a_bearer.as_str()),
+        ),
+    ] {
+        let (st, headers, body) = send_req(
+            &mut router,
+            "GET",
+            uri,
+            cookie,
+            bearer,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "uri={uri} body={body}");
+        assert!(
+            headers.get(header::ACCESS_CONTROL_ALLOW_ORIGIN).is_none(),
+            "must not set CORS headers"
+        );
+        let flights = body["flights"].as_array().unwrap();
+        let ids: HashSet<&str> = flights
+            .iter()
+            .filter_map(|f| f["flightId"].as_str())
+            .collect();
+        assert!(
+            ids.contains(fid_a_club.as_str()),
+            "missing Club A club flight"
+        );
+        assert!(
+            ids.contains(fid_a_pub.as_str()),
+            "missing Club A public flight"
+        );
+        assert!(
+            !ids.contains(fid_own_a.as_str()),
+            "leaked own Club A flight"
+        );
+        assert!(
+            !ids.contains(fid_own_b.as_str()),
+            "leaked own Club B flight across account"
+        );
+        assert!(
+            !ids.contains(fid_a_priv.as_str()),
+            "leaked Club A private flight"
+        );
+        assert!(
+            !ids.contains(fid_c_club.as_str()),
+            "leaked Club C club-only flight"
+        );
+        assert!(
+            !ids.contains(fid_c_pub.as_str()),
+            "leaked Club C public flight when public not requested"
+        );
+        assert!(
+            !ids.contains(fid_c_priv.as_str()),
+            "leaked Club C private flight"
+        );
+
+        // Verify minimal fields & zero PII
+        for f in flights {
+            assert_eq!(f["layer"], json!("club"));
+            assert!(f.get("pilotId").is_none());
+            assert!(f.get("pilotName").is_none());
+            assert!(f.get("email").is_none());
+            assert!(f.get("accountId").is_none());
+            assert!(f.get("deviceId").is_none());
+            let first_pt = f["points"].as_array().unwrap()[0].as_array().unwrap();
+            assert_eq!(
+                first_pt.len(),
+                4,
+                "point must be [t_ms, lat, lon, alt|null]"
+            );
+        }
+        assert_eq!(
+            body["caps"]["maxFlights"],
+            json!(PILOT_LIVE_TRAILS_MAX_FLIGHTS)
+        );
+        assert_eq!(body["caps"]["maxPointsPerFlight"], json!(MAX_TRAIL_POINTS));
+        assert_eq!(
+            body["caps"]["maxWindowMinutes"],
+            json!(MAX_TRAIL_WINDOW_MIN)
+        );
+    }
+
+    // 2) layers=club,public: Club C public now included with layer="public";
+    // Club A public appears ONCE with layer="club"; private & Club C club-only still excluded; own still excluded!
+    let (st, _, body) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=club,public",
+        None,
+        Some(&caller_a_bearer),
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let flights = body["flights"].as_array().unwrap();
+    let count_a_pub = flights
+        .iter()
+        .filter(|f| f["flightId"] == fid_a_pub)
+        .count();
+    assert_eq!(count_a_pub, 1, "dual-qualifying flight must appear once");
+    let a_pub = flights.iter().find(|f| f["flightId"] == fid_a_pub).unwrap();
+    assert_eq!(
+        a_pub["layer"],
+        json!("club"),
+        "dual-qualifying flight must have layer=club"
+    );
+
+    let c_pub = flights
+        .iter()
+        .find(|f| f["flightId"] == fid_c_pub)
+        .expect("Club C public flight must appear with layers=club,public");
+    assert_eq!(c_pub["layer"], json!("public"));
+
+    let ids: HashSet<&str> = flights
+        .iter()
+        .filter_map(|f| f["flightId"].as_str())
+        .collect();
+    assert!(!ids.contains(fid_own_a.as_str()));
+    assert!(!ids.contains(fid_own_b.as_str()));
+    assert!(!ids.contains(fid_a_priv.as_str()));
+    assert!(!ids.contains(fid_c_club.as_str()));
+    assert!(!ids.contains(fid_c_priv.as_str()));
+}
+
+// ---------------------------------------------------------------------------
+// PART 1 — Test 3 + Safety tests: membership states (none, pending, suspended,
+// removed), suspended club, and NULL club_id flights
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[serial]
+async fn pilot_live_trails_membership_states_suspended_club_and_null_club_id() {
+    let db = ClubDb::open_test().await.unwrap();
+    let (_tmp, mut router) = http_stack(db.clone()).await;
+
+    let (club_a, _) = create_live_club(
+        &db,
+        "plt-ms-a",
+        "own-ms-a@test",
+        Some(("SCTB", -33.456, -70.548)),
+    )
+    .await;
+    let (club_susp, _) = create_live_club(
+        &db,
+        "plt-ms-s",
+        "own-ms-s@test",
+        Some(("SCEL", -33.393, -70.786)),
+    )
+    .await;
+
+    // Seed an active club-only flight AND a public flight in Club A
+    let (peer_a, _) = seed_member(&db, &club_a, "Peer A", "pms-a@test", "pilot").await;
+    let (peer_a_pub, _) = seed_member(&db, &club_a, "Peer A Pub", "pms-ap@test", "pilot").await;
+    let (peer_null, _) = seed_member(&db, &club_a, "Peer Null", "pms-null@test", "pilot").await;
+    let (peer_susp, _) = seed_member(&db, &club_susp, "Peer Susp", "pms-s@test", "pilot").await;
+    let (active_viewer, active_cookie) =
+        seed_member(&db, &club_a, "Active Viewer", "act-v@test", "pilot").await;
+    let _ = active_viewer;
+
+    let now = now_ms();
+    let (fid_a_club, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &peer_a,
+        "CC-MSA1",
+        FlightVisibility::Club,
+        false,
+        None,
+        &make_fixes(now, -33.45, -70.55, &[2, 0]),
+    )
+    .await;
+    let (fid_a_pub, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &peer_a_pub,
+        "CC-MSA2",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes(now, -33.46, -70.56, &[2, 0]),
+    )
+    .await;
+    let (fid_null_club, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &peer_null,
+        "CC-NULL",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes(now, -33.47, -70.57, &[2, 0]),
+    )
+    .await;
+    // Simulate a legacy/club-less row with flights.club_id = NULL
+    sqlx::query("UPDATE flights SET club_id = NULL WHERE id = $1")
+        .bind(&fid_null_club)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+
+    let (fid_susp_pub, _) = seed_live_flight(
+        &db,
+        &club_susp,
+        &peer_susp,
+        "CC-SUSP",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes(now, -33.39, -70.78, &[2, 0]),
+    )
+    .await;
+
+    // Suspend club_susp
+    db.set_club_suspended(&club_susp, now).await.unwrap();
+
+    // 1) Active viewer in Club A with layers=club,public:
+    //    NEVER sees suspended club's public flight; NEVER sees NULL club_id flight.
+    let (st, _, body) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=club,public",
+        Some(&active_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let ids: HashSet<&str> = body["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["flightId"].as_str())
+        .collect();
+    assert!(ids.contains(fid_a_club.as_str()));
+    assert!(ids.contains(fid_a_pub.as_str()));
+    assert!(
+        !ids.contains(fid_susp_pub.as_str()),
+        "suspended club flight must be excluded"
+    );
+    assert!(
+        !ids.contains(fid_null_club.as_str()),
+        "NULL club_id flight must be excluded"
+    );
+
+    // 2) Viewer with NO membership at all (account session, 0 memberships) -> zero club rows (NO default_club_id fallback!)
+    let (_acct_none, no_mem_cookie) = seed_account_session(&db, "nomem@test").await;
+    let (st, _, body_club) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=club",
+        Some(&no_mem_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body_club}");
+    assert!(
+        body_club["flights"].as_array().unwrap().is_empty(),
+        "no-membership viewer must get zero club rows"
+    );
+
+    // Same no-membership viewer with layers=club,public -> zero club rows, gets public rows only
+    let (st, _, body_both) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=club,public",
+        Some(&no_mem_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body_both}");
+    let flights_both = body_both["flights"].as_array().unwrap();
+    assert!(
+        flights_both.iter().all(|f| f["layer"] == "public"),
+        "no-membership viewer must never get layer=club rows"
+    );
+    assert!(flights_both.iter().any(|f| f["flightId"] == fid_a_pub));
+    assert!(!flights_both.iter().any(|f| f["flightId"] == fid_a_club));
+
+    // 3) PENDING member -> zero club rows
+    let (_pend_id, pend_cookie) = seed_member_with_status(
+        &db,
+        &club_a,
+        "Pending",
+        "pend-ms@test",
+        "pilot",
+        "pending",
+        "pending",
+        None,
+    )
+    .await;
+    let (st, _, body_pend) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=club",
+        Some(&pend_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(
+        body_pend["flights"].as_array().unwrap().is_empty(),
+        "pending member must get zero club rows"
+    );
+
+    // 4) SUSPENDED member -> zero club rows
+    let (_susp_id, susp_cookie) = seed_member_with_status(
+        &db,
+        &club_a,
+        "Suspended",
+        "susp-ms@test",
+        "pilot",
+        "suspended",
+        "suspended",
+        None,
+    )
+    .await;
+    let (st, _, body_susp) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=club",
+        Some(&susp_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(
+        body_susp["flights"].as_array().unwrap().is_empty(),
+        "suspended member must get zero club rows"
+    );
+
+    // 5) REMOVED membership -> zero club rows
+    let (rem_id, rem_cookie) = seed_member(&db, &club_a, "Removed", "rem-ms@test", "pilot").await;
+    sqlx::query("DELETE FROM club_memberships WHERE pilot_id = $1 AND club_id = $2")
+        .bind(&rem_id)
+        .bind(&club_a)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let (st, _, body_rem) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=club",
+        Some(&rem_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(
+        body_rem["flights"].as_array().unwrap().is_empty(),
+        "removed member must get zero club rows"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// PART 1 — Tests 6, 8, 9: effective trail minutes, Off latest-point-only,
+// stale exclusion, 400/401 validation, and weak ETag / 304 Not Modified
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[serial]
+async fn pilot_live_trails_effective_windows_off_validation_auth_and_etag_304() {
+    let db = ClubDb::open_test().await.unwrap();
+    let (_tmp, mut router) = http_stack(db.clone()).await;
+
+    let (club_a, _) = create_live_club(
+        &db,
+        "plt-win",
+        "own-win@test",
+        Some(("SCTB", -33.456, -70.548)),
+    )
+    .await;
+    // Set club default to 10 min
+    db.set_club_trail_minutes_default(&club_a, crate::club::trail::TrailMinutes::Min10)
+        .await
+        .unwrap();
+
+    let (_viewer_id, viewer_cookie) =
+        seed_member(&db, &club_a, "Viewer", "v-win@test", "pilot").await;
+    let (p_def, _) = seed_member(&db, &club_a, "P Def", "pdef@test", "pilot").await;
+    let (p_ovr, _) = seed_member(&db, &club_a, "P Ovr", "povr@test", "pilot").await;
+    let (p_off, _) = seed_member(&db, &club_a, "P Off", "poff@test", "pilot").await;
+    let (p_stale, _) = seed_member(&db, &club_a, "P Stale", "pstale@test", "pilot").await;
+
+    let now = now_ms();
+    // Fixes at 20, 8, 3, 1, 0 min ago -> 10-min club default gets 4 pts; 2-min override gets 2 pts; Off gets 1 latest pt
+    let (fid_def, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &p_def,
+        "CC-WDEF",
+        FlightVisibility::Club,
+        false,
+        None,
+        &make_fixes(now, -33.45, -70.55, &[20, 8, 3, 1, 0]),
+    )
+    .await;
+    let (fid_ovr, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &p_ovr,
+        "CC-WOVR",
+        FlightVisibility::Club,
+        false,
+        Some(crate::club::trail::TrailMinutes::Min2),
+        &make_fixes(now, -33.46, -70.56, &[20, 8, 3, 1, 0]),
+    )
+    .await;
+    let (fid_off, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &p_off,
+        "CC-WOFF",
+        FlightVisibility::Club,
+        false,
+        Some(crate::club::trail::TrailMinutes::Off),
+        &make_fixes(now, -33.47, -70.57, &[10, 5, 0]),
+    )
+    .await;
+    // Stale flight whose latest fix is 15 min old (> 10 min live threshold) -> excluded
+    let (fid_stale, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &p_stale,
+        "CC-STALE",
+        FlightVisibility::Club,
+        false,
+        None,
+        &make_fixes(now - 15 * 60_000, -33.48, -70.58, &[2, 0]),
+    )
+    .await;
+
+    // Unauthenticated -> 401
+    let (st, _, _) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+    // Invalid Bearer token -> 401
+    let (st, _, _) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails",
+        None,
+        Some("bad-device-token"),
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+    // Unknown / malformed layers -> 400
+    for bad_uri in [
+        "/api/me/live-trails?layers=bogus",
+        "/api/me/live-trails?layers=",
+        "/api/me/live-trails?layers=club,",
+        "/api/me/live-trails?layers=club,club",
+        "/api/me/live-trails?layers=private",
+    ] {
+        let (st, _, body) = send_req(
+            &mut router,
+            "GET",
+            bad_uri,
+            Some(&viewer_cookie),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "uri={bad_uri} body={body}");
+        assert!(body.get("error").and_then(Value::as_str).is_some());
+    }
+
+    // Valid GET -> 200 + weak ETag + effective trail windows + Off latest point only
+    let (st, headers, body) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails",
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let etag1 = headers
+        .get(header::ETAG)
+        .expect("ETag header")
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(etag1.starts_with("W/\""), "expected weak ETag, got {etag1}");
+
+    let flights = body["flights"].as_array().unwrap();
+    assert!(
+        !flights.iter().any(|f| f["flightId"] == fid_stale),
+        "stale flight must be excluded"
+    );
+
+    let f_def = flights.iter().find(|f| f["flightId"] == fid_def).unwrap();
+    assert_eq!(f_def["trailMinutes"], json!(10));
+    assert_eq!(f_def["points"].as_array().unwrap().len(), 4);
+
+    let f_ovr = flights.iter().find(|f| f["flightId"] == fid_ovr).unwrap();
+    assert_eq!(f_ovr["trailMinutes"], json!(2));
+    assert_eq!(f_ovr["points"].as_array().unwrap().len(), 2);
+
+    let f_off = flights.iter().find(|f| f["flightId"] == fid_off).unwrap();
+    assert_eq!(f_off["trailMinutes"], json!(0));
+    let off_pts = f_off["points"].as_array().unwrap();
+    assert_eq!(off_pts.len(), 1, "Off flight must return latest point only");
+    assert_eq!(off_pts[0][0], json!(now));
+
+    // Repeat with matching If-None-Match -> 304 Not Modified
+    let (st304, headers304, body304) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails",
+        Some(&viewer_cookie),
+        None,
+        Some(&etag1),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st304, StatusCode::NOT_MODIFIED);
+    assert_eq!(body304, Value::Null);
+    assert_eq!(
+        headers304.get(header::ETAG).unwrap().to_str().unwrap(),
+        etag1
+    );
+
+    // Changing trail setting changes ETag -> old If-None-Match gets 200 with a new ETag
+    db.set_club_trail_minutes_default(&club_a, crate::club::trail::TrailMinutes::Min5)
+        .await
+        .unwrap();
+    let (st_after, headers_after, body_after) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails",
+        Some(&viewer_cookie),
+        None,
+        Some(&etag1),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_after, StatusCode::OK, "{body_after}");
+    let etag2 = headers_after
+        .get(header::ETAG)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(etag2, etag1);
+}
+
+// ---------------------------------------------------------------------------
+// PART 1 — Test 7: Caps (> MAX_FLIGHTS truncated; > MAX_TRAIL_POINTS downsampled keeping first/last)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[serial]
+async fn pilot_live_trails_enforces_flight_and_point_caps() {
+    let db = ClubDb::open_test().await.unwrap();
+    let (_tmp, mut router) = http_stack(db.clone()).await;
+
+    let (club_a, _) = create_live_club(
+        &db,
+        "plt-cap",
+        "own-cap@test",
+        Some(("SCTB", -33.456, -70.548)),
+    )
+    .await;
+    let (_viewer_id, viewer_cookie) =
+        seed_member(&db, &club_a, "Cap Viewer", "capv@test", "pilot").await;
+    db.upsert_type(&club_a, "C152").await.unwrap();
+
+    let now = now_ms();
+    // Create 53 live club flights with strictly increasing last_fix_at so we verify truncation keeps the newest 50!
+    let total_flights = PILOT_LIVE_TRAILS_MAX_FLIGHTS + 3;
+    let mut created_fids = Vec::with_capacity(total_flights);
+
+    for i in 0..total_flights {
+        let tail = format!("CC-{i:03}");
+        let email = format!("cap-p-{i}@test");
+        let (pid, _) = seed_member(&db, &club_a, &format!("Pilot {i}"), &email, "pilot").await;
+        db.upsert_aircraft(&club_a, &tail, "C152", true)
+            .await
+            .unwrap();
+        db.add_checkout(&pid, "C152", None, None).await.unwrap();
+        let (dev_id, _) = db.create_device(&pid, "phone").await.unwrap();
+        db.issue_open_checkin(&pid, &dev_id, &club_a, now)
+            .await
+            .unwrap();
+        let fid = db
+            .start_flight_with_trail(
+                &pid,
+                &dev_id,
+                &tail,
+                FlightVisibility::Club,
+                false,
+                Some(crate::club::trail::TrailMinutes::Min30),
+                now - 60_000,
+            )
+            .await
+            .unwrap();
+
+        let last_t = now - ((total_flights - 1 - i) as i64) * 1_000;
+        let fixes = if i == total_flights - 1 {
+            // Newest flight gets 450 fixes within 15 minutes (> MAX_TRAIL_POINTS = 300)
+            (0..450i64)
+                .map(|k| LiveFix {
+                    t: last_t - (449 - k) * 2_000,
+                    lat: -33.45 + k as f64 * 0.0001,
+                    lon: -70.55 + k as f64 * 0.0001,
+                    alt: Some(1000.0 + k as f64),
+                    alt_ref: None,
+                    speed: None,
+                    course: None,
+                    accuracy: Some(5.0),
+                })
+                .collect::<Vec<_>>()
+        } else {
+            vec![LiveFix {
+                t: last_t,
+                lat: -33.45,
+                lon: -70.55,
+                alt: Some(900.0),
+                alt_ref: None,
+                speed: None,
+                course: None,
+                accuracy: Some(5.0),
+            }]
+        };
+        db.append_fixes(&fid, &dev_id, &fixes).await.unwrap();
+        created_fids.push((fid, last_t));
+    }
+
+    let (st, _, body) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=club",
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let flights = body["flights"].as_array().unwrap();
+    assert_eq!(flights.len(), PILOT_LIVE_TRAILS_MAX_FLIGHTS);
+
+    // Newest flight must be first, downsampled to MAX_TRAIL_POINTS keeping exact first & last timestamps!
+    let (newest_fid, newest_last_t) = &created_fids[total_flights - 1];
+    assert_eq!(flights[0]["flightId"], json!(newest_fid));
+    let pts = flights[0]["points"].as_array().unwrap();
+    assert_eq!(pts.len(), MAX_TRAIL_POINTS);
+    assert_eq!(pts.first().unwrap()[0], json!(newest_last_t - 449 * 2_000));
+    assert_eq!(pts.last().unwrap()[0], json!(*newest_last_t));
+
+    // Oldest 3 flights must be truncated out
+    let returned_ids: HashSet<&str> = flights
+        .iter()
+        .filter_map(|f| f["flightId"].as_str())
+        .collect();
+    for (old_fid, _) in &created_fids[..3] {
+        assert!(!returned_ids.contains(old_fid.as_str()));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PART 2 — Nearby public flights on club view (admin map & club screen)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[serial]
+async fn club_view_nearby_public_default_toggle_radius_base_visibility_and_suspension() {
+    let db = ClubDb::open_test().await.unwrap();
+    let (_tmp, mut router) = http_stack(db.clone()).await;
+
+    // Club A at SCTB (-33.456, -70.548) — show_nearby_public defaults to TRUE, radius = 50 km
+    let (club_a, _) = create_live_club(
+        &db,
+        "np-a",
+        "own-np-a@test",
+        Some(("SCTB", -33.456, -70.548)),
+    )
+    .await;
+    // Club B (active, trail default = 15 min)
+    let (club_b, _) = create_live_club(
+        &db,
+        "np-b",
+        "own-np-b@test",
+        Some(("SCEL", -33.393, -70.786)),
+    )
+    .await;
+    db.set_club_trail_minutes_default(&club_b, crate::club::trail::TrailMinutes::Min15)
+        .await
+        .unwrap();
+
+    // Club S (will be suspended)
+    let (club_s, _) = create_live_club(
+        &db,
+        "np-s",
+        "own-np-s@test",
+        Some(("SCTB", -33.456, -70.548)),
+    )
+    .await;
+
+    let (_adm_a, adm_a_cookie) = seed_member(&db, &club_a, "Admin A", "adm-np@test", "admin").await;
+    let (pb_near_anon, _) = seed_member(&db, &club_b, "Hidden Name", "pb1@test", "pilot").await;
+    let (pb_near_named, _) = seed_member(&db, &club_b, "Public Name", "pb2@test", "pilot").await;
+    let (pb_mid, _) = seed_member(&db, &club_b, "Mid Dist", "pb3@test", "pilot").await;
+    let (pb_far, _) = seed_member(&db, &club_b, "Far Out", "pb4@test", "pilot").await;
+    let (pb_club_only, _) = seed_member(&db, &club_b, "Club Only", "pb5@test", "pilot").await;
+    let (pb_priv, _) = seed_member(&db, &club_b, "Private", "pb6@test", "pilot").await;
+    let (ps_pub, _) = seed_member(&db, &club_s, "Susp Pub", "ps1@test", "pilot").await;
+
+    let now = now_ms();
+    // ~5 km north of SCTB (inside 10 km and 50 km): public, show_pilot_name_public = false, inherits Club B's 15-min default
+    let (fid_near_anon, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &pb_near_anon,
+        "CC-NEAR1",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes(now, -33.41, -70.548, &[12, 6, 0]),
+    )
+    .await;
+    // ~8 km south of SCTB: public, show_pilot_name_public = true, explicit 2-min override
+    let (fid_near_named, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &pb_near_named,
+        "CC-NEAR2",
+        FlightVisibility::Public,
+        true,
+        Some(crate::club::trail::TrailMinutes::Min2),
+        &make_fixes(now, -33.528, -70.548, &[12, 1, 0]),
+    )
+    .await;
+    // ~30 km north of SCTB (outside 25 km, inside 50 km)
+    let (fid_mid, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &pb_mid,
+        "CC-MID30",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes(now, -33.186, -70.548, &[4, 0]),
+    )
+    .await;
+    // ~65 km north of SCTB (outside default 50 km, inside 100 km)
+    let (fid_far, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &pb_far,
+        "CC-FAR65",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes(now, -32.871, -70.548, &[4, 0]),
+    )
+    .await;
+    // ~2 km from SCTB but club-only & private -> NEVER returned
+    let (fid_club_only, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &pb_club_only,
+        "CC-BCLUB",
+        FlightVisibility::Club,
+        true,
+        None,
+        &make_fixes(now, -33.44, -70.548, &[2, 0]),
+    )
+    .await;
+    let (fid_priv, _) = seed_live_flight(
+        &db,
+        &club_b,
+        &pb_priv,
+        "CC-BPRIV",
+        FlightVisibility::Private,
+        true,
+        None,
+        &make_fixes(now, -33.44, -70.55, &[2, 0]),
+    )
+    .await;
+    // ~2 km from SCTB, public, but Club S is suspended -> NEVER returned
+    let (fid_susp, _) = seed_live_flight(
+        &db,
+        &club_s,
+        &ps_pub,
+        "CC-BSUSP",
+        FlightVisibility::Public,
+        true,
+        None,
+        &make_fixes(now, -33.44, -70.54, &[2, 0]),
+    )
+    .await;
+    db.set_club_suspended(&club_s, now).await.unwrap();
+
+    // 1) Default settings (on = true, radius = 50 km):
+    //    GET /api/club/me and GET /api/admin/club/nearby-public expose defaults
+    let (st_me, _, me_body) = send_req(
+        &mut router,
+        "GET",
+        "/api/club/me",
+        Some(&adm_a_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_me, StatusCode::OK);
+    assert_eq!(me_body["clubShowNearbyPublic"], json!(true));
+    assert_eq!(me_body["clubNearbyPublicRadiusKm"], json!(50));
+
+    // Check ALL FOUR map & trail endpoints (admin + display)
+    for map_uri in ["/api/admin/map", "/api/display/map"] {
+        let (st, _, body) = send_req(
+            &mut router,
+            "GET",
+            map_uri,
+            Some(&adm_a_cookie),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{map_uri}: {body}");
+        let ac = body["aircraft"].as_array().unwrap();
+        let ids: HashSet<&str> = ac.iter().filter_map(|x| x["flightId"].as_str()).collect();
+        assert!(
+            ids.contains(fid_near_anon.as_str()),
+            "{map_uri} missing near anon"
+        );
+        assert!(
+            ids.contains(fid_near_named.as_str()),
+            "{map_uri} missing near named"
+        );
+        assert!(
+            ids.contains(fid_mid.as_str()),
+            "{map_uri} missing 30 km flight"
+        );
+        assert!(
+            !ids.contains(fid_far.as_str()),
+            "{map_uri} leaked 65 km flight (> 50 km)"
+        );
+        assert!(
+            !ids.contains(fid_club_only.as_str()),
+            "{map_uri} leaked other club's club-only"
+        );
+        assert!(
+            !ids.contains(fid_priv.as_str()),
+            "{map_uri} leaked other club's private"
+        );
+        assert!(
+            !ids.contains(fid_susp.as_str()),
+            "{map_uri} leaked suspended club flight"
+        );
+
+        let near1 = ac.iter().find(|x| x["flightId"] == fid_near_anon).unwrap();
+        assert_eq!(near1["nonClub"], json!(true));
+        assert!(
+            near1["pilotName"].is_null(),
+            "pilotName must be null when show_pilot_name_public=false"
+        );
+        assert!(
+            near1.get("pilotId").is_none(),
+            "pilotId must never be exposed on non-club flights"
+        );
+        assert_eq!(
+            near1["trailMinutes"],
+            json!(15),
+            "must use ITS club's default (15)"
+        );
+
+        let near2 = ac.iter().find(|x| x["flightId"] == fid_near_named).unwrap();
+        assert_eq!(near2["nonClub"], json!(true));
+        assert_eq!(near2["pilotName"], json!("Public Name"));
+        assert!(near2.get("pilotId").is_none());
+        assert_eq!(
+            near2["trailMinutes"],
+            json!(2),
+            "must use flight override (2)"
+        );
+    }
+
+    for tr_uri in ["/api/admin/map/trails", "/api/display/map/trails"] {
+        let (st, _, body) = send_req(
+            &mut router,
+            "GET",
+            tr_uri,
+            Some(&adm_a_cookie),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{tr_uri}: {body}");
+        let trails = body["trails"].as_array().unwrap();
+        let t1 = trails
+            .iter()
+            .find(|t| t["flightId"] == fid_near_anon)
+            .unwrap();
+        assert_eq!(t1["nonClub"], json!(true));
+        assert_eq!(t1["trailMinutes"], json!(15));
+        assert_eq!(t1["points"].as_array().unwrap().len(), 3);
+
+        let t2 = trails
+            .iter()
+            .find(|t| t["flightId"] == fid_near_named)
+            .unwrap();
+        assert_eq!(t2["nonClub"], json!(true));
+        assert_eq!(t2["trailMinutes"], json!(2));
+        assert_eq!(t2["points"].as_array().unwrap().len(), 2);
+
+        assert!(!trails.iter().any(|t| t["flightId"] == fid_far));
+        assert!(!trails.iter().any(|t| t["flightId"] == fid_club_only));
+        assert!(!trails.iter().any(|t| t["flightId"] == fid_priv));
+        assert!(!trails.iter().any(|t| t["flightId"] == fid_susp));
+    }
+
+    // 2) Shrink radius to 25 km -> 30 km flight excluded; expand to 100 km -> 65 km flight included
+    let (st, _, body) = send_req(
+        &mut router,
+        "PATCH",
+        "/api/admin/club/nearby-public",
+        Some(&adm_a_cookie),
+        None,
+        None,
+        None,
+        None,
+        Some(json!({ "nearbyPublicRadiusKm": 25 })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["showNearbyPublic"], json!(true));
+    assert_eq!(body["nearbyPublicRadiusKm"], json!(25));
+
+    let (_, _, map_25) = send_req(
+        &mut router,
+        "GET",
+        "/api/display/map",
+        Some(&adm_a_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    let ids_25: HashSet<&str> = map_25["aircraft"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|x| x["flightId"].as_str())
+        .collect();
+    assert!(ids_25.contains(fid_near_anon.as_str()));
+    assert!(
+        !ids_25.contains(fid_mid.as_str()),
+        "30 km flight must be excluded at 25 km radius"
+    );
+
+    let (st, _, _) = send_req(
+        &mut router,
+        "PATCH",
+        "/api/admin/club/nearby-public",
+        Some(&adm_a_cookie),
+        None,
+        None,
+        None,
+        None,
+        Some(json!({ "nearbyPublicRadiusKm": 100 })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let (_, _, map_100) = send_req(
+        &mut router,
+        "GET",
+        "/api/display/map",
+        Some(&adm_a_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    let ids_100: HashSet<&str> = map_100["aircraft"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|x| x["flightId"].as_str())
+        .collect();
+    assert!(
+        ids_100.contains(fid_far.as_str()),
+        "65 km flight must be included at 100 km radius"
+    );
+
+    // 3) Toggle OFF -> server returns ZERO nearby public flights on ALL 4 endpoints
+    let (st, _, body_off) = send_req(
+        &mut router,
+        "PATCH",
+        "/api/admin/club/nearby-public",
+        Some(&adm_a_cookie),
+        None,
+        None,
+        None,
+        None,
+        Some(json!({ "showNearbyPublic": false })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body_off}");
+    assert_eq!(body_off["showNearbyPublic"], json!(false));
+
+    for uri in ["/api/admin/map", "/api/display/map"] {
+        let (_, _, m) = send_req(
+            &mut router,
+            "GET",
+            uri,
+            Some(&adm_a_cookie),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            m["aircraft"].as_array().unwrap().is_empty(),
+            "{uri} must return zero nearby flights when toggled off"
+        );
+    }
+    for uri in ["/api/admin/map/trails", "/api/display/map/trails"] {
+        let (_, _, tr) = send_req(
+            &mut router,
+            "GET",
+            uri,
+            Some(&adm_a_cookie),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            tr["trails"].as_array().unwrap().is_empty(),
+            "{uri} must return zero nearby trails when toggled off"
+        );
+    }
+
+    // 4) Toggle back ON, then remove Club A's base coordinates -> ZERO nearby flights returned
+    let (st, _, _) = send_req(
+        &mut router,
+        "PATCH",
+        "/api/admin/club/nearby-public",
+        Some(&adm_a_cookie),
+        None,
+        None,
+        None,
+        None,
+        Some(json!({ "showNearbyPublic": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    sqlx::query(
+        "UPDATE clubs SET aerodrome_icao = NULL, latitude = NULL, longitude = NULL WHERE id = $1",
+    )
+    .bind(&club_a)
+    .execute(&db.pool)
+    .await
+    .unwrap();
+
+    for uri in ["/api/admin/map", "/api/display/map"] {
+        let (_, _, m) = send_req(
+            &mut router,
+            "GET",
+            uri,
+            Some(&adm_a_cookie),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert!(
+            m["aircraft"].as_array().unwrap().is_empty(),
+            "{uri} must return zero nearby flights when club has no base"
+        );
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn club_view_nearby_public_cap_keeps_nearest_30() {
+    let db = ClubDb::open_test().await.unwrap();
+    let (_tmp, mut router) = http_stack(db.clone()).await;
+
+    let (club_a, _) = create_live_club(
+        &db,
+        "np-cap-a",
+        "own-npca@test",
+        Some(("SCTB", -33.456, -70.548)),
+    )
+    .await;
+    let (club_b, _) = create_live_club(
+        &db,
+        "np-cap-b",
+        "own-npcb@test",
+        Some(("SCEL", -33.393, -70.786)),
+    )
+    .await;
+
+    let (_adm_a, adm_a_cookie) =
+        seed_member(&db, &club_a, "Admin A", "adm-npcap@test", "admin").await;
+    db.upsert_type(&club_b, "C152").await.unwrap();
+
+    let now = now_ms();
+    let total = MAX_NEARBY_PUBLIC_FLIGHTS + 4;
+    let mut fids_by_dist = Vec::with_capacity(total);
+    for i in 0..total {
+        let tail = format!("CC-NP{i:02}");
+        let (pid, _) = seed_member(
+            &db,
+            &club_b,
+            &format!("NP {i}"),
+            &format!("npcap-{i}@test"),
+            "pilot",
+        )
+        .await;
+        // Spread from ~1 km to ~34 km north of SCTB (all within 50 km default radius)
+        let lat = -33.456 + (i + 1) as f64 * 0.009;
+        let (fid, _) = seed_live_flight(
+            &db,
+            &club_b,
+            &pid,
+            &tail,
+            FlightVisibility::Public,
+            false,
+            None,
+            &make_fixes(now, lat, -70.548, &[2, 0]),
+        )
+        .await;
+        fids_by_dist.push(fid);
+    }
+
+    let (st, _, body) = send_req(
+        &mut router,
+        "GET",
+        "/api/display/map",
+        Some(&adm_a_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let ac = body["aircraft"].as_array().unwrap();
+    assert_eq!(ac.len(), MAX_NEARBY_PUBLIC_FLIGHTS);
+    let returned: HashSet<&str> = ac.iter().filter_map(|x| x["flightId"].as_str()).collect();
+    // Nearest 30 kept, farthest 4 dropped
+    for fid in &fids_by_dist[..MAX_NEARBY_PUBLIC_FLIGHTS] {
+        assert!(returned.contains(fid.as_str()));
+    }
+    for fid in &fids_by_dist[MAX_NEARBY_PUBLIC_FLIGHTS..] {
+        assert!(!returned.contains(fid.as_str()));
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn patch_admin_club_nearby_public_auth_csrf_and_validation() {
+    let db = ClubDb::open_test().await.unwrap();
+    let (_tmp, mut router) = http_stack(db.clone()).await;
+
+    let (club_a, _) = create_live_club(
+        &db,
+        "np-auth",
+        "own-npa@test",
+        Some(("SCTB", -33.456, -70.548)),
+    )
+    .await;
+    let (_adm, adm_cookie) = seed_member(&db, &club_a, "Admin", "adm-npa@test", "admin").await;
+    let (_staff, staff_cookie) = seed_member(&db, &club_a, "Staff", "stf-npa@test", "staff").await;
+    let (_pilot, pilot_cookie) = seed_member(&db, &club_a, "Pilot", "pil-npa@test", "pilot").await;
+
+    // Unauthenticated -> 401
+    let (st, _, _) = send_req(
+        &mut router,
+        "PATCH",
+        "/api/admin/club/nearby-public",
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(json!({ "showNearbyPublic": false })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+    // Pilot -> 403
+    let (st, _, _) = send_req(
+        &mut router,
+        "PATCH",
+        "/api/admin/club/nearby-public",
+        Some(&pilot_cookie),
+        None,
+        None,
+        None,
+        None,
+        Some(json!({ "showNearbyPublic": false })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    // Staff -> 403
+    let (st, _, _) = send_req(
+        &mut router,
+        "PATCH",
+        "/api/admin/club/nearby-public",
+        Some(&staff_cookie),
+        None,
+        None,
+        None,
+        None,
+        Some(json!({ "showNearbyPublic": false })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    // Cross-site Origin -> 403
+    let (st, _, _) = send_req(
+        &mut router,
+        "PATCH",
+        "/api/admin/club/nearby-public",
+        Some(&adm_cookie),
+        None,
+        None,
+        Some("https://evil.example"),
+        None,
+        Some(json!({ "showNearbyPublic": false })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    // Wrong Content-Type -> 415
+    let (st, _, _) = send_req(
+        &mut router,
+        "PATCH",
+        "/api/admin/club/nearby-public",
+        Some(&adm_cookie),
+        None,
+        None,
+        None,
+        Some("text/plain"),
+        Some(json!({ "showNearbyPublic": false })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+    // Invalid payloads -> 400
+    for bad in [
+        json!({}),
+        json!({ "showNearbyPublic": "yes" }),
+        json!({ "nearbyPublicRadiusKm": 4 }),
+        json!({ "nearbyPublicRadiusKm": 501 }),
+        json!({ "nearbyPublicRadiusKm": "50" }),
+        json!({ "nearbyPublicRadiusKm": 50.5 }),
+        json!({ "nearbyPublicRadiusKm": null }),
+    ] {
+        let (st, _, _) = send_req(
+            &mut router,
+            "PATCH",
+            "/api/admin/club/nearby-public",
+            Some(&adm_cookie),
+            None,
+            None,
+            None,
+            None,
+            Some(bad),
+        )
+        .await;
+        assert_eq!(st, StatusCode::BAD_REQUEST);
+    }
+
+    // Valid GET & PATCH -> 200
+    let (st, _, body) = send_req(
+        &mut router,
+        "PATCH",
+        "/api/admin/club/nearby-public",
+        Some(&adm_cookie),
+        None,
+        None,
+        None,
+        None,
+        Some(json!({ "showNearbyPublic": false, "nearbyPublicRadiusKm": 100 })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["showNearbyPublic"], json!(false));
+    assert_eq!(body["nearbyPublicRadiusKm"], json!(100));
+
+    let (st_get, _, get_body) = send_req(
+        &mut router,
+        "GET",
+        "/api/admin/club/nearby-public",
+        Some(&adm_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_get, StatusCode::OK);
+    assert_eq!(get_body["showNearbyPublic"], json!(false));
+    assert_eq!(get_body["nearbyPublicRadiusKm"], json!(100));
+}

@@ -7,6 +7,7 @@ import { computeKioskView, latToTileY, lonToTileX } from "./kioskMapView";
 import {
   DEFAULT_TRAIL_MINUTES,
   DEFAULT_TRAIL_RGB,
+  NON_CLUB_TRAIL_RGB,
   isValidTrailMinutes,
   matchTrailForAircraft,
   parseTrailMinutes,
@@ -16,6 +17,7 @@ import {
   type RenderTrailItem,
   type TrailMinutes,
 } from "./liveTrail";
+import { t } from "../i18n/index";
 
 const TILE_SIZE = 256;
 const MIN_TILE_ZOOM = 3;
@@ -38,6 +40,7 @@ export type RawPublicAircraft = {
   flightId?: unknown;
   pilotName?: unknown;
   trailMinutes?: unknown;
+  nonClub?: unknown;
   fix?: {
     t?: unknown;
     lat?: unknown;
@@ -54,6 +57,7 @@ export type PublicMapAircraft = {
   lon: number | null;
   fixT?: number;
   trailMinutes?: TrailMinutes;
+  nonClub?: boolean;
 };
 
 export type PublicMapPayload = {
@@ -136,6 +140,9 @@ export function extractPublicAircraft(rows: unknown): PublicMapAircraft[] {
     }
     if (isValidTrailMinutes(item.trailMinutes)) {
       entry.trailMinutes = item.trailMinutes;
+    }
+    if (item.nonClub === true) {
+      entry.nonClub = true;
     }
     out.push(entry);
   }
@@ -292,12 +299,14 @@ export function renderClubTileMap(
         lon: ac.lon,
       });
       if (pts.length >= 2) {
+        const isNonClub = ac.nonClub === true || matched.nonClub === true;
         trailItems.push({
           flightId: matched.flightId || ac.flightId || "",
           tail: ac.tail,
           trailMinutes: effectiveMinutes,
+          nonClub: isNonClub || undefined,
           points: pts,
-          rgb: DEFAULT_TRAIL_RGB,
+          rgb: isNonClub ? NON_CLUB_TRAIL_RGB : DEFAULT_TRAIL_RGB,
         });
       }
     }
@@ -309,17 +318,40 @@ export function renderClubTileMap(
     });
   }
 
-  for (const ac of validAircraft) {
+  // Render non-club markers first so own-club aircraft stay visually on top.
+  const orderedMarkers = [
+    ...validAircraft.filter((ac) => ac.nonClub === true),
+    ...validAircraft.filter((ac) => ac.nonClub !== true),
+  ];
+
+  for (const ac of orderedMarkers) {
     const pos = projectPointToPx(ac.lat, ac.lon, view, viewportPx);
     const marker = document.createElement("div");
     marker.setAttribute("data-marker", "aircraft");
     marker.setAttribute("data-tail", ac.tail);
-    marker.className = "tile-map-aircraft";
     marker.style.left = `${pos.left}px`;
     marker.style.top = `${pos.top}px`;
-    marker.textContent = ac.tail;
-    if (ac.pilotName) {
-      marker.title = `${ac.tail} · ${ac.pilotName}`;
+    if (ac.nonClub === true) {
+      const otherClubLabel = t("common.otherClub");
+      marker.className = "tile-map-aircraft is-non-club";
+      marker.setAttribute("data-non-club", "true");
+      const tailSpan = document.createElement("span");
+      tailSpan.className = "marker-tail";
+      tailSpan.textContent = ac.tail;
+      const badge = document.createElement("span");
+      badge.className = "non-club-tag";
+      badge.setAttribute("data-non-club-label", "true");
+      badge.textContent = otherClubLabel;
+      marker.append(tailSpan, badge);
+      marker.title = ac.pilotName
+        ? `${ac.tail} · ${otherClubLabel} · ${ac.pilotName}`
+        : `${ac.tail} · ${otherClubLabel}`;
+    } else {
+      marker.className = "tile-map-aircraft";
+      marker.textContent = ac.tail;
+      if (ac.pilotName) {
+        marker.title = `${ac.tail} · ${ac.pilotName}`;
+      }
     }
     container.appendChild(marker);
   }

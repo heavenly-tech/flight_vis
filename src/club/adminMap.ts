@@ -232,6 +232,157 @@ export function mountClubTrailSetting(
   };
 }
 
+export const ALLOWED_NEARBY_PUBLIC_RADII = [10, 25, 50, 100, 200] as const;
+export const DEFAULT_NEARBY_PUBLIC_RADIUS_KM = 50;
+
+export type ClubNearbyPublicController = {
+  configure: (opts: {
+    isAdmin: boolean;
+    showNearbyPublic: boolean;
+    nearbyPublicRadiusKm: number;
+  }) => void;
+  relocalize: () => void;
+};
+
+export function mountClubNearbyPublicSetting(
+  onSaved: () => void = () => {},
+): ClubNearbyPublicController {
+  const toggleEl = document.querySelector<HTMLInputElement>("#club-nearby-public-toggle");
+  const radiusEl = document.querySelector<HTMLSelectElement>("#club-nearby-public-radius");
+  const msgEl = document.querySelector<HTMLParagraphElement>("#club-nearby-public-msg");
+
+  let isAdmin = false;
+  let showNearbyPublic = true;
+  let radiusKm = DEFAULT_NEARBY_PUBLIC_RADIUS_KM;
+  let saving = false;
+
+  function renderRadiusOptions(): void {
+    if (!radiusEl) return;
+    const values: number[] = [...ALLOWED_NEARBY_PUBLIC_RADII];
+    if (!values.includes(radiusKm)) {
+      values.push(radiusKm);
+      values.sort((a, b) => a - b);
+    }
+    radiusEl.replaceChildren(
+      ...values.map((km) => {
+        const opt = document.createElement("option");
+        opt.value = String(km);
+        opt.textContent = t("admin.nearbyPublicRadiusOption", { km: String(km) });
+        opt.selected = km === radiusKm;
+        return opt;
+      }),
+    );
+  }
+
+  function syncControls(): void {
+    if (toggleEl) {
+      toggleEl.checked = showNearbyPublic;
+      toggleEl.disabled = saving || !isAdmin;
+    }
+    if (radiusEl) {
+      radiusEl.value = String(radiusKm);
+      radiusEl.disabled = saving || !isAdmin || !showNearbyPublic;
+    }
+  }
+
+  async function persist(nextShow: boolean, nextRadius: number): Promise<void> {
+    if (!isAdmin || saving) return;
+    const prevShow = showNearbyPublic;
+    const prevRadius = radiusKm;
+    showNearbyPublic = nextShow;
+    radiusKm = nextRadius;
+    saving = true;
+    if (msgEl) {
+      msgEl.setAttribute("role", "status");
+      msgEl.textContent = t("admin.saving");
+    }
+    syncControls();
+    try {
+      const res = await fetch("/api/admin/club/nearby-public", {
+        method: "PATCH",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          showNearbyPublic: nextShow,
+          nearbyPublicRadiusKm: nextRadius,
+        }),
+      });
+      const payload = (await res.json().catch(() => ({}))) as {
+        showNearbyPublic?: unknown;
+        nearbyPublicRadiusKm?: unknown;
+        error?: string;
+      };
+      if (res.ok) {
+        if (typeof payload.showNearbyPublic === "boolean") {
+          showNearbyPublic = payload.showNearbyPublic;
+        }
+        if (
+          typeof payload.nearbyPublicRadiusKm === "number" &&
+          Number.isInteger(payload.nearbyPublicRadiusKm)
+        ) {
+          radiusKm = payload.nearbyPublicRadiusKm;
+        }
+        if (msgEl) {
+          msgEl.setAttribute("role", "status");
+          msgEl.textContent = t("admin.nearbyPublicSaved");
+        }
+        onSaved();
+      } else {
+        showNearbyPublic = prevShow;
+        radiusKm = prevRadius;
+        if (msgEl) {
+          msgEl.setAttribute("role", "alert");
+          msgEl.textContent =
+            payload.error === "admin only" ? t("api.adminOnly") : t("api.dbError");
+        }
+      }
+    } catch {
+      showNearbyPublic = prevShow;
+      radiusKm = prevRadius;
+      if (msgEl) {
+        msgEl.setAttribute("role", "alert");
+        msgEl.textContent = t("api.dbError");
+      }
+    } finally {
+      saving = false;
+      renderRadiusOptions();
+      syncControls();
+    }
+  }
+
+  toggleEl?.addEventListener("change", () => {
+    void persist(toggleEl.checked, radiusKm);
+  });
+
+  radiusEl?.addEventListener("change", () => {
+    const parsed = Number(radiusEl.value);
+    if (!Number.isInteger(parsed) || parsed < 5 || parsed > 500) return;
+    void persist(showNearbyPublic, parsed);
+  });
+
+  renderRadiusOptions();
+  syncControls();
+
+  return {
+    configure(opts) {
+      isAdmin = opts.isAdmin;
+      showNearbyPublic = opts.showNearbyPublic;
+      radiusKm =
+        Number.isInteger(opts.nearbyPublicRadiusKm) &&
+        opts.nearbyPublicRadiusKm >= 5 &&
+        opts.nearbyPublicRadiusKm <= 500
+          ? opts.nearbyPublicRadiusKm
+          : DEFAULT_NEARBY_PUBLIC_RADIUS_KM;
+      renderRadiusOptions();
+      syncControls();
+    },
+    relocalize() {
+      renderRadiusOptions();
+      syncControls();
+    },
+  };
+}
+
 function bootAdminMap(): void {
   const mapElMaybe = document.querySelector<HTMLDivElement>("#admin-map");
   const baseBadgeEl = document.querySelector<HTMLSpanElement>("#admin-base-badge");
@@ -272,6 +423,10 @@ function bootAdminMap(): void {
   let kioskLinkCtrl: OpenKioskLinkController | null = null;
   const deleteClubCtrl = mountDeleteClubSection();
   const trailCtrl = mountClubTrailSetting(() => {
+    notifyKioskRefetch();
+    void refreshLiveMap();
+  });
+  const nearbyPublicCtrl = mountClubNearbyPublicSetting(() => {
     notifyKioskRefetch();
     void refreshLiveMap();
   });
@@ -318,7 +473,16 @@ function bootAdminMap(): void {
     list.replaceChildren(
       ...lastLiveAircraft.map((row) => {
         const li = document.createElement("li");
-        li.textContent = `${row.tail} · ${row.pilotName ?? "—"}`;
+        if (row.nonClub) {
+          li.className = "is-non-club";
+          li.setAttribute("data-non-club", "true");
+          const otherLabel = t("common.otherClub");
+          li.textContent = row.pilotName
+            ? `${row.tail} · ${otherLabel} · ${row.pilotName}`
+            : `${row.tail} · ${otherLabel}`;
+        } else {
+          li.textContent = `${row.tail} · ${row.pilotName ?? "—"}`;
+        }
         return li;
       }),
     );
@@ -508,8 +672,10 @@ function bootAdminMap(): void {
 
   window.addEventListener("fv-locale-change", () => {
     paintSlugHelp();
+    paintLiveMap();
     paintLiveList();
     trailCtrl.relocalize();
+    nearbyPublicCtrl.relocalize();
   });
 
   void (async () => {
@@ -521,6 +687,8 @@ function bootAdminMap(): void {
         pilot?: { role?: string } | null;
         clubDefaultLocale?: string;
         clubTrailMinutesDefault?: number;
+        clubShowNearbyPublic?: boolean;
+        clubNearbyPublicRadiusKm?: number;
         clubSlug?: string;
       }>("/api/club/me");
       mountClubLocalePicker(me.clubDefaultLocale ?? "es");
@@ -535,6 +703,14 @@ function bootAdminMap(): void {
       trailCtrl.configure({
         isAdmin,
         trailMinutes: parseTrailMinutes(me.clubTrailMinutesDefault, DEFAULT_TRAIL_MINUTES),
+      });
+      nearbyPublicCtrl.configure({
+        isAdmin,
+        showNearbyPublic: me.clubShowNearbyPublic ?? true,
+        nearbyPublicRadiusKm:
+          typeof me.clubNearbyPublicRadiusKm === "number"
+            ? me.clubNearbyPublicRadiusKm
+            : DEFAULT_NEARBY_PUBLIC_RADIUS_KM,
       });
       kioskLinkCtrl = await mountOpenKioskLink(openKioskSlot, { clubSlug: me.clubSlug ?? null });
 

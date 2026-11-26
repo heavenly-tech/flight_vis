@@ -4,7 +4,7 @@ use crate::club::{
     auth::{self, digest_token, new_device_token, new_id},
     checkin::{self, CheckinTokenError},
     database::{self, DbConnectError},
-    map::{filter_admin_tails, DeviceFix, TailLivePosition},
+    map::{DeviceFix, TailLivePosition},
     visibility::{FlightVisibility, PilotRole, PilotStatus, Viewer},
 };
 use crate::live::LiveFix;
@@ -1151,14 +1151,7 @@ impl ClubDb {
     }
 
     pub async fn admin_map(&self, admin_id: &str) -> Vec<TailLivePosition> {
-        let viewer = Viewer::Pilot {
-            id: admin_id.to_string(),
-            status: PilotStatus::Approved,
-            role: PilotRole::Admin,
-        };
-        let all = self.club_map_for_viewer_scoped(&viewer).await;
-        let tails = self.admin_map_tails(admin_id).await;
-        filter_admin_tails(all, &tails)
+        self.admin_map_scoped(admin_id).await
     }
 
     pub async fn admin_map_tails(&self, admin_id: &str) -> Vec<String> {
@@ -2544,8 +2537,8 @@ mod tests {
     async fn seed_second_club(db: &ClubDb, slug: &str) -> String {
         let id = crate::club::auth::new_id();
         sqlx::query(
-            "INSERT INTO clubs (id, name, slug, created_at, latitude, longitude, show_public_tracks)
-             VALUES ($1, $2, $3, $4, -33.0, -70.0, TRUE)",
+            "INSERT INTO clubs (id, name, slug, created_at, status, email_verified_at, latitude, longitude, show_public_tracks)
+             VALUES ($1, $2, $3, $4, 'live', $4, -33.0, -70.0, TRUE)",
         )
         .bind(&id)
         .bind("Club B")

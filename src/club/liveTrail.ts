@@ -18,6 +18,7 @@ export type FlightTrail = {
   flightId: string;
   tail: string;
   trailMinutes: TrailMinutes;
+  nonClub?: boolean;
   points: TrailPoint[];
 };
 
@@ -41,6 +42,7 @@ export type RenderTrailItem = {
   flightId: string;
   tail: string;
   trailMinutes: TrailMinutes;
+  nonClub?: boolean;
   points: readonly TrailPoint[];
   rgb: readonly [number, number, number];
 };
@@ -49,6 +51,8 @@ export type RenderTrailItem = {
 export const DEFAULT_TRAIL_RGB: readonly [number, number, number] = [255, 85, 0];
 /** Focused kiosk aircraft marker colour (sky blue matching #0284c7 / #67e8f9). */
 export const FOCUSED_TRAIL_RGB: readonly [number, number, number] = [56, 189, 248];
+/** Desaturated slate-grey trail colour for nearby public flights from other clubs. */
+export const NON_CLUB_TRAIL_RGB: readonly [number, number, number] = [148, 163, 184];
 
 const ALLOWED_SET = new Set<number>(ALLOWED_TRAIL_MINUTES);
 const MS_PER_MIN = 60_000;
@@ -110,6 +114,7 @@ export function parseTrailsPayload(raw: unknown): FlightTrail[] {
       flightId?: unknown;
       tail?: unknown;
       trailMinutes?: unknown;
+      nonClub?: unknown;
       points?: unknown;
     };
     const flightId = typeof rec.flightId === "string" ? rec.flightId.trim() : "";
@@ -126,7 +131,11 @@ export function parseTrailsPayload(raw: unknown): FlightTrail[] {
         points.push([tMs, lat as number, lon as number]);
       }
     }
-    out.push({ flightId, tail, trailMinutes, points });
+    const entry: FlightTrail = { flightId, tail, trailMinutes, points };
+    if (rec.nonClub === true) {
+      entry.nonClub = true;
+    }
+    out.push(entry);
   }
   return out;
 }
@@ -279,27 +288,41 @@ export function renderTrailsOverlay(
     ctx.lineJoin = "round";
   }
 
-  for (const item of drawable) {
+  // Draw nearby non-club trails underneath own-club trails so club aircraft stay prominent.
+  const ordered = [
+    ...drawable.filter((item) => item.nonClub === true),
+    ...drawable.filter((item) => item.nonClub !== true),
+  ];
+
+  for (const item of ordered) {
     const projected: ScreenPoint[] = item.points.map((pt) => {
       const p = opts.project(pt[1], pt[2]);
       return { x: p.left, y: p.top };
     });
-    const segments = buildTrailSegments(projected);
+    const isNonClub = item.nonClub === true;
+    const segments = isNonClub
+      ? buildTrailSegments(projected, 0.14, 0.62)
+      : buildTrailSegments(projected);
     if (segments.length === 0) continue;
 
     if (ctx) {
       const [r, g, b] = item.rgb;
+      const strokeWidth = isNonClub
+        ? Math.max(1.5, opts.lineWidthPx * 0.65)
+        : opts.lineWidthPx;
+      ctx.setLineDash(isNonClub ? [6, 5] : []);
       // High-contrast dark casing so trails stay legible over bright or dark map imagery.
-      ctx.lineWidth = opts.lineWidthPx + 3.5;
+      ctx.lineWidth = strokeWidth + (isNonClub ? 2 : 3.5);
+      const casingFactor = isNonClub ? 0.45 : 0.78;
       for (const seg of segments) {
-        ctx.strokeStyle = `rgba(10, 15, 22, ${(seg.alpha * 0.78).toFixed(3)})`;
+        ctx.strokeStyle = `rgba(10, 15, 22, ${(seg.alpha * casingFactor).toFixed(3)})`;
         ctx.beginPath();
         ctx.moveTo(seg.x1, seg.y1);
         ctx.lineTo(seg.x2, seg.y2);
         ctx.stroke();
       }
       // Primary coloured trail fading oldest -> newest.
-      ctx.lineWidth = opts.lineWidthPx;
+      ctx.lineWidth = strokeWidth;
       for (const seg of segments) {
         ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${seg.alpha.toFixed(3)})`;
         ctx.beginPath();
@@ -323,6 +346,9 @@ export function renderTrailsOverlay(
     meta.setAttribute("data-trail-points", String(item.points.length));
     meta.setAttribute("data-trail-span-ms", String(Math.round(spanMs)));
     meta.setAttribute("data-trail-length-px", String(Math.round(lengthPx)));
+    if (isNonClub) {
+      meta.setAttribute("data-non-club", "true");
+    }
     metaLayer.appendChild(meta);
   }
 

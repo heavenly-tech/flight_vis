@@ -33,6 +33,7 @@ mod mail_suppress;
 mod map;
 mod map_filter;
 mod membership_status;
+pub(crate) mod pilot_live_trails;
 mod qr;
 mod routes;
 mod share_routes;
@@ -75,6 +76,8 @@ mod kiosk_account_session_tests;
 mod live_trail_tests;
 #[cfg(test)]
 mod load_test;
+#[cfg(test)]
+mod pilot_live_trails_tests;
 #[cfg(test)]
 mod public_map_tests;
 

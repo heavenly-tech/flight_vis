@@ -10,11 +10,14 @@ const ACC_WINDOW_MS: i64 = 5_000;
 pub struct TailLivePosition {
     pub tail: String,
     pub flight_id: String,
-    pub pilot_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pilot_id: Option<String>,
     pub pilot_name: Option<String>,
     pub fix: LiveFix,
     pub visibility: String,
     pub trail_minutes: i16,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub non_club: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -55,11 +58,12 @@ pub fn dedupe_by_tail(inputs: Vec<DeviceFix>) -> Vec<TailLivePosition> {
             out.push(TailLivePosition {
                 tail: row.tail.clone(),
                 flight_id: row.flight_id.clone(),
-                pilot_id: row.pilot_id.clone(),
+                pilot_id: Some(row.pilot_id.clone()),
                 pilot_name: Some(row.pilot_name.clone()),
                 fix: row.fix.clone(),
                 visibility: row.visibility.clone(),
                 trail_minutes: row.trail_minutes,
+                non_club: false,
             });
         }
     }
@@ -129,20 +133,22 @@ mod tests {
             TailLivePosition {
                 tail: "A".to_string(),
                 flight_id: "1".into(),
-                pilot_id: "p".into(),
+                pilot_id: Some("p".into()),
                 pilot_name: None,
                 fix: fix(1, Some(5.0)),
                 visibility: "club".into(),
                 trail_minutes: 5,
+                non_club: false,
             },
             TailLivePosition {
                 tail: "B".to_string(),
                 flight_id: "2".into(),
-                pilot_id: "p".into(),
+                pilot_id: Some("p".into()),
                 pilot_name: None,
                 fix: fix(1, Some(5.0)),
                 visibility: "club".into(),
                 trail_minutes: 5,
+                non_club: false,
             },
         ];
         let filtered = filter_admin_tails(all.clone(), &["A".to_string()]);
