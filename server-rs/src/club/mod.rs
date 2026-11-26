@@ -79,6 +79,8 @@ mod load_test;
 #[cfg(test)]
 mod pilot_live_trails_tests;
 #[cfg(test)]
+mod public_live_trails_tests;
+#[cfg(test)]
 mod public_map_tests;
 
 pub use auth::parse_account_session_cookie;

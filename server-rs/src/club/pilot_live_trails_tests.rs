@@ -40,7 +40,10 @@ use tower::Service;
 // Fixtures & HTTP helpers
 // ---------------------------------------------------------------------------
 
-async fn http_stack(db: ClubDb) -> (tempfile::TempDir, axum::Router) {
+pub(super) async fn http_stack_with_throttle(
+    db: ClubDb,
+    public_live_trails_throttle: crate::LoginThrottle,
+) -> (tempfile::TempDir, axum::Router) {
     let data_dir = tempfile::tempdir().unwrap();
     let dist_dir = data_dir.path().join("dist");
     let (video_queue, _) = tokio::sync::mpsc::channel(4);
@@ -57,6 +60,7 @@ async fn http_stack(db: ClubDb) -> (tempfile::TempDir, axum::Router) {
         share_lookup_throttle: crate::LoginThrottle::default(),
         account_password_throttle: crate::LoginThrottle::default(),
         account_password_account_throttle: crate::LoginThrottle::default(),
+        public_live_trails_throttle,
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -65,7 +69,11 @@ async fn http_stack(db: ClubDb) -> (tempfile::TempDir, axum::Router) {
     (data_dir, build_router(state))
 }
 
-async fn create_live_club(
+pub(super) async fn http_stack(db: ClubDb) -> (tempfile::TempDir, axum::Router) {
+    http_stack_with_throttle(db, crate::LoginThrottle::default()).await
+}
+
+pub(super) async fn create_live_club(
     db: &ClubDb,
     prefix: &str,
     owner_email: &str,
@@ -142,7 +150,7 @@ async fn seed_member_with_status(
     (pilot_id, format!("fv_club_session={sess}"))
 }
 
-async fn seed_member(
+pub(super) async fn seed_member(
     db: &ClubDb,
     club_id: &str,
     name: &str,
@@ -173,7 +181,7 @@ async fn seed_account_session(db: &ClubDb, email: &str) -> (String, String) {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn seed_live_flight(
+pub(super) async fn seed_live_flight(
     db: &ClubDb,
     club_id: &str,
     pilot_id: &str,
@@ -211,7 +219,7 @@ async fn seed_live_flight(
     (fid, dev_tok)
 }
 
-fn make_fixes(latest_t: i64, lat: f64, lon: f64, minutes_back: &[i64]) -> Vec<LiveFix> {
+pub(super) fn make_fixes(latest_t: i64, lat: f64, lon: f64, minutes_back: &[i64]) -> Vec<LiveFix> {
     minutes_back
         .iter()
         .enumerate()
@@ -229,7 +237,7 @@ fn make_fixes(latest_t: i64, lat: f64, lon: f64, minutes_back: &[i64]) -> Vec<Li
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn send_req(
+pub(super) async fn send_req(
     router: &mut axum::Router,
     method: &str,
     uri: &str,
@@ -1904,7 +1912,7 @@ async fn patch_admin_club_nearby_public_auth_csrf_and_validation() {
     assert_eq!(get_body["nearbyPublicRadiusKm"], json!(100));
 }
 
-fn make_fixes_with_alt(
+pub(super) fn make_fixes_with_alt(
     latest_t: i64,
     lat: f64,
     lon: f64,
@@ -1926,18 +1934,18 @@ fn make_fixes_with_alt(
         .collect()
 }
 
-struct FlightDataEnvGuard {
+pub(super) struct FlightDataEnvGuard {
     prev: Option<std::ffi::OsString>,
 }
 
 impl FlightDataEnvGuard {
-    fn set(path: &std::path::Path) -> Self {
+    pub(super) fn set(path: &std::path::Path) -> Self {
         let prev = std::env::var_os("FLIGHT_DATA");
         std::env::set_var("FLIGHT_DATA", path);
         Self { prev }
     }
 
-    fn update(&self, path: &std::path::Path) {
+    pub(super) fn update(&self, path: &std::path::Path) {
         std::env::set_var("FLIGHT_DATA", path);
     }
 }
@@ -2499,6 +2507,7 @@ fn live_trails_query_parser_validates_public_location_and_radius() {
             lat: -33.456,
             lon: -70.548,
             radius_km: PILOT_LIVE_TRAILS_DEFAULT_PUBLIC_RADIUS_KM,
+            min_agl_ft: None,
         })
     );
 
@@ -2516,6 +2525,7 @@ fn live_trails_query_parser_validates_public_location_and_radius() {
             lat: 0.0,
             lon: 0.0,
             radius_km: PILOT_LIVE_TRAILS_MIN_PUBLIC_RADIUS_KM,
+            min_agl_ft: None,
         })
     );
     let high =

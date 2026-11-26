@@ -3258,6 +3258,10 @@ pub(crate) async fn sliding_session_renewal(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    let path = req.uri().path();
+    if path == "/api/public/live-trails" || path.starts_with("/api/public/") {
+        return next.run(req).await;
+    }
     let acct_sess = auth::parse_account_session_cookie(req.headers());
     let club_sess = parse_session_cookie(req.headers());
     let secure = is_secure(req.headers());
@@ -3910,6 +3914,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/me/live-trails",
             get(crate::club::pilot_live_trails::get_me_live_trails),
+        )
+        .route(
+            "/api/public/live-trails",
+            get(crate::club::pilot_live_trails::get_public_live_trails),
         )
         .route("/api/me/flights", get(my_flights))
         .route(

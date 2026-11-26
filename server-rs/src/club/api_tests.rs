@@ -85,6 +85,7 @@ pub(crate) async fn setup_with_superadmins(emails: &[&str]) -> Fixture {
         share_lookup_throttle: crate::LoginThrottle::default(),
         account_password_throttle: crate::LoginThrottle::default(),
         account_password_account_throttle: crate::LoginThrottle::default(),
+        public_live_trails_throttle: crate::LoginThrottle::default(),
         mailer: mailer.clone(),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),

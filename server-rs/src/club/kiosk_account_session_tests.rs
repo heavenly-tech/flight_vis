@@ -174,6 +174,7 @@ async fn setup_kiosk_fx() -> KioskFx {
         share_lookup_throttle: Default::default(),
         account_password_throttle: Default::default(),
         account_password_account_throttle: Default::default(),
+        public_live_trails_throttle: Default::default(),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: Arc::new(crate::club::sse_limit::SseLimiter::default()),

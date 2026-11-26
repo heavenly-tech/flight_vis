@@ -54,6 +54,7 @@ async fn http_stack(db: ClubDb) -> (axum::Router, crate::AppState, ClubDb) {
         share_lookup_throttle: crate::LoginThrottle::default(),
         account_password_throttle: crate::LoginThrottle::default(),
         account_password_account_throttle: crate::LoginThrottle::default(),
+        public_live_trails_throttle: crate::LoginThrottle::default(),
         mailer,
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),

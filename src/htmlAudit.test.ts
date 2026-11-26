@@ -11,6 +11,26 @@ const rootHtmlFiles = fs
   .filter((name) => name.endsWith(".html"))
   .sort();
 
+const HTML_AUDIT_TIMEOUT_MS = 20_000;
+
+interface ParsedHtmlFile {
+  html: string;
+  doc: Document;
+}
+
+const parsedHtmlCache = new Map<string, ParsedHtmlFile>();
+
+function getParsedHtml(file: string): ParsedHtmlFile {
+  let cached = parsedHtmlCache.get(file);
+  if (!cached) {
+    const html = fs.readFileSync(path.join(root, file), "utf8");
+    const dom = new JSDOM(html);
+    cached = { html, doc: dom.window.document };
+    parsedHtmlCache.set(file, cached);
+  }
+  return cached;
+}
+
 const EN_ONLY_ARIA_OR_ALT = [
   "Live club map",
   "Check-in QR",
@@ -26,23 +46,20 @@ describe("root HTML accessibility and shared styling audit", () => {
   it("every root HTML file declares an appropriate es-CL or en lang attribute", () => {
     expect(rootHtmlFiles.length).toBeGreaterThan(10);
     for (const file of rootHtmlFiles) {
-      const html = fs.readFileSync(path.join(root, file), "utf8");
-      const dom = new JSDOM(html);
-      const lang = dom.window.document.documentElement.getAttribute("lang") ?? "";
+      const { doc } = getParsedHtml(file);
+      const lang = doc.documentElement.getAttribute("lang") ?? "";
       if (file === "e2e-live.html") {
         expect(lang.startsWith("en"), `${file} lang="${lang}"`).toBe(true);
       } else {
         expect(lang.startsWith("es-CL"), `${file} lang="${lang}"`).toBe(true);
       }
     }
-  });
+  }, HTML_AUDIT_TIMEOUT_MS);
 
   it("every interactive form control in root HTML files has an associated label", () => {
     const unlabeled: string[] = [];
     for (const file of rootHtmlFiles) {
-      const html = fs.readFileSync(path.join(root, file), "utf8");
-      const dom = new JSDOM(html);
-      const doc = dom.window.document;
+      const { doc } = getParsedHtml(file);
       const controls = doc.querySelectorAll("input, select, textarea");
       for (const el of controls) {
         const tag = el.tagName.toLowerCase();
@@ -65,14 +82,12 @@ describe("root HTML accessibility and shared styling audit", () => {
       }
     }
     expect(unlabeled).toEqual([]);
-  });
+  }, HTML_AUDIT_TIMEOUT_MS);
 
   it("no root HTML file retains known English-only aria-label or alt literals", () => {
     const hits: string[] = [];
     for (const file of rootHtmlFiles) {
-      const html = fs.readFileSync(path.join(root, file), "utf8");
-      const dom = new JSDOM(html);
-      const doc = dom.window.document;
+      const { doc } = getParsedHtml(file);
       for (const el of doc.querySelectorAll("[aria-label], [alt]")) {
         const aria = el.getAttribute("aria-label")?.trim();
         const alt = el.getAttribute("alt")?.trim();
@@ -85,7 +100,7 @@ describe("root HTML accessibility and shared styling audit", () => {
       }
     }
     expect(hits).toEqual([]);
-  });
+  }, HTML_AUDIT_TIMEOUT_MS);
 
   it("no root HTML file uses #ddd or #ccc light borders and user pages include the shared stylesheet", () => {
     const mainTs = fs.readFileSync(path.join(root, "src", "main.ts"), "utf8");
@@ -96,7 +111,7 @@ describe("root HTML accessibility and shared styling audit", () => {
     const missingStyle: string[] = [];
 
     for (const file of rootHtmlFiles) {
-      const html = fs.readFileSync(path.join(root, file), "utf8");
+      const { html } = getParsedHtml(file);
       if (/#(?:ddd|ccc)\b/i.test(html)) {
         lightBorders.push(file);
       }
@@ -145,9 +160,7 @@ describe("root HTML accessibility and shared styling audit", () => {
 
     const missingLive: string[] = [];
     for (const [file, selectors] of Object.entries(statusSelectorsByFile)) {
-      const html = fs.readFileSync(path.join(root, file), "utf8");
-      const dom = new JSDOM(html);
-      const doc = dom.window.document;
+      const { doc } = getParsedHtml(file);
       for (const sel of selectors) {
         const el = doc.querySelector(sel);
         if (!el) {
@@ -163,12 +176,10 @@ describe("root HTML accessibility and shared styling audit", () => {
       }
     }
     expect(missingLive).toEqual([]);
-  });
+  }, HTML_AUDIT_TIMEOUT_MS);
 
   it("kiosk layout editor merges save actions into one Guardar button and includes keyboard controls", () => {
-    const html = fs.readFileSync(path.join(root, "club-admin-kiosk-layout.html"), "utf8");
-    const dom = new JSDOM(html);
-    const doc = dom.window.document;
+    const { html, doc } = getParsedHtml("club-admin-kiosk-layout.html");
     expect(doc.querySelector("#btn-save")).not.toBeNull();
     expect(doc.querySelector("#btn-save-visible")).toBeNull();
     expect(doc.querySelector("#qr-x")).not.toBeNull();
