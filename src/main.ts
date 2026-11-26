@@ -11,6 +11,12 @@ import type { ColorMode, Flight, FlightTag, TrimRange } from "./track/types";
 import { clampTrim, fullRange, newTagId, rangeStats, suggestTrim } from "./track/trim";
 import { cssForUnit } from "./viz/colors";
 import { nextChromeTap, shouldToggleChrome, type ChromeTap } from "./viz/globeChrome";
+import {
+  applyTelemetryVisibility,
+  loadTelemetryVisible,
+  saveTelemetryVisible,
+  shouldHandleShortcut,
+} from "./viz/telemetryVisibility";
 import { getLocalFlight, isLocalSlug } from "./live/localFlights";
 import { ACC_DIM_M, createLiveRuntime, parseLivePath } from "./live/runtime";
 import { createE2eFlightViewer } from "./viz/e2eViewerStub";
@@ -58,6 +64,7 @@ const tagsButton = document.querySelector<HTMLButtonElement>("#btn-tags")!;
 const tagsPanel = document.querySelector<HTMLDivElement>("#tags-panel")!;
 const moreButton = document.querySelector<HTMLButtonElement>("#btn-more")!;
 const morePanel = document.querySelector<HTMLDivElement>("#more-panel")!;
+const telemetryToggle = document.querySelector<HTMLButtonElement>("#btn-telemetry")!;
 const hudGrid = document.querySelector<HTMLElement>("#hud-grid")!;
 const chromeRestore = document.querySelector<HTMLButtonElement>("#btn-chrome-restore")!;
 const cesiumContainer = document.getElementById("cesiumContainer")!;
@@ -154,6 +161,27 @@ let applyTrim: ((fly?: boolean) => Promise<void>) | null = null;
 let seekPlayhead: ((timeMs: number) => void) | null = null;
 let liveFollowing = true;
 let liveRuntime: ReturnType<typeof createLiveRuntime> | null = null;
+let telemetryVisible = loadTelemetryVisible();
+
+function syncTelemetryUi(): void {
+  const wasHidden = hud.hidden;
+  applyTelemetryVisibility({
+    hud,
+    toggleButton: telemetryToggle,
+    body: document.body,
+    visible: telemetryVisible,
+    hasFlight: Boolean(flight && trim),
+  });
+  if (hud.hidden !== wasHidden) {
+    layoutHud();
+  }
+}
+
+function toggleTelemetry(): void {
+  telemetryVisible = !telemetryVisible;
+  saveTelemetryVisible(telemetryVisible);
+  syncTelemetryUi();
+}
 
 function pathSlug(): string | null {
   return slugFromPath(window.location.pathname);
@@ -312,10 +340,7 @@ function renderHud(): void {
     accEl.textContent = "—";
   }
   hud.classList.toggle("hud-low-accuracy", (p.accuracyM ?? 0) > ACC_DIM_M);
-  if (hud.hidden) {
-    hud.hidden = false;
-    layoutHud();
-  }
+  syncTelemetryUi();
   maybeDrawProfile(false);
 }
 
@@ -388,6 +413,7 @@ function hitHandle(x: number, width: number): "start" | "end" | null {
 }
 
 async function boot(): Promise<void> {
+  syncTelemetryUi();
   await bootI18n({ persistUser: true });
   refreshGlobeChrome();
   const liveRouteEarly = parseLivePath(window.location.pathname);
@@ -669,6 +695,10 @@ async function boot(): Promise<void> {
     hudToggle.setAttribute("aria-expanded", String(open));
   });
 
+  telemetryToggle.addEventListener("click", () => {
+    toggleTelemetry();
+  });
+
   document.addEventListener("pointerdown", (event) => {
     if (!filePanel.hidden && !fileMenu.contains(event.target as Node)) setFileOpen(false);
   });
@@ -876,6 +906,11 @@ async function boot(): Promise<void> {
   });
 
   window.addEventListener("keydown", (event) => {
+    if (shouldHandleShortcut(event)) {
+      event.preventDefault();
+      toggleTelemetry();
+      return;
+    }
     if (event.target instanceof HTMLInputElement) return;
     if (event.code === "Space") {
       event.preventDefault();
@@ -890,6 +925,7 @@ async function boot(): Promise<void> {
   });
 
   window.addEventListener("resize", () => {
+    viewer.resize();
     resizeProfile();
     layoutHud();
   });

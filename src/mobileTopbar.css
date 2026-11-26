@@ -1,7 +1,7 @@
 /* Mobile narrow-viewport layout fixes for index.html top bar and safe bottom margin. */
 @media (max-width: 640px) {
   body #ui {
-    padding-bottom: max(12px, env(safe-area-inset-bottom));
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
   }
 
   #ui .topbar {
@@ -73,10 +73,6 @@
     text-decoration: none;
     display: inline-flex;
     align-items: center;
-  }
-
-  #ui .transport {
-    margin-bottom: max(4px, env(safe-area-inset-bottom));
   }
 
   #ui .transport .play,

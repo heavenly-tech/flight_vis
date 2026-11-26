@@ -42,42 +42,82 @@ export function clampOverlayRect(
   return { x, y, width: w, height: h };
 }
 
-// Default position for the overlay (top-right area)
-function defaultOverlayRect(): OverlayRect {
-  return {
-    x: 100,
-    y: 100,
-    width: 300,
-    height: 300,
-  };
+// Default dimensions and edge anchoring for first-time open
+export const DEFAULT_OVERLAY_SIZE = 300;
+export const DEFAULT_EDGE_MARGIN = 8;
+export const DEFAULT_TOP_BAR_CLEARANCE = 56;
+
+export interface OverlayLayoutMetrics {
+  topInset?: number;
+  rightInset?: number;
+  topBarBottom?: number;
 }
 
-// Load saved rectangle from localStorage
-function loadOverlayRect(): OverlayRect {
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) {
-    try {
-      const rect = JSON.parse(saved) as OverlayRect;
-      // Validate and clamp to reasonable defaults
-      if (
-        rect &&
-        typeof rect.x === "number" &&
-        typeof rect.y === "number" &&
-        typeof rect.width === "number" &&
-        typeof rect.height === "number"
-      ) {
-        return rect;
-      }
-    } catch {
-      // Invalid JSON, use default
+// Default position for the overlay anchored to the top-right viewport edge,
+// honoring safe-area insets and clearing the top-bar actions.
+// Exported for unit testing.
+export function defaultOverlayRect(
+  viewport: { width: number; height: number } = getViewport(),
+  layout: OverlayLayoutMetrics = {},
+): OverlayRect {
+  const rightEdge = Math.max(DEFAULT_EDGE_MARGIN, layout.rightInset ?? 0);
+  const topEdge = Math.max(DEFAULT_EDGE_MARGIN, layout.topInset ?? 0);
+  const maxFitWidth = Math.max(MIN_OVERLAY_SIZE, viewport.width - rightEdge * 2);
+  const size = Math.min(DEFAULT_OVERLAY_SIZE, maxFitWidth, viewport.height);
+  const minY =
+    layout.topBarBottom != null && layout.topBarBottom > 0
+      ? Math.ceil(layout.topBarBottom) + DEFAULT_EDGE_MARGIN
+      : topEdge + DEFAULT_TOP_BAR_CLEARANCE;
+  return clampOverlayRect(
+    {
+      x: viewport.width - size - rightEdge,
+      y: Math.max(topEdge, minY),
+      width: size,
+      height: size,
+    },
+    viewport,
+  );
+}
+
+function readLayoutMetrics(): OverlayLayoutMetrics {
+  const uiEl = document.getElementById("ui");
+  const uiStyle = uiEl ? getComputedStyle(uiEl) : null;
+  const topInset = uiStyle ? Number.parseFloat(uiStyle.paddingTop) || 0 : 0;
+  const rightInset = uiStyle ? Number.parseFloat(uiStyle.paddingRight) || 0 : 0;
+  const topActions = document.querySelector<HTMLElement>(".top-actions");
+  const actionsRect = topActions?.getBoundingClientRect();
+  const topBarBottom = actionsRect && actionsRect.height > 0 ? actionsRect.bottom : undefined;
+  return { topInset, rightInset, topBarBottom };
+}
+
+// Load saved rectangle from localStorage (null when no user position is saved)
+function loadSavedOverlayRect(): OverlayRect | null {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return null;
+    const rect = JSON.parse(saved) as OverlayRect;
+    if (
+      rect &&
+      typeof rect.x === "number" &&
+      typeof rect.y === "number" &&
+      typeof rect.width === "number" &&
+      typeof rect.height === "number"
+    ) {
+      return rect;
     }
+  } catch {
+    // Invalid JSON or unavailable storage, use default
   }
-  return defaultOverlayRect();
+  return null;
 }
 
 // Save rectangle to localStorage
 function saveOverlayRect(rect: OverlayRect): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(rect));
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(rect));
+  } catch {
+    /* ignore storage errors */
+  }
 }
 
 // State management
@@ -100,7 +140,13 @@ let resizeHandle: HTMLElement | null = null;
 let pill: HTMLElement | null = null;
 
 // Current position and size
-let currentRect: OverlayRect = defaultOverlayRect();
+let hasSavedRect = false;
+let currentRect: OverlayRect = {
+  x: 0,
+  y: DEFAULT_EDGE_MARGIN + DEFAULT_TOP_BAR_CLEARANCE,
+  width: DEFAULT_OVERLAY_SIZE,
+  height: DEFAULT_OVERLAY_SIZE,
+};
 
 // Track if we're dragging or resizing
 let isDragging = false;
@@ -136,7 +182,9 @@ export function initGlobeAdminQr(
   }
 
   // Load saved position/size
-  currentRect = loadOverlayRect();
+  const saved = loadSavedOverlayRect();
+  hasSavedRect = saved !== null;
+  currentRect = saved ?? defaultOverlayRect(getViewport(), readLayoutMetrics());
   
   // Initialize overlay position and size
   updateOverlayStyle();
@@ -188,7 +236,9 @@ export function initGlobeAdminQr(
   window.addEventListener("resize", () => {
     if (state !== "closed") {
       const viewport = getViewport();
-      currentRect = clampOverlayRect(currentRect, viewport);
+      currentRect = hasSavedRect
+        ? clampOverlayRect(currentRect, viewport)
+        : defaultOverlayRect(viewport, readLayoutMetrics());
       updateOverlayStyle();
     }
   });
@@ -213,6 +263,7 @@ export function initGlobeAdminQr(
         }
       }
       dragStart = null;
+      hasSavedRect = true;
       saveOverlayRect(currentRect);
     }
     if (isResizing) {
@@ -225,6 +276,7 @@ export function initGlobeAdminQr(
         }
       }
       resizeStart = null;
+      hasSavedRect = true;
       saveOverlayRect(currentRect);
     }
   });
@@ -253,7 +305,9 @@ function openOverlay(): void {
   if (state !== "closed") return;
   
   const viewport = getViewport();
-  currentRect = clampOverlayRect(currentRect, viewport);
+  currentRect = hasSavedRect
+    ? clampOverlayRect(currentRect, viewport)
+    : defaultOverlayRect(viewport, readLayoutMetrics());
   
   setState("open");
   updateOverlayStyle();

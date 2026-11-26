@@ -454,6 +454,8 @@
     "hudDist": "DIST",
     "hudUtc": "UTC",
     "hudAcc": "PREC",
+    "telemetryToggle": "Telemetría",
+    "telemetryToggleAria": "Mostrar u ocultar las lecturas de vuelo",
     "summaryMax": "máx.",
     "altEllip": "elip.",
     "copiedLink": "Enlace copiado: {url}",
