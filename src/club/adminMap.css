@@ -154,3 +154,55 @@
 .admin-settings-details > section:last-child {
   margin-bottom: 0;
 }
+
+.admin-shell section.danger-zone {
+  border-color: rgba(248, 113, 113, 0.55);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.danger-zone-heading {
+  color: #fca5a5;
+}
+
+.danger-zone-warning {
+  margin: 0 0 0.75rem;
+  font-size: 0.92rem;
+  color: #fecaca;
+  line-height: 1.45;
+}
+
+.danger-zone-slug-code {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.88rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 6px;
+  background: rgba(248, 113, 113, 0.18);
+  color: #fecaca;
+}
+
+.admin-shell button.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.65rem 1.05rem;
+  border: 1px solid rgba(248, 113, 113, 0.75);
+  border-radius: 10px;
+  background: #dc2626;
+  color: #ffffff;
+  font: 650 0.95rem Outfit, system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.admin-shell button.btn-danger:hover:not(:disabled) {
+  background: #b91c1c;
+  border-color: #f87171;
+}
+
+.admin-shell button.btn-danger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: rgba(220, 38, 38, 0.35);
+  color: rgba(255, 255, 255, 0.7);
+  border-color: rgba(248, 113, 113, 0.35);
+}

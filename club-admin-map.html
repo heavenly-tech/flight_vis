@@ -110,6 +110,31 @@
           <button type="button" id="club-base-save" class="btn-primary" data-i18n="admin.saveBase"></button>
           <p id="club-base-msg" class="status-msg" role="status" aria-live="polite"></p>
         </section>
+        <section id="club-danger-zone" class="danger-zone" hidden>
+          <h2 class="section-heading danger-zone-heading" data-i18n="adminMap.deleteClubTitle"></h2>
+          <p class="danger-zone-warning" data-i18n="adminMap.deleteClubWarning"></p>
+          <div class="field">
+            <label for="club-delete-slug-input">
+              <span data-i18n="adminMap.deleteClubConfirmLabel"></span>
+              <code id="club-delete-slug-expected" class="danger-zone-slug-code"></code>
+            </label>
+            <input
+              id="club-delete-slug-input"
+              type="text"
+              maxlength="48"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </div>
+          <button
+            type="button"
+            id="club-delete-confirm"
+            class="btn-danger"
+            data-i18n="adminMap.deleteClubButton"
+            disabled
+          ></button>
+          <p id="club-delete-msg" class="error-msg" role="alert" aria-live="assertive"></p>
+        </section>
       </details>
     </main>
     <script type="module" src="/src/club/adminMap.ts"></script>

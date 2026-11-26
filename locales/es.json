@@ -632,6 +632,12 @@
     "selectionSaved": "Selección guardada.",
     "clubSettings": "Configuración del club",
     "openClubScreen": "Abrir pantalla del club",
-    "noTailsRegistered": "Aún no hay matrículas registradas."
+    "noTailsRegistered": "Aún no hay matrículas registradas.",
+    "deleteClubTitle": "Eliminar club",
+    "deleteClubWarning": "Esta acción no se puede deshacer. Se eliminarán definitivamente el club y todas sus membresías, aeronaves, vuelos, registros de entrada y sesiones.",
+    "deleteClubConfirmLabel": "Para confirmar, escribe el nombre corto del club:",
+    "deleteClubButton": "Eliminar definitivamente",
+    "deleteClubWrongSlug": "El nombre corto ingresado no coincide con este club.",
+    "deleteClubFailed": "No se pudo eliminar el club. Intenta nuevamente."
   }
 }

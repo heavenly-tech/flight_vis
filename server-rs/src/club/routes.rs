@@ -744,6 +744,157 @@ async fn post_admin_club_slug(
     super::slug_admin::rename_club_slug_for_id(&state, &club_id, &body, Some(&id)).await
 }
 
+#[derive(Deserialize)]
+struct DeleteClubBody {
+    slug: String,
+}
+
+async fn delete_admin_club(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(status) = super::slug_admin::require_exact_json_content_type(&headers) {
+        return (status, Json(json!({ "error": "json required" }))).into_response();
+    }
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let v = viewer(&state, &headers).await;
+    let Viewer::Pilot {
+        id: actor_pilot_id,
+        status: PilotStatus::Approved,
+        ..
+    } = v
+    else {
+        return match v {
+            Viewer::Anonymous => (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            )
+                .into_response(),
+            _ => (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "admin only" })),
+            )
+                .into_response(),
+        };
+    };
+    let Ok(club_id) = db.pilot_club_id(&actor_pilot_id).await else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response();
+    };
+    if db
+        .require_active_club_admin_role(&actor_pilot_id, &club_id)
+        .await
+        .is_err()
+    {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    }
+    let Ok(parsed) = serde_json::from_slice::<DeleteClubBody>(&body) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid json" })),
+        )
+            .into_response();
+    };
+
+    let now = now_ms();
+    let actor_account_id = db.pilot_account_id(&actor_pilot_id).await;
+    let acct_sess = auth::parse_account_session_cookie(&headers);
+    let acting_account = match acct_sess.as_deref() {
+        Some(sess) => match db.account_from_session(sess, now).await {
+            Some((acct, _)) if actor_account_id.as_deref() == Some(acct.id.as_str()) => {
+                Some((sess.to_string(), acct.id))
+            }
+            _ => None,
+        },
+        None => None,
+    };
+
+    match db.delete_club(&club_id, &parsed.slug).await {
+        Ok(()) => {}
+        Err(crate::club::db_club_lifecycle::ClubDeleteError::SlugMismatch) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "slug mismatch" })),
+            )
+                .into_response();
+        }
+        Err(crate::club::db_club_lifecycle::ClubDeleteError::NotFound) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "club not found" })),
+            )
+                .into_response();
+        }
+        Err(crate::club::db_club_lifecycle::ClubDeleteError::Db) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "db error" })),
+            )
+                .into_response();
+        }
+    }
+
+    let secure = is_secure(&headers);
+
+    if let Some((sess, account_id)) = acting_account {
+        if let Some(next_mem) = db.next_operational_membership(&account_id).await {
+            if let Ok(next_pilot) = db.set_active_membership(&sess, &next_mem.id, now).await {
+                let next_slug = next_mem.club_slug.unwrap_or_default();
+                let mut resp = (
+                    StatusCode::OK,
+                    Json(json!({
+                        "ok": true,
+                        "redirect": "/account-clubs.html",
+                        "clubId": next_pilot.club_id,
+                        "slug": next_slug,
+                    })),
+                )
+                    .into_response();
+                if let Ok(ps) = db.create_pilot_session(&next_pilot.id, now).await {
+                    let cookie = auth::set_session_cookie(&ps, secure);
+                    resp.headers_mut()
+                        .append(header::SET_COOKIE, cookie.parse().expect("cookie"));
+                } else {
+                    let clear_club = auth::clear_session_cookie(secure);
+                    resp.headers_mut()
+                        .append(header::SET_COOKIE, clear_club.parse().expect("cookie"));
+                }
+                return resp;
+            }
+        }
+    }
+
+    let clear_club = auth::clear_session_cookie(secure);
+    let mut resp = (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "redirect": "/account-clubs.html",
+        })),
+    )
+        .into_response();
+    resp.headers_mut()
+        .append(header::SET_COOKIE, clear_club.parse().expect("cookie"));
+    resp
+}
+
 async fn patch_admin_club_locale(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -3342,6 +3493,7 @@ pub fn router() -> Router<AppState> {
             axum::routing::get(get_admin_club_base).patch(patch_admin_club_base),
         )
         .route("/api/admin/club/slug", post(post_admin_club_slug))
+        .route("/api/admin/club", axum::routing::delete(delete_admin_club))
         .route("/api/me/tails", get(me_tails))
         .route("/api/me/flights", get(my_flights))
         .route(
