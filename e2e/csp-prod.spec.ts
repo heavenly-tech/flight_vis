@@ -140,23 +140,37 @@ test.describe("production CSP (release server)", () => {
     assertStrictCsp(loginCsp, "/login.html");
     expect(loginCsp).not.toContain("services.arcgisonline.com");
 
-    await page.goto("/login?mode=password&next=/club-admin-map.html");
-    await page.locator("#login-form input[name=email]").fill("admin@demo.test");
-    await page.locator("#login-form input[name=password]").fill("password12");
-    await page.locator("#submit-password").click();
-    await page.waitForURL(/club-admin-map\.html/, { timeout: 30_000 });
+    const unauthAdminMapRes = await request.get("/club-admin-map.html", { maxRedirects: 0 });
+    expect(unauthAdminMapRes.status(), "unauthenticated /club-admin-map.html").toBe(302);
+    expect(
+      unauthAdminMapRes.headers()["location"] ?? "",
+      "unauthenticated /club-admin-map.html redirect",
+    ).toMatch(/^\/login\?next=/);
 
-    const adminMapRes = await page.goto("/club-admin-map.html");
-    expect(adminMapRes?.ok(), "/club-admin-map.html").toBeTruthy();
+    const login = await page.request.post("/api/club/login", {
+      data: { email: "admin@demo.test", password: "password12" },
+    });
+    expect(login.ok(), "POST /api/club/login").toBeTruthy();
+
+    const adminMapRes = await page.request.get("/club-admin-map.html", { maxRedirects: 0 });
+    expect(adminMapRes.status(), "/club-admin-map.html").toBe(200);
+    expect(
+      adminMapRes.headers()["location"],
+      "/club-admin-map.html must not redirect",
+    ).toBeUndefined();
     assertMapCsp(
-      adminMapRes?.headers()["content-security-policy"] ?? "",
+      adminMapRes.headers()["content-security-policy"] ?? "",
       "/club-admin-map.html",
     );
 
-    const adminPilotsRes = await page.goto("/club-admin-pilots.html");
-    expect(adminPilotsRes?.ok(), "/club-admin-pilots.html").toBeTruthy();
+    const adminPilotsRes = await page.request.get("/club-admin-pilots.html", { maxRedirects: 0 });
+    expect(adminPilotsRes.status(), "/club-admin-pilots.html").toBe(200);
+    expect(
+      adminPilotsRes.headers()["location"],
+      "/club-admin-pilots.html must not redirect",
+    ).toBeUndefined();
     assertStrictCsp(
-      adminPilotsRes?.headers()["content-security-policy"] ?? "",
+      adminPilotsRes.headers()["content-security-policy"] ?? "",
       "/club-admin-pilots.html",
     );
   });
