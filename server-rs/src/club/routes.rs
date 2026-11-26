@@ -7,6 +7,7 @@ use crate::club::{
         MAX_DEVICES_PER_PILOT,
     },
     map::TailLivePosition,
+    trail::{FlightTrailError, TrailMinutes, DEFAULT_TRAIL_MINUTES},
     visibility::{FlightVisibility, PilotStatus, Viewer},
 };
 use crate::{AppState, ClientIp, SHARE_LOOKUP_MAX_ATTEMPTS};
@@ -572,6 +573,11 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
                 .club_default_locale(&p.club_id)
                 .await
                 .unwrap_or_else(|_| "es".to_string());
+            let club_trail_default = db
+                .club_trail_minutes_default(&p.club_id)
+                .await
+                .map(TrailMinutes::as_i16)
+                .unwrap_or(DEFAULT_TRAIL_MINUTES);
             let club_slug = db.club_slug(&p.club_id).await.unwrap_or_default();
             let club_name = db.club_name(&p.club_id).await.unwrap_or_default();
             Json(json!({
@@ -585,6 +591,7 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
                     "locale": p.locale,
                 },
                 "clubDefaultLocale": club_default,
+                "clubTrailMinutesDefault": club_trail_default,
                 "clubSlug": club_slug,
                 "clubName": club_name,
             }))
@@ -1010,6 +1017,91 @@ async fn patch_admin_club_base(
     }
 }
 
+async fn get_admin_club_trail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let v = viewer(&state, &headers).await;
+    let club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    match db.club_trail_minutes_default(&club_id).await {
+        Ok(val) => Json(json!({ "trailMinutes": val.as_i16() })).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn patch_admin_club_trail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
+    if let Err(status) = super::csrf::exact_json_content_type(&headers) {
+        return (status, Json(json!({ "error": "unsupported media type" }))).into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let v = viewer(&state, &headers).await;
+    let club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    let parsed: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(val) => val,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid json" })),
+            )
+                .into_response();
+        }
+    };
+    let Some(raw_tm) = parsed.get("trailMinutes") else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid trailMinutes" })),
+        )
+            .into_response();
+    };
+    let trail_minutes = match TrailMinutes::from_json_value(raw_tm) {
+        Ok(val) => val,
+        Err(msg) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
+        }
+    };
+    match db
+        .set_club_trail_minutes_default(&club_id, trail_minutes)
+        .await
+    {
+        Ok(val) => Json(json!({ "trailMinutes": val.as_i16() })).into_response(),
+        Err(_) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
 async fn me_tails(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let v = viewer(&state, &headers).await;
     let Viewer::Pilot {
@@ -1044,6 +1136,8 @@ struct StartFlightBody {
     visibility: Option<String>,
     #[serde(default)]
     show_pilot_name_public: Option<bool>,
+    #[serde(rename = "trailMinutes", default)]
+    trail_minutes: Option<serde_json::Value>,
 }
 
 fn parse_visibility(raw: Option<&str>) -> Result<FlightVisibility, &'static str> {
@@ -1132,24 +1226,48 @@ pub async fn post_club_flight_start(
             return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
         }
     };
+    let trail_minutes = match parsed.trail_minutes.as_ref() {
+        None => None,
+        Some(raw) => match TrailMinutes::from_optional_json_value(raw) {
+            Ok(tm) => tm,
+            Err(msg) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
+            }
+        },
+    };
     let show_name = parsed.show_pilot_name_public.unwrap_or(false);
     match db
-        .start_flight(
+        .start_flight_with_trail(
             &pilot_id,
             &device_id,
             parsed.tail.trim(),
             visibility,
             show_name,
+            trail_minutes,
             now,
         )
         .await
     {
-        Ok(flight_id) => Json(json!({
-            "id": flight_id,
-            "visibility": visibility.as_str(),
-            "showPilotNamePublic": show_name,
-        }))
-        .into_response(),
+        Ok(flight_id) => {
+            let club_default = match db.club_id_for_flight(&flight_id).await {
+                Some(cid) => db
+                    .club_trail_minutes_default(&cid)
+                    .await
+                    .map(TrailMinutes::as_i16)
+                    .unwrap_or(DEFAULT_TRAIL_MINUTES),
+                None => DEFAULT_TRAIL_MINUTES,
+            };
+            let raw_override = trail_minutes.map(TrailMinutes::as_i16);
+            let effective = TrailMinutes::effective(raw_override, club_default);
+            Json(json!({
+                "id": flight_id,
+                "visibility": visibility.as_str(),
+                "showPilotNamePublic": show_name,
+                "trailMinutes": raw_override,
+                "effectiveTrailMinutes": effective.as_i16(),
+            }))
+            .into_response()
+        }
         Err(StartFlightError::NotCleared { tail, type_code }) => (
             StatusCode::FORBIDDEN,
             Json(json!({ "error": format!("not cleared for {tail} / {type_code}") })),
@@ -1259,6 +1377,121 @@ async fn end_club_flight(
         Err(EndError::NotActive) => {
             (StatusCode::CONFLICT, Json(json!({ "error": "not active" }))).into_response()
         }
+    }
+}
+
+async fn patch_club_flight_trail(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(flight_id): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(status) = super::csrf::exact_json_content_type(&headers) {
+        return (status, Json(json!({ "error": "unsupported media type" }))).into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+
+    // Accept either device Bearer token (Android app) or club/account session cookie (web).
+    // When authenticated via cookie alone, enforce same-origin/CSRF checks.
+    let pilot_id = if headers.contains_key(header::AUTHORIZATION) {
+        let Some(token) = bearer_token(&headers) else {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            )
+                .into_response();
+        };
+        let Some(device_id) = db.resolve_device_token(&token).await else {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            )
+                .into_response();
+        };
+        let Some(dev_pilot_id) = db.device_pilot_id(&device_id).await else {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            )
+                .into_response();
+        };
+        if let Viewer::Pilot { id: cookie_pid, .. } = viewer(&state, &headers).await {
+            if cookie_pid != dev_pilot_id {
+                return (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" })))
+                    .into_response();
+            }
+        }
+        dev_pilot_id
+    } else {
+        if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+            return (status, Json(json!({ "error": "csrf" }))).into_response();
+        }
+        let v = viewer(&state, &headers).await;
+        let Viewer::Pilot { id, .. } = v else {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            )
+                .into_response();
+        };
+        id
+    };
+
+    let parsed: serde_json::Value = match serde_json::from_slice(&body) {
+        Ok(val) => val,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid json" })),
+            )
+                .into_response();
+        }
+    };
+    let Some(raw_tm) = parsed.get("trailMinutes") else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid trailMinutes" })),
+        )
+            .into_response();
+    };
+    let trail_override = match TrailMinutes::from_optional_json_value(raw_tm) {
+        Ok(tm) => tm,
+        Err(msg) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
+        }
+    };
+
+    match db
+        .set_flight_trail_minutes(&pilot_id, &flight_id, trail_override)
+        .await
+    {
+        Ok((override_val, effective)) => Json(json!({
+            "ok": true,
+            "flightId": flight_id,
+            "trailMinutes": override_val.map(TrailMinutes::as_i16),
+            "effectiveTrailMinutes": effective.as_i16(),
+        }))
+        .into_response(),
+        Err(FlightTrailError::NotFound) => {
+            (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+        }
+        Err(FlightTrailError::Forbidden) => {
+            (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
+        }
+        Err(FlightTrailError::NotActive) => {
+            (StatusCode::CONFLICT, Json(json!({ "error": "not active" }))).into_response()
+        }
+        Err(FlightTrailError::Db) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
     }
 }
 
@@ -1382,6 +1615,33 @@ async fn admin_map(State(state): State<AppState>, headers: HeaderMap) -> impl In
     }
     let aircraft = db.admin_map(&admin_id).await;
     Json(json!({ "aircraft": aircraft })).into_response()
+}
+
+async fn admin_map_trails(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    let v = viewer(&state, &headers).await;
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "trails": [] })).into_response();
+    };
+    let admin_id = match &v {
+        Viewer::Pilot { id, .. } => id.clone(),
+        _ => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "admin only" })),
+            )
+                .into_response();
+        }
+    };
+    if require_club_admin_scope(db, &v).await.is_err() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "admin only" })),
+        )
+            .into_response();
+    }
+    let positions = db.admin_map(&admin_id).await;
+    let trails = db.trails_for_positions(&positions).await;
+    Json(json!({ "trails": trails })).into_response()
 }
 
 #[derive(Deserialize)]
@@ -2741,6 +3001,22 @@ async fn display_map(State(state): State<AppState>, headers: HeaderMap) -> impl 
     Json(json!({ "aircraft": rows })).into_response()
 }
 
+async fn display_map_trails(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return Json(json!({ "trails": [] })).into_response();
+    };
+    let (club_id, admin_id) = match require_kiosk_admin(&state, db, &headers).await {
+        Ok(v) => v,
+        Err(e) => return e.into_response(),
+    };
+    let positions = db.display_map(&club_id, &admin_id).await;
+    let trails = db.trails_for_positions(&positions).await;
+    Json(json!({ "trails": trails })).into_response()
+}
+
 async fn display_base(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
         return Json(json!({ "icao": null, "lat": null, "lon": null, "clubName": null }))
@@ -3458,6 +3734,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/club/screen/qr.svg", get(club_screen_qr_svg))
         .route("/api/devices/pair/{id}/qr.svg", get(device_pair_qr_svg))
         .route("/api/display/map", get(display_map))
+        .route("/api/display/map/trails", get(display_map_trails))
         .route("/api/display/base", get(display_base))
         .route("/api/display/kiosk-layout", get(display_kiosk_layout))
         .route(
@@ -3495,6 +3772,10 @@ pub fn router() -> Router<AppState> {
             "/api/admin/club/base",
             axum::routing::get(get_admin_club_base).patch(patch_admin_club_base),
         )
+        .route(
+            "/api/admin/club/trail",
+            axum::routing::get(get_admin_club_trail).patch(patch_admin_club_trail),
+        )
         .route("/api/admin/club/slug", post(post_admin_club_slug))
         .route("/api/admin/club", axum::routing::delete(delete_admin_club))
         .route("/api/me/tails", get(me_tails))
@@ -3506,12 +3787,14 @@ pub fn router() -> Router<AppState> {
         .route("/api/me/devices", get(list_devices).post(create_device))
         .route("/api/me/devices/{id}", axum::routing::delete(delete_device))
         .route("/api/flights/{id}/end", post(end_club_flight))
+        .route("/api/flights/{id}/trail", patch(patch_club_flight_trail))
         .route("/api/flights/{id}/fixes", get(club_flight_fixes))
         .route("/api/flights/{id}/stream", get(club_flight_stream))
         .route("/api/flights/{id}/gpx", get(club_flight_gpx))
         .route("/api/club/map", get(club_map))
         .route("/api/club/map/public", get(public_map))
         .route("/api/admin/map", get(admin_map))
+        .route("/api/admin/map/trails", get(admin_map_trails))
         .route(
             "/api/admin/map/tails",
             get(get_admin_map_tails).post(put_admin_map_tails),

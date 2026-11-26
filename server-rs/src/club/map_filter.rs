@@ -145,6 +145,7 @@ mod tests {
             pilot_name: "Guest".into(),
             visibility: "public".into(),
             club_id: "c1".into(),
+            trail_minutes: 5,
             fix: LiveFix {
                 t: 0,
                 lat,
@@ -197,6 +198,7 @@ mod tests {
                     accuracy: None,
                 },
                 visibility: "public".into(),
+                trail_minutes: 5,
             },
             TailLivePosition {
                 tail: "NEAR".into(),
@@ -214,6 +216,7 @@ mod tests {
                     accuracy: None,
                 },
                 visibility: "public".into(),
+                trail_minutes: 5,
             },
         ];
         let capped = apply_public_cap(pos, 1, center);

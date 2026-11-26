@@ -14,6 +14,7 @@ pub struct TailLivePosition {
     pub pilot_name: Option<String>,
     pub fix: LiveFix,
     pub visibility: String,
+    pub trail_minutes: i16,
 }
 
 #[derive(Clone, Debug)]
@@ -25,6 +26,7 @@ pub struct DeviceFix {
     pub visibility: String,
     #[allow(dead_code)]
     pub club_id: String,
+    pub trail_minutes: i16,
     pub fix: LiveFix,
 }
 
@@ -57,6 +59,7 @@ pub fn dedupe_by_tail(inputs: Vec<DeviceFix>) -> Vec<TailLivePosition> {
                 pilot_name: Some(row.pilot_name.clone()),
                 fix: row.fix.clone(),
                 visibility: row.visibility.clone(),
+                trail_minutes: row.trail_minutes,
             });
         }
     }
@@ -105,6 +108,7 @@ mod tests {
             pilot_name: "Pat".to_string(),
             visibility: "club".to_string(),
             club_id: "c1".to_string(),
+            trail_minutes: 5,
             fix: fix(t, acc),
         }
     }
@@ -129,6 +133,7 @@ mod tests {
                 pilot_name: None,
                 fix: fix(1, Some(5.0)),
                 visibility: "club".into(),
+                trail_minutes: 5,
             },
             TailLivePosition {
                 tail: "B".to_string(),
@@ -137,6 +142,7 @@ mod tests {
                 pilot_name: None,
                 fix: fix(1, Some(5.0)),
                 visibility: "club".into(),
+                trail_minutes: 5,
             },
         ];
         let filtered = filter_admin_tails(all.clone(), &["A".to_string()]);

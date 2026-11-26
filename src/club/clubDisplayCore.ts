@@ -7,6 +7,18 @@ import {
   lonToTileX,
   type KioskViewPadding,
 } from "./kioskMapView";
+import {
+  DEFAULT_TRAIL_MINUTES,
+  DEFAULT_TRAIL_RGB,
+  FOCUSED_TRAIL_RGB,
+  matchTrailForAircraft,
+  parseTrailMinutes,
+  parseTrailsPayload,
+  prepareTrailPoints,
+  renderTrailsOverlay,
+  type FlightTrail,
+  type RenderTrailItem,
+} from "./liveTrail";
 import { subscribeKioskSignals } from "./kioskSync";
 import { clubStaffLoginRedirectUrl } from "./safeNext";
 import { t } from "../i18n/index";
@@ -38,7 +50,9 @@ type BaseAerodrome = {
 
 type AircraftPosition = {
   tail: string;
+  flightId?: string;
   pilotName?: string | null;
+  trailMinutes?: number;
   fix?: {
     lat: number;
     lon: number;
@@ -84,6 +98,7 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
   let base: BaseAerodrome | null = null;
   let mapContainer: HTMLElement | null = null;
   let lastAircraft: AircraftPosition[] = [];
+  let lastTrails: FlightTrail[] = [];
   let focusedTail: string | null = null;
 
   function redirectToLoginOnce(): void {
@@ -351,8 +366,11 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
 
   async function refreshMap(): Promise<void> {
     if (sessionEnded) return;
-    const res = await fetch("/api/display/map", { credentials: "same-origin" });
-    if (isAuthFailure(res.status)) {
+    const [res, trailsRes] = await Promise.all([
+      fetch("/api/display/map", { credentials: "same-origin" }),
+      fetch("/api/display/map/trails", { credentials: "same-origin" }).catch(() => null),
+    ]);
+    if (isAuthFailure(res.status) || (trailsRes && isAuthFailure(trailsRes.status))) {
       redirectToLoginOnce();
       return;
     }
@@ -360,9 +378,14 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     const data = (await res.json()) as {
       aircraft: AircraftPosition[];
     };
+    const trailsData =
+      trailsRes && trailsRes.ok
+        ? parseTrailsPayload(await trailsRes.json().catch(() => null))
+        : [];
     if (sessionEnded) return;
 
     lastAircraft = data.aircraft ?? [];
+    lastTrails = trailsData;
     if (focusedTail !== null && !lastAircraft.some((a) => a.tail === focusedTail)) {
       focusedTail = null;
     }
@@ -420,19 +443,25 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     existingTiles.forEach((tile) => tile.remove());
     const existingMarkers = mapContainer.querySelectorAll("[data-marker]");
     existingMarkers.forEach((m) => m.remove());
+    const existingTrails = mapContainer.querySelectorAll("[data-trails-canvas], [data-trails-layer]");
+    existingTrails.forEach((el) => el.remove());
 
     const mapPx = getMapViewportPx();
     const padding = getMapPadding(mapPx);
 
     const aircraftPositions = (aircraft ?? [])
       .filter(
-        (a): a is AircraftPosition & { fix: { lat: number; lon: number; alt?: number | null; speed?: number | null } } =>
-          a.fix != null && Number.isFinite(a.fix.lat) && Number.isFinite(a.fix.lon),
+        (a): a is AircraftPosition & {
+          fix: { lat: number; lon: number; alt?: number | null; speed?: number | null; t?: number };
+        } => a.fix != null && Number.isFinite(a.fix.lat) && Number.isFinite(a.fix.lon),
       )
       .map((a) => ({
         lat: a.fix.lat,
         lon: a.fix.lon,
+        t: a.fix.t,
         tail: a.tail,
+        flightId: a.flightId,
+        trailMinutes: a.trailMinutes,
         pilotName: a.pilotName ?? null,
       }));
 
@@ -458,6 +487,47 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     }
 
     renderTiles(view, mapPx);
+
+    if (lastTrails.length > 0 && aircraftPositions.length > 0) {
+      const tileSize = 256;
+      const centerX = lonToTileX(view.centerLon, view.zoom);
+      const centerY = latToTileY(view.centerLat, view.zoom);
+      const project = (lat: number, lon: number) => ({
+        left: (lonToTileX(lon, view.zoom) - centerX) * tileSize + mapPx.w / 2,
+        top: (latToTileY(lat, view.zoom) - centerY) * tileSize + mapPx.h / 2,
+      });
+
+      const trailItems: RenderTrailItem[] = [];
+      for (const ac of aircraftPositions) {
+        const matched = matchTrailForAircraft(lastTrails, ac);
+        if (!matched) continue;
+        const effectiveMinutes = parseTrailMinutes(
+          ac.trailMinutes ?? matched.trailMinutes,
+          DEFAULT_TRAIL_MINUTES,
+        );
+        const pts = prepareTrailPoints(matched.points, effectiveMinutes, {
+          t: ac.t,
+          lat: ac.lat,
+          lon: ac.lon,
+        });
+        if (pts.length >= 2) {
+          trailItems.push({
+            flightId: matched.flightId || ac.flightId || "",
+            tail: ac.tail,
+            trailMinutes: effectiveMinutes,
+            points: pts,
+            rgb: focusedTail === ac.tail ? FOCUSED_TRAIL_RGB : DEFAULT_TRAIL_RGB,
+          });
+        }
+      }
+
+      renderTrailsOverlay(mapContainer, {
+        viewportPx: mapPx,
+        lineWidthPx: 4,
+        items: trailItems,
+        project,
+      });
+    }
 
     for (const ac of aircraftPositions) {
       renderAircraftMarker(ac, view, mapPx);
