@@ -76,6 +76,7 @@ export type FlightViewer = {
   appendLivePoints: (newPoints: TrackPoint[]) => Promise<void>;
   setAccuracyDim: (thresholdM: number) => void;
   getAircraftPosition: () => { lon: number; lat: number; alt: number } | null;
+  resize: () => void;
   destroy: () => void;
 };
 
@@ -834,6 +835,11 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
         lat: CesiumMath.toDegrees(carto.latitude),
         alt: carto.height,
       };
+    },
+    resize: () => {
+      if (viewer.isDestroyed()) return;
+      viewer.resize();
+      requestRender();
     },
     destroy: () => {
       removeCameraMoveEnd();

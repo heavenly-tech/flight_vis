@@ -445,6 +445,8 @@
     "hudDist": "DIST",
     "hudUtc": "UTC",
     "hudAcc": "ACC",
+    "telemetryToggle": "Telemetry",
+    "telemetryToggleAria": "Show or hide the flight readouts",
     "summaryMax": "max",
     "altEllip": "ellip.",
     "copiedLink": "Copied {url}",

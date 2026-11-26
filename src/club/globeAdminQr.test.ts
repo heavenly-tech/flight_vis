@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { clampOverlayRect, MIN_OVERLAY_SIZE, MAX_OVERLAY_SIZE } from "./globeAdminQr";
+import {
+  clampOverlayRect,
+  defaultOverlayRect,
+  DEFAULT_EDGE_MARGIN,
+  DEFAULT_OVERLAY_SIZE,
+  DEFAULT_TOP_BAR_CLEARANCE,
+  MIN_OVERLAY_SIZE,
+  MAX_OVERLAY_SIZE,
+} from "./globeAdminQr";
 
 describe("clampOverlayRect", () => {
   const viewport = { width: 1000, height: 800 };
@@ -98,5 +106,41 @@ describe("clampOverlayRect", () => {
     const result = clampOverlayRect(rect, largeViewport, minSize);
     expect(result.width).toBe(MAX_OVERLAY_SIZE);
     expect(result.height).toBe(MAX_OVERLAY_SIZE);
+  });
+});
+
+describe("defaultOverlayRect", () => {
+  it("anchors first-time open to the top-right desktop viewport edge below top-bar clearance", () => {
+    const rect = defaultOverlayRect({ width: 1280, height: 800 });
+    expect(rect.width).toBe(DEFAULT_OVERLAY_SIZE);
+    expect(rect.height).toBe(DEFAULT_OVERLAY_SIZE);
+    expect(rect.x + rect.width).toBe(1280 - DEFAULT_EDGE_MARGIN);
+    expect(rect.y).toBe(DEFAULT_EDGE_MARGIN + DEFAULT_TOP_BAR_CLEARANCE);
+  });
+
+  it("clears measured top-bar actions without overlapping them", () => {
+    const rect = defaultOverlayRect(
+      { width: 1920, height: 1080 },
+      { topInset: 8, rightInset: 8, topBarBottom: 52 },
+    );
+    expect(rect.x + rect.width).toBe(1920 - 8);
+    expect(rect.y).toBe(52 + DEFAULT_EDGE_MARGIN);
+  });
+
+  it("honors safe-area insets on notched viewports", () => {
+    const rect = defaultOverlayRect(
+      { width: 390, height: 844 },
+      { topInset: 44, rightInset: 20 },
+    );
+    expect(rect.x + rect.width).toBe(390 - 20);
+    expect(rect.y).toBe(44 + DEFAULT_TOP_BAR_CLEARANCE);
+  });
+
+  it("stays completely within narrow viewports", () => {
+    const rect = defaultOverlayRect({ width: 240, height: 400 });
+    expect(rect.x).toBeGreaterThanOrEqual(0);
+    expect(rect.y).toBeGreaterThanOrEqual(0);
+    expect(rect.x + rect.width).toBeLessThanOrEqual(240);
+    expect(rect.y + rect.height).toBeLessThanOrEqual(400);
   });
 });
