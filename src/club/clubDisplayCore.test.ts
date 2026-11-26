@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CHECKIN_STEP_SEC } from "./checkinStep";
 import { mountClubDisplayScreen } from "./clubDisplayCore";
@@ -158,5 +161,182 @@ describe("mountClubDisplayScreen activation loop", () => {
     expect(dom.map.textContent).toContain("CC-BBB · Piloto Dos");
     expect(kioskMap?.getAttribute("data-view")).toBe("flights");
     expect(kioskMap?.querySelector('[data-marker="aircraft"][data-tail="CC-BBB"]')).not.toBeNull();
+  });
+
+  it("renders clubName, empty state, tail focus via button or marker, detail strip, auto-drop, and Ver todas reset", async () => {
+    const dom = buildKioskDom();
+    let pollStep = 0;
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/club/i18n/context") {
+        return new Response(JSON.stringify({ resolvedLocale: "es" }), { status: 200 });
+      }
+      if (url === "/api/display/base") {
+        return new Response(
+          JSON.stringify({
+            icao: "SCTB",
+            lat: -33.456,
+            lon: -70.548,
+            clubName: "Club Aéreo de Santiago",
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "/api/display/kiosk-layout") {
+        return new Response(
+          JSON.stringify({ x: 0.85, y: 0.76, size: 0.22, checkinQrVisible: true }),
+          { status: 200 },
+        );
+      }
+      if (url === "/api/display/map") {
+        pollStep += 1;
+        // 1 = displaySessionActive check, 2 = initial empty poll, 3 = 2 aircraft, 4 = CC-AAA moved, 5 = CC-AAA gone
+        if (pollStep <= 2) {
+          return new Response(JSON.stringify({ aircraft: [] }), { status: 200 });
+        }
+        if (pollStep === 3) {
+          return new Response(
+            JSON.stringify({
+              aircraft: [
+                {
+                  tail: "CC-AAA",
+                  pilotName: "Piloto Uno",
+                  fix: { lat: -33.5, lon: -70.6, alt: 1249.6, speed: 40 },
+                },
+                {
+                  tail: "CC-BBB",
+                  fix: { lat: -33.42, lon: -70.5 },
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        if (pollStep === 4) {
+          return new Response(
+            JSON.stringify({
+              aircraft: [
+                {
+                  tail: "CC-AAA",
+                  pilotName: "Piloto Uno",
+                  fix: { lat: -33.51, lon: -70.61, alt: 1300, speed: 45 },
+                },
+                {
+                  tail: "CC-BBB",
+                  fix: { lat: -33.42, lon: -70.5 },
+                },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            aircraft: [
+              {
+                tail: "CC-BBB",
+                fix: { lat: -33.42, lon: -70.5 },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mountClubDisplayScreen(dom);
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Club name shown in header
+    const clubNameEl = dom.viewport.querySelector<HTMLElement>("#club-name");
+    expect(clubNameEl?.hidden).toBe(false);
+    expect(clubNameEl?.textContent).toBe("Club Aéreo de Santiago");
+
+    // Empty state shown when no aircraft
+    const emptyEl = dom.viewport.querySelector<HTMLElement>("#map-empty");
+    expect(emptyEl?.hidden).toBe(false);
+    expect(emptyEl?.textContent).toBe(t("kiosk.noAircraft"));
+    expect(dom.map.querySelectorAll("li")).toHaveLength(0);
+
+    // Next 5s poll brings 2 aircraft
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(emptyEl?.hidden).toBe(true);
+    const buttons = dom.map.querySelectorAll<HTMLButtonElement>("li > button");
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0].getAttribute("aria-pressed")).toBe("false");
+    expect(buttons[1].getAttribute("aria-pressed")).toBe("false");
+
+    const kioskMap = dom.mapLayer.querySelector<HTMLElement>('[data-testid="kiosk-map"]')!;
+    const viewAllBtn = dom.viewport.querySelector<HTMLButtonElement>("#btn-view-all")!;
+    const focusDetail = dom.viewport.querySelector<HTMLElement>("#focus-detail")!;
+    expect(viewAllBtn.hidden).toBe(true);
+    expect(focusDetail.hidden).toBe(true);
+
+    // Tap first tail button -> focuses CC-AAA, shows detail strip with real payload data only
+    buttons[0].click();
+    expect(kioskMap.getAttribute("data-view")).toBe("focus");
+    expect(kioskMap.getAttribute("data-focused-tail")).toBe("CC-AAA");
+    expect(viewAllBtn.hidden).toBe(false);
+    expect(viewAllBtn.textContent).toBe(t("kiosk.viewAll"));
+    expect(focusDetail.hidden).toBe(false);
+    expect(focusDetail.textContent).toContain("CC-AAA");
+    expect(focusDetail.textContent).toContain("Piloto Uno");
+    expect(focusDetail.textContent).toContain("1250 m");
+    expect(focusDetail.textContent).toContain("144 km/h");
+    expect(
+      dom.map.querySelector('button[data-tail="CC-AAA"]')?.getAttribute("aria-pressed"),
+    ).toBe("true");
+
+    // Next 5s poll keeps following CC-AAA and updates detail strip
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(kioskMap.getAttribute("data-view")).toBe("focus");
+    expect(kioskMap.getAttribute("data-focused-tail")).toBe("CC-AAA");
+    expect(focusDetail.textContent).toContain("1300 m");
+    expect(focusDetail.textContent).toContain("162 km/h");
+
+    // Click map marker for CC-BBB (pointer-events: auto) -> switches focus to CC-BBB, omits absent pilot/alt/speed
+    const markerB = kioskMap.querySelector<HTMLButtonElement>(
+      '[data-marker="aircraft"][data-tail="CC-BBB"]',
+    )!;
+    expect(markerB).not.toBeNull();
+    expect(markerB.style.pointerEvents).toBe("auto");
+    markerB.click();
+    expect(kioskMap.getAttribute("data-focused-tail")).toBe("CC-BBB");
+    expect(focusDetail.hidden).toBe(false);
+    expect(focusDetail.textContent).toContain("CC-BBB");
+    expect(focusDetail.querySelector('[data-detail="pilot"]')).toBeNull();
+    expect(focusDetail.querySelector('[data-detail="alt"]')).toBeNull();
+    expect(focusDetail.querySelector('[data-detail="speed"]')).toBeNull();
+
+    // Click "Ver todas" resets to fit-all
+    viewAllBtn.click();
+    expect(kioskMap.getAttribute("data-view")).toBe("flights");
+    expect(kioskMap.getAttribute("data-focused-tail")).toBeNull();
+    expect(viewAllBtn.hidden).toBe(true);
+    expect(focusDetail.hidden).toBe(true);
+
+    // Focus CC-AAA again, then let poll 5 drop CC-AAA -> focus automatically clears
+    dom.map.querySelector<HTMLButtonElement>('button[data-tail="CC-AAA"]')?.click();
+    expect(kioskMap.getAttribute("data-focused-tail")).toBe("CC-AAA");
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(kioskMap.getAttribute("data-focused-tail")).toBeNull();
+    expect(kioskMap.getAttribute("data-view")).toBe("flights");
+    expect(viewAllBtn.hidden).toBe(true);
+    expect(focusDetail.hidden).toBe(true);
+  });
+
+  it("club-screen.html uses visible text input with autocomplete=off, spellcheck=false, and i18n placeholder", () => {
+    const root = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
+    const html = fs.readFileSync(path.join(root, "club-screen.html"), "utf8");
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const input = doc.querySelector<HTMLInputElement>("#activate-token");
+    expect(input).not.toBeNull();
+    expect(input?.getAttribute("type")).toBe("text");
+    expect(input?.getAttribute("autocomplete")).toBe("off");
+    expect(input?.getAttribute("spellcheck")).toBe("false");
+    expect(input?.getAttribute("data-i18n-placeholder")).toBe("kiosk.pasteTokenPlaceholder");
   });
 });

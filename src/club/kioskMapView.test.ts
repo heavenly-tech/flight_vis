@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computeKioskView,
   DEFAULT_BASE_VIEW_KM,
+  DEFAULT_FOCUS_VIEW_KM,
   getFallbackBase,
   getFallbackViewKm,
   latToTileY,
@@ -119,6 +120,76 @@ describe("kioskMapView", () => {
       expect(result.viewType).toBe("flights");
       expect(result.centerLat).toBeCloseTo((-33.5 + -33.4) / 2, 5);
       expect(result.centerLon).toBeCloseTo((-70.6 + -70.7) / 2, 5);
+    });
+
+    it("focuses on a selected aircraft at closer zoom (~5 km span)", () => {
+      const target = { lat: -33.52, lon: -70.62 };
+      const other = { lat: -33.2, lon: -70.3 };
+      const allView = computeKioskView(TOBALABA, [target, other], { w: 1280, h: 720 });
+      const baseView = computeKioskView(TOBALABA, [], { w: 1280, h: 720 });
+      const focusView = computeKioskView(
+        TOBALABA,
+        [target, other],
+        { w: 1280, h: 720 },
+        { focus: target },
+      );
+
+      expect(DEFAULT_FOCUS_VIEW_KM).toBe(5);
+      expect(focusView.viewType).toBe("focus");
+      expect(focusView.centerLat).toBeCloseTo(target.lat, 5);
+      expect(focusView.centerLon).toBeCloseTo(target.lon, 5);
+      expect(focusView.zoom).toBeGreaterThan(allView.zoom);
+      expect(focusView.zoom).toBeGreaterThan(baseView.zoom);
+    });
+
+    it("ignores non-finite focus coordinates and falls back to fit-all", () => {
+      const ac = [{ lat: -33.5, lon: -70.6 }];
+      const view = computeKioskView(
+        TOBALABA,
+        ac,
+        { w: 1280, h: 720 },
+        { focus: { lat: Number.NaN, lon: -70.6 } },
+      );
+      expect(view.viewType).toBe("flights");
+    });
+
+    it("applies safe top padding so markers stay below top header and controls", () => {
+      const viewport = { w: 1280, h: 720 };
+      const padding = { top: 120, right: 56, bottom: 48, left: 56 };
+      const aircraft = [
+        { lat: -33.35, lon: -70.548 },
+        { lat: -33.55, lon: -70.548 },
+      ];
+      const view = computeKioskView(TOBALABA, aircraft, viewport, { padding });
+      const centerY = latToTileY(view.centerLat, view.zoom);
+      const centerX = lonToTileX(view.centerLon, view.zoom);
+
+      for (const pt of [TOBALABA, ...aircraft]) {
+        const pxY = (latToTileY(pt.lat, view.zoom) - centerY) * 256 + viewport.h / 2;
+        const pxX = (lonToTileX(pt.lon, view.zoom) - centerX) * 256 + viewport.w / 2;
+        expect(pxY).toBeGreaterThanOrEqual(padding.top - 0.5);
+        expect(pxY).toBeLessThanOrEqual(viewport.h - padding.bottom + 0.5);
+        expect(pxX).toBeGreaterThanOrEqual(padding.left - 0.5);
+        expect(pxX).toBeLessThanOrEqual(viewport.w - padding.right + 0.5);
+      }
+    });
+
+    it("shifts focused aircraft down into the unobstructed center when top padding is set", () => {
+      const viewport = { w: 390, h: 740 };
+      const padding = { top: 120, right: 40, bottom: 40, left: 40 };
+      const target = { lat: -33.48, lon: -70.58 };
+      const view = computeKioskView(TOBALABA, [target], viewport, {
+        focus: target,
+        padding,
+      });
+
+      expect(view.viewType).toBe("focus");
+      const pxY =
+        (latToTileY(target.lat, view.zoom) - latToTileY(view.centerLat, view.zoom)) * 256 +
+        viewport.h / 2;
+      const expectedSafeCenterY = padding.top + (viewport.h - padding.top - padding.bottom) / 2;
+      expect(pxY).toBeCloseTo(expectedSafeCenterY, 1);
+      expect(pxY).toBeGreaterThan(padding.top);
     });
   });
 

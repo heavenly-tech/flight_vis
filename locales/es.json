@@ -284,7 +284,7 @@
   },
   "admin": {
     "liveMapTitle": "Mapa en vivo (administración)",
-    "tailFilterHint": "Las matrículas filtran solo esta vista (se guardan).",
+    "tailFilterHint": "Las matrículas seleccionadas filtran esta vista y la pantalla del club que actives.",
     "showTails": "Mostrar matrículas",
     "saveSelection": "Guardar selección",
     "kioskSession": "Activar pantalla del club",
@@ -408,7 +408,13 @@
     "qrHide": "Ocultar QR",
     "qrRotateHint": "El QR rota cada {seconds} segundos.",
     "liveMapAria": "Mapa en vivo del club",
-    "awaitingActivation": "Pantalla sin activar."
+    "awaitingActivation": "Pantalla sin activar.",
+    "viewAll": "Ver todas",
+    "noAircraft": "No hay aeronaves en vuelo.",
+    "pasteTokenPlaceholder": "Pega el código aquí",
+    "detailAltitude": "Altitud",
+    "detailSpeed": "Velocidad",
+    "focusedAircraftAria": "Detalle de aeronave seleccionada"
   },
   "globe": {
     "metaDescription": "Visualización 3D de vuelos IGC y GPX.",
@@ -625,5 +631,21 @@
       "bodyPlain": "Hola,\n\nTe invitaron a volar con el club. Usa este enlace para aceptar (vence en {minutes} minutos):\n{url}\n\nSi no esperabas este correo, ignóralo.",
       "bodyHtml": "<p>Hola,</p><p>Te invitaron a volar con el club. <a href=\"{url}\">Acepta la invitación</a> (vence en {minutes} minutos).</p><p>Si no esperabas este correo, ignóralo.</p>"
     }
+  },
+  "adminMap": {
+    "noLiveAircraft": "No hay aeronaves en vuelo en este momento.",
+    "selectAllTails": "Todas",
+    "selectNoTails": "Ninguna",
+    "selectionSaved": "Selección guardada.",
+    "clubSettings": "Configuración del club",
+    "kioskCardTitle": "Pantalla del club (kiosco)",
+    "openClubScreen": "Abrir pantalla del club",
+    "openDisplay": "Abrir pantalla",
+    "copyCode": "Copiar código",
+    "copyLink": "Copiar enlace",
+    "copySelected": "Texto seleccionado para copiar.",
+    "displayUrlLabel": "Enlace de la pantalla del club",
+    "activationCodeLabel": "Código de activación",
+    "noTailsRegistered": "Aún no hay matrículas registradas."
   }
 }

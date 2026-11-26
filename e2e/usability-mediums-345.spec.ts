@@ -171,6 +171,7 @@ test("admin map interpolates club slug in language help without double braces", 
   });
   expect(login.ok()).toBeTruthy();
 
+  await stubArcgisTiles(page);
   await page.goto("/club-admin-map.html", { waitUntil: "networkidle" });
   const helpText = await page.locator("#club-locale-help").textContent();
   expect(helpText).toContain("/c/demo");

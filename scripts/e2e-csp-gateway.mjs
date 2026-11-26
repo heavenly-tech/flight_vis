@@ -79,6 +79,9 @@ function shouldProxy(urlPath) {
   return (
     pathOnly === "/signup" ||
     pathOnly === "/club-login.html" ||
+    pathOnly === "/club-globe-screen.html" ||
+    pathOnly === "/club/globe-screen" ||
+    pathOnly === "/club/screen" ||
     urlPath.startsWith("/api") ||
     urlPath.startsWith("/login") ||
     urlPath.startsWith("/logout") ||

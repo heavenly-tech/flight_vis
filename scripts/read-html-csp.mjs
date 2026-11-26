@@ -10,6 +10,10 @@ export function readHtmlStrictCsp() {
   return readFileSync(path.join(cspDir, "html-strict.csp"), "utf8").trim();
 }
 
+export function readHtmlMapCsp() {
+  return readFileSync(path.join(cspDir, "html-map.csp"), "utf8").trim();
+}
+
 export function readHtmlGlobeCsp() {
   return readFileSync(path.join(cspDir, "html-globe.csp"), "utf8").trim();
 }
@@ -23,6 +27,7 @@ export function readHtmlPageCsp() {
 export function cspForPath(urlPath) {
   const kind = policyKindForPath(urlPath);
   if (kind === "globe") return readHtmlGlobeCsp();
+  if (kind === "map") return readHtmlMapCsp();
   if (kind === "strict") return readHtmlStrictCsp();
   throw new Error(`no HTML CSP mapping for path ${urlPath}`);
 }
