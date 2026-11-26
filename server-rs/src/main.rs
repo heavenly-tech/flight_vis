@@ -417,6 +417,14 @@ fn apply_login_mode_html(html: &str, query: &HashMap<String, String>) -> String 
         return html.to_string();
     }
     html.replace(
+        r#"id="login-lead" class="lead" data-i18n="entrar.magicLead""#,
+        r#"id="login-lead" class="lead" data-i18n="entrar.passwordLead""#,
+    )
+    .replace(
+        "Ingresa tu correo y te enviaremos un enlace para iniciar sesión.",
+        "Inicia sesión con tu contraseña.",
+    )
+    .replace(
         r#"id="login-form" method="post" action="/api/account/magic-link""#,
         r#"id="login-form" method="post" action="/api/account/login""#,
     )
@@ -439,7 +447,7 @@ fn apply_login_mode_html(html: &str, query: &HashMap<String, String>) -> String 
     )
     .replace(
         r#"id="legacy-details" class="muted" hidden"#,
-        r#"id="legacy-details" class="muted" open"#,
+        r#"id="legacy-details" class="muted""#,
     )
     .replace(
         r#"name="password" type="password" autocomplete="current-password""#,
@@ -455,11 +463,23 @@ fn apply_login_ssr_locale(html: &str, locale: &str) -> String {
     };
     let title = cat.t(locale, "entrar.title", &[]);
     let send_link = cat.t(locale, "entrar.sendLink", &[]);
+    let magic_lead = cat.t(locale, "entrar.magicLead", &[]);
+    let password_lead = cat.t(locale, "entrar.passwordLead", &[]);
     let lang_attr = format!(r#"lang="{bcp47}""#);
     let mut out = html.replace(r#"lang="es-CL""#, &lang_attr);
     for (key, fallback, localized) in [
         ("entrar.title", "Iniciar sesión", title.as_str()),
         ("entrar.sendLink", "Enviar enlace", send_link.as_str()),
+        (
+            "entrar.magicLead",
+            "Ingresa tu correo y te enviaremos un enlace para iniciar sesión.",
+            magic_lead.as_str(),
+        ),
+        (
+            "entrar.passwordLead",
+            "Inicia sesión con tu contraseña.",
+            password_lead.as_str(),
+        ),
     ] {
         let needle = format!(r#"data-i18n="{key}""#);
         if let Some(idx) = out.find(&needle) {
@@ -467,7 +487,14 @@ fn apply_login_ssr_locale(html: &str, locale: &str) -> String {
                 let start = idx + close + 1;
                 if let Some(end) = out[start..].find('<') {
                     let text = &out[start..start + end];
-                    if text.trim() == fallback || matches!(key, "entrar.title" | "entrar.sendLink")
+                    if text.trim() == fallback
+                        || matches!(
+                            key,
+                            "entrar.title"
+                                | "entrar.sendLink"
+                                | "entrar.magicLead"
+                                | "entrar.passwordLead"
+                        )
                     {
                         out.replace_range(start..start + end, localized);
                     }
@@ -1339,5 +1366,53 @@ mod tests {
         let gone_addr = gone.local_addr().expect("addr");
         drop(gone);
         assert!(!healthcheck_at(gone_addr));
+    }
+
+    #[test]
+    fn login_ssr_password_mode_updates_lead_and_keeps_legacy_collapsed() {
+        let locales = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../locales");
+        let _ = crate::i18n::init_global(&locales);
+        let raw = include_str!("../../login.html");
+
+        // Default magic-link mode: magic lead intact, legacy details hidden, secondary pilot CTA.
+        let default_html = apply_login_mode_html(raw, &HashMap::new());
+        assert!(
+            default_html.contains(r#"id="login-lead" class="lead" data-i18n="entrar.magicLead""#)
+        );
+        assert!(default_html
+            .contains("Ingresa tu correo y te enviaremos un enlace para iniciar sesión."));
+        assert!(default_html.contains(r#"id="legacy-details" class="muted" hidden"#));
+        assert!(default_html.contains(
+            r#"id="register-pilot"
+          class="secondary""#
+        ));
+        assert!(!default_html.contains(
+            r#"id="register-pilot"
+          class="primary""#
+        ));
+
+        let default_en = apply_login_ssr_locale(&default_html, "en");
+        assert!(default_en.contains("Enter your email and we will send you a sign-in link."));
+
+        // Password mode: password lead swapped, legacy details un-hidden WITHOUT open attribute.
+        let mut pw_query = HashMap::new();
+        pw_query.insert("mode".to_string(), "password".to_string());
+        let pw_html = apply_login_mode_html(raw, &pw_query);
+        assert!(pw_html.contains(r#"id="login-lead" class="lead" data-i18n="entrar.passwordLead""#));
+        assert!(pw_html.contains("Inicia sesión con tu contraseña."));
+        assert!(
+            !pw_html.contains("Ingresa tu correo y te enviaremos un enlace para iniciar sesión.")
+        );
+        assert!(pw_html.contains(r#"<details id="legacy-details" class="muted">"#));
+        assert!(!pw_html.contains(r#"id="legacy-details" class="muted" open"#));
+        assert!(!pw_html.contains(r#"id="legacy-details" class="muted" hidden"#));
+        assert!(pw_html.contains(r#"id="login-form" method="post" action="/api/account/login""#));
+
+        let pw_es = apply_login_ssr_locale(&pw_html, "es");
+        assert!(pw_es.contains("Inicia sesión con tu contraseña."));
+
+        let pw_en = apply_login_ssr_locale(&pw_html, "en");
+        assert!(pw_en.contains("Sign in with your password."));
+        assert!(!pw_en.contains("Inicia sesión con tu contraseña."));
     }
 }

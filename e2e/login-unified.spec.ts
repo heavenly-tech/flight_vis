@@ -148,6 +148,10 @@ test.describe("unified /login", () => {
     await page.goto("/login?mode=password", { waitUntil: "domcontentloaded" });
     await page.locator("#email").fill("nobody@test");
     await page.locator("#password").fill("password1234");
+    const details = page.locator("#legacy-details");
+    await expect(details).toBeVisible();
+    await expect(details).not.toHaveAttribute("open", /.*/);
+    await details.locator("summary").click();
     const legacy = page.locator("#legacy-submit");
     await expect(legacy).toHaveAttribute("formaction", "/api/club/login");
     await Promise.all([

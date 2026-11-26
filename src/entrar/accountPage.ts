@@ -54,7 +54,7 @@ export async function bootAccountPage(): Promise<void> {
       body: JSON.stringify(payload),
     });
     if (res.ok) {
-      if (msg) msg.textContent = t("club.login.success");
+      if (msg) msg.textContent = t("account.password.saved");
       return;
     }
     const err = ((await res.json().catch(() => ({}))) as { error?: string }).error ?? "unauthorized";
@@ -62,4 +62,6 @@ export async function bootAccountPage(): Promise<void> {
   });
 }
 
-void bootAccountPage();
+if (typeof document !== "undefined" && document.getElementById("password-form")) {
+  void bootAccountPage();
+}

@@ -94,7 +94,7 @@
     <main class="auth-card">
       <div id="lang-slot" class="lang-bar"></div>
       <h1 data-i18n="entrar.title">Iniciar sesión</h1>
-      <p class="lead" data-i18n="entrar.magicLead">
+      <p id="login-lead" class="lead" data-i18n="entrar.magicLead">
         Ingresa tu correo y te enviaremos un enlace para iniciar sesión.
       </p>
       <form id="login-form" method="post" action="/api/account/magic-link">
@@ -154,7 +154,7 @@
       <div class="row-links">
         <a
           id="register-pilot"
-          class="primary"
+          class="secondary"
           href="/signup.html"
           data-i18n="entrar.registerPilot"
         >

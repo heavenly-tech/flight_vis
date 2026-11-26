@@ -17,7 +17,7 @@ describe("login and pilot signup hierarchy", () => {
     document.body.innerHTML = "";
   });
 
-  it("keeps magic link as default login method and puts Registrar piloto primary over Registrar club", () => {
+  it("keeps magic link as default login method and styles both signup links secondary", () => {
     document.body.innerHTML = loadHtmlBody("login.html");
     initI18n({ stored: "es" });
     applyI18nDocument(document);
@@ -25,27 +25,36 @@ describe("login and pilot signup hierarchy", () => {
     // Magic link remains the default login method (password stays hidden until toggled).
     const form = document.querySelector<HTMLFormElement>("#login-form")!;
     expect(form.getAttribute("action")).toBe("/api/account/magic-link");
+    const loginLead = document.querySelector<HTMLParagraphElement>("#login-lead")!;
+    expect(loginLead).not.toBeNull();
+    expect(loginLead.dataset.i18n).toBe("entrar.magicLead");
+    expect(loginLead.textContent?.trim()).toBe(
+      "Ingresa tu correo y te enviaremos un enlace para iniciar sesión.",
+    );
     const submitMagic = document.querySelector<HTMLButtonElement>("#submit-magic")!;
     const submitPassword = document.querySelector<HTMLButtonElement>("#submit-password")!;
     const passwordReveal = document.querySelector<HTMLElement>("#password-reveal")!;
     const usePassword = document.querySelector<HTMLAnchorElement>("#use-password")!;
+    const legacyDetails = document.querySelector<HTMLDetailsElement>("#legacy-details")!;
     expect(submitMagic.hidden).toBe(false);
     expect(submitMagic.textContent?.trim()).toBe("Enviar enlace");
     expect(passwordReveal.hidden).toBe(true);
     expect(submitPassword.hidden).toBe(true);
     expect(usePassword.hidden).toBe(false);
+    expect(legacyDetails.hidden).toBe(true);
+    expect(legacyDetails.hasAttribute("open")).toBe(false);
     expect(submitMagic.compareDocumentPosition(usePassword) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
-    // Signup CTA hierarchy: Registrar piloto is primary/first -> /signup.html;
-    // Registrar club is secondary/second -> /club-signup.html.
+    // Signup CTA hierarchy: both Registrar piloto (/signup.html) and Registrar club (/club-signup.html)
+    // use secondary styling so the main login submit stays the single primary CTA.
     const registerPilot = document.querySelector<HTMLAnchorElement>("#register-pilot")!;
     const registerClub = document.querySelector<HTMLAnchorElement>("#register-club")!;
     expect(registerPilot).not.toBeNull();
     expect(registerClub).not.toBeNull();
     expect(registerPilot.textContent?.trim()).toBe("Registrar piloto");
     expect(registerClub.textContent?.trim()).toBe("Registrar club");
-    expect(registerPilot.classList.contains("primary")).toBe(true);
-    expect(registerPilot.classList.contains("secondary")).toBe(false);
+    expect(registerPilot.classList.contains("secondary")).toBe(true);
+    expect(registerPilot.classList.contains("primary")).toBe(false);
     expect(registerClub.classList.contains("secondary")).toBe(true);
     expect(registerClub.classList.contains("primary")).toBe(false);
     expect(

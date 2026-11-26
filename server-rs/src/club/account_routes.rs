@@ -1,3 +1,4 @@
+use super::routes::is_secure;
 use crate::club::{
     auth,
     db::{now_ms, ClubDb},
@@ -18,13 +19,6 @@ use std::collections::HashMap;
 
 fn club_db(state: &AppState) -> Option<&ClubDb> {
     state.club.as_ref()
-}
-
-fn is_secure(headers: &HeaderMap) -> bool {
-    headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|p| p.eq_ignore_ascii_case("https"))
 }
 
 async fn signup_available() -> impl IntoResponse {
@@ -405,6 +399,32 @@ async fn account_login(
             }
         }
     }
+}
+
+async fn account_logout(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
+    if let Some(db) = club_db(&state) {
+        if let Some(account_sess) = auth::parse_account_session_cookie(&headers) {
+            let _ = db.logout_account_session(&account_sess).await;
+        }
+        if let Some(club_sess) = auth::parse_session_cookie(&headers) {
+            let _ = db.logout(&club_sess).await;
+        }
+    }
+    let secure = is_secure(&headers);
+    let clear_account = auth::clear_account_session_cookie(secure);
+    let clear_club = auth::clear_session_cookie(secure);
+    let clear_legacy = crate::auth::clear_cookie_header(secure);
+    let mut res = (StatusCode::OK, Json(json!({ "ok": true }))).into_response();
+    res.headers_mut()
+        .append(header::SET_COOKIE, clear_account.parse().expect("cookie"));
+    res.headers_mut()
+        .append(header::SET_COOKIE, clear_club.parse().expect("cookie"));
+    res.headers_mut()
+        .append(header::SET_COOKIE, clear_legacy.parse().expect("cookie"));
+    res
 }
 
 async fn account_me(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
@@ -951,6 +971,7 @@ pub fn routes() -> Router<AppState> {
         .route("/api/account/signup-available", get(signup_available))
         .route("/api/account/signup", post(account_signup))
         .route("/api/account/login", post(account_login))
+        .route("/api/account/logout", post(account_logout))
         .route("/api/account/password", post(account_set_password))
         .route("/api/account/magic-link", post(account_magic_link))
         .route("/api/account/me", get(account_me))

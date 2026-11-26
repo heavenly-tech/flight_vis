@@ -6,15 +6,6 @@
     <title data-i18n="club.login.misClubs">flight_vis</title>
     <link rel="stylesheet" href="/src/style.css" />
     <style>
-      ul {
-        list-style: none;
-        padding: 0;
-        margin: 0.75rem 0;
-      }
-      li button {
-        width: 100%;
-        margin: 0.35rem 0;
-      }
       .actions {
         display: flex;
         flex-direction: column;
@@ -26,7 +17,7 @@
         width: 100%;
         box-sizing: border-box;
       }
-      section[hidden] {
+      [hidden] {
         display: none !important;
       }
     </style>
@@ -35,46 +26,33 @@
     <main class="auth-card">
       <div id="lang-slot" class="lang-bar"></div>
       <section id="pick-panel">
-        <h1 data-i18n="club.login.misClubs"></h1>
-        <ul id="club-list"></ul>
+        <h1 data-i18n="club.login.misClubs">Mis clubes</h1>
+        <p id="account-email" class="muted account-email-line" hidden></p>
+        <ul id="club-list" class="club-list"></ul>
+        <p id="clubs-msg" class="status-msg" role="status" aria-live="polite"></p>
         <div class="actions">
-          <button type="button" id="continue-globe" class="btn-primary" data-i18n="club.login.continue"></button>
-          <button type="button" id="join-open" class="btn-secondary" data-i18n="account.join.open"></button>
-          <button type="button" id="admin-open" class="btn-secondary" data-i18n="entrar.clubAdmin"></button>
-          <a href="/" class="btn-secondary" data-i18n="nav.globe"></a>
+          <button type="button" id="continue-globe" class="btn-primary" hidden data-i18n="club.login.continue">Continuar</button>
+          <button type="button" id="join-open" class="btn-secondary" data-i18n="account.join.open">Unirse a un club</button>
+          <a href="/account.html" id="account-password-link" class="btn-secondary" data-i18n="account.password.title">Contraseña de cuenta</a>
+          <a href="/" class="btn-secondary" data-i18n="nav.globe">Visor global</a>
+          <button type="button" id="logout-btn" class="btn-secondary" data-i18n="pilot.logOut">Cerrar sesión</button>
         </div>
       </section>
       <section id="join-panel" hidden>
-        <h2 data-i18n="account.join.title"></h2>
+        <h2 data-i18n="account.join.title">Únete a un club</h2>
         <form id="join-form" method="post" action="/api/account/join">
           <div class="field">
-            <label for="join-slug" data-i18n="account.join.slug"></label>
+            <label for="join-slug" data-i18n="account.join.slug">Nombre corto del club (ej. cas-tobalaba)</label>
             <input id="join-slug" name="slug" required />
           </div>
           <div class="field">
-            <label for="join-name" data-i18n="account.join.name"></label>
+            <label for="join-name" data-i18n="account.join.name">Tu nombre (opcional)</label>
             <input id="join-name" name="name" />
           </div>
-          <button type="submit" class="btn-primary" data-i18n="account.join.submit"></button>
+          <button type="submit" class="btn-primary" data-i18n="account.join.submit">Enviar solicitud</button>
           <p id="join-msg" class="status-msg" role="status" aria-live="polite"></p>
         </form>
-        <button type="button" id="join-back" class="btn-secondary btn-block" data-i18n="common.cancel"></button>
-      </section>
-      <section id="admin-panel" hidden>
-        <h2 data-i18n="club.login.clubTitle"></h2>
-        <p class="muted" data-i18n="club.login.clubLead"></p>
-        <form id="admin-form">
-          <div class="field">
-            <label for="admin-slug" data-i18n="club.register.pickClubLabel"></label>
-            <input id="admin-slug" name="slug" required />
-          </div>
-          <button type="submit" class="btn-primary" data-i18n="club.login.submit"></button>
-          <p id="admin-msg" class="status-msg" role="status" aria-live="polite"></p>
-        </form>
-        <div class="actions">
-          <a class="btn-secondary" href="/club-admin-map.html" data-i18n="nav.adminMap"></a>
-          <button type="button" id="admin-back" class="btn-secondary" data-i18n="common.cancel"></button>
-        </div>
+        <button type="button" id="join-back" class="btn-secondary btn-block" data-i18n="common.cancel">Cancelar</button>
       </section>
     </main>
     <script type="module" src="/src/entrar/misClubsPage.ts"></script>

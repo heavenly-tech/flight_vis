@@ -317,6 +317,176 @@ body.fv-auth-page {
   overflow: hidden;
 }
 
+/* Shared admin header bar, active nav pill, and mobile scroll strip */
+.admin-header-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.45rem 0.75rem;
+  padding: 0.5rem 0.75rem;
+  margin: 0.6rem 0 0.5rem;
+  border: 1px solid var(--stroke, rgba(255, 255, 255, 0.12));
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 0.86rem;
+}
+
+.admin-header-club {
+  font-weight: 600;
+  color: var(--text, #f4f7fb);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.admin-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem 0.7rem;
+  margin-left: auto;
+}
+
+.admin-header-link {
+  color: var(--cyan, #67e8f9);
+  text-decoration: none;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.admin-header-link:hover {
+  text-decoration: underline;
+}
+
+.admin-shell button.admin-header-logout {
+  padding: 0.28rem 0.65rem;
+  font-size: 0.84rem;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+
+.admin-nav a[aria-current="page"],
+.admin-nav a[aria-current="page"]:visited,
+.admin-nav a[aria-current="page"]:hover {
+  background: var(--admin-nav-active-bg, #ecebff);
+  color: var(--admin-nav-active-fg, #15132a);
+  border-color: var(--admin-nav-active-border, #ecebff);
+  font-weight: 650;
+}
+
+:root[data-theme="light"] .admin-nav a[aria-current="page"],
+:root[data-theme="light"] .admin-nav a[aria-current="page"]:visited,
+:root[data-theme="light"] .admin-nav a[aria-current="page"]:hover {
+  background: #15132a;
+  color: #ecebff;
+  border-color: #15132a;
+}
+
+@media (max-width: 640px) {
+  .admin-header-bar {
+    padding: 0.45rem 0.65rem;
+  }
+
+  .admin-header-actions {
+    margin-left: 0;
+  }
+
+  .admin-nav {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: thin;
+    padding-bottom: 0.25rem;
+    margin: 0.5rem 0 0.85rem;
+  }
+
+  .admin-nav a {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+}
+
+/* Mis clubes membership cards */
+.account-email-line {
+  margin: 0 0 0.75rem;
+  font-size: 0.9rem;
+  overflow-wrap: anywhere;
+}
+
+.club-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.75rem 0 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.club-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid var(--stroke, rgba(255, 255, 255, 0.14));
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.club-card.is-current {
+  border-color: rgba(103, 232, 249, 0.65);
+  background: rgba(103, 232, 249, 0.08);
+}
+
+.club-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem 0.6rem;
+}
+
+.club-card-name {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text, #f4f7fb);
+  overflow-wrap: anywhere;
+}
+
+.club-current-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: #ecebff;
+  color: #15132a;
+  font-size: 0.76rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+:root[data-theme="light"] .club-current-badge {
+  background: #15132a;
+  color: #ecebff;
+}
+
+.club-card-meta {
+  font-size: 0.86rem;
+  color: var(--muted, #9aa6b5);
+}
+
+.club-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.25rem;
+}
+
+.club-card-actions button {
+  width: auto;
+  flex: 1 1 auto;
+  margin: 0;
+}
+
 .admin-shell .admin-list {
   list-style: none;
   padding: 0;

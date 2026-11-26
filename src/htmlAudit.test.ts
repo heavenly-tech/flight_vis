@@ -125,7 +125,7 @@ describe("root HTML accessibility and shared styling audit", () => {
       "club-register.html": ["#msg"],
       "club-signup.html": ["#msg"],
       "account.html": ["#msg"],
-      "account-clubs.html": ["#join-msg", "#admin-msg"],
+      "account-clubs.html": ["#join-msg", "#clubs-msg"],
       "app.html": ["#status"],
       "club-admin-kiosk-layout.html": ["#save-status"],
       "club-admin-map.html": [

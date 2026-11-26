@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("unified login keeps magic link default and puts pilot signup primary over club signup", async ({
+test("unified login keeps magic link default and styles both signup links secondary", async ({
   page,
 }) => {
   await page.goto("/login?next=/club-pilot.html", { waitUntil: "load" });
@@ -17,7 +17,8 @@ test("unified login keeps magic link default and puts pilot signup primary over 
   const clubLink = page.locator('a#register-club[href="/club-signup.html"]');
   await expect(pilotLink).toBeVisible();
   await expect(clubLink).toBeVisible();
-  await expect(pilotLink).toHaveClass(/\bprimary\b/);
+  await expect(pilotLink).toHaveClass(/\bsecondary\b/);
+  await expect(pilotLink).not.toHaveClass(/\bprimary\b/);
   await expect(clubLink).toHaveClass(/\bsecondary\b/);
   await expect(page.locator('a[href="/club-register.html"]')).toHaveCount(0);
 
