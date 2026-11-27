@@ -90,3 +90,7 @@ On the **admin map**, cross-club tracks are treated like anonymous viewers for p
 ## Attribution
 
 Imagery and elevation: Esri, Maxar, Earthstar Geographics, USGS, NOAA. Globe engine: CesiumJS (Apache 2.0).
+
+The 3D globe (web viewer and `/embed/3d`) uses Esri’s keyless World Imagery and World Elevation services. [Esri’s terms](https://location.arcgis.com/help/licensing-and-attribution/) limit that keyless use to non-commercial projects or Esri software/subscriptions; flight_vis is not commercial at the moment.
+
+If it goes commercial, revisit: switch to an [ArcGIS Location Platform](https://location.arcgis.com/pricing/) API key (2M free tiles/month, then paid), add the basemap API host to the Globe CSP, and handle the key’s referrer restriction vs the embed’s `Referrer-Policy: no-referrer`.
