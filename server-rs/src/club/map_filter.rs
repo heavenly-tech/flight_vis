@@ -6,6 +6,9 @@ use crate::club::{
 };
 use crate::live::LiveFix;
 
+/// Default minimum altitude floor (ft AGL) applied to public tracks on public surfaces.
+pub const DEFAULT_PUBLIC_ALTITUDE_MIN_FT: f64 = 300.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AltitudeMode {
     Agl,
@@ -48,7 +51,7 @@ pub fn evaluate_public_altitude(
     min_ft: f64,
     dem: &DemIndex,
 ) -> AltitudeEval {
-    let Some(alt_m) = fix.alt else {
+    let Some(alt_m) = fix.alt.filter(|a| a.is_finite()) else {
         return AltitudeEval::Fail;
     };
     let und = egm96_undulation_m(fix.lat, fix.lon);

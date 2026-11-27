@@ -38,8 +38,24 @@
 //!   with `Retry-After: <seconds>`).
 //! - Returns ONLY live `visibility = 'public'` flights from operational (`live`, verified,
 //!   non-suspended) clubs (`flights.club_id IS NOT NULL`), geo-bounded by `PublicArea` with the
-//!   same SQL `LIMIT 500`, exact haversine, optional `min_agl_ft` AGL floor, and 50-flight /
-//!   300-point / 120-min caps.
+//!   same SQL `LIMIT 500`, exact haversine, and 50-flight / 300-point / 120-min caps.
+//! - Mandatory AGL altitude floor (M-27, fail-closed):
+//!   - Default floor is `DEFAULT_PUBLIC_ALTITUDE_MIN_FT` (`300.0` ft AGL).
+//!   - `min_agl_ft` can raise the floor up to `20_000` ft but never lower it below `300` ft:
+//!     `effective = clamp(min_agl_ft.unwrap_or(300), 300, 20000)` (values in `0..300` clamp to
+//!     `300`; values `> 20000` clamp to `20000`; negative, non-numeric, `NaN`, `inf`, empty, or
+//!     repeated values return `400 {"error":"invalid min_agl_ft"}`).
+//!   - `publicArea.minAglFt` is ALWAYS present in the JSON payload and reports the effective floor.
+//!   - Evaluated against each candidate flight's latest fix via `evaluate_public_altitude` in
+//!     `AltitudeMode::Agl`; failing excludes the whole flight.
+//!   - **Fail closed**: ONLY `AltitudeEval::Pass` is admitted (`NoDemFallbackMsl` is NOT accepted
+//!     here). A flight whose latest fix has `alt IS NULL` (or non-finite) or whose position lacks
+//!     DEM ground elevation (`DemSample::NoCoverage`) is excluded even at high MSL so grounded
+//!     airfield traffic cannot leak to anonymous viewers when AGL cannot be verified.
+//!   - `fx.alt_ref` follows `evaluate_public_altitude`'s existing semantics: `"msl"` is treated as
+//!     MSL meters directly; `"hae"`, `"wgs84_ellipsoid"`, `None`, or any other value is converted
+//!     from ellipsoid height to MSL via `alt_m - egm96_undulation_m(lat, lon)` before subtracting
+//!     DEM terrain elevation (the ingest model has no `"agl"` `alt_ref`).
 //! - Includes `"pilotName"` ONLY when `flights.show_pilot_name_public = TRUE`; never exposes
 //!   pilot/account/device IDs.
 //! - Weak ETag + `If-None-Match` -> `304`, `Cache-Control: public, max-age=5`, no CORS headers.
@@ -48,7 +64,9 @@ use crate::club::{
     auth::{self, parse_session_cookie},
     db::{now_ms, ClubDb},
     geo::{haversine_km, safe_bbox_for_radius_km},
-    map_filter::{evaluate_public_altitude, AltitudeEval, AltitudeMode},
+    map_filter::{
+        evaluate_public_altitude, AltitudeEval, AltitudeMode, DEFAULT_PUBLIC_ALTITUDE_MIN_FT,
+    },
     routes::{bearer_token, club_db},
     trail::{
         window_and_downsample_trail_with_alt, TrailMinutes, TrailPointWithAlt,
@@ -79,7 +97,9 @@ pub const PILOT_LIVE_TRAILS_DEFAULT_PUBLIC_RADIUS_KM: f64 = 20.0;
 pub const PILOT_LIVE_TRAILS_MIN_PUBLIC_RADIUS_KM: f64 = 5.0;
 /// Maximum server-clamped search radius (km) for the `public` layer.
 pub const PILOT_LIVE_TRAILS_MAX_PUBLIC_RADIUS_KM: f64 = 500.0;
-/// Minimum server-clamped altitude floor (ft AGL) for `min_agl_ft` when supplied.
+/// Minimum server-clamped altitude floor (ft AGL) for optional `min_agl_ft` on `/api/me/live-trails`.
+/// Anonymous `/api/public/live-trails` enforces `DEFAULT_PUBLIC_ALTITUDE_MIN_FT` (300 ft) as both
+/// its default and minimum floor.
 pub const PUBLIC_LIVE_TRAILS_MIN_AGL_FT_MIN: f64 = 0.0;
 /// Maximum server-clamped altitude floor (ft AGL) for `min_agl_ft` when supplied.
 pub const PUBLIC_LIVE_TRAILS_MIN_AGL_FT_MAX: f64 = 20_000.0;
@@ -179,10 +199,9 @@ fn normalize_zero(v: f64) -> f64 {
 }
 
 impl PublicArea {
-    /// Parses required finite `lat` (`[-90, 90]`) & `lon` (`[-180, 180]`), optional
-    /// `radius_km` (default `20.0`, clamped `5.0..=500.0`), and optional `min_agl_ft`
-    /// (clamped `0.0..=20000.0`; absent = `None`) from the raw query string.
-    pub fn parse_query(raw_query: Option<&str>) -> Result<Self, &'static str> {
+    fn parse_base_params(
+        raw_query: Option<&str>,
+    ) -> Result<(f64, f64, f64, Option<String>), &'static str> {
         let Some(query) = raw_query else {
             return Err("invalid location");
         };
@@ -255,6 +274,20 @@ impl PublicArea {
             }
         };
 
+        Ok((
+            normalize_zero(lat),
+            normalize_zero(lon),
+            radius_km,
+            min_agl_raw,
+        ))
+    }
+
+    /// Parses required finite `lat` (`[-90, 90]`) & `lon` (`[-180, 180]`), optional
+    /// `radius_km` (default `20.0`, clamped `5.0..=500.0`), and optional `min_agl_ft`
+    /// (clamped `0.0..=20000.0`; absent = `None`) for authenticated `/api/me/live-trails`.
+    pub fn parse_query(raw_query: Option<&str>) -> Result<Self, &'static str> {
+        let (lat, lon, radius_km, min_agl_raw) = Self::parse_base_params(raw_query)?;
+
         let min_agl_ft = match min_agl_raw {
             None => None,
             Some(ref a_s) => {
@@ -272,10 +305,46 @@ impl PublicArea {
         };
 
         Ok(Self {
-            lat: normalize_zero(lat),
-            lon: normalize_zero(lon),
+            lat,
+            lon,
             radius_km,
             min_agl_ft,
+        })
+    }
+
+    /// Parses required finite `lat`/`lon`, optional `radius_km` (`5.0..=500.0`, default `20.0`),
+    /// and `min_agl_ft` for anonymous `GET /api/public/live-trails`.
+    ///
+    /// Always resolves `min_agl_ft` to `Some(effective)` with
+    /// `effective = clamp(min_agl_ft.unwrap_or(300), 300, 20000)`:
+    /// - Absent -> `300.0` (`DEFAULT_PUBLIC_ALTITUDE_MIN_FT`)
+    /// - `0.0..300.0` -> clamped up to `300.0` (caller cannot lower below the 300 ft floor)
+    /// - `> 20_000.0` -> clamped down to `20_000.0`
+    /// - Negative (`< 0.0`), non-numeric, `NaN`, `inf`, empty, or repeated -> `Err("invalid min_agl_ft")`
+    pub fn parse_anonymous_query(raw_query: Option<&str>) -> Result<Self, &'static str> {
+        let (lat, lon, radius_km, min_agl_raw) = Self::parse_base_params(raw_query)?;
+
+        let effective_min_agl_ft = match min_agl_raw {
+            None => DEFAULT_PUBLIC_ALTITUDE_MIN_FT,
+            Some(ref a_s) => {
+                let Ok(a) = a_s.parse::<f64>() else {
+                    return Err("invalid min_agl_ft");
+                };
+                if !a.is_finite() || a < 0.0 {
+                    return Err("invalid min_agl_ft");
+                }
+                a.clamp(
+                    DEFAULT_PUBLIC_ALTITUDE_MIN_FT,
+                    PUBLIC_LIVE_TRAILS_MIN_AGL_FT_MAX,
+                )
+            }
+        };
+
+        Ok(Self {
+            lat,
+            lon,
+            radius_km,
+            min_agl_ft: Some(effective_min_agl_ft),
         })
     }
 }
@@ -455,6 +524,17 @@ fn sanitize_point(t: i64, lat: f64, lon: f64, alt: Option<f64>) -> Option<TrailP
     } else {
         None
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublicAltitudePolicy {
+    /// Authenticated `/api/me/live-trails` public layer (L-76): optional floor (`area.min_agl_ft`),
+    /// falls back to MSL comparison (`AltitudeEval::NoDemFallbackMsl`) when DEM coverage is absent.
+    OptionalWithMslFallback,
+    /// Anonymous `/api/public/live-trails` (M-27): enforces at least
+    /// `DEFAULT_PUBLIC_ALTITUDE_MIN_FT` (300 ft AGL) and fails closed — only `AltitudeEval::Pass`
+    /// is admitted; missing `alt` or `DemSample::NoCoverage` excludes the flight.
+    FailClosedFloor,
 }
 
 impl ClubDb {
@@ -638,8 +718,20 @@ impl ClubDb {
         &self,
         candidates: Vec<CandidateLiveFlight>,
         area: PublicArea,
+        altitude_policy: PublicAltitudePolicy,
     ) -> Vec<CandidateLiveFlight> {
-        let dem = area.min_agl_ft.map(|_| self.dem_index());
+        let effective_min_agl_ft = match altitude_policy {
+            PublicAltitudePolicy::OptionalWithMslFallback => area.min_agl_ft,
+            PublicAltitudePolicy::FailClosedFloor => Some(
+                area.min_agl_ft
+                    .unwrap_or(DEFAULT_PUBLIC_ALTITUDE_MIN_FT)
+                    .clamp(
+                        DEFAULT_PUBLIC_ALTITUDE_MIN_FT,
+                        PUBLIC_LIVE_TRAILS_MIN_AGL_FT_MAX,
+                    ),
+            ),
+        };
+        let dem = effective_min_agl_ft.map(|_| self.dem_index());
         let mut filtered: Vec<CandidateLiveFlight> = candidates
             .into_iter()
             .filter(|c| {
@@ -649,7 +741,7 @@ impl ClubDb {
                 {
                     return false;
                 }
-                if let (Some(min_agl_ft), Some(dem)) = (area.min_agl_ft, dem.as_ref()) {
+                if let (Some(min_agl_ft), Some(dem)) = (effective_min_agl_ft, dem.as_ref()) {
                     let fix = crate::live::LiveFix {
                         t: c.latest_t,
                         lat: c.latest_lat,
@@ -660,10 +752,16 @@ impl ClubDb {
                         course: None,
                         accuracy: None,
                     };
-                    if !matches!(
-                        evaluate_public_altitude(&fix, AltitudeMode::Agl, min_agl_ft, dem),
-                        AltitudeEval::Pass | AltitudeEval::NoDemFallbackMsl
-                    ) {
+                    let eval = evaluate_public_altitude(&fix, AltitudeMode::Agl, min_agl_ft, dem);
+                    let passes = match altitude_policy {
+                        PublicAltitudePolicy::OptionalWithMslFallback => {
+                            matches!(eval, AltitudeEval::Pass | AltitudeEval::NoDemFallbackMsl)
+                        }
+                        PublicAltitudePolicy::FailClosedFloor => {
+                            matches!(eval, AltitudeEval::Pass)
+                        }
+                    };
+                    if !passes {
                         return false;
                     }
                 }
@@ -760,7 +858,11 @@ impl ClubDb {
         .unwrap_or_default();
 
         let candidates = rows_to_candidates(rows, TrailLayer::Public, true, false);
-        self.filter_public_candidates(candidates, area)
+        self.filter_public_candidates(
+            candidates,
+            area,
+            PublicAltitudePolicy::OptionalWithMslFallback,
+        )
     }
 
     async fn query_anonymous_public_live_flights(
@@ -839,7 +941,7 @@ impl ClubDb {
         .unwrap_or_default();
 
         let candidates = rows_to_candidates(rows, TrailLayer::Public, true, true);
-        self.filter_public_candidates(candidates, area)
+        self.filter_public_candidates(candidates, area, PublicAltitudePolicy::FailClosedFloor)
     }
 
     async fn batch_fixes_with_alt(
@@ -1106,6 +1208,22 @@ pub(crate) async fn get_me_live_trails(
         .into_response()
 }
 
+/// Anonymous `GET /api/public/live-trails` handler.
+///
+/// Enforces a mandatory AGL floor of at least `DEFAULT_PUBLIC_ALTITUDE_MIN_FT` (300 ft AGL) on
+/// each flight's latest fix via [`evaluate_public_altitude`] in [`AltitudeMode::Agl`]:
+/// - `min_agl_ft` can raise the floor up to `20_000` ft but never lower it below `300` ft
+///   (`effective = clamp(min_agl_ft.unwrap_or(300), 300, 20000)`; negative/non-numeric/NaN/inf
+///   returns `400 {"error":"invalid min_agl_ft"}`). `publicArea.minAglFt` is always populated
+///   with the effective floor.
+/// - **Fail closed**: only `AltitudeEval::Pass` is admitted (`NoDemFallbackMsl` is never accepted
+///   here). A flight whose latest fix has `alt IS NULL` (or non-finite) or whose position has no
+///   DEM coverage (`DemSample::NoCoverage`) is excluded even at high MSL so grounded airfield
+///   aircraft cannot be exposed anonymously when AGL cannot be determined.
+/// - `alt_ref` semantics match [`evaluate_public_altitude`]: `"msl"` is used directly as MSL;
+///   `"hae"`, `"wgs84_ellipsoid"`, `None`, or unknown values are converted via
+///   `alt_m - egm96_undulation_m(lat, lon)` before subtracting DEM ground elevation (the ingest
+///   model does not produce `"agl"` fixes).
 pub(crate) async fn get_public_live_trails(
     State(state): State<AppState>,
     client_ip: ClientIp,
@@ -1124,7 +1242,7 @@ pub(crate) async fn get_public_live_trails(
         )
             .into_response();
     }
-    let area = match PublicArea::parse_query(uri.query()) {
+    let area = match PublicArea::parse_anonymous_query(uri.query()) {
         Ok(area) => area,
         Err(msg) => {
             return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();

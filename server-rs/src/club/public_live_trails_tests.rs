@@ -8,13 +8,16 @@
 //! - Weak ETag / `If-None-Match` -> `304 Not Modified`
 //! - K-1: `GET /api/me/live-trails` runs auth BEFORE query validation (`401` signed-out, `400` signed-in)
 //! - L-77: SQL `LIMIT` enforced on both authenticated & anonymous public-layer queries (`PUBLIC_LIVE_TRAILS_SQL_CANDIDATE_LIMIT == 500`)
-//! - L-76: Optional `min_agl_ft` AGL floor (`0..=20000`) on both `/api/public/live-trails` and `/api/me/live-trails` (public layer only)
+//! - L-76: Optional `min_agl_ft` AGL floor (`0..=20000`) on `/api/me/live-trails` (public layer only)
+//! - M-27: Mandatory fail-closed `300.0` ft AGL default floor (`300..=20000`) on anonymous `/api/public/live-trails`
+//! - L-79: Hard distinct-key cap on `LoginThrottle` (`public_live_trails_throttle`)
 
 use crate::{
     club::{
         auth::new_id,
         db::now_ms,
         geo::haversine_km,
+        map_filter::DEFAULT_PUBLIC_ALTITUDE_MIN_FT,
         pilot_live_trails::{
             LiveTrailsCaller, LiveTrailsQuery, PublicArea,
             PILOT_LIVE_TRAILS_DEFAULT_PUBLIC_RADIUS_KM, PILOT_LIVE_TRAILS_MAX_FLIGHTS,
@@ -81,8 +84,25 @@ async fn send_public_req(
     (status, headers, parsed)
 }
 
+fn make_flat_dem(tiles: &[(&str, f64)]) -> (tempfile::TempDir, FlightDataEnvGuard) {
+    let dem_root = tempfile::tempdir().unwrap();
+    let dem_dir = dem_root.path().join("dem");
+    std::fs::create_dir_all(&dem_dir).unwrap();
+    for (tile, elev_m) in tiles {
+        std::fs::write(
+            dem_dir.join(format!("{tile}.asc")),
+            format!(
+                "# {elev_m} m flat terrain\n{elev_m} {elev_m} {elev_m}\n{elev_m} {elev_m} {elev_m}\n{elev_m} {elev_m} {elev_m}\n"
+            ),
+        )
+        .unwrap();
+    }
+    let guard = FlightDataEnvGuard::set(dem_root.path());
+    (dem_root, guard)
+}
+
 // ---------------------------------------------------------------------------
-// Unit tests: PublicArea parser (shared by /api/public/live-trails & /api/me/live-trails)
+// Unit tests: PublicArea parser (/api/me/live-trails & /api/public/live-trails)
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -174,6 +194,58 @@ fn public_area_parser_validates_location_radius_and_min_agl_ft() {
 
     // Club-only /api/me/live-trails still ignores min_agl_ft
     assert!(LiveTrailsQuery::parse_query(Some("layers=club&min_agl_ft=abc")).is_ok());
+
+    // Anonymous /api/public/live-trails parser: default 300 ft, clamp 300..=20000, reject negative
+    assert_eq!(
+        PublicArea::parse_anonymous_query(Some("lat=-33.456&lon=-70.548")).unwrap(),
+        PublicArea {
+            lat: -33.456,
+            lon: -70.548,
+            radius_km: PILOT_LIVE_TRAILS_DEFAULT_PUBLIC_RADIUS_KM,
+            min_agl_ft: Some(DEFAULT_PUBLIC_ALTITUDE_MIN_FT),
+        }
+    );
+    assert_eq!(
+        PublicArea::parse_anonymous_query(Some("lat=0&lon=0&min_agl_ft=0"))
+            .unwrap()
+            .min_agl_ft,
+        Some(DEFAULT_PUBLIC_ALTITUDE_MIN_FT)
+    );
+    assert_eq!(
+        PublicArea::parse_anonymous_query(Some("lat=0&lon=0&min_agl_ft=150"))
+            .unwrap()
+            .min_agl_ft,
+        Some(DEFAULT_PUBLIC_ALTITUDE_MIN_FT)
+    );
+    assert_eq!(
+        PublicArea::parse_anonymous_query(Some("lat=0&lon=0&min_agl_ft=1000"))
+            .unwrap()
+            .min_agl_ft,
+        Some(1000.0)
+    );
+    assert_eq!(
+        PublicArea::parse_anonymous_query(Some("lat=0&lon=0&min_agl_ft=50000"))
+            .unwrap()
+            .min_agl_ft,
+        Some(PUBLIC_LIVE_TRAILS_MIN_AGL_FT_MAX)
+    );
+    for bad_anon_agl in [
+        "lat=0&lon=0&min_agl_ft=-1",
+        "lat=0&lon=0&min_agl_ft=-50",
+        "lat=0&lon=0&min_agl_ft=-0.01",
+        "lat=0&lon=0&min_agl_ft=abc",
+        "lat=0&lon=0&min_agl_ft=NaN",
+        "lat=0&lon=0&min_agl_ft=inf",
+        "lat=0&lon=0&min_agl_ft=-inf",
+        "lat=0&lon=0&min_agl_ft=",
+        "lat=0&lon=0&min_agl_ft=400&min_agl_ft=500",
+    ] {
+        assert_eq!(
+            PublicArea::parse_anonymous_query(Some(bad_anon_agl)),
+            Err("invalid min_agl_ft"),
+            "anon query={bad_anon_agl}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +258,8 @@ fn public_area_parser_validates_location_radius_and_min_agl_ft() {
 async fn public_live_trails_anonymous_scoping_visibility_pii_and_headers() {
     let db = ClubDb::open_test().await.unwrap();
     let (_tmp, mut router) = http_stack(db.clone()).await;
+    // 600 m flat DEM so airborne make_fixes (~930-960 m MSL) sit > 300 ft AGL.
+    let (_dem_root, _env_guard) = make_flat_dem(&[("N34W071", 600.0)]);
 
     let (club_a, _) = create_live_club(
         &db,
@@ -406,7 +480,12 @@ async fn public_live_trails_anonymous_scoping_visibility_pii_and_headers() {
     );
     assert_eq!(
         body["publicArea"],
-        json!({ "lat": -33.456, "lon": -70.548, "radiusKm": 20.0 })
+        json!({
+            "lat": -33.456,
+            "lon": -70.548,
+            "radiusKm": 20.0,
+            "minAglFt": DEFAULT_PUBLIC_ALTITUDE_MIN_FT,
+        })
     );
 
     let flights = body["flights"].as_array().unwrap();
@@ -520,6 +599,9 @@ async fn public_live_trails_anonymous_scoping_visibility_pii_and_headers() {
 async fn public_live_trails_radius_clamping_geo_validation_and_etag_304() {
     let db = ClubDb::open_test().await.unwrap();
     let (_tmp, mut router) = http_stack(db.clone()).await;
+    // Cover both SCTB (-33.x -> N34W071) and the ~500 km north points (-28.9x -> N29W071)
+    // at 600 m terrain so 1200 m MSL test flights are ~1968 ft AGL (> 300 ft default floor).
+    let (_dem_root, _env_guard) = make_flat_dem(&[("N34W071", 600.0), ("N29W071", 600.0)]);
 
     let center_lat = -33.456;
     let center_lon = -70.548;
@@ -625,6 +707,10 @@ async fn public_live_trails_radius_clamping_geo_validation_and_etag_304() {
     .await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(b_def["publicArea"]["radiusKm"], json!(20.0));
+    assert_eq!(
+        b_def["publicArea"]["minAglFt"],
+        json!(DEFAULT_PUBLIC_ALTITUDE_MIN_FT)
+    );
     let ids_def: HashSet<&str> = b_def["flights"]
         .as_array()
         .unwrap()
@@ -759,7 +845,7 @@ async fn public_live_trails_radius_clamping_geo_validation_and_etag_304() {
 async fn public_live_trails_rate_limit_per_ip_with_retry_after_and_reset() {
     let db = ClubDb::open_test().await.unwrap();
     let throttle = LoginThrottle::default();
-    let (_tmp, mut router) = http_stack_with_throttle(db, throttle.clone()).await;
+    let (_tmp, mut router) = http_stack_with_throttle(db.clone(), throttle.clone()).await;
 
     let trusted_proxy = Some(SocketAddr::from(([127, 0, 0, 1], 0)));
     let uri = "/api/public/live-trails?lat=-33.456&lon=-70.548";
@@ -858,6 +944,63 @@ async fn public_live_trails_rate_limit_per_ip_with_retry_after_and_reset() {
     )
     .await;
     assert_eq!(st_after_reset, StatusCode::OK);
+
+    // L-79: Hard distinct-key cap rejects unknown IPs with 429 + Retry-After without growing map,
+    // while already-tracked IPs continue working normally.
+    let capped_throttle = LoginThrottle::with_max_keys(2);
+    let (_tmp2, mut capped_router) = http_stack_with_throttle(db, capped_throttle.clone()).await;
+    for ip in ["198.51.100.1", "198.51.100.2"] {
+        let (st_ok, _, _) = send_public_req(
+            &mut capped_router,
+            uri,
+            trusted_proxy,
+            Some(ip),
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(st_ok, StatusCode::OK);
+    }
+    assert_eq!(capped_throttle.len(), 2);
+
+    let (st_cap, h_cap, b_cap) = send_public_req(
+        &mut capped_router,
+        uri,
+        trusted_proxy,
+        Some("198.51.100.3"),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_cap, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(b_cap, json!({ "error": "rate_limited" }));
+    let cap_retry: u64 = h_cap
+        .get(header::RETRY_AFTER)
+        .expect("Retry-After required when rejected at key cap")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((1..=60).contains(&cap_retry));
+    assert_eq!(
+        capped_throttle.len(),
+        2,
+        "rejected unknown IP must not be inserted into throttle map"
+    );
+
+    let (st_existing, _, _) = send_public_req(
+        &mut capped_router,
+        uri,
+        trusted_proxy,
+        Some("198.51.100.1"),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_existing, StatusCode::OK);
 }
 
 // ---------------------------------------------------------------------------
@@ -941,6 +1084,8 @@ async fn public_layer_sql_queries_enforce_hard_candidate_limit_l77() {
     assert_eq!(PUBLIC_LIVE_TRAILS_SQL_CANDIDATE_LIMIT, 500);
 
     let db = ClubDb::open_test().await.unwrap();
+    // 600 m flat DEM so 1200 m MSL test flights (~1968 ft AGL) pass the anonymous 300 ft floor.
+    let (_dem_root, _env_guard) = make_flat_dem(&[("N34W071", 600.0)]);
     let (club_a, _) = create_live_club(
         &db,
         "l77-club",
@@ -1116,6 +1261,8 @@ async fn live_trails_min_agl_ft_filters_public_layer_with_dem_fallback_and_etag_
     for bad_uri in [
         "/api/public/live-trails?lat=-33.456&lon=-70.548&min_agl_ft=abc",
         "/api/public/live-trails?lat=-33.456&lon=-70.548&min_agl_ft=NaN",
+        "/api/public/live-trails?lat=-33.456&lon=-70.548&min_agl_ft=-1",
+        "/api/public/live-trails?lat=-33.456&lon=-70.548&min_agl_ft=-50",
         "/api/me/live-trails?layers=public&lat=-33.456&lon=-70.548&min_agl_ft=abc",
         "/api/me/live-trails?layers=club,public&lat=-33.456&lon=-70.548&min_agl_ft=inf",
     ] {
@@ -1140,8 +1287,9 @@ async fn live_trails_min_agl_ft_filters_public_layer_with_dem_fallback_and_etag_
         assert_eq!(body, json!({ "error": "invalid min_agl_ft" }));
     }
 
-    // 2) Absent min_agl_ft -> unchanged (all 3 public flights shown, minAglFt omitted from publicArea)
-    let (st_no_floor, h_no_floor, b_no_floor) = send_public_req(
+    // 2a) Absent min_agl_ft on /api/public/live-trails -> default 300 ft AGL floor, fail-closed:
+    //     fid_pub_low (~328 ft) and fid_pub_high (~984 ft) pass, fid_pub_noalt excluded, minAglFt = 300.0
+    let (st_default_floor, h_default_floor, b_default_floor) = send_public_req(
         &mut router,
         "/api/public/live-trails?lat=-33.456&lon=-70.548",
         None,
@@ -1151,17 +1299,50 @@ async fn live_trails_min_agl_ft_filters_public_layer_with_dem_fallback_and_etag_
         None,
     )
     .await;
-    assert_eq!(st_no_floor, StatusCode::OK);
-    assert!(b_no_floor["publicArea"].get("minAglFt").is_none());
-    let ids_no_floor: HashSet<&str> = b_no_floor["flights"]
+    assert_eq!(st_default_floor, StatusCode::OK);
+    assert_eq!(
+        b_default_floor["publicArea"]["minAglFt"],
+        json!(DEFAULT_PUBLIC_ALTITUDE_MIN_FT)
+    );
+    let ids_default_floor: HashSet<&str> = b_default_floor["flights"]
         .as_array()
         .unwrap()
         .iter()
         .filter_map(|f| f["flightId"].as_str())
         .collect();
-    assert!(ids_no_floor.contains(fid_pub_low.as_str()));
-    assert!(ids_no_floor.contains(fid_pub_high.as_str()));
-    assert!(ids_no_floor.contains(fid_pub_noalt.as_str()));
+    assert!(ids_default_floor.contains(fid_pub_low.as_str()));
+    assert!(ids_default_floor.contains(fid_pub_high.as_str()));
+    assert!(
+        !ids_default_floor.contains(fid_pub_noalt.as_str()),
+        "anonymous endpoint must fail closed on alt NULL"
+    );
+
+    // 2b) Absent min_agl_ft on /api/me/live-trails -> unchanged (no floor, minAglFt omitted,
+    //     all 3 public flights + club flight returned)
+    let (st_me_no_floor, _, b_me_no_floor) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=club,public&lat=-33.456&lon=-70.548",
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_me_no_floor, StatusCode::OK, "{b_me_no_floor}");
+    assert!(b_me_no_floor["publicArea"].get("minAglFt").is_none());
+    let ids_me_no_floor: HashSet<&str> = b_me_no_floor["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["flightId"].as_str())
+        .collect();
+    assert!(ids_me_no_floor.contains(fid_club_low.as_str()));
+    assert!(ids_me_no_floor.contains(fid_pub_low.as_str()));
+    assert!(ids_me_no_floor.contains(fid_pub_high.as_str()));
+    assert!(ids_me_no_floor.contains(fid_pub_noalt.as_str()));
 
     // 3) With DEM + min_agl_ft=500 on /api/public/live-trails -> only fid_pub_high shown, publicArea.minAglFt = 500.0
     let (st_500, h_500, b_500) = send_public_req(
@@ -1186,10 +1367,10 @@ async fn live_trails_min_agl_ft_filters_public_layer_with_dem_fallback_and_etag_
     assert!(!ids_500.contains(fid_pub_low.as_str()));
     assert!(!ids_500.contains(fid_pub_noalt.as_str()));
 
-    // ETag differs between absent min_agl_ft and min_agl_ft=500 (and between 500 and 600 even with same flights!)
-    let etag_no_floor = h_no_floor.get(header::ETAG).unwrap().to_str().unwrap();
+    // ETag differs between default (300) and 500 (and between 500 and 600 even with same flights!)
+    let etag_default_floor = h_default_floor.get(header::ETAG).unwrap().to_str().unwrap();
     let etag_500 = h_500.get(header::ETAG).unwrap().to_str().unwrap();
-    assert_ne!(etag_no_floor, etag_500);
+    assert_ne!(etag_default_floor, etag_500);
     let (st_600, h_600, _) = send_public_req(
         &mut router,
         "/api/public/live-trails?lat=-33.456&lon=-70.548&min_agl_ft=600",
@@ -1234,9 +1415,11 @@ async fn live_trails_min_agl_ft_filters_public_layer_with_dem_fallback_and_etag_
     assert!(!ids_me.contains(fid_pub_low.as_str()));
     assert!(!ids_me.contains(fid_pub_noalt.as_str()));
 
-    // 5) Without DEM coverage -> NoDemFallbackMsl keeps fid_pub_low (700 m MSL ≈ 2297 ft >= 500 ft)
+    // 5) Without DEM coverage:
+    //    - /api/public/live-trails FAILS CLOSED (excludes all flights even at high MSL)
+    //    - /api/me/live-trails keeps NoDemFallbackMsl (unchanged L-76 behavior)
     env_guard.update(empty_root.path());
-    let (st_nodem, _, b_nodem) = send_public_req(
+    let (st_pub_nodem, _, b_pub_nodem) = send_public_req(
         &mut router,
         "/api/public/live-trails?lat=-33.456&lon=-70.548&min_agl_ft=500",
         None,
@@ -1246,17 +1429,343 @@ async fn live_trails_min_agl_ft_filters_public_layer_with_dem_fallback_and_etag_
         None,
     )
     .await;
-    assert_eq!(st_nodem, StatusCode::OK);
-    let ids_nodem: HashSet<&str> = b_nodem["flights"]
+    assert_eq!(st_pub_nodem, StatusCode::OK);
+    assert_eq!(b_pub_nodem["publicArea"]["minAglFt"], json!(500.0));
+    assert!(
+        b_pub_nodem["flights"].as_array().unwrap().is_empty(),
+        "anonymous /api/public/live-trails must fail closed when DEM coverage is missing"
+    );
+
+    let (st_me_nodem, _, b_me_nodem) = send_req(
+        &mut router,
+        "GET",
+        "/api/me/live-trails?layers=public&lat=-33.456&lon=-70.548&min_agl_ft=500",
+        Some(&viewer_cookie),
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_me_nodem, StatusCode::OK, "{b_me_nodem}");
+    let ids_me_nodem: HashSet<&str> = b_me_nodem["flights"]
         .as_array()
         .unwrap()
         .iter()
         .filter_map(|f| f["flightId"].as_str())
         .collect();
     assert!(
-        ids_nodem.contains(fid_pub_low.as_str()),
-        "without DEM, 700 m MSL (~2297 ft) must pass via NoDemFallbackMsl"
+        ids_me_nodem.contains(fid_pub_low.as_str()),
+        "authenticated /api/me/live-trails keeps NoDemFallbackMsl"
     );
-    assert!(ids_nodem.contains(fid_pub_high.as_str()));
-    assert!(!ids_nodem.contains(fid_pub_noalt.as_str()));
+    assert!(ids_me_nodem.contains(fid_pub_high.as_str()));
+    assert!(!ids_me_nodem.contains(fid_pub_noalt.as_str()));
+}
+
+// ---------------------------------------------------------------------------
+// Test 11 (M-27): Anonymous /api/public/live-trails 300 ft AGL default floor & fail-closed
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[serial]
+async fn public_live_trails_enforces_300ft_default_agl_floor_fail_closed_m27() {
+    let db = ClubDb::open_test().await.unwrap();
+    let (_tmp, mut router) = http_stack(db.clone()).await;
+
+    // 600 m flat DEM covering ONLY (-34..-33, -71..-70) -> N34W071.asc.
+    // Positions south of -34.0 (tile N35W071) intentionally have NO DEM coverage.
+    let (_dem_root, _env_guard) = make_flat_dem(&[("N34W071", 600.0)]);
+
+    let (club_a, _) = create_live_club(
+        &db,
+        "m27-club",
+        "own-m27@test",
+        Some(("SCTB", -33.456, -70.548)),
+    )
+    .await;
+
+    let (p_ground, _) = seed_member(&db, &club_a, "Ground Pilot", "m27-gnd@test", "pilot").await;
+    let (p_150, _) = seed_member(&db, &club_a, "Low 150ft", "m27-150@test", "pilot").await;
+    let (p_500, _) = seed_member(&db, &club_a, "Air 500ft", "m27-500@test", "pilot").await;
+    let (p_1500, _) = seed_member(&db, &club_a, "Air 1500ft", "m27-1500@test", "pilot").await;
+    let (p_21000, _) = seed_member(&db, &club_a, "High 21kft", "m27-21k@test", "pilot").await;
+    let (p_null, _) = seed_member(&db, &club_a, "Null Alt", "m27-null@test", "pilot").await;
+    let (p_nodem, _) = seed_member(&db, &club_a, "No DEM", "m27-nodem@test", "pilot").await;
+    let (p_hae, _) = seed_member(&db, &club_a, "HAE Pass", "m27-hae@test", "pilot").await;
+    let (p_msl_lo, _) = seed_member(&db, &club_a, "MSL Fail", "m27-msllo@test", "pilot").await;
+
+    let now = now_ms();
+
+    // 1) Ground flight at airfield: earlier fix airborne (900 m MSL), latest fix at terrain (605 m MSL ≈ 16 ft AGL) -> EXCLUDED
+    let (fid_ground, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &p_ground,
+        "CC-M27G",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(
+            now,
+            -33.456,
+            -70.548,
+            &[(3, Some(900.0), Some("msl")), (0, Some(605.0), Some("msl"))],
+        ),
+    )
+    .await;
+
+    // 2) Low flight at ~151 ft AGL (646 m MSL over 600 m terrain = 46 m ≈ 150.9 ft) -> EXCLUDED under default and min_agl_ft=0
+    let (fid_150ft, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &p_150,
+        "CC-M27L",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(now, -33.450, -70.548, &[(0, Some(646.0), Some("msl"))]),
+    )
+    .await;
+
+    // 3) Airborne flight at 500 ft AGL (752.4 m MSL over 600 m terrain; earlier fix on ground) -> INCLUDED at 300, EXCLUDED at 1000
+    let (fid_500ft, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &p_500,
+        "CC-M27A",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(
+            now,
+            -33.445,
+            -70.548,
+            &[(3, Some(600.0), Some("msl")), (0, Some(752.4), Some("msl"))],
+        ),
+    )
+    .await;
+
+    // 4) Higher flight at ~1509 ft AGL (1060 m MSL over 600 m terrain) -> INCLUDED at 300 & 1000, EXCLUDED at 20000
+    let (fid_1500ft, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &p_1500,
+        "CC-M27B",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(now, -33.440, -70.548, &[(0, Some(1060.0), Some("msl"))]),
+    )
+    .await;
+
+    // 5) Very high flight at ~21161 ft AGL (7050 m MSL over 600 m terrain) -> INCLUDED even when min_agl_ft=50000 (clamped to 20000)
+    let (fid_21000ft, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &p_21000,
+        "CC-M27H",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(now, -33.435, -70.548, &[(0, Some(7050.0), Some("msl"))]),
+    )
+    .await;
+
+    // 6) Latest fix with alt NULL (even with high earlier fix) -> EXCLUDED (fail closed)
+    let (fid_null_alt, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &p_null,
+        "CC-M27N",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(
+            now,
+            -33.430,
+            -70.548,
+            &[(3, Some(1500.0), Some("msl")), (0, None, None)],
+        ),
+    )
+    .await;
+
+    // 7) Fix outside DEM coverage (-34.05, -70.548 is ~66 km south, inside radius_km=100, tile N35W071 missing)
+    //    at high MSL (3000 m ≈ 9842 ft MSL) -> EXCLUDED (fail closed, no NoDemFallbackMsl)
+    assert!(haversine_km(-33.456, -70.548, -34.05, -70.548) < 100.0);
+    let (fid_no_dem, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &p_nodem,
+        "CC-M27D",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(now, -34.05, -70.548, &[(0, Some(3000.0), Some("msl"))]),
+    )
+    .await;
+
+    // 8) alt_ref semantics at 680 m over 600 m terrain (undulation ≈ -30.07 m at lat -33.45):
+    //    - alt_ref="hae" -> ~710.07 m MSL -> ~361 ft AGL (>= 300 ft) -> INCLUDED
+    //    - alt_ref="msl" -> 680.00 m MSL -> ~262 ft AGL (< 300 ft) -> EXCLUDED
+    let (fid_hae_pass, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &p_hae,
+        "CC-M27E",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(now, -33.452, -70.548, &[(0, Some(680.0), Some("hae"))]),
+    )
+    .await;
+    let (fid_msl_fail, _) = seed_live_flight(
+        &db,
+        &club_a,
+        &p_msl_lo,
+        "CC-M27M",
+        FlightVisibility::Public,
+        false,
+        None,
+        &make_fixes_with_alt(now, -33.453, -70.548, &[(0, Some(680.0), Some("msl"))]),
+    )
+    .await;
+
+    // Case A: Default (no min_agl_ft) -> effective floor 300 ft AGL, fail closed
+    let (st_def, h_def, b_def) = send_public_req(
+        &mut router,
+        "/api/public/live-trails?lat=-33.456&lon=-70.548&radius_km=100",
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_def, StatusCode::OK, "{b_def}");
+    assert_eq!(b_def["publicArea"]["minAglFt"], json!(300.0));
+    let ids_def: HashSet<&str> = b_def["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["flightId"].as_str())
+        .collect();
+    assert!(
+        !ids_def.contains(fid_ground.as_str()),
+        "ground flight must be excluded"
+    );
+    assert!(
+        !ids_def.contains(fid_150ft.as_str()),
+        "150 ft AGL flight must be excluded"
+    );
+    assert!(
+        !ids_def.contains(fid_null_alt.as_str()),
+        "alt NULL flight must be excluded"
+    );
+    assert!(
+        !ids_def.contains(fid_no_dem.as_str()),
+        "no-DEM flight must be excluded even at high MSL"
+    );
+    assert!(
+        !ids_def.contains(fid_msl_fail.as_str()),
+        "680 m MSL (~262 ft AGL) must be excluded"
+    );
+    assert!(
+        ids_def.contains(fid_500ft.as_str()),
+        "500 ft AGL flight must be included"
+    );
+    assert!(
+        ids_def.contains(fid_1500ft.as_str()),
+        "1500 ft AGL flight must be included"
+    );
+    assert!(
+        ids_def.contains(fid_21000ft.as_str()),
+        "21000 ft AGL flight must be included"
+    );
+    assert!(
+        ids_def.contains(fid_hae_pass.as_str()),
+        "680 m HAE (~361 ft AGL) must be included"
+    );
+
+    // Case B: min_agl_ft=0 -> clamped up to 300 (cannot lower floor); identical ETag -> 304
+    let (st_zero, h_zero, b_zero) = send_public_req(
+        &mut router,
+        "/api/public/live-trails?lat=-33.456&lon=-70.548&radius_km=100&min_agl_ft=0",
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_zero, StatusCode::OK, "{b_zero}");
+    assert_eq!(b_zero["publicArea"]["minAglFt"], json!(300.0));
+    let ids_zero: HashSet<&str> = b_zero["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["flightId"].as_str())
+        .collect();
+    assert!(
+        !ids_zero.contains(fid_150ft.as_str()),
+        "min_agl_ft=0 must still exclude 150 ft AGL"
+    );
+    assert!(!ids_zero.contains(fid_ground.as_str()));
+    assert!(!ids_zero.contains(fid_null_alt.as_str()));
+    assert!(!ids_zero.contains(fid_no_dem.as_str()));
+    assert!(ids_zero.contains(fid_500ft.as_str()));
+    assert_eq!(
+        h_zero.get(header::ETAG).unwrap(),
+        h_def.get(header::ETAG).unwrap(),
+        "min_agl_ft=0 and omitted min_agl_ft share canonical floor 300 and identical ETag"
+    );
+
+    // Case C: min_agl_ft=1000 raises the floor -> 500 ft excluded, 1500 ft & 21000 ft included
+    let (st_1000, _, b_1000) = send_public_req(
+        &mut router,
+        "/api/public/live-trails?lat=-33.456&lon=-70.548&radius_km=100&min_agl_ft=1000",
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_1000, StatusCode::OK, "{b_1000}");
+    assert_eq!(b_1000["publicArea"]["minAglFt"], json!(1000.0));
+    let ids_1000: HashSet<&str> = b_1000["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["flightId"].as_str())
+        .collect();
+    assert!(
+        !ids_1000.contains(fid_500ft.as_str()),
+        "500 ft AGL must be excluded at min_agl_ft=1000"
+    );
+    assert!(!ids_1000.contains(fid_hae_pass.as_str()));
+    assert!(ids_1000.contains(fid_1500ft.as_str()));
+    assert!(ids_1000.contains(fid_21000ft.as_str()));
+
+    // Case D: min_agl_ft=50000 -> clamped to 20000 (1500 ft excluded, 21000 ft included)
+    let (st_50k, _, b_50k) = send_public_req(
+        &mut router,
+        "/api/public/live-trails?lat=-33.456&lon=-70.548&radius_km=100&min_agl_ft=50000",
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_50k, StatusCode::OK, "{b_50k}");
+    assert_eq!(b_50k["publicArea"]["minAglFt"], json!(20000.0));
+    let ids_50k: HashSet<&str> = b_50k["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["flightId"].as_str())
+        .collect();
+    assert!(!ids_50k.contains(fid_1500ft.as_str()));
+    assert!(ids_50k.contains(fid_21000ft.as_str()));
 }
