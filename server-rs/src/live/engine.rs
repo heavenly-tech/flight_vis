@@ -168,33 +168,48 @@ impl LiveEngine {
     pub async fn allow_ingest(&self, device_key: &str) -> bool {
         self.allow_ingest_fixes(device_key, 1, MAX_INGEST_PER_MINUTE)
             .await
+            .is_ok()
     }
 
     /// Sliding-window per-device fix budget. Counts batches by fix count (`fix_count.max(1)`).
-    /// Rejects atomically (recording no hits) if the batch would push the 60s window above `max_per_minute`.
+    /// Rejects atomically (recording no hits) if the batch would push the 60s window above `max_per_minute`,
+    /// returning `Err(retry_after_secs)` (rounded up, minimum 1) until the window has room for this request.
     pub async fn allow_ingest_fixes(
         &self,
         device_key: &str,
         fix_count: usize,
         max_per_minute: usize,
-    ) -> bool {
+    ) -> Result<(), u64> {
         let units = fix_count.max(1);
+        let window_secs = (CLUB_INGEST_WINDOW_MS.max(1) as u64).div_ceil(1000);
         if units > max_per_minute {
-            return false;
+            return Err(window_secs);
         }
         let now = self.now_ms();
-        let cutoff = now - CLUB_INGEST_WINDOW_MS;
+        let cutoff = now.saturating_sub(CLUB_INGEST_WINDOW_MS);
         let mut hits = self.ingest_hits.write().await;
         let entry = hits.entry(device_key.to_string()).or_default();
         entry.retain(|t| *t > cutoff);
-        if entry.len().saturating_add(units) > max_per_minute {
-            return false;
+        let room_allowed = max_per_minute - units;
+        if entry.len() > room_allowed {
+            let need_to_expire = entry.len() - room_allowed;
+            let expire_ts = entry[need_to_expire - 1];
+            let remaining_ms = expire_ts
+                .saturating_add(CLUB_INGEST_WINDOW_MS)
+                .saturating_sub(now)
+                .max(1) as u64;
+            let retry_after = remaining_ms.div_ceil(1000).clamp(1, window_secs);
+            return Err(retry_after);
         }
+        let needs_sort = entry.last().is_some_and(|&last| now < last);
         entry.resize(entry.len() + units, now);
+        if needs_sort {
+            entry.sort_unstable();
+        }
         if hits.len() > 4096 {
             hits.retain(|_, v| v.last().is_some_and(|t| *t > cutoff));
         }
-        true
+        Ok(())
     }
 
     pub fn validate_fix(&self, fix: &LiveFix) -> Result<(), &'static str> {

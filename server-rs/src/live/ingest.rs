@@ -70,7 +70,7 @@ pub async fn post_ingest(
                     }
                 }
                 let rate_key = format!("club-flight:{device_id}");
-                if !state
+                if let Err(retry_after) = state
                     .live
                     .allow_ingest_fixes(
                         &rate_key,
@@ -81,6 +81,7 @@ pub async fn post_ingest(
                 {
                     return (
                         StatusCode::TOO_MANY_REQUESTS,
+                        [(header::RETRY_AFTER, retry_after.to_string())],
                         Json(json!({ "error": "rate limited" })),
                     )
                         .into_response();
@@ -313,7 +314,7 @@ pub async fn osmand_ingest(
                     }
                 }
                 let rate_key = format!("club-flight:{device_id}");
-                if !state
+                if let Err(retry_after) = state
                     .live
                     .allow_ingest_fixes(
                         &rate_key,
@@ -324,6 +325,7 @@ pub async fn osmand_ingest(
                 {
                     return (
                         StatusCode::TOO_MANY_REQUESTS,
+                        [(header::RETRY_AFTER, retry_after.to_string())],
                         Json(json!({ "error": "rate limited" })),
                     )
                         .into_response();

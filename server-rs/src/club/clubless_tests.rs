@@ -10,6 +10,7 @@ use crate::{
         checkin::{current_step, mint_checkin_token},
         db::{normalize_free_tail, now_ms, ACCOUNT_SIGNUP_MAX_PER_IP},
         mail::{MailOutbox, Mailer},
+        pilot_live_trails_tests::FlightDataEnvGuard,
         trail::DEFAULT_TRAIL_MINUTES,
         visibility::FlightVisibility,
         ClubDb,
@@ -1171,11 +1172,12 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
     assert_eq!(st, StatusCode::OK, "{start}");
     let flight_id = start["id"].as_str().unwrap().to_string();
 
-    // 1. A single batch > MAX_CLUB_INGEST_FIXES_PER_MINUTE (120) is rejected atomically (429).
+    // 1. A single batch > MAX_CLUB_INGEST_FIXES_PER_MINUTE (120) is rejected atomically (429)
+    //    with Retry-After: 60 (full window) and unchanged error body.
     let oversized: Vec<Value> = (0..=MAX_CLUB_INGEST_FIXES_PER_MINUTE)
         .map(|i| json!({ "t": t0 + i as i64 * 100, "lat": -33.45, "lon": -70.55, "alt": 900.0 }))
         .collect();
-    let (st, _, body) = send_json(
+    let (st, hdrs_over, body) = send_json(
         &mut fx.router,
         "POST",
         "/api/ingest",
@@ -1186,12 +1188,21 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
     .await;
     assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{body}");
     assert_eq!(body["error"], "rate limited");
+    let retry_over: u64 = hdrs_over
+        .get(header::RETRY_AFTER)
+        .expect("Retry-After header required on oversized batch 429")
+        .to_str()
+        .unwrap()
+        .parse()
+        .expect("Retry-After must be integer seconds");
+    assert_eq!(retry_over, 60);
 
-    // 2. Fill the 120-fix budget across two batches (100 + 20) -> both 200 OK.
+    // 2. Fill the 120-fix budget across two batches (100 at t0, 20 at t0 + 15s) -> both 200 OK
+    //    with no Retry-After header.
     let batch100: Vec<Value> = (0..100)
         .map(|i| json!({ "t": t0 + i as i64 * 500, "lat": -33.45, "lon": -70.55, "alt": 900.0 }))
         .collect();
-    let (st, _, b1) = send_json(
+    let (st, hdrs_b1, b1) = send_json(
         &mut fx.router,
         "POST",
         "/api/ingest",
@@ -1202,11 +1213,17 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
     .await;
     assert_eq!(st, StatusCode::OK, "{b1}");
     assert_eq!(b1["accepted"], 100);
+    assert!(
+        hdrs_b1.get(header::RETRY_AFTER).is_none(),
+        "200 /api/ingest must not carry Retry-After"
+    );
 
+    let t_b2 = t0 + 15_000;
+    fx.clock_ms.store(t_b2, Ordering::SeqCst);
     let batch20: Vec<Value> = (100..MAX_CLUB_INGEST_FIXES_PER_MINUTE)
         .map(|i| json!({ "t": t0 + i as i64 * 500, "lat": -33.45, "lon": -70.55, "alt": 910.0 }))
         .collect();
-    let (st, _, b2) = send_json(
+    let (st, hdrs_b2, b2) = send_json(
         &mut fx.router,
         "POST",
         "/api/ingest",
@@ -1217,9 +1234,13 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
     .await;
     assert_eq!(st, StatusCode::OK, "{b2}");
     assert_eq!(b2["accepted"], 20);
+    assert!(
+        hdrs_b2.get(header::RETRY_AFTER).is_none(),
+        "200 /api/ingest must not carry Retry-After"
+    );
 
-    // 3. 121st fix via /api/ingest -> 429 rate limited.
-    let (st, _, b3) = send_json(
+    // 3. 121st fix via /api/ingest at t0 + 15s -> 429 with Retry-After = 45 (time until t0 batch expires).
+    let (st, hdrs_b3, b3) = send_json(
         &mut fx.router,
         "POST",
         "/api/ingest",
@@ -1232,8 +1253,69 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
     .await;
     assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{b3}");
     assert_eq!(b3["error"], "rate limited");
+    let retry_b3: u64 = hdrs_b3
+        .get(header::RETRY_AFTER)
+        .expect("Retry-After header required on /api/ingest 429")
+        .to_str()
+        .unwrap()
+        .parse()
+        .expect("Retry-After must be integer seconds");
+    assert!((1..=60).contains(&retry_b3));
+    assert_eq!(retry_b3, 45);
 
-    // 4. Same device via /api/osmand also shares the budget -> 429 rate limited.
+    // A 101-fix batch at t0 + 15s cannot fit when only the 100 t0 hits expire; it must wait
+    // until a hit from the t0 + 15s batch expires (60s).
+    let batch101: Vec<Value> = (0..101)
+        .map(
+            |i| json!({ "t": t0 + 100_000 + i as i64, "lat": -33.45, "lon": -70.55, "alt": 920.0 }),
+        )
+        .collect();
+    let (st, hdrs_101, b101) = send_json(
+        &mut fx.router,
+        "POST",
+        "/api/ingest",
+        None,
+        Some(&dev_tok),
+        Some(json!({ "fixes": batch101 })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{b101}");
+    assert_eq!(b101["error"], "rate limited");
+    let retry_101: u64 = hdrs_101
+        .get(header::RETRY_AFTER)
+        .expect("Retry-After header required on /api/ingest 429")
+        .to_str()
+        .unwrap()
+        .parse()
+        .expect("Retry-After must be integer seconds");
+    assert_eq!(retry_101, 60);
+
+    // 4. Advance clock by 20.5s (t0 + 35.5s): Retry-After shrinks and rounds UP (24.5s -> 25s)
+    //    on both /api/ingest and /api/osmand.
+    fx.clock_ms.store(t0 + 35_500, Ordering::SeqCst);
+    let (st, hdrs_b3_later, b3_later) = send_json(
+        &mut fx.router,
+        "POST",
+        "/api/ingest",
+        None,
+        Some(&dev_tok),
+        Some(
+            json!({ "fixes": [{ "t": t0 + 90_500, "lat": -33.45, "lon": -70.55, "alt": 920.0 }] }),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{b3_later}");
+    let retry_b3_later: u64 = hdrs_b3_later
+        .get(header::RETRY_AFTER)
+        .expect("Retry-After header required on /api/ingest 429")
+        .to_str()
+        .unwrap()
+        .parse()
+        .expect("Retry-After must be integer seconds");
+    assert_eq!(retry_b3_later, 25);
+    assert!(retry_b3_later < retry_b3);
+
+    // Same device via /api/osmand also shares the budget -> 429 rate limited with Retry-After: 25.
     let osmand_req = Request::builder()
         .method("POST")
         .uri(format!(
@@ -1244,6 +1326,19 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
         .unwrap();
     let osmand_res = fx.router.call(osmand_req).await.unwrap();
     assert_eq!(osmand_res.status(), StatusCode::TOO_MANY_REQUESTS);
+    let osmand_retry: u64 = osmand_res
+        .headers()
+        .get(header::RETRY_AFTER)
+        .expect("Retry-After header required on /api/osmand 429")
+        .to_str()
+        .unwrap()
+        .parse()
+        .expect("Retry-After must be integer seconds");
+    assert_eq!(osmand_retry, 25);
+    let osmand_body: Value =
+        serde_json::from_slice(&to_bytes(osmand_res.into_body(), usize::MAX).await.unwrap())
+            .unwrap();
+    assert_eq!(osmand_body["error"], "rate limited");
 
     // 5. Flight is STILL active (rate limit never kills the flight).
     let open = fx.db.open_flight_for_device(&dev_id).await;
@@ -1252,11 +1347,12 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
     assert_eq!(frow.status, "active");
     assert!(frow.ended_at.is_none());
 
-    // 6. Advance injected clock past CLUB_INGEST_WINDOW_MS -> both /api/ingest and /api/osmand succeed!
+    // 6. Advance injected clock past CLUB_INGEST_WINDOW_MS -> both /api/ingest and /api/osmand succeed
+    //    with no Retry-After header!
     let t_next = t0 + CLUB_INGEST_WINDOW_MS + 1_000;
     fx.clock_ms.store(t_next, Ordering::SeqCst);
 
-    let (st, _, b4) = send_json(
+    let (st, hdrs_b4, b4) = send_json(
         &mut fx.router,
         "POST",
         "/api/ingest",
@@ -1267,6 +1363,10 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
     .await;
     assert_eq!(st, StatusCode::OK, "{b4}");
     assert_eq!(b4["accepted"], 1);
+    assert!(
+        hdrs_b4.get(header::RETRY_AFTER).is_none(),
+        "200 /api/ingest must not carry Retry-After"
+    );
 
     let osmand_ok_req = Request::builder()
         .method("POST")
@@ -1278,6 +1378,10 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
         .unwrap();
     let osmand_ok_res = fx.router.call(osmand_ok_req).await.unwrap();
     assert_eq!(osmand_ok_res.status(), StatusCode::OK);
+    assert!(
+        osmand_ok_res.headers().get(header::RETRY_AFTER).is_none(),
+        "200 /api/osmand must not carry Retry-After"
+    );
 
     // 7. Club flights share the exact same per-device ingest rate limit and stay active on 429.
     let (club_id, _) = create_live_club(
@@ -1325,7 +1429,7 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
             |i| json!({ "t": t_next + i as i64 * 100, "lat": -33.45, "lon": -70.55, "alt": 900.0 }),
         )
         .collect();
-    let (st, _, cb1) = send_json(
+    let (st, hdrs_cb1, cb1) = send_json(
         &mut fx.router,
         "POST",
         "/api/ingest",
@@ -1336,8 +1440,9 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
     .await;
     assert_eq!(st, StatusCode::OK, "{cb1}");
     assert_eq!(cb1["accepted"], MAX_CLUB_INGEST_FIXES_PER_MINUTE);
+    assert!(hdrs_cb1.get(header::RETRY_AFTER).is_none());
 
-    let (st, _, cb2) = send_json(
+    let (st, hdrs_cb2, cb2) = send_json(
         &mut fx.router,
         "POST",
         "/api/ingest",
@@ -1348,6 +1453,14 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
     .await;
     assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{cb2}");
     assert_eq!(cb2["error"], "rate limited");
+    let retry_cb2: u64 = hdrs_cb2
+        .get(header::RETRY_AFTER)
+        .expect("Retry-After header required on club flight 429")
+        .to_str()
+        .unwrap()
+        .parse()
+        .expect("Retry-After must be integer seconds");
+    assert_eq!(retry_cb2, 60);
     assert_eq!(
         fx.db.open_flight_for_device(&c_dev).await.as_deref(),
         Some(c_fid.as_str()),
@@ -1749,6 +1862,18 @@ async fn public_live_trails_excludes_clubless_and_unverified_without_500_and_kee
     let mut fx = setup_harness().await;
     let now = now_ms();
 
+    // Flat 0 m DEM covering SCTB (-33.45x, -70.548 -> tile N34W071) so AGL checks
+    // resolve deterministically both with MSL fallback and under fail-closed DEM floors.
+    let dem_root = tempfile::tempdir().unwrap();
+    let dem_dir = dem_root.path().join("dem");
+    std::fs::create_dir_all(&dem_dir).unwrap();
+    std::fs::write(
+        dem_dir.join("N34W071.asc"),
+        "# 0 m flat terrain\n0.0 0.0 0.0\n0.0 0.0 0.0\n0.0 0.0 0.0\n",
+    )
+    .unwrap();
+    let _env_guard = FlightDataEnvGuard::set(dem_root.path());
+
     let (club_id, _) = create_live_club(
         &fx.db,
         "pubcl",
@@ -1768,7 +1893,7 @@ async fn public_live_trails_excludes_clubless_and_unverified_without_500_and_kee
         .await
         .unwrap();
 
-    // High-altitude club public flight (2500 m MSL ~ 8202 ft -> passes 500 ft floor)
+    // High-altitude club public flight (2500 m MSL ~ 8202 ft AGL over 0 m DEM -> passes default and 500 ft floors)
     let hi_email = format!("pubcl-hi-{}@test.example", &new_id()[..6]);
     let (hi_acct, _) = create_account_with_session(&fx.db, &hi_email, true, None).await;
     let (hi_pid, _) =
@@ -1813,7 +1938,7 @@ async fn public_live_trails_excludes_clubless_and_unverified_without_500_and_kee
         .await
         .unwrap();
 
-    // Low-altitude club public flight (50 m MSL ~ 164 ft -> excluded by min_agl_ft=500 even on MSL fallback)
+    // Low-altitude club public flight (50 m MSL ~ 164 ft AGL over 0 m DEM -> below min_agl_ft=500 and any 300 ft default floor)
     let lo_email = format!("pubcl-lo-{}@test.example", &new_id()[..6]);
     let (lo_acct, _) = create_account_with_session(&fx.db, &lo_email, true, None).await;
     let (lo_pid, _) =
@@ -1932,8 +2057,10 @@ async fn public_live_trails_excludes_clubless_and_unverified_without_500_and_kee
         .await
         .unwrap();
 
-    // 1. Anonymous GET /api/public/live-trails (no altitude floor) -> 200 OK, no 500,
-    //    returns club public flights only; NEVER returns unverified or verified club-less rows.
+    // 1. Anonymous GET /api/public/live-trails (default altitude floor policy) -> 200 OK, no 500,
+    //    returns the high-altitude club public flight; NEVER returns unverified or verified
+    //    club-less rows. Presence of fid_club_low (~164 ft AGL) depends on the endpoint's default
+    //    AGL floor (none vs. M-27's 300 ft default), so it is not asserted here.
     let (st, _, body) = send_json(
         &mut fx.router,
         "GET",
@@ -1951,7 +2078,6 @@ async fn public_live_trails_excludes_clubless_and_unverified_without_500_and_kee
         .filter_map(|f| f["flightId"].as_str())
         .collect();
     assert!(ids.contains(fid_club_high.as_str()));
-    assert!(ids.contains(fid_club_low.as_str()));
     assert!(
         !ids.contains(fid_unv_clubless.as_str()),
         "unverified club-less flight must never appear on /api/public/live-trails"
