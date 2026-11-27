@@ -1,0 +1,56 @@
+# Woodpecker workflow: Playwright e2e (linux/arm64).
+# Skips draft PRs unless the `ready` label is present (matches former GHA `if`).
+when:
+  - event: push
+    branch: main
+  - event: pull_request
+    evaluate: 'CI_COMMIT_PULL_REQUEST_DRAFT == "false" || CI_COMMIT_PULL_REQUEST_LABELS contains "ready"'
+  - event: pull_request_metadata
+    evaluate: 'CI_COMMIT_PULL_REQUEST_DRAFT == "false" || CI_COMMIT_PULL_REQUEST_LABELS contains "ready"'
+
+labels:
+  platform: linux/arm64
+
+services:
+  - name: postgres
+    image: postgres:18-alpine
+    pull: false
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: flight_vis_test
+    ports:
+      - 5432
+
+steps:
+  - name: wait-postgres
+    image: postgres:18-alpine
+    pull: false
+    commands:
+      - |
+        until PGPASSWORD=postgres psql -h postgres -U postgres -d flight_vis_test -c 'SELECT 1' >/dev/null 2>&1; do
+          sleep 1
+        done
+
+  - name: e2e
+    image: mcr.microsoft.com/playwright:v1.61.1-noble
+    pull: false
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/flight_vis_test
+      CI: "true"
+    commands:
+      - apt-get update
+      - apt-get install -y --no-install-recommends curl ca-certificates ffmpeg libssl-dev pkg-config
+      - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.98.0
+      - export PATH="$HOME/.cargo/bin:$PATH"
+      - node scripts/e2e-seed.mjs
+      - npm ci
+      - npm run test:e2e
+
+  - name: cleanup
+    image: alpine:3.20
+    pull: false
+    when:
+      - status: [success, failure]
+    commands:
+      - rm -rf server-rs/target node_modules
