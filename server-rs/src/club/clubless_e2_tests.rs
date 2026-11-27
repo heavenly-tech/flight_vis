@@ -861,9 +861,11 @@ async fn tail_text_equal_to_club_aircraft_is_disambiguated_and_isolated_from_clu
         .unwrap();
     assert_eq!(pm_club["tailSource"], json!(TAIL_SOURCE_CLUB));
     assert!(pm_club.get("nonClub").is_none());
+    assert!(pm_club.get("otherClub").is_none());
     assert_eq!(pm_club["clubSlug"], json!(club_slug));
     assert_eq!(pm_cl["tailSource"], json!(TAIL_SOURCE_PILOT));
     assert_eq!(pm_cl["nonClub"], json!(true));
+    assert!(pm_cl.get("otherClub").is_none());
     assert!(pm_cl.get("clubSlug").is_none());
     assert!(pm_cl.get("clubName").is_none());
 
@@ -939,6 +941,7 @@ async fn tail_text_equal_to_club_aircraft_is_disambiguated_and_isolated_from_clu
             .unwrap_or_else(|| panic!("{uri} missing nearby club-less flight: {b}"));
         assert_eq!(cl_item["tailSource"], json!(TAIL_SOURCE_PILOT));
         assert_eq!(cl_item["nonClub"], json!(true));
+        assert!(cl_item.get("otherClub").is_none());
         assert!(cl_item.get("clubSlug").is_none());
         assert!(cl_item.get("clubName").is_none());
     }
@@ -1310,7 +1313,7 @@ async fn clubless_owner_tools_and_shares_work_for_owner_and_deny_others() {
         let expected_share_status = if label == "anonymous" {
             StatusCode::UNAUTHORIZED
         } else {
-            StatusCode::FORBIDDEN
+            StatusCode::NOT_FOUND
         };
         for (method, uri) in [
             ("GET", format!("/api/me/flights/{fid}/shares")),

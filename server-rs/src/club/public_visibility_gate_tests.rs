@@ -780,8 +780,8 @@ async fn unverified_pilot_patch_to_public_rejected_and_existing_public_flight_ke
         Some(json!({ "visibility": "public" })),
     )
     .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
-    assert_eq!(body["error"], "forbidden");
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"], "not found");
 }
 
 // ---------------------------------------------------------------------------

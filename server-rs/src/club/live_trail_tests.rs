@@ -553,7 +553,7 @@ async fn patch_flight_trail_auth_matrix_and_validation() {
     .await;
     assert_eq!(st, StatusCode::UNAUTHORIZED);
 
-    // Other pilot same club -> 403
+    // Other pilot same club -> 404 (L-97: no existence oracle)
     let (st, _) = send_json(
         &mut router,
         "PATCH",
@@ -564,9 +564,9 @@ async fn patch_flight_trail_auth_matrix_and_validation() {
         Some(json!({ "trailMinutes": 10 })),
     )
     .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert_eq!(st, StatusCode::NOT_FOUND);
 
-    // Same-club staff -> 403
+    // Same-club staff -> 404 (L-97)
     let (st, _) = send_json(
         &mut router,
         "PATCH",
@@ -577,9 +577,9 @@ async fn patch_flight_trail_auth_matrix_and_validation() {
         Some(json!({ "trailMinutes": 10 })),
     )
     .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert_eq!(st, StatusCode::NOT_FOUND);
 
-    // Same-club admin -> 403
+    // Same-club admin -> 404 (L-97)
     let (st, _) = send_json(
         &mut router,
         "PATCH",
@@ -590,9 +590,9 @@ async fn patch_flight_trail_auth_matrix_and_validation() {
         Some(json!({ "trailMinutes": 10 })),
     )
     .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert_eq!(st, StatusCode::NOT_FOUND);
 
-    // Other-club admin -> 403
+    // Other-club admin -> 404 (L-97)
     let (st, _) = send_json(
         &mut router,
         "PATCH",
@@ -603,7 +603,7 @@ async fn patch_flight_trail_auth_matrix_and_validation() {
         Some(json!({ "trailMinutes": 10 })),
     )
     .await;
-    assert_eq!(st, StatusCode::FORBIDDEN);
+    assert_eq!(st, StatusCode::NOT_FOUND);
 
     // Cross-site Origin on cookie auth -> 403 (CSRF)
     let (st, _) = send_json(

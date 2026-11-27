@@ -13,7 +13,7 @@ use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 
-use crate::html_csp::{csp_for_dist_relative, csp_for_spa_fallback};
+use crate::html_csp::{csp_for_dist_relative, csp_for_spa_fallback, SENSITIVE_REFERRER_POLICY};
 
 fn mime_for(ext: &str) -> &'static str {
     match ext {
@@ -205,6 +205,7 @@ struct FileResponseOpts<'a> {
     not_modified: bool,
     sized_body: Option<Vec<u8>>,
     html_csp: Option<&'static str>,
+    referrer_policy: &'static str,
 }
 
 async fn file_response(opts: FileResponseOpts<'_>) -> Result<axum::response::Response, StatusCode> {
@@ -238,7 +239,7 @@ async fn file_response(opts: FileResponseOpts<'_>) -> Result<axum::response::Res
     if let Some(csp) = opts.html_csp {
         builder = builder
             .header(header::CONTENT_SECURITY_POLICY, csp)
-            .header(header::REFERRER_POLICY, HTML_REFERRER_POLICY);
+            .header(header::REFERRER_POLICY, opts.referrer_policy);
     }
     if let Some(len) = content_length {
         builder = builder.header(header::CONTENT_LENGTH, len.to_string());
@@ -257,12 +258,26 @@ async fn file_response(opts: FileResponseOpts<'_>) -> Result<axum::response::Res
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
 
+fn html_referrer_policy_for(relative: &str) -> &'static str {
+    if relative == "embed-3d.html" {
+        SENSITIVE_REFERRER_POLICY
+    } else {
+        HTML_REFERRER_POLICY
+    }
+}
+
 pub async fn serve(
     dist_dir: &Path,
     url_path: &str,
     headers: &HeaderMap,
 ) -> Result<axum::response::Response, StatusCode> {
-    if let Some(joined) = safe_join(dist_dir, url_path) {
+    let is_embed_3d_alias = normalize_url_path(url_path).as_deref() == Some("/embed/3d");
+    let effective_url_path = if is_embed_3d_alias {
+        "/embed-3d.html"
+    } else {
+        url_path
+    };
+    if let Some(joined) = safe_join(dist_dir, effective_url_path) {
         if tokio::fs::metadata(&joined)
             .await
             .map(|m| m.is_file())
@@ -326,11 +341,12 @@ pub async fn serve(
                 not_modified,
                 sized_body,
                 html_csp,
+                referrer_policy: html_referrer_policy_for(relative),
             })
             .await;
         }
     }
-    if is_app_extension_path(url_path) {
+    if is_embed_3d_alias || is_app_extension_path(url_path) {
         return Err(StatusCode::NOT_FOUND);
     }
     let index = dist_dir.join("index.html");
@@ -352,6 +368,7 @@ pub async fn serve(
             not_modified: if_none_match == Some(etag.as_str()),
             sized_body: None,
             html_csp: Some(csp_for_spa_fallback()),
+            referrer_policy: HTML_REFERRER_POLICY,
         })
         .await;
     }
@@ -658,6 +675,56 @@ mod tests {
             Some("public, max-age=31536000, immutable")
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn serve_embed_3d_uses_globe_csp_no_referrer_and_no_cache() {
+        let dir = temp_dist();
+        std::fs::write(
+            dir.join("embed-3d.html"),
+            "<!doctype html><title>3d</title>",
+        )
+        .unwrap();
+        std::fs::write(dir.join("index.html"), "<!doctype html><title>spa</title>").unwrap();
+
+        for path in ["/embed/3d", "/embed/3d/", "/embed-3d.html"] {
+            let res = serve(&dir, path, &HeaderMap::new())
+                .await
+                .expect("embed-3d route");
+            assert_eq!(res.status(), StatusCode::OK, "{path}");
+            assert_eq!(
+                res.headers()
+                    .get(header::CONTENT_SECURITY_POLICY)
+                    .and_then(|v| v.to_str().ok()),
+                Some(HTML_GLOBE_CSP),
+                "{path} CSP"
+            );
+            assert_eq!(
+                res.headers()
+                    .get(header::REFERRER_POLICY)
+                    .and_then(|v| v.to_str().ok()),
+                Some(SENSITIVE_REFERRER_POLICY),
+                "{path} Referrer-Policy"
+            );
+            assert_eq!(
+                res.headers()
+                    .get(header::CACHE_CONTROL)
+                    .and_then(|v| v.to_str().ok()),
+                Some("no-cache"),
+                "{path} Cache-Control"
+            );
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn missing_embed_3d_returns_404_not_spa() {
+        let dir = temp_dist();
+        std::fs::write(dir.join("index.html"), "<!doctype html><title>spa</title>").unwrap();
+        let res = serve(&dir, "/embed/3d", &HeaderMap::new()).await;
+        assert!(matches!(res, Err(StatusCode::NOT_FOUND)));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

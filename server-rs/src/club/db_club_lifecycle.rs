@@ -720,7 +720,17 @@ impl ClubDb {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(|s| s.to_ascii_uppercase());
+        let pre_account_id = self.account_id_for_email(&email).await;
         let mut tx = self.pool.begin().await.map_err(|_| ClubSignupError::Db)?;
+        if let Some(ref aid) = pre_account_id {
+            if !crate::club::db_account::lock_account_for_membership_change(&mut tx, aid)
+                .await
+                .map_err(|_| ClubSignupError::Db)?
+            {
+                let _ = tx.rollback().await;
+                return Err(ClubSignupError::Db);
+            }
+        }
         if Self::slug_taken_in_tx(&mut tx, &slug, None, now)
             .await
             .map_err(|_| ClubSignupError::Db)?
@@ -755,9 +765,27 @@ impl ClubDb {
             return Err(ClubSignupError::Db);
         }
         let admin_name = format!("Admin · {name}");
-        let account_id = if let Some(a) = self.account_by_email(&email).await {
-            a.id
+        let existing_acct: Option<String> =
+            sqlx::query_scalar("SELECT id FROM accounts WHERE lower(email) = lower($1)")
+                .bind(&email)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|_| ClubSignupError::Db)?;
+        let account_id = if let Some(aid) = existing_acct {
+            if pre_account_id.as_deref() != Some(aid.as_str())
+                && !crate::club::db_account::lock_account_for_membership_change(&mut tx, &aid)
+                    .await
+                    .map_err(|_| ClubSignupError::Db)?
+            {
+                let _ = tx.rollback().await;
+                return Err(ClubSignupError::Db);
+            }
+            aid
         } else {
+            if pre_account_id.is_some() {
+                let _ = tx.rollback().await;
+                return Err(ClubSignupError::Db);
+            }
             let aid = new_id();
             sqlx::query(
                 "INSERT INTO accounts (id, email, created_at)
@@ -769,6 +797,13 @@ impl ClubDb {
             .execute(&mut *tx)
             .await
             .map_err(|_| ClubSignupError::Db)?;
+            if !crate::club::db_account::lock_account_for_membership_change(&mut tx, &aid)
+                .await
+                .map_err(|_| ClubSignupError::Db)?
+            {
+                let _ = tx.rollback().await;
+                return Err(ClubSignupError::Db);
+            }
             aid
         };
         sqlx::query(
@@ -863,21 +898,46 @@ impl ClubDb {
         if now > expires_at {
             return Err(MagicConsumeError::Expired);
         }
+        let pre_admin_accounts: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT account_id FROM pilots
+             WHERE club_id = $1 AND role = 'admin' AND account_id IS NOT NULL
+             ORDER BY account_id ASC",
+        )
+        .bind(&club_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|_| MagicConsumeError::Invalid)?;
+
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| MagicConsumeError::Invalid)?;
+        for aid in &pre_admin_accounts {
+            if !crate::club::db_account::lock_account_for_membership_change(&mut tx, aid)
+                .await
+                .map_err(|_| MagicConsumeError::Invalid)?
+            {
+                let _ = tx.rollback().await;
+                return Err(MagicConsumeError::Invalid);
+            }
+        }
         let updated = sqlx::query(
             "UPDATE magic_login_tokens SET used_at = $1 WHERE id = $2 AND used_at IS NULL",
         )
         .bind(now)
         .bind(&id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|_| MagicConsumeError::Invalid)?;
         if updated.rows_affected() == 0 {
+            let _ = tx.rollback().await;
             return Err(MagicConsumeError::Used);
         }
         sqlx::query("UPDATE clubs SET status = 'live', email_verified_at = $1 WHERE id = $2")
             .bind(now)
             .bind(&club_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(|_| MagicConsumeError::Invalid)?;
         sqlx::query(
@@ -886,7 +946,7 @@ impl ClubDb {
         )
         .bind(now)
         .bind(&club_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|_| MagicConsumeError::Invalid)?;
         sqlx::query(
@@ -894,7 +954,7 @@ impl ClubDb {
              WHERE club_id = $1 AND role = 'admin'",
         )
         .bind(&club_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|_| MagicConsumeError::Invalid)?;
         sqlx::query(
@@ -904,9 +964,10 @@ impl ClubDb {
         )
         .bind(now)
         .bind(&club_id)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(|_| MagicConsumeError::Invalid)?;
+        tx.commit().await.map_err(|_| MagicConsumeError::Invalid)?;
         Ok(club_id)
     }
 }

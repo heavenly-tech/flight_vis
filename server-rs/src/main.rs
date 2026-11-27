@@ -691,9 +691,10 @@ impl LoginThrottle {
     /// `Err(retry_after_secs)` (`>= 1`) when `max_attempts` requests have already been recorded
     /// within the last `window_secs`, or when at `max_keys` capacity (after pruning expired
     /// entries) under [`OverflowPolicy::RejectNew`]. Under
-    /// [`OverflowPolicy::EvictSoonestExpiring`], a new unknown key at capacity evicts the single
-    /// soonest-to-expire key (oldest newest-timestamp, deterministic key tie-break) and is
-    /// admitted without growing the map past `max_keys`.
+    /// [`OverflowPolicy::EvictSoonestExpiring`], saturated keys (`len >= max_attempts`) are pinned
+    /// until their window expires (L-87); a new unknown key evicts only the single soonest-to-expire
+    /// UNDER-limit key, and if every key is pinned it is rejected with `Retry-After` without
+    /// growing the map past `max_keys`.
     pub(crate) fn check_up_to_window(
         &self,
         key: &str,
@@ -732,20 +733,23 @@ impl LoginThrottle {
                 pruned = true;
             }
             if hits.len() >= self.max_keys {
+                let reject_retry_after = || {
+                    let earliest_expiry = hits
+                        .values()
+                        .filter_map(|times| times.iter().copied().max())
+                        .min();
+                    earliest_expiry
+                        .map(|t| t.saturating_add(window_secs).saturating_sub(now).max(1))
+                        .unwrap_or_else(|| window_secs.max(1))
+                };
                 match self.policy {
                     OverflowPolicy::RejectNew => {
-                        let earliest_expiry = hits
-                            .values()
-                            .filter_map(|times| times.iter().copied().max())
-                            .min();
-                        let retry_after = earliest_expiry
-                            .map(|t| t.saturating_add(window_secs).saturating_sub(now).max(1))
-                            .unwrap_or_else(|| window_secs.max(1));
-                        return Err(retry_after);
+                        return Err(reject_retry_after());
                     }
                     OverflowPolicy::EvictSoonestExpiring => {
                         if let Some(victim) = hits
                             .iter()
+                            .filter(|(_, times)| times.len() < max_attempts)
                             .filter_map(|(k, times)| {
                                 times
                                     .iter()
@@ -757,6 +761,10 @@ impl LoginThrottle {
                             .map(|(_, k)| k.to_string())
                         {
                             hits.remove(&victim);
+                        } else {
+                            // Every active key is pinned at or above `max_attempts` (L-87):
+                            // never evict a saturated counter; reject new key with Retry-After.
+                            return Err(reject_retry_after());
                         }
                     }
                 }
@@ -1673,22 +1681,25 @@ mod tests {
             .is_err());
         assert!(throttle.check_up_to("ip-mid", t0 + 27, 3).is_err());
 
-        // Deterministic tie-breaking: identical newest timestamps evict lexicographically smallest key.
+        // Deterministic tie-breaking: identical newest timestamps among under-limit keys evict
+        // lexicographically smallest key (saturated keys are pinned by L-87).
         let tie = LoginThrottle::with_max_keys(2);
         let t1 = 30_000_u64;
-        assert_eq!(tie.check_up_to("ip-z", t1, 2), Ok(()));
-        assert_eq!(tie.check_up_to("ip-z", t1, 2), Ok(()));
-        assert_eq!(tie.check_up_to("ip-a", t1, 2), Ok(()));
-        assert_eq!(tie.check_up_to("ip-a", t1, 2), Ok(()));
+        assert_eq!(tie.check_up_to("ip-z", t1, 3), Ok(()));
+        assert_eq!(tie.check_up_to("ip-z", t1, 3), Ok(()));
+        assert_eq!(tie.check_up_to("ip-a", t1, 3), Ok(()));
+        assert_eq!(tie.check_up_to("ip-a", t1, 3), Ok(()));
         assert_eq!(tie.len(), 2);
 
-        assert_eq!(tie.check_up_to("ip-m", t1 + 5, 2), Ok(()));
+        assert_eq!(tie.check_up_to("ip-m", t1 + 5, 3), Ok(()));
         assert_eq!(tie.len(), 2);
-        // ip-z must have survived with count=2; ip-a was evicted and starts fresh.
-        assert!(tie.check_up_to("ip-z", t1 + 6, 2).is_err());
-        assert_eq!(tie.check_up_to("ip-a", t1 + 7, 2), Ok(()));
-        assert_eq!(tie.check_up_to("ip-a", t1 + 7, 2), Ok(()));
-        assert!(tie.check_up_to("ip-a", t1 + 7, 2).is_err());
+        // ip-z must have survived with count=2 (1 remaining); ip-a was evicted and starts fresh.
+        assert_eq!(tie.check_up_to("ip-z", t1 + 6, 3), Ok(()));
+        assert!(tie.check_up_to("ip-z", t1 + 6, 3).is_err());
+        assert_eq!(tie.check_up_to("ip-a", t1 + 7, 3), Ok(()));
+        assert_eq!(tie.check_up_to("ip-a", t1 + 7, 3), Ok(()));
+        assert_eq!(tie.check_up_to("ip-a", t1 + 7, 3), Ok(()));
+        assert!(tie.check_up_to("ip-a", t1 + 7, 3).is_err());
         assert_eq!(tie.len(), 2);
 
         // Expired entries are pruned before evicting any active entry.
@@ -1756,5 +1767,80 @@ mod tests {
             state.public_live_trails_throttle.max_keys(),
             THROTTLE_MAX_KEYS
         );
+    }
+
+    #[test]
+    fn login_throttle_evict_soonest_pins_saturated_keys_under_flood_and_rejects_when_all_pinned() {
+        let cap = 4;
+        let limit = 3;
+        let throttle = LoginThrottle::with_max_keys(cap);
+        assert_eq!(throttle.policy(), OverflowPolicy::EvictSoonestExpiring);
+        let t0 = 40_000_u64;
+
+        // Saturate "ip-limited" FIRST (earliest timestamp t0) so old EvictSoonest would evict it first.
+        for _ in 0..limit {
+            assert_eq!(throttle.check_up_to("ip-limited", t0, limit), Ok(()));
+        }
+        assert!(throttle.check_up_to("ip-limited", t0, limit).is_err());
+
+        // Fill remaining cap slots with under-limit keys at newer timestamps.
+        for i in 1..cap {
+            assert_eq!(
+                throttle.check_up_to(&format!("ip-under-{i}"), t0 + i as u64, limit),
+                Ok(())
+            );
+        }
+        assert_eq!(throttle.len(), cap);
+
+        // Flood 2*cap brand-new keys: under-limit keys rotate out, memory stays bounded at cap,
+        // and the pinned saturated key "ip-limited" MUST NEVER be evicted or reset!
+        for j in 0..(2 * cap) {
+            assert_eq!(
+                throttle.check_up_to(&format!("ip-flood-{j}"), t0 + 10 + j as u64, limit),
+                Ok(())
+            );
+            assert!(throttle.len() <= cap);
+        }
+        assert_eq!(throttle.len(), cap);
+        assert!(
+            throttle.check_up_to("ip-limited", t0 + 20, limit).is_err(),
+            "L-87: saturated key must stay pinned through 2x-cap flood"
+        );
+
+        // Now saturate EVERY slot in the map so all `cap` keys are pinned.
+        let all_pinned = LoginThrottle::with_max_keys(cap);
+        for i in 0..cap {
+            let k = format!("ip-pin-{i}");
+            for _ in 0..limit {
+                assert_eq!(all_pinned.check_up_to(&k, t0 + i as u64, limit), Ok(()));
+            }
+            assert!(all_pinned.check_up_to(&k, t0 + i as u64, limit).is_err());
+        }
+        assert_eq!(all_pinned.len(), cap);
+
+        // With every key pinned, a new unknown key MUST be rejected with Retry-After and NOT inserted.
+        let retry = all_pinned
+            .check_up_to("ip-new-while-all-pinned", t0 + 10, limit)
+            .expect_err("L-87: all-pinned map must reject new keys");
+        assert_eq!(retry, LOGIN_WINDOW_SECS - 10);
+        assert_eq!(all_pinned.len(), cap);
+
+        // All originally pinned keys remain saturated.
+        for i in 0..cap {
+            assert!(all_pinned
+                .check_up_to(&format!("ip-pin-{i}"), t0 + 10, limit)
+                .is_err());
+        }
+
+        // Once the earliest pinned key's window expires, stale pruning frees a slot cleanly.
+        assert_eq!(
+            all_pinned.check_up_to("ip-after-expiry", t0 + LOGIN_WINDOW_SECS, limit),
+            Ok(())
+        );
+        assert_eq!(all_pinned.len(), cap);
+        // Newer pinned keys (t0 + 1..cap) are still within window and still limited.
+        assert!(all_pinned
+            .check_up_to("ip-pin-1", t0 + LOGIN_WINDOW_SECS, limit)
+            .is_err());
     }
 }

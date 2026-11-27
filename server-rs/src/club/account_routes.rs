@@ -2,7 +2,7 @@ use super::routes::is_secure;
 use crate::club::{
     auth,
     db::{now_ms, ClubDb},
-    db_account::{AccountDeleteError, AccountJoinError, AccountSignupError},
+    db_account::{AccountDeleteError, AccountJoinError, AccountLeaveError, AccountSignupError},
 };
 use crate::AppState;
 use axum::{
@@ -732,6 +732,11 @@ async fn join_club(
             Json(json!({ "error": "account suspended" })),
         )
             .into_response(),
+        Err(AccountJoinError::NotFound) => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response(),
         Err(_) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "join failed" })),
@@ -1049,12 +1054,6 @@ async fn delete_account(
     client_ip: crate::ClientIp,
     body: Bytes,
 ) -> impl IntoResponse {
-    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
-        return (status, Json(json!({ "error": "csrf" }))).into_response();
-    }
-    if let Err(status) = super::csrf::exact_json_content_type(&headers) {
-        return (status, Json(json!({ "error": "unsupported media type" }))).into_response();
-    }
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1070,6 +1069,19 @@ async fn delete_account(
             .into_response();
     };
     let now = now_ms();
+    let Some((acct, _)) = db.account_from_session(&sess, now).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    };
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
+    if let Err(status) = super::csrf::exact_json_content_type(&headers) {
+        return (status, Json(json!({ "error": "unsupported media type" }))).into_response();
+    }
     let now_sec = (now / 1000).max(0) as u64;
     if let Err(retry_after) = state.account_password_throttle.check_up_to(
         &client_ip.0,
@@ -1083,13 +1095,6 @@ async fn delete_account(
         )
             .into_response();
     }
-    let Some((acct, _)) = db.account_from_session(&sess, now).await else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
-        )
-            .into_response();
-    };
     if let Err(retry_after) = state.account_password_account_throttle.check_up_to(
         &acct.id,
         now_sec,
@@ -1185,6 +1190,92 @@ async fn delete_account(
         )
             .into_response(),
         Err(AccountDeleteError::Db) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
+async fn leave_club(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(slug): Path<String>,
+    body: Bytes,
+) -> impl IntoResponse {
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let Some(sess) = auth::parse_account_session_cookie(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    };
+    let now = now_ms();
+    let Some((acct, _)) = db.account_from_session(&sess, now).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    };
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
+    if !body.is_empty() || headers.contains_key(header::CONTENT_TYPE) {
+        if let Err(status) = super::csrf::exact_json_content_type(&headers) {
+            return (status, Json(json!({ "error": "unsupported media type" }))).into_response();
+        }
+        if !body.is_empty() {
+            match serde_json::from_slice::<serde_json::Value>(&body) {
+                Ok(val) if val.is_object() => {}
+                _ => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": "invalid json" })),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
+    let club_cookie_pilot_id = match auth::parse_session_cookie(&headers) {
+        Some(club_sess) => db.pilot_from_session(&club_sess, now).await.map(|p| p.id),
+        None => None,
+    };
+    match db.leave_club_by_slug(&acct.id, &slug, now).await {
+        Ok(outcome) => {
+            let mut res = (
+                StatusCode::OK,
+                [(header::CACHE_CONTROL, "no-store")],
+                Json(json!({ "ok": true })),
+            )
+                .into_response();
+            if club_cookie_pilot_id.as_deref() == Some(outcome.pilot_id.as_str()) {
+                let clear_club = auth::clear_session_cookie(is_secure(&headers));
+                res.headers_mut()
+                    .append(header::SET_COOKIE, clear_club.parse().expect("cookie"));
+            }
+            res
+        }
+        Err(AccountLeaveError::NotFound) => {
+            (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
+        }
+        Err(AccountLeaveError::LastAdmin) => {
+            (StatusCode::CONFLICT, Json(json!({ "error": "last_admin" }))).into_response()
+        }
+        Err(AccountLeaveError::AccountGone) => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response(),
+        Err(AccountLeaveError::Db) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "db error" })),
         )
@@ -1443,6 +1534,10 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/signup", get(serve_signup_page))
         .route("/api/account", axum::routing::delete(delete_account))
+        .route(
+            "/api/account/clubs/{slug}",
+            axum::routing::delete(leave_club),
+        )
         .route("/api/account/signup-available", get(signup_available))
         .route("/api/account/signup", post(account_signup))
         .route("/api/account/login", post(account_login))

@@ -450,11 +450,25 @@ impl ClubDb {
         pilot_id: &str,
         checkout: Option<ApprovePilotCheckout>,
     ) -> Result<(), DbError> {
+        let pre_account_id: Option<String> =
+            sqlx::query_scalar("SELECT account_id FROM pilots WHERE id = $1")
+                .bind(pilot_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
         let mut tx = self.pool.begin().await?;
-        let row = sqlx::query("SELECT club_id, status, role FROM pilots WHERE id = $1")
-            .bind(pilot_id)
-            .fetch_one(&mut *tx)
-            .await?;
+        if let Some(ref aid) = pre_account_id {
+            if !crate::club::db_account::lock_account_for_membership_change(&mut tx, aid).await? {
+                tx.rollback().await.ok();
+                return Err(DbError::protocol("missing account"));
+            }
+        }
+        let row = sqlx::query(
+            "SELECT club_id, status, role, account_id FROM pilots WHERE id = $1 FOR UPDATE",
+        )
+        .bind(pilot_id)
+        .fetch_one(&mut *tx)
+        .await?;
         let club_id: Option<String> = row.try_get(0).ok().flatten();
         let Some(club_id) = club_id else {
             tx.rollback().await.ok();
@@ -462,6 +476,21 @@ impl ClubDb {
         };
         let status: String = row.get(1);
         let role: String = row.get(2);
+        let cur_account_id: Option<String> = row.try_get(3).ok().flatten();
+        if pre_account_id.is_some() && cur_account_id != pre_account_id {
+            tx.rollback().await.ok();
+            return Err(DbError::protocol("missing account"));
+        }
+        if pre_account_id.is_none() {
+            if let Some(ref aid) = cur_account_id {
+                if !crate::club::db_account::lock_account_for_membership_change(&mut tx, aid)
+                    .await?
+                {
+                    tx.rollback().await.ok();
+                    return Err(DbError::protocol("missing account"));
+                }
+            }
+        }
         if status != "pending" {
             tx.commit().await?;
             return Ok(());

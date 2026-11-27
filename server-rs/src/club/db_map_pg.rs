@@ -421,7 +421,9 @@ impl ClubDb {
         let club_meta = self.club_public_row(&club).await;
         let dem = self.dem_index();
         let live_cutoff_ms = now_ms().saturating_sub(LIVE_FIX_MAX_AGE_MS);
-        let rows = self.latest_device_fixes().await;
+        let rows = self
+            .latest_device_fixes_for_public_map(&club, PUBLIC_LIVE_TRAILS_SQL_CANDIDATE_LIMIT)
+            .await;
         let mut own_club_rows = Vec::new();
         let mut clubless_positions = Vec::new();
         let min_agl_ft = filter.altitude_min_ft.max(DEFAULT_PUBLIC_ALTITUDE_MIN_FT);
@@ -478,6 +480,7 @@ impl ClubDb {
                     visibility: "public".to_string(),
                     trail_minutes: r.trail_minutes,
                     non_club: true,
+                    other_club: false,
                     club_name: None,
                     club_slug: None,
                 });
@@ -765,7 +768,8 @@ impl ClubDb {
                         fix,
                         visibility: "public".to_string(),
                         trail_minutes: effective.as_i16(),
-                        non_club: true,
+                        non_club: !is_club_aircraft,
+                        other_club: is_club_aircraft,
                         club_name,
                         club_slug,
                     },

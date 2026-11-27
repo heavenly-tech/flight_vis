@@ -144,10 +144,7 @@ async fn post_flight_share(
             )
                 .into_response()
         }
-        Err(ShareCreateError::NotOwner) => {
-            (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
-        }
-        Err(ShareCreateError::NotFound) => {
+        Err(ShareCreateError::NotOwner | ShareCreateError::NotFound) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
         }
         Err(_) => (
@@ -176,10 +173,7 @@ async fn get_flight_shares(
     };
     match db.list_flight_shares(&id, &flight_id).await {
         Ok(shares) => Json(json!({ "shares": shares })).into_response(),
-        Err(ShareCreateError::NotOwner) => {
-            (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
-        }
-        Err(ShareCreateError::NotFound) => {
+        Err(ShareCreateError::NotOwner | ShareCreateError::NotFound) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
         }
         Err(_) => (
@@ -208,10 +202,7 @@ async fn revoke_flight_share(
     };
     match db.revoke_flight_share(&id, &flight_id, &share_id).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(ShareRevokeError::NotOwner) => {
-            (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
-        }
-        Err(ShareRevokeError::NotFound) => {
+        Err(ShareRevokeError::NotOwner | ShareRevokeError::NotFound) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
         }
         Err(_) => (

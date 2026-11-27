@@ -662,5 +662,12 @@
     "off": "No",
     "minutes": "{minutes} min",
     "all": "Todo"
+  },
+  "embed3d": {
+    "title": "Vista 3D",
+    "loading": "Cargando 3D…",
+    "webglError": "Tu dispositivo no puede mostrar el mapa 3D.",
+    "creditsAria": "Atribución del mapa",
+    "mapAria": "Mapa 3D en vivo"
   }
 }

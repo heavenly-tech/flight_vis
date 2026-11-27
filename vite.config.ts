@@ -46,16 +46,25 @@ const authProxy: Record<string, string | ProxyOptions> = {
 };
 
 function liveSpaFallback(): Plugin {
+  const rewrite = (req: IncomingMessage, _res: ServerResponse, next: () => void) => {
+    const raw = req.url ?? "";
+    const qIdx = raw.indexOf("?");
+    const pathOnly = qIdx >= 0 ? raw.slice(0, qIdx) : raw;
+    const search = qIdx >= 0 ? raw.slice(qIdx) : "";
+    if (/^\/live\/[A-Za-z0-9._-]+$/i.test(pathOnly)) {
+      req.url = `/index.html${search}`;
+    } else if (normalizeUrlPath(pathOnly) === "/embed/3d") {
+      req.url = `/embed-3d.html${search}`;
+    }
+    next();
+  };
   return {
     name: "live-spa-fallback",
     configureServer(server) {
-      server.middlewares.use((req, _res, next) => {
-        const pathOnly = req.url?.split("?")[0] ?? "";
-        if (/^\/live\/[A-Za-z0-9._-]+$/i.test(pathOnly)) {
-          req.url = "/index.html";
-        }
-        next();
-      });
+      server.middlewares.use(rewrite);
+    },
+    configurePreviewServer(server) {
+      server.middlewares.use(rewrite);
     },
   };
 }
@@ -195,6 +204,9 @@ export default defineConfig({
   base: "/",
   define: {
     CESIUM_BASE_URL: JSON.stringify(`/${cesiumBaseUrl}/`),
+    __FV_BUILD_ID__: JSON.stringify(
+      process.env.VITE_BUILD_ID ?? process.env.GITHUB_SHA?.slice(0, 7) ?? "0.1.0",
+    ),
     "import.meta.env.VITE_E2E_SKIP_GLOBE": JSON.stringify(
       process.env.VITE_E2E_SKIP_GLOBE ?? "",
     ),
@@ -253,6 +265,7 @@ export default defineConfig({
         clubCheckinLanding: path.resolve(root, "club-checkin-landing.html"),
         clubCheckinExpired: path.resolve(root, "club-checkin-expired.html"),
         shareFlight: path.resolve(root, "share-flight.html"),
+        embed3d: path.resolve(root, "embed-3d.html"),
         e2eLive: path.resolve(root, "e2e-live.html"),
       },
     },

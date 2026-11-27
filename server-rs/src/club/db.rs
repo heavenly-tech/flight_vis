@@ -204,6 +204,7 @@ pub const SHARE_LIFETIME_AFTER_END_MS: i64 = 24 * 3600 * 1000;
 pub struct AppendFixesOutcome {
     pub accepted: usize,
     pub duplicates: usize,
+    pub dropped_pre_start: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +212,7 @@ pub struct OpenFlightContext {
     pub flight_id: String,
     pub club_id: Option<String>,
     pub started_at: i64,
+    pub previous_flight_ended_at: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -549,15 +551,55 @@ impl ClubDb {
 
     #[allow(dead_code)]
     pub async fn approve_pilot(&self, pilot_id: &str) -> Result<(), DbError> {
-        let Some(club_id) = self.pilot_club_id_opt(pilot_id).await? else {
+        let pre_account_id: Option<String> =
+            sqlx::query_scalar("SELECT account_id FROM pilots WHERE id = $1")
+                .bind(pilot_id)
+                .fetch_optional(&self.pool)
+                .await?
+                .flatten();
+        let mut tx = self.pool.begin().await?;
+        if let Some(ref aid) = pre_account_id {
+            if !crate::club::db_account::lock_account_for_membership_change(&mut tx, aid).await? {
+                let _ = tx.rollback().await;
+                return Err(DbError::protocol("missing account"));
+            }
+        }
+        let row = sqlx::query("SELECT club_id, account_id FROM pilots WHERE id = $1 FOR UPDATE")
+            .bind(pilot_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        let Some(row) = row else {
+            let _ = tx.rollback().await;
             return Err(DbError::protocol("cannot approve personal pilot"));
         };
+        let club_id: Option<String> = row.try_get(0).ok().flatten();
+        let cur_account_id: Option<String> = row.try_get(1).ok().flatten();
+        let Some(club_id) = club_id else {
+            let _ = tx.rollback().await;
+            return Err(DbError::protocol("cannot approve personal pilot"));
+        };
+        if pre_account_id.is_some() && cur_account_id != pre_account_id {
+            let _ = tx.rollback().await;
+            return Err(DbError::protocol("missing account"));
+        }
         sqlx::query("UPDATE pilots SET status = 'approved' WHERE id = $1 AND club_id IS NOT NULL")
             .bind(pilot_id)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await?;
-        self.ensure_membership_row(pilot_id, &club_id, "pilot", "active")
-            .await?;
+        sqlx::query(
+            "INSERT INTO club_memberships (id, pilot_id, club_id, role, status, created_at)
+             VALUES ($1, $2, $3, 'pilot', 'active', $4)
+             ON CONFLICT(pilot_id, club_id) DO UPDATE SET
+               role = excluded.role,
+               status = excluded.status",
+        )
+        .bind(new_id())
+        .bind(pilot_id)
+        .bind(&club_id)
+        .bind(now_ms())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -1156,6 +1198,46 @@ impl ClubDb {
         }
     }
 
+    async fn previous_flight_ended_at_for_device<'e, E>(
+        executor: E,
+        current_flight_id: &str,
+        device_id: &str,
+        pilot_id: &str,
+        account_id: Option<&str>,
+    ) -> Result<Option<i64>, DbError>
+    where
+        E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+    {
+        let ended_at: Option<i64> = sqlx::query_scalar(
+            "SELECT MAX(prev.ended_at)
+             FROM flights prev
+             LEFT JOIN pilots prev_p ON prev_p.id = prev.pilot_id
+             WHERE prev.id <> $1
+               AND prev.ended_at IS NOT NULL
+               AND (
+                   EXISTS (
+                       SELECT 1 FROM flight_devices pfd
+                       WHERE pfd.flight_id = prev.id AND pfd.device_id = $2
+                   )
+                   OR prev.pilot_id = $3
+                   OR (
+                       $4::text IS NOT NULL
+                       AND (
+                           prev.owner_account_id = $4
+                           OR prev_p.account_id = $4
+                       )
+                   )
+               )",
+        )
+        .bind(current_flight_id)
+        .bind(device_id)
+        .bind(pilot_id)
+        .bind(account_id)
+        .fetch_one(executor)
+        .await?;
+        Ok(ended_at)
+    }
+
     /// Resolve the currently open active flight bound to `device_id`, enforcing that
     /// the flight is still open (`status = 'active' AND ended_at IS NULL`) and owned
     /// by the device's pilot/account (both club and club-less flights).
@@ -1164,7 +1246,7 @@ impl ClubDb {
         device_id: &str,
     ) -> Option<OpenFlightContext> {
         let row = sqlx::query(
-            "SELECT f.id, f.club_id, f.started_at
+            "SELECT f.id, f.club_id, f.started_at, f.pilot_id, dp.account_id
              FROM flights f
              JOIN flight_devices fd ON fd.flight_id = f.id
              JOIN devices d ON d.id = fd.device_id
@@ -1188,10 +1270,26 @@ impl ClubDb {
         .fetch_optional(&self.pool)
         .await
         .ok()??;
+        let flight_id: String = row.try_get(0).ok()?;
+        let club_id: Option<String> = row.try_get(1).ok().flatten();
+        let started_at: i64 = row.try_get(2).ok()?;
+        let pilot_id: String = row.try_get(3).ok()?;
+        let account_id: Option<String> = row.try_get(4).ok().flatten();
+        let previous_flight_ended_at = Self::previous_flight_ended_at_for_device(
+            &self.pool,
+            &flight_id,
+            device_id,
+            &pilot_id,
+            account_id.as_deref(),
+        )
+        .await
+        .ok()
+        .flatten();
         Some(OpenFlightContext {
-            flight_id: row.try_get(0).ok()?,
-            club_id: row.try_get(1).ok().flatten(),
-            started_at: row.try_get(2).ok()?,
+            flight_id,
+            club_id,
+            started_at,
+            previous_flight_ended_at,
         })
     }
 
@@ -1301,6 +1399,7 @@ impl ClubDb {
         Ok(AppendFixesOutcome {
             accepted,
             duplicates,
+            dropped_pre_start: 0,
         })
     }
 
@@ -1314,6 +1413,7 @@ impl ClubDb {
             return Ok(AppendFixesOutcome {
                 accepted: 0,
                 duplicates: 0,
+                dropped_pre_start: 0,
             });
         }
         let mut tx = self.pool.begin().await?;
@@ -1324,17 +1424,20 @@ impl ClubDb {
 
     /// Transactionally verify that `flight_id` is still open and owned by `device_id`'s
     /// pilot/account (`FOR SHARE OF f`) before appending `fixes`, preventing races with
-    /// concurrent flight close or device/ownership changes.
+    /// concurrent flight close or device/ownership changes. When `omit_flight_id` is true
+    /// (M-32), also enforces the fail-closed previous-flight lower bound inside the transaction.
     pub async fn append_fixes_for_open_flight(
         &self,
         flight_id: &str,
         device_id: &str,
         fixes: &[LiveFix],
+        omit_flight_id: bool,
     ) -> Result<AppendFixesOutcome, AppendOpenFlightError> {
         if fixes.is_empty() {
             return Ok(AppendFixesOutcome {
                 accepted: 0,
                 duplicates: 0,
+                dropped_pre_start: 0,
             });
         }
         let mut tx = self
@@ -1342,8 +1445,8 @@ impl ClubDb {
             .begin()
             .await
             .map_err(|_| AppendOpenFlightError::Db)?;
-        let pilot_id: Option<String> = sqlx::query_scalar(
-            "SELECT f.pilot_id
+        let row = sqlx::query(
+            "SELECT f.pilot_id, dp.account_id, f.started_at
              FROM flights f
              JOIN flight_devices fd ON fd.flight_id = f.id
              JOIN devices d ON d.id = fd.device_id
@@ -1368,14 +1471,52 @@ impl ClubDb {
         .fetch_optional(&mut *tx)
         .await
         .map_err(|_| AppendOpenFlightError::Db)?;
-        let Some(pilot_id) = pilot_id else {
+        let Some(row) = row else {
             let _ = tx.rollback().await;
             return Err(AppendOpenFlightError::FlightMismatch);
         };
-        let outcome =
-            Self::insert_fixes_in_tx(&mut tx, flight_id, device_id, Some(&pilot_id), fixes)
+        let pilot_id: String = row.try_get(0).map_err(|_| AppendOpenFlightError::Db)?;
+        let account_id: Option<String> = row.try_get(1).ok().flatten();
+        let started_at: i64 = row.try_get(2).map_err(|_| AppendOpenFlightError::Db)?;
+
+        let mut filtered: Vec<LiveFix> = Vec::new();
+        let mut tx_dropped = 0usize;
+        let to_insert: &[LiveFix] = if omit_flight_id {
+            let prev_end = Self::previous_flight_ended_at_for_device(
+                &mut *tx,
+                flight_id,
+                device_id,
+                &pilot_id,
+                account_id.as_deref(),
+            )
+            .await
+            .map_err(|_| AppendOpenFlightError::Db)?;
+            let min_allowed_t = crate::live::effective_pre_start_min_t(started_at, prev_end, true);
+            for fix in fixes {
+                if fix.t < min_allowed_t {
+                    tx_dropped += 1;
+                } else {
+                    filtered.push(fix.clone());
+                }
+            }
+            if filtered.is_empty() {
+                tx.commit().await.map_err(|_| AppendOpenFlightError::Db)?;
+                return Ok(AppendFixesOutcome {
+                    accepted: 0,
+                    duplicates: 0,
+                    dropped_pre_start: tx_dropped,
+                });
+            }
+            &filtered
+        } else {
+            fixes
+        };
+
+        let mut outcome =
+            Self::insert_fixes_in_tx(&mut tx, flight_id, device_id, Some(&pilot_id), to_insert)
                 .await
                 .map_err(|_| AppendOpenFlightError::Db)?;
+        outcome.dropped_pre_start = tx_dropped;
         tx.commit().await.map_err(|_| AppendOpenFlightError::Db)?;
         Ok(outcome)
     }
@@ -1512,6 +1653,105 @@ impl ClubDb {
             .collect()
     }
 
+    /// SQL candidate query for anonymous `/api/club/map/public` (L-96): capped at
+    /// `PUBLIC_LIVE_TRAILS_SQL_CANDIDATE_LIMIT` (500), newest active public flights first.
+    pub(crate) const LATEST_DEVICE_FIXES_PUBLIC_MAP_SQL: &'static str =
+        "SELECT f.id,
+                COALESCE(a.tail, f.tail_text) AS tail,
+                f.pilot_id,
+                p.name,
+                f.visibility,
+                COALESCE(f.club_id, a.club_id) AS club_id,
+                fx.t_ms, fx.lat, fx.lon, fx.alt, fx.alt_ref, fx.speed, fx.course, fx.accuracy,
+                COALESCE(f.trail_minutes, c.trail_minutes_default, $1) AS trail_minutes,
+                (a.id IS NOT NULL AND COALESCE(f.club_id, a.club_id) IS NOT NULL) AS is_club_aircraft,
+                (
+                    f.club_id IS NULL
+                    AND f.aircraft_id IS NULL
+                    AND f.tail_text IS NOT NULL
+                    AND p.club_id IS NULL
+                    AND p.status <> 'guest'
+                    AND p.account_id IS NOT NULL
+                    AND f.owner_account_id = p.account_id
+                    AND oa.id = f.owner_account_id
+                    AND oa.email_verified_at IS NOT NULL
+                    AND oa.suspended_at IS NULL
+                ) AS clubless_public_eligible,
+                f.last_fix_at
+         FROM flights f
+         LEFT JOIN aircraft a ON a.id = f.aircraft_id
+         LEFT JOIN clubs c ON c.id = COALESCE(f.club_id, a.club_id)
+         JOIN pilots p ON p.id = f.pilot_id
+         LEFT JOIN accounts oa ON oa.id = f.owner_account_id
+         JOIN LATERAL (
+             SELECT t_ms, lat, lon, alt, alt_ref, speed, course, accuracy
+             FROM fixes
+             WHERE flight_id = f.id
+             ORDER BY t_ms DESC, id DESC
+             LIMIT 1
+         ) fx ON TRUE
+         WHERE f.status = 'active'
+           AND f.ended_at IS NULL
+           AND f.visibility = 'public'
+           AND COALESCE(a.tail, f.tail_text) IS NOT NULL
+           AND (COALESCE(f.club_id, a.club_id) = $2 OR f.club_id IS NULL)
+         ORDER BY COALESCE(f.last_fix_at, fx.t_ms) DESC, f.id ASC
+         LIMIT $3";
+
+    fn row_to_device_fix(r: sqlx::postgres::PgRow) -> Option<DeviceFix> {
+        let raw_trail: i16 = r
+            .try_get(14)
+            .unwrap_or(crate::club::trail::DEFAULT_TRAIL_MINUTES);
+        let trail_minutes = crate::club::trail::TrailMinutes::from_i16(raw_trail)
+            .unwrap_or(crate::club::trail::TrailMinutes::Min5)
+            .as_i16();
+        Some(DeviceFix {
+            flight_id: r.try_get(0).ok()?,
+            tail: r.try_get(1).ok()?,
+            pilot_id: r.try_get(2).ok()?,
+            pilot_name: r.try_get(3).ok()?,
+            visibility: r.try_get(4).ok()?,
+            club_id: r.try_get(5).ok().flatten(),
+            is_club_aircraft: r.try_get::<bool, _>(15).unwrap_or(false),
+            clubless_public_eligible: r.try_get::<bool, _>(16).unwrap_or(false),
+            last_fix_at: r.try_get(17).ok().flatten(),
+            trail_minutes,
+            fix: LiveFix {
+                t: r.try_get(6).ok()?,
+                lat: r.try_get(7).ok()?,
+                lon: r.try_get(8).ok()?,
+                alt: r.try_get(9).ok()?,
+                alt_ref: r.try_get(10).ok().flatten(),
+                speed: r.try_get(11).ok()?,
+                course: r.try_get(12).ok()?,
+                accuracy: r.try_get(13).ok()?,
+            },
+        })
+    }
+
+    /// Bounded candidate loader for anonymous `/api/club/map/public` (L-96).
+    /// Applies SQL `LIMIT` (matching `PUBLIC_LIVE_TRAILS_SQL_CANDIDATE_LIMIT = 500`, ordered
+    /// newest first) so anonymous public map requests never perform an unbounded active-flight scan.
+    pub(crate) async fn latest_device_fixes_for_public_map(
+        &self,
+        club_id: &str,
+        limit: usize,
+    ) -> Vec<DeviceFix> {
+        let rows = sqlx::query(Self::LATEST_DEVICE_FIXES_PUBLIC_MAP_SQL)
+            .bind(crate::club::trail::DEFAULT_TRAIL_MINUTES)
+            .bind(club_id)
+            .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+        rows.into_iter()
+            .filter_map(Self::row_to_device_fix)
+            .collect()
+    }
+
+    /// Unbounded active-flight loader retained for authenticated club/admin/display own-club readers
+    /// (`club_map_for_viewer_scoped`, `admin_map_scoped`, `display_map_scoped`); anonymous public
+    /// map uses [`Self::latest_device_fixes_for_public_map`] with SQL `LIMIT 500`.
     pub(crate) async fn latest_device_fixes(&self) -> Vec<DeviceFix> {
         let rows = sqlx::query(
             "SELECT f.id,
@@ -1557,36 +1797,7 @@ impl ClubDb {
         .await
         .unwrap_or_default();
         rows.into_iter()
-            .filter_map(|r| {
-                let raw_trail: i16 = r
-                    .try_get(14)
-                    .unwrap_or(crate::club::trail::DEFAULT_TRAIL_MINUTES);
-                let trail_minutes = crate::club::trail::TrailMinutes::from_i16(raw_trail)
-                    .unwrap_or(crate::club::trail::TrailMinutes::Min5)
-                    .as_i16();
-                Some(DeviceFix {
-                    flight_id: r.try_get(0).ok()?,
-                    tail: r.try_get(1).ok()?,
-                    pilot_id: r.try_get(2).ok()?,
-                    pilot_name: r.try_get(3).ok()?,
-                    visibility: r.try_get(4).ok()?,
-                    club_id: r.try_get(5).ok().flatten(),
-                    is_club_aircraft: r.try_get::<bool, _>(15).unwrap_or(false),
-                    clubless_public_eligible: r.try_get::<bool, _>(16).unwrap_or(false),
-                    last_fix_at: r.try_get(17).ok().flatten(),
-                    trail_minutes,
-                    fix: LiveFix {
-                        t: r.try_get(6).ok()?,
-                        lat: r.try_get(7).ok()?,
-                        lon: r.try_get(8).ok()?,
-                        alt: r.try_get(9).ok()?,
-                        alt_ref: r.try_get(10).ok().flatten(),
-                        speed: r.try_get(11).ok()?,
-                        course: r.try_get(12).ok()?,
-                        accuracy: r.try_get(13).ok()?,
-                    },
-                })
-            })
+            .filter_map(Self::row_to_device_fix)
             .collect()
     }
 
@@ -3658,31 +3869,36 @@ mod tests {
         let w = ACCOUNT_SIGNUP_WINDOW_SECS;
         let t0 = 50_000_u64;
 
-        // Fill cap: ip-1 has oldest newest timestamp (t0 + 6), so it expires soonest.
-        assert!(wt.allow("198.51.100.2", t0 + 1, 2, w));
-        assert!(wt.allow("198.51.100.1", t0 + 5, 2, w));
-        assert!(wt.allow("198.51.100.1", t0 + 6, 2, w));
-        assert!(wt.allow("198.51.100.3", t0 + 30, 2, w));
-        assert!(wt.allow("198.51.100.2", t0 + 50, 2, w));
+        // Fill cap with under-limit keys (limit=3): ip-1 has oldest newest timestamp (t0 + 6),
+        // so it expires soonest and is evicted first (saturated keys are pinned by L-87).
+        assert!(wt.allow("198.51.100.2", t0 + 1, 3, w));
+        assert!(wt.allow("198.51.100.1", t0 + 5, 3, w));
+        assert!(wt.allow("198.51.100.1", t0 + 6, 3, w));
+        assert!(wt.allow("198.51.100.3", t0 + 30, 3, w));
+        assert!(wt.allow("198.51.100.2", t0 + 50, 3, w));
         assert_eq!(wt.len(), cap);
 
         // A new signup IP at cap is admitted; len stays == cap; soonest-expiring ip-1 is evicted.
-        assert!(wt.allow("198.51.100.4", t0 + 60, 2, w));
+        assert!(wt.allow("198.51.100.4", t0 + 60, 3, w));
         assert_eq!(wt.len(), cap);
 
         // Surviving IPs keep their existing counts.
-        assert!(!wt.allow("198.51.100.2", t0 + 61, 2, w));
-        assert!(wt.allow("198.51.100.3", t0 + 61, 2, w));
-        assert!(!wt.allow("198.51.100.3", t0 + 61, 2, w));
+        assert!(wt.allow("198.51.100.2", t0 + 61, 3, w)); // 3rd hit -> pinned
+        assert!(!wt.allow("198.51.100.2", t0 + 61, 3, w));
+        assert!(wt.allow("198.51.100.3", t0 + 61, 3, w)); // 2nd hit
+        assert!(wt.allow("198.51.100.3", t0 + 61, 3, w)); // 3rd hit -> pinned
+        assert!(!wt.allow("198.51.100.3", t0 + 61, 3, w));
 
-        // Evicted ip-1 starts a fresh window on its next attempt (full 2 attempts).
-        assert!(wt.allow("198.51.100.1", t0 + 62, 2, w));
-        assert!(wt.allow("198.51.100.1", t0 + 62, 2, w));
-        assert!(!wt.allow("198.51.100.1", t0 + 62, 2, w));
+        // Evicted ip-1 starts a fresh window on its next attempt (full 3 attempts, evicting
+        // under-limit 198.51.100.4 while preserving pinned .2 and .3).
+        assert!(wt.allow("198.51.100.1", t0 + 62, 3, w));
+        assert!(wt.allow("198.51.100.1", t0 + 62, 3, w));
+        assert!(wt.allow("198.51.100.1", t0 + 62, 3, w));
+        assert!(!wt.allow("198.51.100.1", t0 + 62, 3, w));
         assert_eq!(wt.len(), cap);
 
         // After the 10-minute window passes, pruning clears expired keys cleanly.
-        assert!(wt.allow("198.51.100.99", t0 + 62 + w, 2, w));
+        assert!(wt.allow("198.51.100.99", t0 + 62 + w, 3, w));
         assert_eq!(wt.len(), 1);
     }
 }

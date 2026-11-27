@@ -22,6 +22,8 @@ pub struct TailLivePosition {
     pub trail_minutes: i16,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub non_club: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub other_club: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub club_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,6 +81,7 @@ pub fn dedupe_by_tail(inputs: Vec<DeviceFix>) -> Vec<TailLivePosition> {
                 visibility: row.visibility.clone(),
                 trail_minutes: row.trail_minutes,
                 non_club: false,
+                other_club: false,
                 club_name: None,
                 club_slug: None,
             });
@@ -161,6 +164,7 @@ mod tests {
                 visibility: "club".into(),
                 trail_minutes: 5,
                 non_club: false,
+                other_club: false,
                 club_name: None,
                 club_slug: None,
             },
@@ -174,6 +178,7 @@ mod tests {
                 visibility: "club".into(),
                 trail_minutes: 5,
                 non_club: false,
+                other_club: false,
                 club_name: None,
                 club_slug: None,
             },

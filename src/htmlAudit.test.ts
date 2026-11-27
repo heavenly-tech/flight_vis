@@ -122,6 +122,13 @@ describe("root HTML accessibility and shared styling audit", () => {
         }
         continue;
       }
+      if (file === "embed-3d.html") {
+        const embedTs = fs.readFileSync(path.join(root, "src", "embed", "embed3d.ts"), "utf8");
+        if (!html.includes("/src/embed/embed3d.ts") || !embedTs.includes("./embed3d.css")) {
+          missingStyle.push(file);
+        }
+        continue;
+      }
       if (!html.includes('href="/src/style.css"')) {
         missingStyle.push(file);
       }
@@ -156,6 +163,7 @@ describe("root HTML accessibility and shared styling audit", () => {
       "club-screen.html": ["#status-bar"],
       "public-map.html": ["#empty-state", "#map-error"],
       "share-flight.html": ["#status"],
+      "embed-3d.html": ["#status"],
     };
 
     const missingLive: string[] = [];

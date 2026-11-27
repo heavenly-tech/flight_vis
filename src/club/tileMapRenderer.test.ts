@@ -160,7 +160,7 @@ describe("tileMapRenderer", () => {
             tail: "CC-EXT",
             tailSource: "club",
             flightId: "f-other-club",
-            nonClub: true,
+            otherClub: true,
             clubName: "Club Valparaíso",
             clubSlug: "valpo",
             fix: { lat: -33.49, lon: -70.58 },
@@ -171,10 +171,18 @@ describe("tileMapRenderer", () => {
       const parsed = parsePublicMapPayload(raw);
       expect(parsed.aircraft).toHaveLength(3);
       expect(parsed.aircraft[0].tailSource).toBe("club");
+      expect(parsed.aircraft[0].nonClub).toBeUndefined();
+      expect(parsed.aircraft[0].otherClub).toBeUndefined();
       expect(parsed.aircraft[0].clubSlug).toBe("cas");
       expect(parsed.aircraft[1].tailSource).toBe("pilot");
+      expect(parsed.aircraft[1].nonClub).toBe(true);
+      expect(parsed.aircraft[1].otherClub).toBeUndefined();
       expect(parsed.aircraft[1].clubName).toBeUndefined();
       expect(parsed.aircraft[1].clubSlug).toBeUndefined();
+      expect(parsed.aircraft[2].tailSource).toBe("club");
+      expect(parsed.aircraft[2].nonClub).toBeUndefined();
+      expect(parsed.aircraft[2].otherClub).toBe(true);
+      expect(parsed.aircraft[2].clubSlug).toBe("valpo");
 
       for (const [locale, expectedPilotLabel, expectedOtherClubLabel] of [
         ["es", "Registrada por el piloto", "Fuera del club"],
@@ -211,16 +219,24 @@ describe("tileMapRenderer", () => {
         );
 
         expect(clubMarker?.getAttribute("data-tail-source")).toBe("club");
+        expect(clubMarker?.getAttribute("data-non-club")).toBeNull();
+        expect(clubMarker?.getAttribute("data-other-club")).toBeNull();
         expect(clubMarker?.querySelector("[data-tail-source-label]")).toBeNull();
         expect(clubMarker?.textContent).toBe("CC-DUP");
 
         expect(pilotMarker?.getAttribute("data-tail-source")).toBe("pilot");
+        expect(pilotMarker?.getAttribute("data-non-club")).toBe("true");
+        expect(pilotMarker?.getAttribute("data-other-club")).toBeNull();
+        expect(pilotMarker?.classList.contains("is-non-club")).toBe(true);
         expect(pilotMarker?.classList.contains("is-pilot-tail")).toBe(true);
         expect(pilotMarker?.querySelector('[data-tail-source-label="pilot"]')?.textContent).toBe(
           expectedPilotLabel,
         );
 
         expect(otherClubMarker?.getAttribute("data-tail-source")).toBe("club");
+        expect(otherClubMarker?.getAttribute("data-non-club")).toBe("true");
+        expect(otherClubMarker?.getAttribute("data-other-club")).toBe("true");
+        expect(otherClubMarker?.classList.contains("is-non-club")).toBe(true);
         expect(otherClubMarker?.classList.contains("is-pilot-tail")).toBe(false);
         expect(
           otherClubMarker?.querySelector('[data-tail-source-label="club"]')?.textContent,

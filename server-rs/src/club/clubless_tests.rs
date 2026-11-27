@@ -596,8 +596,8 @@ async fn clubless_email_verification_gates_public_start_and_patch() {
         Some(json!({ "visibility": "public" })),
     )
     .await;
-    assert_eq!(st, StatusCode::FORBIDDEN, "{cross_patch}");
-    assert_eq!(cross_patch["error"], "forbidden");
+    assert_eq!(st, StatusCode::NOT_FOUND, "{cross_patch}");
+    assert_eq!(cross_patch["error"], "not found");
 
     // 6. Verify the account email -> /api/account/me flips true & PATCH private -> public succeeds.
     sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")

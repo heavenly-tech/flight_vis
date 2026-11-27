@@ -1472,7 +1472,16 @@ async fn club_view_nearby_public_default_toggle_radius_base_visibility_and_suspe
         );
 
         let near1 = ac.iter().find(|x| x["flightId"] == fid_near_anon).unwrap();
-        assert_eq!(near1["nonClub"], json!(true));
+        assert_eq!(near1["tailSource"], json!("club"));
+        assert!(
+            near1.get("nonClub").is_none(),
+            "L-92: other-club aircraft must have nonClub=false (omitted): {near1}"
+        );
+        assert_eq!(
+            near1["otherClub"],
+            json!(true),
+            "L-92: other-club aircraft must set otherClub=true: {near1}"
+        );
         assert!(
             near1["pilotName"].is_null(),
             "pilotName must be null when show_pilot_name_public=false"
@@ -1488,7 +1497,16 @@ async fn club_view_nearby_public_default_toggle_radius_base_visibility_and_suspe
         );
 
         let near2 = ac.iter().find(|x| x["flightId"] == fid_near_named).unwrap();
-        assert_eq!(near2["nonClub"], json!(true));
+        assert_eq!(near2["tailSource"], json!("club"));
+        assert!(
+            near2.get("nonClub").is_none(),
+            "L-92: other-club aircraft must have nonClub=false (omitted): {near2}"
+        );
+        assert_eq!(
+            near2["otherClub"],
+            json!(true),
+            "L-92: other-club aircraft must set otherClub=true: {near2}"
+        );
         assert_eq!(near2["pilotName"], json!("Public Name"));
         assert!(near2.get("pilotId").is_none());
         assert_eq!(
@@ -1517,7 +1535,9 @@ async fn club_view_nearby_public_default_toggle_radius_base_visibility_and_suspe
             .iter()
             .find(|t| t["flightId"] == fid_near_anon)
             .unwrap();
-        assert_eq!(t1["nonClub"], json!(true));
+        assert_eq!(t1["tailSource"], json!("club"));
+        assert!(t1.get("nonClub").is_none(), "L-92: {t1}");
+        assert_eq!(t1["otherClub"], json!(true), "L-92: {t1}");
         assert_eq!(t1["trailMinutes"], json!(15));
         assert_eq!(t1["points"].as_array().unwrap().len(), 3);
 
@@ -1525,7 +1545,9 @@ async fn club_view_nearby_public_default_toggle_radius_base_visibility_and_suspe
             .iter()
             .find(|t| t["flightId"] == fid_near_named)
             .unwrap();
-        assert_eq!(t2["nonClub"], json!(true));
+        assert_eq!(t2["tailSource"], json!("club"));
+        assert!(t2.get("nonClub").is_none(), "L-92: {t2}");
+        assert_eq!(t2["otherClub"], json!(true), "L-92: {t2}");
         assert_eq!(t2["trailMinutes"], json!(2));
         assert_eq!(t2["points"].as_array().unwrap().len(), 2);
 
