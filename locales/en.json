@@ -13,6 +13,7 @@
     "language": "Language",
     "copied": "Copied",
     "otherClub": "Other club",
+    "pilotEntered": "Pilot-entered",
     "backPilot": "← Pilot",
     "backHome": "← Back to flight_vis"
   },
@@ -98,6 +99,8 @@
     "emailNotVerified": "Verify your email to share flights publicly.",
     "clubVisibilityRequiresClub": "Club visibility requires a club.",
     "invalidTail": "Invalid tail",
+    "leaveClubsFirst": "Leave your clubs before deleting your account.",
+    "batchTooLarge": "Position batch exceeds the maximum allowed size.",
     "genericError": "Something went wrong. Please try again."
   },
   "club": {

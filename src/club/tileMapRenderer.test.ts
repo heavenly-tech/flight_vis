@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { initI18n } from "../i18n/index";
 import { computeKioskView } from "./kioskMapView";
 import {
+  aircraftSourceBadgeLabel,
   computeTileGrid,
   extractPublicAircraft,
+  formatAircraftListLabel,
   normalizeBaseAerodrome,
   parsePublicMapPayload,
   projectPointToPx,
@@ -131,6 +134,98 @@ describe("tileMapRenderer", () => {
       expect(el.querySelector('[data-marker="base"]')?.textContent).toBe("SCTB");
       const acMarker = el.querySelector('[data-marker="aircraft"][data-tail="CC-ABC"]');
       expect(acMarker?.textContent).toBe("CC-ABC");
+    });
+
+    it("visibly distinguishes pilot-entered tails from club aircraft with the same registration in es and en", () => {
+      const raw = {
+        clubName: "Club Aéreo de Santiago",
+        base: TOBALABA,
+        aircraft: [
+          {
+            tail: "CC-DUP",
+            tailSource: "club",
+            flightId: "f-club",
+            clubName: "Club Aéreo de Santiago",
+            clubSlug: "cas",
+            fix: { lat: -33.46, lon: -70.55 },
+          },
+          {
+            tail: "CC-DUP",
+            tailSource: "pilot",
+            flightId: "f-pilot",
+            nonClub: true,
+            fix: { lat: -33.48, lon: -70.57 },
+          },
+          {
+            tail: "CC-EXT",
+            tailSource: "club",
+            flightId: "f-other-club",
+            nonClub: true,
+            clubName: "Club Valparaíso",
+            clubSlug: "valpo",
+            fix: { lat: -33.49, lon: -70.58 },
+          },
+        ],
+      };
+
+      const parsed = parsePublicMapPayload(raw);
+      expect(parsed.aircraft).toHaveLength(3);
+      expect(parsed.aircraft[0].tailSource).toBe("club");
+      expect(parsed.aircraft[0].clubSlug).toBe("cas");
+      expect(parsed.aircraft[1].tailSource).toBe("pilot");
+      expect(parsed.aircraft[1].clubName).toBeUndefined();
+      expect(parsed.aircraft[1].clubSlug).toBeUndefined();
+
+      for (const [locale, expectedPilotLabel, expectedOtherClubLabel] of [
+        ["es", "Registrada por el piloto", "Fuera del club"],
+        ["en", "Pilot-entered", "Other club"],
+      ] as const) {
+        initI18n({ stored: locale });
+        expect(aircraftSourceBadgeLabel(parsed.aircraft[0])).toBeNull();
+        expect(aircraftSourceBadgeLabel(parsed.aircraft[1])).toBe(expectedPilotLabel);
+        expect(aircraftSourceBadgeLabel(parsed.aircraft[2])).toBe(expectedOtherClubLabel);
+
+        expect(formatAircraftListLabel(parsed.aircraft[0])).toBe("CC-DUP");
+        expect(formatAircraftListLabel(parsed.aircraft[1])).toBe(
+          `CC-DUP · ${expectedPilotLabel}`,
+        );
+        expect(formatAircraftListLabel(parsed.aircraft[2])).toBe(
+          `CC-EXT · ${expectedOtherClubLabel}`,
+        );
+
+        const el = document.createElement("div");
+        renderClubTileMap(el, {
+          base: parsed.base,
+          aircraft: parsed.aircraft,
+          viewportPx: { w: 800, h: 450 },
+        });
+
+        const clubMarker = el.querySelector<HTMLElement>(
+          '[data-marker="aircraft"][data-flight-id="f-club"]',
+        );
+        const pilotMarker = el.querySelector<HTMLElement>(
+          '[data-marker="aircraft"][data-flight-id="f-pilot"]',
+        );
+        const otherClubMarker = el.querySelector<HTMLElement>(
+          '[data-marker="aircraft"][data-flight-id="f-other-club"]',
+        );
+
+        expect(clubMarker?.getAttribute("data-tail-source")).toBe("club");
+        expect(clubMarker?.querySelector("[data-tail-source-label]")).toBeNull();
+        expect(clubMarker?.textContent).toBe("CC-DUP");
+
+        expect(pilotMarker?.getAttribute("data-tail-source")).toBe("pilot");
+        expect(pilotMarker?.classList.contains("is-pilot-tail")).toBe(true);
+        expect(pilotMarker?.querySelector('[data-tail-source-label="pilot"]')?.textContent).toBe(
+          expectedPilotLabel,
+        );
+
+        expect(otherClubMarker?.getAttribute("data-tail-source")).toBe("club");
+        expect(otherClubMarker?.classList.contains("is-pilot-tail")).toBe(false);
+        expect(
+          otherClubMarker?.querySelector('[data-tail-source-label="club"]')?.textContent,
+        ).toBe(expectedOtherClubLabel);
+      }
     });
   });
 });

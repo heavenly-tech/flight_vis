@@ -1174,12 +1174,12 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
     assert_eq!(st, StatusCode::OK, "{start}");
     let flight_id = start["id"].as_str().unwrap().to_string();
 
-    // 1. A single batch > MAX_CLUB_INGEST_FIXES_PER_MINUTE (120) is rejected atomically (429)
-    //    with Retry-After: 60 (full window) and unchanged error body.
+    // 1. A single batch > MAX_INGEST_BATCH_FIXES (100) is rejected atomically (413) with
+    //    {"error":"batch too large","max":100} and consumes zero rate-limit budget.
     let oversized: Vec<Value> = (0..=MAX_CLUB_INGEST_FIXES_PER_MINUTE)
         .map(|i| json!({ "t": t0 + i as i64 * 100, "lat": -33.45, "lon": -70.55, "alt": 900.0 }))
         .collect();
-    let (st, hdrs_over, body) = send_json(
+    let (st, _hdrs_over, body) = send_json(
         &mut fx.router,
         "POST",
         "/api/ingest",
@@ -1188,16 +1188,8 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
         Some(json!({ "fixes": oversized })),
     )
     .await;
-    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{body}");
-    assert_eq!(body["error"], "rate limited");
-    let retry_over: u64 = hdrs_over
-        .get(header::RETRY_AFTER)
-        .expect("Retry-After header required on oversized batch 429")
-        .to_str()
-        .unwrap()
-        .parse()
-        .expect("Retry-After must be integer seconds");
-    assert_eq!(retry_over, 60);
+    assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    assert_eq!(body, json!({ "error": "batch too large", "max": 100 }));
 
     // 2. Fill the 120-fix budget across two batches (100 at t0, 20 at t0 + 15s) -> both 200 OK
     //    with no Retry-After header.
@@ -1249,7 +1241,7 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
         None,
         Some(&dev_tok),
         Some(
-            json!({ "fixes": [{ "t": t0 + 90_000, "lat": -33.45, "lon": -70.55, "alt": 920.0 }] }),
+            json!({ "fixes": [{ "t": t0 + 15_500, "lat": -33.45, "lon": -70.55, "alt": 920.0 }] }),
         ),
     )
     .await;
@@ -1265,14 +1257,11 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
     assert!((1..=60).contains(&retry_b3));
     assert_eq!(retry_b3, 45);
 
-    // A 101-fix batch at t0 + 15s cannot fit when only the 100 t0 hits expire; it must wait
-    // until a hit from the t0 + 15s batch expires (60s).
+    // A 101-fix batch exceeds MAX_INGEST_BATCH_FIXES=100 -> 413 Payload Too Large.
     let batch101: Vec<Value> = (0..101)
-        .map(
-            |i| json!({ "t": t0 + 100_000 + i as i64, "lat": -33.45, "lon": -70.55, "alt": 920.0 }),
-        )
+        .map(|i| json!({ "t": t0 + 15_000 + i as i64, "lat": -33.45, "lon": -70.55, "alt": 920.0 }))
         .collect();
-    let (st, hdrs_101, b101) = send_json(
+    let (st, _, b101) = send_json(
         &mut fx.router,
         "POST",
         "/api/ingest",
@@ -1281,16 +1270,8 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
         Some(json!({ "fixes": batch101 })),
     )
     .await;
-    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{b101}");
-    assert_eq!(b101["error"], "rate limited");
-    let retry_101: u64 = hdrs_101
-        .get(header::RETRY_AFTER)
-        .expect("Retry-After header required on /api/ingest 429")
-        .to_str()
-        .unwrap()
-        .parse()
-        .expect("Retry-After must be integer seconds");
-    assert_eq!(retry_101, 60);
+    assert_eq!(st, StatusCode::PAYLOAD_TOO_LARGE, "{b101}");
+    assert_eq!(b101, json!({ "error": "batch too large", "max": 100 }));
 
     // 4. Advance clock by 20.5s (t0 + 35.5s): Retry-After shrinks and rounds UP (24.5s -> 25s)
     //    on both /api/ingest and /api/osmand.
@@ -1302,7 +1283,7 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
         None,
         Some(&dev_tok),
         Some(
-            json!({ "fixes": [{ "t": t0 + 90_500, "lat": -33.45, "lon": -70.55, "alt": 920.0 }] }),
+            json!({ "fixes": [{ "t": t0 + 35_500, "lat": -33.45, "lon": -70.55, "alt": 920.0 }] }),
         ),
     )
     .await;
@@ -1426,7 +1407,7 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
         .await
         .unwrap();
 
-    let club_batch: Vec<Value> = (0..MAX_CLUB_INGEST_FIXES_PER_MINUTE)
+    let club_batch_1: Vec<Value> = (0..100)
         .map(
             |i| json!({ "t": t_next + i as i64 * 100, "lat": -33.45, "lon": -70.55, "alt": 900.0 }),
         )
@@ -1437,12 +1418,30 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
         "/api/ingest",
         None,
         Some(&c_tok),
-        Some(json!({ "fixes": club_batch })),
+        Some(json!({ "fixes": club_batch_1 })),
     )
     .await;
     assert_eq!(st, StatusCode::OK, "{cb1}");
-    assert_eq!(cb1["accepted"], MAX_CLUB_INGEST_FIXES_PER_MINUTE);
+    assert_eq!(cb1["accepted"], 100);
     assert!(hdrs_cb1.get(header::RETRY_AFTER).is_none());
+
+    let club_batch_2: Vec<Value> = (100..MAX_CLUB_INGEST_FIXES_PER_MINUTE)
+        .map(
+            |i| json!({ "t": t_next + i as i64 * 100, "lat": -33.45, "lon": -70.55, "alt": 905.0 }),
+        )
+        .collect();
+    let (st, hdrs_cb1b, cb1b) = send_json(
+        &mut fx.router,
+        "POST",
+        "/api/ingest",
+        None,
+        Some(&c_tok),
+        Some(json!({ "fixes": club_batch_2 })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{cb1b}");
+    assert_eq!(cb1b["accepted"], MAX_CLUB_INGEST_FIXES_PER_MINUTE - 100);
+    assert!(hdrs_cb1b.get(header::RETRY_AFTER).is_none());
 
     let (st, hdrs_cb2, cb2) = send_json(
         &mut fx.router,
@@ -1480,6 +1479,15 @@ async fn ingest_and_osmand_per_device_rate_limit_preserves_flight_and_recovers()
 async fn clubless_pilot_denied_on_club_admin_kiosk_and_isolated_on_live_trails() {
     let mut fx = setup_harness().await;
     let now = now_ms();
+    let dem_root = tempfile::tempdir().unwrap();
+    let dem_dir = dem_root.path().join("dem");
+    std::fs::create_dir_all(&dem_dir).unwrap();
+    std::fs::write(
+        dem_dir.join("N34W071.asc"),
+        "# 600 m flat terrain\n600 600 600\n600 600 600\n600 600 600\n",
+    )
+    .unwrap();
+    let _dem_guard = FlightDataEnvGuard::set(dem_root.path());
 
     // Seed a live club with an admin, a club-only flight, and a public flight near SCTB.
     let (club_id, club_slug) = create_live_club(
@@ -1825,9 +1833,25 @@ async fn clubless_pilot_denied_on_club_admin_kiosk_and_isolated_on_live_trails()
         assert_eq!(body_far["flights"].as_array().map(Vec::len), Some(0));
     }
 
-    // 3. Existing readers (club/admin/display/public maps) do not 500 or emit club-less flights in E1.
+    // 3. Club-only reader (`/api/club/map`) never includes club-less flights, while explicit
+    //    public/nearby readers include the verified airborne club-less public flight with
+    //    `tailSource: "pilot"` without 500s.
+    let (st_cm, _, body_cm) = send_json(
+        &mut fx.router,
+        "GET",
+        "/api/club/map",
+        Some(admin_cookie.as_str()),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_cm, StatusCode::OK, "{body_cm}");
+    assert!(
+        !body_cm.to_string().contains(&cl_fid),
+        "club-less flight must never appear on /api/club/map: {body_cm}"
+    );
+
     for (uri, cookie) in [
-        ("/api/club/map".to_string(), Some(admin_cookie.as_str())),
         ("/api/admin/map".to_string(), Some(admin_cookie.as_str())),
         (
             "/api/admin/map/trails".to_string(),
@@ -1847,8 +1871,12 @@ async fn clubless_pilot_denied_on_club_admin_kiosk_and_isolated_on_live_trails()
         let (st, _, body) = send_json(&mut fx.router, "GET", &uri, cookie, None, None).await;
         assert_eq!(st, StatusCode::OK, "{uri} failed: {body}");
         assert!(
-            !body.to_string().contains(&cl_fid),
-            "club-less flight must not appear on {uri} in E1: {body}"
+            body.to_string().contains(&cl_fid),
+            "verified airborne club-less public flight should appear on {uri} in E2: {body}"
+        );
+        assert!(
+            body.to_string().contains("\"tailSource\":\"pilot\""),
+            "club-less flight on {uri} must carry tailSource=pilot: {body}"
         );
     }
 }
@@ -2059,10 +2087,9 @@ async fn public_live_trails_excludes_clubless_and_unverified_without_500_and_kee
         .await
         .unwrap();
 
-    // 1. Anonymous GET /api/public/live-trails (default altitude floor policy) -> 200 OK, no 500,
-    //    returns the high-altitude club public flight; NEVER returns unverified or verified
-    //    club-less rows. Presence of fid_club_low (~164 ft AGL) depends on the endpoint's default
-    //    AGL floor (none vs. M-27's 300 ft default), so it is not asserted here.
+    // 1. Anonymous GET /api/public/live-trails (default 300 ft AGL floor) -> 200 OK, no 500,
+    //    returns the high-altitude club public flight AND the verified club-less flight
+    //    (with tailSource="pilot"), NEVER returns unverified club-less or low-altitude rows.
     let (st, _, body) = send_json(
         &mut fx.router,
         "GET",
@@ -2080,17 +2107,27 @@ async fn public_live_trails_excludes_clubless_and_unverified_without_500_and_kee
         .filter_map(|f| f["flightId"].as_str())
         .collect();
     assert!(ids.contains(fid_club_high.as_str()));
+    assert!(!ids.contains(fid_club_low.as_str()));
     assert!(
         !ids.contains(fid_unv_clubless.as_str()),
         "unverified club-less flight must never appear on /api/public/live-trails"
     );
     assert!(
-        !ids.contains(fid_ver_clubless.as_str()),
-        "club-less flight must not appear on /api/public/live-trails in E1"
+        ids.contains(fid_ver_clubless.as_str()),
+        "verified airborne club-less flight must appear on /api/public/live-trails in E2"
     );
+    let ver_row = body["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["flightId"] == fid_ver_clubless)
+        .unwrap();
+    assert_eq!(ver_row["tailSource"], json!("pilot"));
+    assert!(ver_row.get("clubName").is_none());
+    assert!(ver_row.get("clubSlug").is_none());
 
     // 2. Anonymous GET /api/public/live-trails with min_agl_ft=500 keeps main's altitude floor
-    //    (drops low-altitude club flight, keeps high-altitude club flight, excludes club-less).
+    //    (drops low-altitude club flight, keeps high-altitude club & verified club-less, excludes unverified).
     let (st_agl, _, body_agl) = send_json(
         &mut fx.router,
         "GET",
@@ -2113,9 +2150,10 @@ async fn public_live_trails_excludes_clubless_and_unverified_without_500_and_kee
         "min_agl_ft floor must filter low-altitude flight"
     );
     assert!(!ids_agl.contains(fid_unv_clubless.as_str()));
-    assert!(!ids_agl.contains(fid_ver_clubless.as_str()));
+    assert!(ids_agl.contains(fid_ver_clubless.as_str()));
 
-    // 3. Authenticated GET /api/me/live-trails?layers=public also never leaks unverified club-less flight.
+    // 3. Authenticated GET /api/me/live-trails?layers=public never leaks unverified club-less flight,
+    //    and returns the other verified airborne club-less flight with tailSource="pilot".
     let (st_me, _, body_me) = send_json(
         &mut fx.router,
         "GET",
@@ -2133,7 +2171,7 @@ async fn public_live_trails_excludes_clubless_and_unverified_without_500_and_kee
         .filter_map(|f| f["flightId"].as_str())
         .collect();
     assert!(!ids_me.contains(fid_unv_clubless.as_str()));
-    assert!(!ids_me.contains(fid_ver_clubless.as_str()));
+    assert!(ids_me.contains(fid_ver_clubless.as_str()));
 }
 
 // ---------------------------------------------------------------------------

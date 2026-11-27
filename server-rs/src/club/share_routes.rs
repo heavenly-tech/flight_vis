@@ -2,8 +2,7 @@
 use crate::club::{
     db::{ShareCreateError, ShareRevokeError},
     qr,
-    routes::{club_db, is_secure, viewer},
-    visibility::Viewer,
+    routes::{club_db, is_secure, resolve_flight_owner_actor},
 };
 use crate::html_csp::{HTML_GLOBE_CSP, SENSITIVE_REFERRER_POLICY};
 use crate::{AppState, ClientIp, SHARE_LOOKUP_MAX_ATTEMPTS};
@@ -52,8 +51,17 @@ async fn share_resolve_operational(
     let Some(meta) = db.resolve_share_token(token).await else {
         return Err(StatusCode::NOT_FOUND);
     };
-    if db.club_operational(&meta.club_id).await.is_err() {
-        return Err(StatusCode::FORBIDDEN);
+    if let Some(ref club_id) = meta.club_id {
+        if db.club_operational(club_id).await.is_err() {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    } else {
+        let Some(ident) = db.pilot_identity(&meta.pilot_id).await else {
+            return Err(StatusCode::NOT_FOUND);
+        };
+        if ident.account_suspended {
+            return Err(StatusCode::NOT_FOUND);
+        }
     }
     Ok(meta)
 }
@@ -108,20 +116,16 @@ async fn post_flight_share(
     headers: HeaderMap,
     Path(flight_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers).await;
-    let Viewer::Pilot { id, .. } = v else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
-        )
-            .into_response();
-    };
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "club disabled" })),
         )
             .into_response();
+    };
+    let id = match resolve_flight_owner_actor(&state, db, &headers, Some(&flight_id), true).await {
+        Ok(pid) => pid,
+        Err(e) => return e.into_response(),
     };
     match db.create_flight_share(&id, &flight_id).await {
         Ok((row, token)) => {
@@ -159,16 +163,16 @@ async fn get_flight_shares(
     headers: HeaderMap,
     Path(flight_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers).await;
-    let Viewer::Pilot { id, .. } = v else {
+    let Some(db) = club_db(&state) else {
         return (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "unauthorized" })),
         )
             .into_response();
     };
-    let Some(db) = club_db(&state) else {
-        return Json(json!({ "shares": [] })).into_response();
+    let id = match resolve_flight_owner_actor(&state, db, &headers, Some(&flight_id), false).await {
+        Ok(pid) => pid,
+        Err(e) => return e.into_response(),
     };
     match db.list_flight_shares(&id, &flight_id).await {
         Ok(shares) => Json(json!({ "shares": shares })).into_response(),
@@ -191,20 +195,16 @@ async fn revoke_flight_share(
     headers: HeaderMap,
     Path((flight_id, share_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers).await;
-    let Viewer::Pilot { id, .. } = v else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
-        )
-            .into_response();
-    };
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "club disabled" })),
         )
             .into_response();
+    };
+    let id = match resolve_flight_owner_actor(&state, db, &headers, Some(&flight_id), true).await {
+        Ok(pid) => pid,
+        Err(e) => return e.into_response(),
     };
     match db.revoke_flight_share(&id, &flight_id, &share_id).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
@@ -247,6 +247,7 @@ async fn share_flight_meta(
         [(header::CACHE_CONTROL, "no-store")],
         Json(json!({
             "tail": meta.tail,
+            "tailSource": meta.tail_source,
             "status": meta.status,
         })),
     )
@@ -277,7 +278,7 @@ async fn share_flight_fixes(
     (
         StatusCode::OK,
         [(header::CACHE_CONTROL, "no-store")],
-        Json(json!({ "fixes": fixes, "tail": meta.tail })),
+        Json(json!({ "fixes": fixes, "tail": meta.tail, "tailSource": meta.tail_source })),
     )
         .into_response()
 }
@@ -305,17 +306,33 @@ async fn share_flight_stream(
     let db = state.club.clone().unwrap();
     let flight_id = meta.flight_id.clone();
     let share_club_id = meta.club_id.clone();
+    let share_pilot_id = meta.pilot_id.clone();
     let token_capture = token.clone();
     let backfill = db.fixes_for_flight(&flight_id).await;
     let stream = stream::iter(backfill.into_iter().enumerate().map(move |(i, fix)| {
         Ok::<Event, Infallible>(Event::default().id(i.to_string()).json_data(fix).unwrap())
     }))
     .chain(stream::unfold(
-        (db, flight_id, share_club_id, token_capture, 0_i64),
+        (
+            db,
+            flight_id,
+            share_club_id,
+            share_pilot_id,
+            token_capture,
+            0_i64,
+        ),
         #[allow(clippy::question_mark)]
-        |(db, fid, club_id, tok, mut last_t)| async move {
+        |(db, fid, club_id, pilot_id, tok, mut last_t)| async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
-            if db.club_operational(&club_id).await.is_err() {
+            if let Some(ref cid) = club_id {
+                if db.club_operational(cid).await.is_err() {
+                    return None;
+                }
+            } else if db
+                .pilot_identity(&pilot_id)
+                .await
+                .is_none_or(|ident| ident.account_suspended)
+            {
                 return None;
             }
             if db.share_flight_id(&tok).await.is_none() {
@@ -332,7 +349,7 @@ async fn share_flight_stream(
                     .json_data(json!({ "fixes": fresh }))
                     .unwrap()
             };
-            Some((Ok(event), (db, fid, club_id, tok, last_t)))
+            Some((Ok(event), (db, fid, club_id, pilot_id, tok, last_t)))
         },
     ));
     Sse::new(stream)

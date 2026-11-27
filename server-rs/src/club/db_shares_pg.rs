@@ -4,6 +4,7 @@ use crate::club::{
         now_ms, ClubDb, FlightRow, FlightShareListItem, FlightShareRow, ResolvedShare,
         ShareCreateError, ShareRevokeError, SHARE_LIFETIME_AFTER_END_MS,
     },
+    map::{TAIL_SOURCE_CLUB, TAIL_SOURCE_PILOT},
 };
 use sqlx::Row;
 use subtle::ConstantTimeEq;
@@ -12,7 +13,7 @@ use subtle::ConstantTimeEq;
 fn row_from_query(
     id: String,
     flight_id: String,
-    club_id: String,
+    club_id: Option<String>,
     created_by: String,
     token_hash: String,
     created_at: i64,
@@ -69,13 +70,15 @@ impl ClubDb {
         if flight.pilot_id != pilot_id {
             return Err(ShareCreateError::NotOwner);
         }
-        let club_id: String = sqlx::query_scalar(
-            "SELECT a.club_id FROM flights f JOIN aircraft a ON a.id = f.aircraft_id WHERE f.id = $1",
-        )
-        .bind(flight_id)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(ShareCreateError::Db)?;
+        let club_id: Option<String> = if flight.aircraft_id.is_some() {
+            let cid = self
+                .flight_aircraft_club_id(flight_id)
+                .await
+                .or_else(|| flight.club_id.clone());
+            Some(cid.ok_or(ShareCreateError::NotFound)?)
+        } else {
+            None
+        };
         let token = new_share_token();
         let token_hash = digest_token(&token);
         let id = new_id();
@@ -98,7 +101,7 @@ impl ClubDb {
         )
         .bind(&row.id)
         .bind(&row.flight_id)
-        .bind(&row.club_id)
+        .bind(row.club_id.as_deref())
         .bind(&row.created_by)
         .bind(&row.token_hash)
         .bind(row.created_at)
@@ -185,7 +188,7 @@ impl ClubDb {
         Some(row_from_query(
             row.try_get(0).ok()?,
             row.try_get(1).ok()?,
-            row.try_get(2).ok()?,
+            row.try_get(2).ok().flatten(),
             row.try_get(3).ok()?,
             row.try_get(4).ok()?,
             row.try_get(5).ok()?,
@@ -207,10 +210,17 @@ impl ClubDb {
         if !share_active_at(&share, &flight, now_ms()) {
             return None;
         }
+        let tail_source = if flight.club_id.is_some() && flight.aircraft_id.is_some() {
+            TAIL_SOURCE_CLUB
+        } else {
+            TAIL_SOURCE_PILOT
+        };
         Some(ResolvedShare {
             flight_id: flight.id,
             club_id: share.club_id,
+            pilot_id: flight.pilot_id,
             tail: flight.tail,
+            tail_source,
             status: flight.status.clone(),
         })
     }

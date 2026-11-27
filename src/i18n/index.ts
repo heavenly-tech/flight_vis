@@ -191,6 +191,8 @@ const API_ALIASES: Record<string, string> = {
   email_not_verified: "api.emailNotVerified",
   club_visibility_requires_club: "api.clubVisibilityRequiresClub",
   "invalid tail": "api.invalidTail",
+  leave_clubs_first: "api.leaveClubsFirst",
+  "batch too large": "api.batchTooLarge",
   csrf: "api.forbidden",
   last_admin: "club.admin.lastAdmin",
   "invalid icao": "admin.invalidBase",

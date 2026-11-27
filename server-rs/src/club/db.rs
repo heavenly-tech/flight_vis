@@ -120,6 +120,7 @@ pub enum DeviceRegisterError {
 }
 
 #[allow(dead_code)]
+#[derive(Debug)]
 pub enum ShareCreateError {
     Db(DbError),
     NotFound,
@@ -199,11 +200,30 @@ pub struct FlightRow {
 
 pub const SHARE_LIFETIME_AFTER_END_MS: i64 = 24 * 3600 * 1000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppendFixesOutcome {
+    pub accepted: usize,
+    pub duplicates: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenFlightContext {
+    pub flight_id: String,
+    pub club_id: Option<String>,
+    pub started_at: i64,
+}
+
+#[derive(Debug)]
+pub enum AppendOpenFlightError {
+    FlightMismatch,
+    Db,
+}
+
 #[derive(Debug, Clone)]
 pub struct FlightShareRow {
     pub id: String,
     pub flight_id: String,
-    pub club_id: String,
+    pub club_id: Option<String>,
     pub created_by: String,
     pub token_hash: String,
     pub created_at: i64,
@@ -222,9 +242,10 @@ pub struct FlightShareListItem {
 #[derive(Clone, Debug)]
 pub struct ResolvedShare {
     pub flight_id: String,
-    #[allow(dead_code)]
-    pub club_id: String,
+    pub club_id: Option<String>,
+    pub pilot_id: String,
     pub tail: String,
+    pub tail_source: &'static str,
     pub status: String,
 }
 
@@ -1135,18 +1156,50 @@ impl ClubDb {
         }
     }
 
-    pub async fn open_flight_for_device(&self, device_id: &str) -> Option<String> {
-        sqlx::query_scalar(
-            "SELECT f.id FROM flights f
+    /// Resolve the currently open active flight bound to `device_id`, enforcing that
+    /// the flight is still open (`status = 'active' AND ended_at IS NULL`) and owned
+    /// by the device's pilot/account (both club and club-less flights).
+    pub async fn open_flight_context_for_device(
+        &self,
+        device_id: &str,
+    ) -> Option<OpenFlightContext> {
+        let row = sqlx::query(
+            "SELECT f.id, f.club_id, f.started_at
+             FROM flights f
              JOIN flight_devices fd ON fd.flight_id = f.id
-             WHERE fd.device_id = $1 AND f.status = 'active'
-             ORDER BY f.started_at DESC LIMIT 1",
+             JOIN devices d ON d.id = fd.device_id
+             JOIN pilots dp ON dp.id = d.pilot_id
+             WHERE fd.device_id = $1
+               AND f.status = 'active'
+               AND f.ended_at IS NULL
+               AND f.pilot_id = d.pilot_id
+               AND (
+                   f.owner_account_id IS NULL
+                   OR (dp.account_id IS NOT NULL AND f.owner_account_id = dp.account_id)
+               )
+               AND (
+                   f.club_id IS NOT NULL
+                   OR (dp.club_id IS NULL AND dp.account_id IS NOT NULL AND f.owner_account_id = dp.account_id)
+               )
+             ORDER BY f.started_at DESC
+             LIMIT 1",
         )
         .bind(device_id)
         .fetch_optional(&self.pool)
         .await
-        .ok()
-        .flatten()
+        .ok()??;
+        Some(OpenFlightContext {
+            flight_id: row.try_get(0).ok()?,
+            club_id: row.try_get(1).ok().flatten(),
+            started_at: row.try_get(2).ok()?,
+        })
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub async fn open_flight_for_device(&self, device_id: &str) -> Option<String> {
+        self.open_flight_context_for_device(device_id)
+            .await
+            .map(|ctx| ctx.flight_id)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -1167,13 +1220,27 @@ impl ClubDb {
         device_id: &str,
         fixes: &[LiveFix],
     ) -> Result<usize, DbError> {
-        if fixes.is_empty() {
-            return Ok(0);
-        }
-        let mut tx = self.pool.begin().await?;
-        let mut inserted = 0usize;
-        let mut last_t = fixes[0].t;
-        for fix in fixes {
+        Ok(self
+            .append_fixes_with_counts(flight_id, device_id, fixes)
+            .await?
+            .accepted)
+    }
+
+    async fn insert_fixes_in_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        flight_id: &str,
+        device_id: &str,
+        pilot_id: Option<&str>,
+        fixes: &[LiveFix],
+    ) -> Result<AppendFixesOutcome, DbError> {
+        // Sort by device timestamp ascending so out-of-order batches are inserted deterministically
+        // and the chronologically newest fix drives monotonic position updates.
+        let mut ordered: Vec<&LiveFix> = fixes.iter().collect();
+        ordered.sort_by_key(|f| f.t);
+        let mut accepted = 0usize;
+        let mut duplicates = 0usize;
+        let rx_now = now_ms();
+        for fix in &ordered {
             let changed = sqlx::query(
                 "INSERT INTO fixes (flight_id, device_id, t_ms, received_at, lat, lon, alt, alt_ref, speed, course, accuracy)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
@@ -1182,7 +1249,7 @@ impl ClubDb {
             .bind(flight_id)
             .bind(device_id)
             .bind(fix.t)
-            .bind(now_ms())
+            .bind(rx_now)
             .bind(fix.lat)
             .bind(fix.lon)
             .bind(fix.alt)
@@ -1190,37 +1257,127 @@ impl ClubDb {
             .bind(fix.speed)
             .bind(fix.course)
             .bind(fix.accuracy)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?
             .rows_affected();
-            inserted += usize::try_from(changed).unwrap_or(0);
-            last_t = fix.t;
-        }
-        sqlx::query("UPDATE flights SET last_fix_at = $1 WHERE id = $2")
-            .bind(last_t)
-            .bind(flight_id)
-            .execute(&mut *tx)
-            .await?;
-        if let Ok(pilot_id) =
-            sqlx::query_scalar::<_, String>("SELECT pilot_id FROM flights WHERE id = $1")
-                .bind(flight_id)
-                .fetch_one(&mut *tx)
-                .await
-        {
-            if let Some(last) = fixes.last() {
-                let _ = sqlx::query(
-                    "UPDATE pilots SET last_latitude = $1, last_longitude = $2, last_position_at = $3 WHERE id = $4",
-                )
-                .bind(last.lat)
-                .bind(last.lon)
-                .bind(last.t)
-                .bind(pilot_id)
-                .execute(&mut *tx)
-                .await;
+            if changed > 0 {
+                accepted += usize::try_from(changed).unwrap_or(0);
+            } else {
+                duplicates += 1;
             }
         }
+        let max_fix = ordered[ordered.len() - 1];
+        // Monotonic: late or out-of-order batches must never move `last_fix_at` backwards.
+        sqlx::query(
+            "UPDATE flights SET last_fix_at = GREATEST(COALESCE(last_fix_at, $1), $1) WHERE id = $2",
+        )
+        .bind(max_fix.t)
+        .bind(flight_id)
+        .execute(&mut **tx)
+        .await?;
+        let owner_pilot_id = match pilot_id {
+            Some(pid) => Some(pid.to_string()),
+            None => sqlx::query_scalar::<_, String>("SELECT pilot_id FROM flights WHERE id = $1")
+                .bind(flight_id)
+                .fetch_optional(&mut **tx)
+                .await
+                .ok()
+                .flatten(),
+        };
+        if let Some(pid) = owner_pilot_id {
+            // Monotonic: never move pilot's last known position backwards on late/out-of-order fixes.
+            let _ = sqlx::query(
+                "UPDATE pilots
+                 SET last_latitude = $1, last_longitude = $2, last_position_at = $3
+                 WHERE id = $4 AND (last_position_at IS NULL OR last_position_at < $3)",
+            )
+            .bind(max_fix.lat)
+            .bind(max_fix.lon)
+            .bind(max_fix.t)
+            .bind(pid)
+            .execute(&mut **tx)
+            .await;
+        }
+        Ok(AppendFixesOutcome {
+            accepted,
+            duplicates,
+        })
+    }
+
+    pub async fn append_fixes_with_counts(
+        &self,
+        flight_id: &str,
+        device_id: &str,
+        fixes: &[LiveFix],
+    ) -> Result<AppendFixesOutcome, DbError> {
+        if fixes.is_empty() {
+            return Ok(AppendFixesOutcome {
+                accepted: 0,
+                duplicates: 0,
+            });
+        }
+        let mut tx = self.pool.begin().await?;
+        let outcome = Self::insert_fixes_in_tx(&mut tx, flight_id, device_id, None, fixes).await?;
         tx.commit().await?;
-        Ok(inserted)
+        Ok(outcome)
+    }
+
+    /// Transactionally verify that `flight_id` is still open and owned by `device_id`'s
+    /// pilot/account (`FOR SHARE OF f`) before appending `fixes`, preventing races with
+    /// concurrent flight close or device/ownership changes.
+    pub async fn append_fixes_for_open_flight(
+        &self,
+        flight_id: &str,
+        device_id: &str,
+        fixes: &[LiveFix],
+    ) -> Result<AppendFixesOutcome, AppendOpenFlightError> {
+        if fixes.is_empty() {
+            return Ok(AppendFixesOutcome {
+                accepted: 0,
+                duplicates: 0,
+            });
+        }
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| AppendOpenFlightError::Db)?;
+        let pilot_id: Option<String> = sqlx::query_scalar(
+            "SELECT f.pilot_id
+             FROM flights f
+             JOIN flight_devices fd ON fd.flight_id = f.id
+             JOIN devices d ON d.id = fd.device_id
+             JOIN pilots dp ON dp.id = d.pilot_id
+             WHERE f.id = $1
+               AND fd.device_id = $2
+               AND f.status = 'active'
+               AND f.ended_at IS NULL
+               AND f.pilot_id = d.pilot_id
+               AND (
+                   f.owner_account_id IS NULL
+                   OR (dp.account_id IS NOT NULL AND f.owner_account_id = dp.account_id)
+               )
+               AND (
+                   f.club_id IS NOT NULL
+                   OR (dp.club_id IS NULL AND dp.account_id IS NOT NULL AND f.owner_account_id = dp.account_id)
+               )
+             FOR SHARE OF f",
+        )
+        .bind(flight_id)
+        .bind(device_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| AppendOpenFlightError::Db)?;
+        let Some(pilot_id) = pilot_id else {
+            let _ = tx.rollback().await;
+            return Err(AppendOpenFlightError::FlightMismatch);
+        };
+        let outcome =
+            Self::insert_fixes_in_tx(&mut tx, flight_id, device_id, Some(&pilot_id), fixes)
+                .await
+                .map_err(|_| AppendOpenFlightError::Db)?;
+        tx.commit().await.map_err(|_| AppendOpenFlightError::Db)?;
+        Ok(outcome)
     }
 
     pub async fn auto_end_idle(&self, idle_ms: i64, now: i64) -> Result<usize, DbError> {
@@ -1357,26 +1514,52 @@ impl ClubDb {
 
     pub(crate) async fn latest_device_fixes(&self) -> Vec<DeviceFix> {
         let rows = sqlx::query(
-            "SELECT f.id, a.tail, f.pilot_id, p.name, f.visibility, COALESCE(f.club_id, a.club_id),
-                    fx.t_ms, fx.lat, fx.lon, fx.alt, fx.speed, fx.course, fx.accuracy,
-                    COALESCE(f.trail_minutes, c.trail_minutes_default)
+            "SELECT f.id,
+                    COALESCE(a.tail, f.tail_text) AS tail,
+                    f.pilot_id,
+                    p.name,
+                    f.visibility,
+                    COALESCE(f.club_id, a.club_id) AS club_id,
+                    fx.t_ms, fx.lat, fx.lon, fx.alt, fx.alt_ref, fx.speed, fx.course, fx.accuracy,
+                    COALESCE(f.trail_minutes, c.trail_minutes_default, $1) AS trail_minutes,
+                    (a.id IS NOT NULL AND COALESCE(f.club_id, a.club_id) IS NOT NULL) AS is_club_aircraft,
+                    (
+                        f.club_id IS NULL
+                        AND f.aircraft_id IS NULL
+                        AND f.tail_text IS NOT NULL
+                        AND p.club_id IS NULL
+                        AND p.status <> 'guest'
+                        AND p.account_id IS NOT NULL
+                        AND f.owner_account_id = p.account_id
+                        AND oa.id = f.owner_account_id
+                        AND oa.email_verified_at IS NOT NULL
+                        AND oa.suspended_at IS NULL
+                    ) AS clubless_public_eligible,
+                    f.last_fix_at
              FROM flights f
-             JOIN aircraft a ON a.id = f.aircraft_id
-             JOIN clubs c ON c.id = COALESCE(f.club_id, a.club_id)
+             LEFT JOIN aircraft a ON a.id = f.aircraft_id
+             LEFT JOIN clubs c ON c.id = COALESCE(f.club_id, a.club_id)
              JOIN pilots p ON p.id = f.pilot_id
-             JOIN fixes fx ON fx.flight_id = f.id
+             LEFT JOIN accounts oa ON oa.id = f.owner_account_id
+             JOIN LATERAL (
+                 SELECT t_ms, lat, lon, alt, alt_ref, speed, course, accuracy
+                 FROM fixes
+                 WHERE flight_id = f.id
+                 ORDER BY t_ms DESC, id DESC
+                 LIMIT 1
+             ) fx ON TRUE
              WHERE f.status = 'active'
-               AND fx.t_ms = (
-                 SELECT MAX(fx2.t_ms) FROM fixes fx2 WHERE fx2.flight_id = f.id
-               )",
+               AND f.ended_at IS NULL
+               AND COALESCE(a.tail, f.tail_text) IS NOT NULL",
         )
+        .bind(crate::club::trail::DEFAULT_TRAIL_MINUTES)
         .fetch_all(&self.pool)
         .await
         .unwrap_or_default();
         rows.into_iter()
             .filter_map(|r| {
                 let raw_trail: i16 = r
-                    .try_get(13)
+                    .try_get(14)
                     .unwrap_or(crate::club::trail::DEFAULT_TRAIL_MINUTES);
                 let trail_minutes = crate::club::trail::TrailMinutes::from_i16(raw_trail)
                     .unwrap_or(crate::club::trail::TrailMinutes::Min5)
@@ -1387,17 +1570,20 @@ impl ClubDb {
                     pilot_id: r.try_get(2).ok()?,
                     pilot_name: r.try_get(3).ok()?,
                     visibility: r.try_get(4).ok()?,
-                    club_id: r.try_get(5).ok()?,
+                    club_id: r.try_get(5).ok().flatten(),
+                    is_club_aircraft: r.try_get::<bool, _>(15).unwrap_or(false),
+                    clubless_public_eligible: r.try_get::<bool, _>(16).unwrap_or(false),
+                    last_fix_at: r.try_get(17).ok().flatten(),
                     trail_minutes,
                     fix: LiveFix {
                         t: r.try_get(6).ok()?,
                         lat: r.try_get(7).ok()?,
                         lon: r.try_get(8).ok()?,
                         alt: r.try_get(9).ok()?,
-                        alt_ref: None,
-                        speed: r.try_get(10).ok()?,
-                        course: r.try_get(11).ok()?,
-                        accuracy: r.try_get(12).ok()?,
+                        alt_ref: r.try_get(10).ok().flatten(),
+                        speed: r.try_get(11).ok()?,
+                        course: r.try_get(12).ok()?,
+                        accuracy: r.try_get(13).ok()?,
                     },
                 })
             })

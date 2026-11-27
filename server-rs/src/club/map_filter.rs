@@ -147,7 +147,10 @@ mod tests {
             pilot_id: "p1".into(),
             pilot_name: "Guest".into(),
             visibility: "public".into(),
-            club_id: "c1".into(),
+            club_id: Some("c1".into()),
+            is_club_aircraft: true,
+            clubless_public_eligible: false,
+            last_fix_at: Some(0),
             trail_minutes: 5,
             fix: LiveFix {
                 t: 0,
@@ -187,6 +190,7 @@ mod tests {
         let pos = vec![
             TailLivePosition {
                 tail: "FAR".into(),
+                tail_source: crate::club::map::TAIL_SOURCE_CLUB,
                 flight_id: "1".into(),
                 pilot_id: Some("p".into()),
                 pilot_name: None,
@@ -203,9 +207,12 @@ mod tests {
                 visibility: "public".into(),
                 trail_minutes: 5,
                 non_club: false,
+                club_name: None,
+                club_slug: None,
             },
             TailLivePosition {
                 tail: "NEAR".into(),
+                tail_source: crate::club::map::TAIL_SOURCE_CLUB,
                 flight_id: "2".into(),
                 pilot_id: Some("p".into()),
                 pilot_name: None,
@@ -222,6 +229,8 @@ mod tests {
                 visibility: "public".into(),
                 trail_minutes: 5,
                 non_club: false,
+                club_name: None,
+                club_slug: None,
             },
         ];
         let capped = apply_public_cap(pos, 1, center);

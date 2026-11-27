@@ -114,20 +114,30 @@ fn public_area_parser_validates_location_radius_and_min_agl_ft() {
             lat: -33.456,
             lon: -70.548,
             radius_km: PILOT_LIVE_TRAILS_DEFAULT_PUBLIC_RADIUS_KM,
-            min_agl_ft: None,
+            min_agl_ft: Some(DEFAULT_PUBLIC_ALTITUDE_MIN_FT),
         }
     );
 
     let clamped_low =
-        PublicArea::parse_query(Some("lat=-0.0&lon=-0.0&radius_km=1&min_agl_ft=-50")).unwrap();
+        PublicArea::parse_query(Some("lat=-0.0&lon=-0.0&radius_km=1&min_agl_ft=0")).unwrap();
     assert_eq!(
         clamped_low,
         PublicArea {
             lat: 0.0,
             lon: 0.0,
             radius_km: PILOT_LIVE_TRAILS_MIN_PUBLIC_RADIUS_KM,
-            min_agl_ft: Some(PUBLIC_LIVE_TRAILS_MIN_AGL_FT_MIN),
+            min_agl_ft: Some(DEFAULT_PUBLIC_ALTITUDE_MIN_FT),
         }
+    );
+    assert_eq!(
+        PublicArea::parse_query(Some("lat=-0.0&lon=-0.0&radius_km=1&min_agl_ft=150"))
+            .unwrap()
+            .min_agl_ft,
+        Some(DEFAULT_PUBLIC_ALTITUDE_MIN_FT)
+    );
+    assert_eq!(
+        PUBLIC_LIVE_TRAILS_MIN_AGL_FT_MIN,
+        DEFAULT_PUBLIC_ALTITUDE_MIN_FT
     );
 
     let clamped_high =
@@ -178,6 +188,9 @@ fn public_area_parser_validates_location_radius_and_min_agl_ft() {
     }
 
     for bad_agl in [
+        "lat=0&lon=0&min_agl_ft=-1",
+        "lat=0&lon=0&min_agl_ft=-50",
+        "lat=0&lon=0&min_agl_ft=-0.01",
         "lat=0&lon=0&min_agl_ft=abc",
         "lat=0&lon=0&min_agl_ft=NaN",
         "lat=0&lon=0&min_agl_ft=inf",
@@ -1319,9 +1332,10 @@ async fn live_trails_min_agl_ft_filters_public_layer_with_dem_fallback_and_etag_
         "anonymous endpoint must fail closed on alt NULL"
     );
 
-    // 2b) Absent min_agl_ft on /api/me/live-trails -> unchanged (no floor, minAglFt omitted,
-    //     all 3 public flights + club flight returned)
-    let (st_me_no_floor, _, b_me_no_floor) = send_req(
+    // 2b) Absent min_agl_ft on /api/me/live-trails (L-76 closed in E2):
+    //     enforces the same fail-closed 300 ft AGL floor on the public layer (drops alt NULL),
+    //     while club layer stays exempt (keeps low-altitude fid_club_low).
+    let (st_me_default_floor, _, b_me_default_floor) = send_req(
         &mut router,
         "GET",
         "/api/me/live-trails?layers=club,public&lat=-33.456&lon=-70.548",
@@ -1333,18 +1347,24 @@ async fn live_trails_min_agl_ft_filters_public_layer_with_dem_fallback_and_etag_
         None,
     )
     .await;
-    assert_eq!(st_me_no_floor, StatusCode::OK, "{b_me_no_floor}");
-    assert!(b_me_no_floor["publicArea"].get("minAglFt").is_none());
-    let ids_me_no_floor: HashSet<&str> = b_me_no_floor["flights"]
+    assert_eq!(st_me_default_floor, StatusCode::OK, "{b_me_default_floor}");
+    assert_eq!(
+        b_me_default_floor["publicArea"]["minAglFt"],
+        json!(DEFAULT_PUBLIC_ALTITUDE_MIN_FT)
+    );
+    let ids_me_default_floor: HashSet<&str> = b_me_default_floor["flights"]
         .as_array()
         .unwrap()
         .iter()
         .filter_map(|f| f["flightId"].as_str())
         .collect();
-    assert!(ids_me_no_floor.contains(fid_club_low.as_str()));
-    assert!(ids_me_no_floor.contains(fid_pub_low.as_str()));
-    assert!(ids_me_no_floor.contains(fid_pub_high.as_str()));
-    assert!(ids_me_no_floor.contains(fid_pub_noalt.as_str()));
+    assert!(ids_me_default_floor.contains(fid_club_low.as_str()));
+    assert!(ids_me_default_floor.contains(fid_pub_low.as_str()));
+    assert!(ids_me_default_floor.contains(fid_pub_high.as_str()));
+    assert!(
+        !ids_me_default_floor.contains(fid_pub_noalt.as_str()),
+        "public layer of /api/me/live-trails must fail closed on alt NULL (L-76)"
+    );
 
     // 3) With DEM + min_agl_ft=500 on /api/public/live-trails -> only fid_pub_high shown, publicArea.minAglFt = 500.0
     let (st_500, h_500, b_500) = send_public_req(
@@ -1418,8 +1438,7 @@ async fn live_trails_min_agl_ft_filters_public_layer_with_dem_fallback_and_etag_
     assert!(!ids_me.contains(fid_pub_noalt.as_str()));
 
     // 5) Without DEM coverage:
-    //    - /api/public/live-trails FAILS CLOSED (excludes all flights even at high MSL)
-    //    - /api/me/live-trails keeps NoDemFallbackMsl (unchanged L-76 behavior)
+    //    BOTH /api/public/live-trails AND /api/me/live-trails?layers=public FAIL CLOSED (M-27 + L-76)
     env_guard.update(empty_root.path());
     let (st_pub_nodem, _, b_pub_nodem) = send_public_req(
         &mut router,
@@ -1451,18 +1470,10 @@ async fn live_trails_min_agl_ft_filters_public_layer_with_dem_fallback_and_etag_
     )
     .await;
     assert_eq!(st_me_nodem, StatusCode::OK, "{b_me_nodem}");
-    let ids_me_nodem: HashSet<&str> = b_me_nodem["flights"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|f| f["flightId"].as_str())
-        .collect();
     assert!(
-        ids_me_nodem.contains(fid_pub_low.as_str()),
-        "authenticated /api/me/live-trails keeps NoDemFallbackMsl"
+        b_me_nodem["flights"].as_array().unwrap().is_empty(),
+        "public layer of /api/me/live-trails must fail closed when DEM coverage is missing (L-76)"
     );
-    assert!(ids_me_nodem.contains(fid_pub_high.as_str()));
-    assert!(!ids_me_nodem.contains(fid_pub_noalt.as_str()));
 }
 
 // ---------------------------------------------------------------------------

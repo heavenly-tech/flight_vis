@@ -507,6 +507,62 @@ impl LiveEngine {
         let _ = self.persist.replace_index(&index).await;
     }
 
+    /// Immediately terminate and purge all live sessions, disk logs, and ingest rate-limit
+    /// entries associated with `device_ids` (used on account deletion so nothing keeps
+    /// broadcasting or retaining telemetry in memory or on disk).
+    pub async fn purge_devices(&self, device_ids: &[String]) {
+        if device_ids.is_empty() {
+            return;
+        }
+        let targets: HashSet<&str> = device_ids.iter().map(String::as_str).collect();
+        let matches_device = |key: &str| -> bool {
+            if targets.contains(key) {
+                return true;
+            }
+            if let Some(rest) = key.strip_prefix("club-flight:") {
+                return targets.contains(rest);
+            }
+            if let Some((_, tail)) = key.rsplit_once(':') {
+                return targets.contains(tail);
+            }
+            false
+        };
+
+        {
+            let mut hits = self.ingest_hits.write().await;
+            hits.retain(|k, _| !matches_device(k));
+        }
+
+        let removed_ids: Vec<String> = {
+            let mut sessions = self.sessions.write().await;
+            let mut device_active = self.device_active.write().await;
+            let ids: Vec<String> = sessions
+                .iter()
+                .filter(|(_, rt)| matches_device(&rt.record.device))
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in &ids {
+                if let Some(mut rt) = sessions.remove(id) {
+                    rt.record.phase = SessionPhase::Ended;
+                    let _ = rt.bus.send(SseSessionEvent::End);
+                    if device_active.get(&rt.record.device) == Some(id) {
+                        device_active.remove(&rt.record.device);
+                    }
+                }
+            }
+            device_active.retain(|dev, _| !matches_device(dev));
+            ids
+        };
+
+        for id in &removed_ids {
+            let _ = self.persist.delete_session_files(id).await;
+        }
+        if !removed_ids.is_empty() {
+            let index = self.snapshot_index().await;
+            let _ = self.persist.replace_index(&index).await;
+        }
+    }
+
     pub fn input_to_fix(input: crate::live::types::IngestFixInput) -> LiveFix {
         LiveFix {
             t: input.t,

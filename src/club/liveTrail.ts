@@ -17,6 +17,7 @@ export type TrailPoint = readonly [number, number, number];
 export type FlightTrail = {
   flightId: string;
   tail: string;
+  tailSource?: "club" | "pilot";
   trailMinutes: TrailMinutes;
   nonClub?: boolean;
   points: TrailPoint[];
@@ -41,6 +42,7 @@ export type LiveFixHint = {
 export type RenderTrailItem = {
   flightId: string;
   tail: string;
+  tailSource?: "club" | "pilot";
   trailMinutes: TrailMinutes;
   nonClub?: boolean;
   points: readonly TrailPoint[];
@@ -113,6 +115,7 @@ export function parseTrailsPayload(raw: unknown): FlightTrail[] {
     const rec = item as {
       flightId?: unknown;
       tail?: unknown;
+      tailSource?: unknown;
       trailMinutes?: unknown;
       nonClub?: unknown;
       points?: unknown;
@@ -132,6 +135,9 @@ export function parseTrailsPayload(raw: unknown): FlightTrail[] {
       }
     }
     const entry: FlightTrail = { flightId, tail, trailMinutes, points };
+    if (rec.tailSource === "club" || rec.tailSource === "pilot") {
+      entry.tailSource = rec.tailSource;
+    }
     if (rec.nonClub === true) {
       entry.nonClub = true;
     }
@@ -348,6 +354,9 @@ export function renderTrailsOverlay(
     meta.setAttribute("data-trail-length-px", String(Math.round(lengthPx)));
     if (isNonClub) {
       meta.setAttribute("data-non-club", "true");
+    }
+    if (item.tailSource) {
+      meta.setAttribute("data-tail-source", item.tailSource);
     }
     metaLayer.appendChild(meta);
   }

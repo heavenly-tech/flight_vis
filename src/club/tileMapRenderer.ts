@@ -35,12 +35,62 @@ export type NormalizedBase = {
   lon: number;
 };
 
+export type TailSource = "club" | "pilot";
+
+export function parseTailSource(raw: unknown): TailSource | undefined {
+  return raw === "club" || raw === "pilot" ? raw : undefined;
+}
+
+/**
+ * Returns the user-visible disambiguation label for an aircraft whose registration comes
+ * from free-text pilot input (`tailSource === "pilot"`) or from another club (`nonClub === true`),
+ * or `null` for an aircraft belonging to the viewed club.
+ */
+export function aircraftSourceBadgeLabel(ac: {
+  tailSource?: TailSource;
+  nonClub?: boolean;
+}): string | null {
+  if (ac.tailSource === "pilot") {
+    return t("common.pilotEntered");
+  }
+  if (ac.nonClub === true) {
+    return t("common.otherClub");
+  }
+  return null;
+}
+
+export function formatAircraftListLabel(
+  ac: {
+    tail: string;
+    pilotName?: string | null;
+    tailSource?: TailSource;
+    nonClub?: boolean;
+  },
+  opts?: { fallbackPilotDash?: boolean },
+): string {
+  const badge = aircraftSourceBadgeLabel(ac);
+  const pilot =
+    typeof ac.pilotName === "string" && ac.pilotName.trim().length > 0
+      ? ac.pilotName.trim()
+      : null;
+  if (badge) {
+    return pilot ? `${ac.tail} · ${badge} · ${pilot}` : `${ac.tail} · ${badge}`;
+  }
+  if (pilot) {
+    return `${ac.tail} · ${pilot}`;
+  }
+  return opts?.fallbackPilotDash ? `${ac.tail} · —` : ac.tail;
+}
+
 export type RawPublicAircraft = {
   tail?: unknown;
+  tailSource?: unknown;
   flightId?: unknown;
   pilotName?: unknown;
   trailMinutes?: unknown;
   nonClub?: unknown;
+  clubName?: unknown;
+  clubSlug?: unknown;
   fix?: {
     t?: unknown;
     lat?: unknown;
@@ -51,6 +101,7 @@ export type RawPublicAircraft = {
 
 export type PublicMapAircraft = {
   tail: string;
+  tailSource?: TailSource;
   flightId?: string;
   pilotName?: string;
   lat: number | null;
@@ -58,6 +109,8 @@ export type PublicMapAircraft = {
   fixT?: number;
   trailMinutes?: TrailMinutes;
   nonClub?: boolean;
+  clubName?: string;
+  clubSlug?: string;
 };
 
 export type PublicMapPayload = {
@@ -132,6 +185,10 @@ export function extractPublicAircraft(rows: unknown): PublicMapAircraft[] {
       lat: hasCoords ? rawLat : null,
       lon: hasCoords ? rawLon : null,
     };
+    const tailSource = parseTailSource(item.tailSource);
+    if (tailSource) {
+      entry.tailSource = tailSource;
+    }
     if (typeof item.flightId === "string" && item.flightId.trim().length > 0) {
       entry.flightId = item.flightId.trim();
     }
@@ -143,6 +200,12 @@ export function extractPublicAircraft(rows: unknown): PublicMapAircraft[] {
     }
     if (item.nonClub === true) {
       entry.nonClub = true;
+    }
+    if (typeof item.clubName === "string" && item.clubName.trim().length > 0) {
+      entry.clubName = item.clubName.trim();
+    }
+    if (typeof item.clubSlug === "string" && item.clubSlug.trim().length > 0) {
+      entry.clubSlug = item.clubSlug.trim();
     }
     out.push(entry);
   }
@@ -299,10 +362,13 @@ export function renderClubTileMap(
         lon: ac.lon,
       });
       if (pts.length >= 2) {
-        const isNonClub = ac.nonClub === true || matched.nonClub === true;
+        const tailSource = ac.tailSource ?? matched.tailSource;
+        const isNonClub =
+          ac.nonClub === true || matched.nonClub === true || tailSource === "pilot";
         trailItems.push({
           flightId: matched.flightId || ac.flightId || "",
           tail: ac.tail,
+          tailSource,
           trailMinutes: effectiveMinutes,
           nonClub: isNonClub || undefined,
           points: pts,
@@ -318,10 +384,12 @@ export function renderClubTileMap(
     });
   }
 
-  // Render non-club markers first so own-club aircraft stay visually on top.
+  // Render non-club / pilot-entered markers first so own-club aircraft stay visually on top.
+  const isSecondarySource = (ac: PublicMapAircraft) =>
+    ac.nonClub === true || ac.tailSource === "pilot";
   const orderedMarkers = [
-    ...validAircraft.filter((ac) => ac.nonClub === true),
-    ...validAircraft.filter((ac) => ac.nonClub !== true),
+    ...validAircraft.filter(isSecondarySource),
+    ...validAircraft.filter((ac) => !isSecondarySource(ac)),
   ];
 
   for (const ac of orderedMarkers) {
@@ -329,11 +397,20 @@ export function renderClubTileMap(
     const marker = document.createElement("div");
     marker.setAttribute("data-marker", "aircraft");
     marker.setAttribute("data-tail", ac.tail);
+    if (ac.flightId) {
+      marker.setAttribute("data-flight-id", ac.flightId);
+    }
+    if (ac.tailSource) {
+      marker.setAttribute("data-tail-source", ac.tailSource);
+    }
     marker.style.left = `${pos.left}px`;
     marker.style.top = `${pos.top}px`;
-    if (ac.nonClub === true) {
-      const otherClubLabel = t("common.otherClub");
-      marker.className = "tile-map-aircraft is-non-club";
+    const badgeLabel = aircraftSourceBadgeLabel(ac);
+    if (badgeLabel) {
+      marker.className =
+        ac.tailSource === "pilot"
+          ? "tile-map-aircraft is-non-club is-pilot-tail"
+          : "tile-map-aircraft is-non-club";
       marker.setAttribute("data-non-club", "true");
       const tailSpan = document.createElement("span");
       tailSpan.className = "marker-tail";
@@ -341,11 +418,12 @@ export function renderClubTileMap(
       const badge = document.createElement("span");
       badge.className = "non-club-tag";
       badge.setAttribute("data-non-club-label", "true");
-      badge.textContent = otherClubLabel;
+      badge.setAttribute("data-tail-source-label", ac.tailSource ?? "club");
+      badge.textContent = badgeLabel;
       marker.append(tailSpan, badge);
       marker.title = ac.pilotName
-        ? `${ac.tail} · ${otherClubLabel} · ${ac.pilotName}`
-        : `${ac.tail} · ${otherClubLabel}`;
+        ? `${ac.tail} · ${badgeLabel} · ${ac.pilotName}`
+        : `${ac.tail} · ${badgeLabel}`;
     } else {
       marker.className = "tile-map-aircraft";
       marker.textContent = ac.tail;
