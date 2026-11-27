@@ -630,21 +630,40 @@ pub(crate) const SHARE_LOOKUP_MAX_ATTEMPTS: usize = 60;
 pub(crate) const ACCOUNT_PASSWORD_MAX_ATTEMPTS: usize = 10;
 pub(crate) const ACCOUNT_PASSWORD_PER_ACCOUNT_MAX_ATTEMPTS: usize = 5;
 pub(crate) const PUBLIC_LIVE_TRAILS_MAX_REQUESTS: usize = 30;
+/// Hard cap on distinct active keys tracked simultaneously by a [`LoginThrottle`] window.
+/// Protects against memory exhaustion from spoofed / distributed key floods: once at the cap
+/// (after pruning expired entries), new unknown keys are rejected without inserting.
+pub(crate) const THROTTLE_MAX_KEYS: usize = 10_000;
 const LOGIN_WINDOW_SECS: u64 = 60;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct LoginThrottle {
     hits: Arc<Mutex<HashMap<String, Vec<u64>>>>,
+    max_keys: usize,
+}
+
+impl Default for LoginThrottle {
+    fn default() -> Self {
+        Self::with_max_keys(THROTTLE_MAX_KEYS)
+    }
 }
 
 impl LoginThrottle {
+    pub(crate) fn with_max_keys(max_keys: usize) -> Self {
+        Self {
+            hits: Arc::new(Mutex::new(HashMap::new())),
+            max_keys,
+        }
+    }
+
     /// Sliding-window check returning `Ok(())` if allowed, or `Err(retry_after_secs)` (`>= 1`)
-    /// when `max_attempts` requests have already been recorded within the last `LOGIN_WINDOW_SECS`.
+    /// when `max_attempts` requests have already been recorded within the last `LOGIN_WINDOW_SECS`,
+    /// or when the throttle is at its `max_keys` capacity (after pruning expired entries) and a
+    /// new unknown key arrives (rejected without inserting so map memory stays bounded).
     pub(crate) fn check_up_to(&self, ip: &str, now: u64, max_attempts: usize) -> Result<(), u64> {
         let mut hits = self.hits.lock().unwrap_or_else(|err| err.into_inner());
         let cutoff = now.saturating_sub(LOGIN_WINDOW_SECS);
-        let result = {
-            let entry = hits.entry(ip.to_string()).or_default();
+        let result = if let Some(entry) = hits.get_mut(ip) {
             entry.retain(|stamp| *stamp > cutoff);
             if entry.len() >= max_attempts {
                 let oldest = entry.first().copied().unwrap_or(now);
@@ -652,14 +671,46 @@ impl LoginThrottle {
                     .saturating_add(LOGIN_WINDOW_SECS)
                     .saturating_sub(now)
                     .max(1);
+                if entry.is_empty() {
+                    hits.remove(ip);
+                }
                 Err(retry_after)
             } else {
                 entry.push(now);
                 Ok(())
             }
+        } else {
+            if hits.len() >= self.max_keys {
+                hits.retain(|_, times| {
+                    times.retain(|stamp| *stamp > cutoff);
+                    !times.is_empty()
+                });
+            }
+            if hits.len() >= self.max_keys {
+                let earliest_expiry = hits
+                    .values()
+                    .filter_map(|times| times.iter().copied().max())
+                    .min();
+                let retry_after = earliest_expiry
+                    .map(|t| {
+                        t.saturating_add(LOGIN_WINDOW_SECS)
+                            .saturating_sub(now)
+                            .max(1)
+                    })
+                    .unwrap_or(LOGIN_WINDOW_SECS);
+                return Err(retry_after);
+            }
+            if max_attempts == 0 {
+                return Err(LOGIN_WINDOW_SECS);
+            }
+            hits.insert(ip.to_string(), vec![now]);
+            Ok(())
         };
         if hits.len() > 4096 {
-            hits.retain(|_, times| times.last().is_some_and(|stamp| *stamp > cutoff));
+            hits.retain(|_, times| {
+                times.retain(|stamp| *stamp > cutoff);
+                !times.is_empty()
+            });
         }
         result
     }
@@ -674,6 +725,14 @@ impl LoginThrottle {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .clear();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.hits
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .len()
     }
 
     fn allow(&self, ip: &str, now: u64) -> bool {
@@ -1435,5 +1494,48 @@ mod tests {
         let pw_en = apply_login_ssr_locale(&pw_html, "en");
         assert!(pw_en.contains("Sign in with your password."));
         assert!(!pw_en.contains("Inicia sesión con tu contraseña."));
+    }
+
+    #[test]
+    fn login_throttle_caps_distinct_keys_and_recovers_after_window_expiry() {
+        let cap = 3;
+        let throttle = LoginThrottle::with_max_keys(cap);
+        let t0 = 10_000_u64;
+
+        // Fill cap with N distinct keys.
+        for i in 0..cap {
+            assert_eq!(throttle.check_up_to(&format!("ip-{i}"), t0, 2), Ok(()));
+        }
+        assert_eq!(throttle.len(), cap);
+
+        // N+1th unknown key is rejected with Retry-After and NOT inserted.
+        let err = throttle
+            .check_up_to("ip-overflow", t0 + 10, 2)
+            .expect_err("unknown key at cap must be rejected");
+        assert_eq!(err, LOGIN_WINDOW_SECS - 10);
+        assert!(!throttle.allow("ip-overflow-2", t0 + 10));
+        assert_eq!(throttle.len(), cap);
+
+        // Existing keys keep normal per-key behavior (still allowed until max_attempts, then limited).
+        assert_eq!(throttle.check_up_to("ip-0", t0 + 10, 2), Ok(()));
+        assert!(throttle.check_up_to("ip-0", t0 + 10, 2).is_err());
+        assert_eq!(throttle.len(), cap);
+
+        // After the window expires for ip-1 and ip-2 (last hit at t0), pruning frees slots
+        // while keeping ip-0 (last hit at t0 + 10), so new unknown keys are accepted again.
+        let t_expire = t0 + LOGIN_WINDOW_SECS;
+        assert_eq!(throttle.check_up_to("ip-new-1", t_expire, 2), Ok(()));
+        assert_eq!(throttle.len(), 2); // ip-0 + ip-new-1
+        assert_eq!(throttle.check_up_to("ip-new-2", t_expire, 2), Ok(()));
+        assert_eq!(throttle.len(), cap);
+
+        // Once full again, another unknown key is rejected without growing the map.
+        assert!(throttle.check_up_to("ip-overflow-3", t_expire, 2).is_err());
+        assert_eq!(throttle.len(), cap);
+
+        // After all keys expire, fresh keys are accepted again.
+        let t_all_expired = t_expire + LOGIN_WINDOW_SECS;
+        assert_eq!(throttle.check_up_to("ip-fresh", t_all_expired, 2), Ok(()));
+        assert_eq!(throttle.len(), 1);
     }
 }

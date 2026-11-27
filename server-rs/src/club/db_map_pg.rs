@@ -7,7 +7,7 @@ use crate::club::{
     map::{dedupe_by_tail, filter_admin_tails, DeviceFix, TailLivePosition},
     map_filter::{
         apply_public_cap, evaluate_public_altitude, public_track_passes, visibility_is_public,
-        AltitudeEval, AltitudeMode, MapViewFilter,
+        AltitudeEval, AltitudeMode, MapViewFilter, DEFAULT_PUBLIC_ALTITUDE_MIN_FT,
     },
     trail::{
         TrailMinutes, DEFAULT_NEARBY_PUBLIC_RADIUS_KM, DEFAULT_TRAIL_MINUTES, LIVE_FIX_MAX_AGE_MS,
@@ -78,7 +78,7 @@ impl ClubDb {
                 &r.try_get::<String, _>(5)
                     .unwrap_or_else(|_| "agl".to_string()),
             ),
-            altitude_min_ft: r.try_get(6).unwrap_or(300.0),
+            altitude_min_ft: r.try_get(6).unwrap_or(DEFAULT_PUBLIC_ALTITUDE_MIN_FT),
             club_id: club_id.to_string(),
         })
         .unwrap_or_else(|| MapViewFilter {
@@ -88,7 +88,7 @@ impl ClubDb {
             show_public_tracks: true,
             cap: 50,
             altitude_mode: AltitudeMode::Agl,
-            altitude_min_ft: 300.0,
+            altitude_min_ft: DEFAULT_PUBLIC_ALTITUDE_MIN_FT,
             club_id: club_id.to_string(),
         })
     }
@@ -457,7 +457,9 @@ impl ClubDb {
                 .try_get::<String, _>(4)
                 .unwrap_or_else(|_| "agl".to_string()),
         );
-        let altitude_min_ft: f64 = club_row.try_get(5).unwrap_or(300.0);
+        let altitude_min_ft: f64 = club_row
+            .try_get(5)
+            .unwrap_or(DEFAULT_PUBLIC_ALTITUDE_MIN_FT);
 
         let (raw_min_lat, raw_max_lat, raw_min_lon, raw_max_lon) =
             bbox_for_radius_km(base_lat, base_lon, radius_km);
