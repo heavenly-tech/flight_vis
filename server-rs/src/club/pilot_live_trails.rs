@@ -33,9 +33,9 @@
 //! Security & scoping contract (`GET /api/public/live-trails`):
 //! - Anonymous: ignores `Cookie` and `Authorization` headers completely; `sliding_session_renewal`
 //!   skips `/api/public/*` so `Set-Cookie` is never emitted on cached public responses.
-//! - Per-IP rate-limited via `AppState::public_live_trails_throttle` (`LoginThrottle`) and
-//!   `ClientIp` (`PUBLIC_LIVE_TRAILS_MAX_REQUESTS = 30` req/min -> `429 {"error":"rate_limited"}`
-//!   with `Retry-After: <seconds>`).
+//! - Per-IP rate-limited via `AppState::public_live_trails_throttle` (`LoginThrottle` with
+//!   `OverflowPolicy::RejectNew`) and `ClientIp` (`PUBLIC_LIVE_TRAILS_MAX_REQUESTS = 30` req/min ->
+//!   `429 {"error":"rate_limited"}` with `Retry-After: <seconds>`).
 //! - Returns ONLY live `visibility = 'public'` flights from operational (`live`, verified,
 //!   non-suspended) clubs (`flights.club_id IS NOT NULL`), geo-bounded by `PublicArea` with the
 //!   same SQL `LIMIT 500`, exact haversine, and 50-flight / 300-point / 120-min caps.

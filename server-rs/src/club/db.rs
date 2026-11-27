@@ -50,13 +50,31 @@ pub fn normalize_free_tail(raw: &str) -> Result<String, &'static str> {
     Ok(norm)
 }
 
-/// Sliding-window rate limiter with caller-supplied window length (seconds).
-#[derive(Clone, Default)]
+/// Bounded sliding-window rate limiter with caller-supplied window length (seconds).
+/// Caps distinct tracked keys at [`crate::THROTTLE_MAX_KEYS`] and defaults to
+/// [`crate::OverflowPolicy::EvictSoonestExpiring`] (M-29) so a flood of spoofed IPs cannot lock
+/// out legitimate new signups.
+#[derive(Clone)]
 pub(crate) struct WindowThrottle {
-    hits: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u64>>>>,
+    inner: crate::LoginThrottle,
+}
+
+impl Default for WindowThrottle {
+    fn default() -> Self {
+        Self::with_max_keys(crate::THROTTLE_MAX_KEYS)
+    }
 }
 
 impl WindowThrottle {
+    pub(crate) fn with_max_keys(max_keys: usize) -> Self {
+        Self {
+            inner: crate::LoginThrottle::with_max_keys_and_policy(
+                max_keys,
+                crate::OverflowPolicy::EvictSoonestExpiring,
+            ),
+        }
+    }
+
     pub(crate) fn allow(
         &self,
         key: &str,
@@ -64,22 +82,24 @@ impl WindowThrottle {
         max_attempts: usize,
         window_secs: u64,
     ) -> bool {
-        let mut hits = self.hits.lock().unwrap_or_else(|e| e.into_inner());
-        let cutoff = now_secs.saturating_sub(window_secs);
-        let allowed = {
-            let entry = hits.entry(key.to_string()).or_default();
-            entry.retain(|stamp| *stamp > cutoff);
-            if entry.len() >= max_attempts {
-                false
-            } else {
-                entry.push(now_secs);
-                true
-            }
-        };
-        if hits.len() > 4096 {
-            hits.retain(|_, times| times.last().is_some_and(|stamp| *stamp > cutoff));
-        }
-        allowed
+        self.inner
+            .check_up_to_window(key, now_secs, max_attempts, window_secs)
+            .is_ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn policy(&self) -> crate::OverflowPolicy {
+        self.inner.policy()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn max_keys(&self) -> usize {
+        self.inner.max_keys()
     }
 }
 
@@ -3436,5 +3456,47 @@ mod tests {
             db.add_checkout(&a, "C152", Some("NOPE"), None).await,
             Err(CheckoutError::UnknownTail)
         ));
+    }
+
+    #[test]
+    fn window_throttle_caps_keys_and_evicts_soonest_expiring_for_signup() {
+        let default_wt = WindowThrottle::default();
+        assert_eq!(default_wt.max_keys(), crate::THROTTLE_MAX_KEYS);
+        assert_eq!(
+            default_wt.policy(),
+            crate::OverflowPolicy::EvictSoonestExpiring
+        );
+
+        let cap = 3;
+        let wt = WindowThrottle::with_max_keys(cap);
+        let w = ACCOUNT_SIGNUP_WINDOW_SECS;
+        let t0 = 50_000_u64;
+
+        // Fill cap: ip-1 has oldest newest timestamp (t0 + 6), so it expires soonest.
+        assert!(wt.allow("198.51.100.2", t0 + 1, 2, w));
+        assert!(wt.allow("198.51.100.1", t0 + 5, 2, w));
+        assert!(wt.allow("198.51.100.1", t0 + 6, 2, w));
+        assert!(wt.allow("198.51.100.3", t0 + 30, 2, w));
+        assert!(wt.allow("198.51.100.2", t0 + 50, 2, w));
+        assert_eq!(wt.len(), cap);
+
+        // A new signup IP at cap is admitted; len stays == cap; soonest-expiring ip-1 is evicted.
+        assert!(wt.allow("198.51.100.4", t0 + 60, 2, w));
+        assert_eq!(wt.len(), cap);
+
+        // Surviving IPs keep their existing counts.
+        assert!(!wt.allow("198.51.100.2", t0 + 61, 2, w));
+        assert!(wt.allow("198.51.100.3", t0 + 61, 2, w));
+        assert!(!wt.allow("198.51.100.3", t0 + 61, 2, w));
+
+        // Evicted ip-1 starts a fresh window on its next attempt (full 2 attempts).
+        assert!(wt.allow("198.51.100.1", t0 + 62, 2, w));
+        assert!(wt.allow("198.51.100.1", t0 + 62, 2, w));
+        assert!(!wt.allow("198.51.100.1", t0 + 62, 2, w));
+        assert_eq!(wt.len(), cap);
+
+        // After the 10-minute window passes, pruning clears expired keys cleanly.
+        assert!(wt.allow("198.51.100.99", t0 + 62 + w, 2, w));
+        assert_eq!(wt.len(), 1);
     }
 }

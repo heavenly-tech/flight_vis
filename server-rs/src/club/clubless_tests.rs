@@ -76,7 +76,9 @@ async fn setup_harness() -> TestHarness {
         share_lookup_throttle: crate::LoginThrottle::default(),
         account_password_throttle: crate::LoginThrottle::default(),
         account_password_account_throttle: crate::LoginThrottle::default(),
-        public_live_trails_throttle: crate::LoginThrottle::default(),
+        public_live_trails_throttle: crate::LoginThrottle::with_policy(
+            crate::OverflowPolicy::RejectNew,
+        ),
         mailer: mailer.clone(),
         webauthn: None,
         sse_limiter: Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -2407,4 +2409,262 @@ async fn guest_rescope_guard_never_mutates_personal_pilot() {
         .await;
     assert!(res_ho2.is_err());
     assert_eq!(fx.db.pilot_club_id_opt(&personal_pid).await.unwrap(), None);
+}
+
+// ---------------------------------------------------------------------------
+// M-29: Bounded login-adjacent throttles evict soonest-expiring key at cap
+// while public_live_trails_throttle retains RejectNew
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[serial]
+async fn m29_login_adjacent_throttles_evict_at_cap_while_public_live_trails_rejects() {
+    use crate::club::db::WindowThrottle;
+    use crate::{LoginThrottle, OverflowPolicy, LOGIN_MAX_ATTEMPTS};
+    use axum::extract::ConnectInfo;
+    use std::net::SocketAddr;
+
+    let locales = crate::i18n::Catalogs::resolve_dir(std::path::Path::new("dist"));
+    let _ = crate::i18n::init_global(&locales);
+    let dir = tempfile::tempdir().unwrap();
+    let dist_dir = dir.path().join("dist");
+    std::fs::create_dir_all(&dist_dir).unwrap();
+
+    let mut db = ClubDb::open_test().await.expect("open test db");
+    let signup_throttle = WindowThrottle::with_max_keys(2);
+    db.account_signup_throttle = signup_throttle.clone();
+
+    let login_throttle = LoginThrottle::with_max_keys(2);
+    let device_register_throttle = LoginThrottle::with_max_keys(2);
+    let public_live_trails_throttle =
+        LoginThrottle::with_max_keys_and_policy(2, OverflowPolicy::RejectNew);
+
+    let (video_queue, _) = tokio::sync::mpsc::channel(4);
+    let state = AppState {
+        dist_dir,
+        auth: Auth::with_password("test-secret"),
+        device_auth: DeviceAuth::empty(),
+        live: Arc::new(LiveEngine::new(dir.path())),
+        store: Store::new(dir.path()),
+        club: Some(db.clone()),
+        video_queue,
+        login_throttle: login_throttle.clone(),
+        device_register_throttle: device_register_throttle.clone(),
+        share_lookup_throttle: LoginThrottle::default(),
+        account_password_throttle: LoginThrottle::default(),
+        account_password_account_throttle: LoginThrottle::default(),
+        public_live_trails_throttle: public_live_trails_throttle.clone(),
+        mailer: Mailer::from_env(MailOutbox::default()),
+        webauthn: None,
+        sse_limiter: Arc::new(crate::club::sse_limit::SseLimiter::default()),
+        superadmin_emails: HashSet::new(),
+    };
+    let mut router = build_router(state);
+
+    async fn send_from_ip(
+        router: &mut axum::Router,
+        method: &str,
+        uri: &str,
+        ip: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, axum::http::HeaderMap, Value) {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::ACCEPT, "application/json")
+            .header("x-forwarded-for", ip);
+        let req_body = if let Some(v) = body {
+            builder = builder.header(header::CONTENT_TYPE, "application/json");
+            Body::from(v.to_string())
+        } else {
+            Body::empty()
+        };
+        let mut req = builder.body(req_body).unwrap();
+        req.extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 0))));
+        let resp = router.call(req).await.unwrap();
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, headers, json)
+    }
+
+    // 1. Account signup throttle (`WindowThrottle`) at cap=2 admits a new IP by evicting the
+    //    soonest-expiring IP, while preserving the saturated surviving IP's counter.
+    let (st, _, _) = send_from_ip(
+        &mut router,
+        "POST",
+        "/api/account/signup",
+        "198.51.100.1",
+        Some(json!({ "email": "m29-a@test.example" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED);
+    for i in 0..ACCOUNT_SIGNUP_MAX_PER_IP {
+        let (st, _, _) = send_from_ip(
+            &mut router,
+            "POST",
+            "/api/account/signup",
+            "198.51.100.2",
+            Some(json!({ "email": format!("m29-b-{i}@test.example") })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::CREATED, "signup attempt {i} should succeed");
+    }
+    let (st, _, _) = send_from_ip(
+        &mut router,
+        "POST",
+        "/api/account/signup",
+        "198.51.100.2",
+        Some(json!({ "email": "m29-b-over@test.example" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(signup_throttle.len(), 2);
+
+    // 3rd distinct IP is admitted (evicting 198.51.100.1); 198.51.100.2 stays throttled.
+    let (st, _, _) = send_from_ip(
+        &mut router,
+        "POST",
+        "/api/account/signup",
+        "198.51.100.3",
+        Some(json!({ "email": "m29-c@test.example" })),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::CREATED,
+        "new signup IP must be admitted at cap via eviction"
+    );
+    assert_eq!(signup_throttle.len(), 2);
+    let (st, _, _) = send_from_ip(
+        &mut router,
+        "POST",
+        "/api/account/signup",
+        "198.51.100.2",
+        Some(json!({ "email": "m29-b-still@test.example" })),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::TOO_MANY_REQUESTS,
+        "surviving IP counter must not be reset by another key's eviction"
+    );
+
+    // 2. Guest / anonymous device issuance (`POST /api/devices/anonymous` -> `device_register_throttle`)
+    //    at cap=2 admits a new IP instead of locking out new clients.
+    for ip in ["198.51.100.10", "198.51.100.11"] {
+        let (st, _, _) = send_from_ip(
+            &mut router,
+            "POST",
+            "/api/devices/anonymous",
+            ip,
+            Some(json!({ "name": "Guest" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK);
+    }
+    assert_eq!(device_register_throttle.len(), 2);
+    let (st, _, _) = send_from_ip(
+        &mut router,
+        "POST",
+        "/api/devices/anonymous",
+        "198.51.100.12",
+        Some(json!({ "name": "Guest New" })),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "guest/anonymous issuance must admit new IP at cap via eviction"
+    );
+    assert_eq!(device_register_throttle.len(), 2);
+
+    // 3. Legacy platform login (`POST /login` -> `login_throttle`) at cap=2 admits a new IP while
+    //    preserving the saturated surviving IP's block.
+    let (st, _, _) = send_from_ip(
+        &mut router,
+        "POST",
+        "/login",
+        "198.51.100.20",
+        Some(json!({ "password": "wrong" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    for _ in 0..LOGIN_MAX_ATTEMPTS {
+        let (st, _, _) = send_from_ip(
+            &mut router,
+            "POST",
+            "/login",
+            "198.51.100.21",
+            Some(json!({ "password": "wrong" })),
+        )
+        .await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED);
+    }
+    let (st, _, _) = send_from_ip(
+        &mut router,
+        "POST",
+        "/login",
+        "198.51.100.21",
+        Some(json!({ "password": "wrong" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(login_throttle.len(), 2);
+
+    let (st, _, _) = send_from_ip(
+        &mut router,
+        "POST",
+        "/login",
+        "198.51.100.22",
+        Some(json!({ "password": "test-secret" })),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "legitimate new client must be able to log in at cap via eviction"
+    );
+    assert_eq!(login_throttle.len(), 2);
+    let (st, _, _) = send_from_ip(
+        &mut router,
+        "POST",
+        "/login",
+        "198.51.100.21",
+        Some(json!({ "password": "test-secret" })),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::TOO_MANY_REQUESTS,
+        "throttled attacker IP must remain blocked after another key is evicted"
+    );
+
+    // 4. Anonymous public live-trails (`public_live_trails_throttle`) keeps RejectNew at cap=2.
+    let public_uri = "/api/public/live-trails?lat=-33.456&lon=-70.548";
+    for ip in ["198.51.100.30", "198.51.100.31"] {
+        let (st, _, _) = send_from_ip(&mut router, "GET", public_uri, ip, None).await;
+        assert_eq!(st, StatusCode::OK);
+    }
+    assert_eq!(public_live_trails_throttle.len(), 2);
+
+    let (st_cap, h_cap, b_cap) =
+        send_from_ip(&mut router, "GET", public_uri, "198.51.100.32", None).await;
+    assert_eq!(st_cap, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(b_cap, json!({ "error": "rate_limited" }));
+    let retry_after: u64 = h_cap
+        .get(header::RETRY_AFTER)
+        .expect("Retry-After header required on public live-trails cap reject")
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((1..=60).contains(&retry_after));
+    assert_eq!(public_live_trails_throttle.len(), 2);
+
+    let (st_existing, _, _) =
+        send_from_ip(&mut router, "GET", public_uri, "198.51.100.30", None).await;
+    assert_eq!(st_existing, StatusCode::OK);
 }

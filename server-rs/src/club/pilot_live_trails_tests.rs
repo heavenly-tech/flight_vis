@@ -70,7 +70,11 @@ pub(super) async fn http_stack_with_throttle(
 }
 
 pub(super) async fn http_stack(db: ClubDb) -> (tempfile::TempDir, axum::Router) {
-    http_stack_with_throttle(db, crate::LoginThrottle::default()).await
+    http_stack_with_throttle(
+        db,
+        crate::LoginThrottle::with_policy(crate::OverflowPolicy::RejectNew),
+    )
+    .await
 }
 
 pub(super) async fn create_live_club(

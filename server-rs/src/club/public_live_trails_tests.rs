@@ -34,7 +34,7 @@ use crate::{
         ClubDb,
     },
     live::LiveFix,
-    LoginThrottle, PUBLIC_LIVE_TRAILS_MAX_REQUESTS,
+    LoginThrottle, OverflowPolicy, PUBLIC_LIVE_TRAILS_MAX_REQUESTS,
 };
 use axum::{
     body::{to_bytes, Body},
@@ -846,7 +846,7 @@ async fn public_live_trails_radius_clamping_geo_validation_and_etag_304() {
 #[serial]
 async fn public_live_trails_rate_limit_per_ip_with_retry_after_and_reset() {
     let db = ClubDb::open_test().await.unwrap();
-    let throttle = LoginThrottle::default();
+    let throttle = LoginThrottle::with_policy(OverflowPolicy::RejectNew);
     let (_tmp, mut router) = http_stack_with_throttle(db.clone(), throttle.clone()).await;
 
     let trusted_proxy = Some(SocketAddr::from(([127, 0, 0, 1], 0)));
@@ -949,7 +949,7 @@ async fn public_live_trails_rate_limit_per_ip_with_retry_after_and_reset() {
 
     // L-79: Hard distinct-key cap rejects unknown IPs with 429 + Retry-After without growing map,
     // while already-tracked IPs continue working normally.
-    let capped_throttle = LoginThrottle::with_max_keys(2);
+    let capped_throttle = LoginThrottle::with_max_keys_and_policy(2, OverflowPolicy::RejectNew);
     let (_tmp2, mut capped_router) = http_stack_with_throttle(db, capped_throttle.clone()).await;
     for ip in ["198.51.100.1", "198.51.100.2"] {
         let (st_ok, _, _) = send_public_req(
