@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests {
     use super::super::engine::{
-        AckResult, LiveEngine, TestClock, MAX_FIXES_PER_SESSION, SESSION_IDLE_END_MS,
-        SESSION_RETAIN_MS,
+        AckResult, LiveEngine, TestClock, MAX_CLUB_INGEST_FIXES_PER_MINUTE, MAX_FIXES_PER_SESSION,
+        SESSION_IDLE_END_MS, SESSION_RETAIN_MS,
     };
     use super::super::persist::LivePersist;
     use super::super::types::{LiveFix, SessionPhase, ALT_REF_WGS84_ELLIPSOID};
@@ -330,5 +330,51 @@ mod tests {
         let snap = engine.stream_snapshot(&id).await.unwrap();
         assert_eq!(snap.phase, SessionPhase::Ended);
         assert!(snap.live_rx.is_none());
+    }
+
+    #[tokio::test]
+    async fn allow_ingest_fixes_retry_after_tracks_expiry_and_oversized_batch() {
+        let dir = test_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let start = 1_700_000_000_000;
+        let (engine, clock) = engine_at(start, &dir);
+        let key = "club-flight:dev-retry-after";
+        let cap = MAX_CLUB_INGEST_FIXES_PER_MINUTE;
+
+        // Oversized single batch (> cap) returns full window (60s) and records no hits.
+        assert_eq!(engine.allow_ingest_fixes(key, cap + 1, cap).await, Err(60));
+
+        // Fill 80 fixes at t0, then 40 fixes at t0 + 20s (total 120).
+        assert_eq!(engine.allow_ingest_fixes(key, 80, cap).await, Ok(()));
+        clock.advance(20_000);
+        assert_eq!(engine.allow_ingest_fixes(key, 40, cap).await, Ok(()));
+
+        // At t0 + 20s:
+        // - 1 fix needs 1 oldest hit (at t0, expires at t0 + 60s) -> 40s.
+        // - 80 fixes need 80 oldest hits (all at t0, expire at t0 + 60s) -> 40s.
+        // - 81 fixes need 81st hit (at t0 + 20s, expires at t0 + 80s) -> 60s.
+        assert_eq!(engine.allow_ingest_fixes(key, 1, cap).await, Err(40));
+        assert_eq!(engine.allow_ingest_fixes(key, 80, cap).await, Err(40));
+        assert_eq!(engine.allow_ingest_fixes(key, 81, cap).await, Err(60));
+
+        // Advance by 15.5s (t0 + 35.5s): remaining is 24.5s -> rounded UP to 25s;
+        // 81-fix batch remaining is 44.5s -> rounded UP to 45s.
+        clock.advance(15_500);
+        assert_eq!(engine.allow_ingest_fixes(key, 1, cap).await, Err(25));
+        assert_eq!(engine.allow_ingest_fixes(key, 81, cap).await, Err(45));
+
+        // Advance to 1 ms before the t0 hits expire (t0 + 59_999 ms): minimum 1s.
+        clock.advance(24_499);
+        assert_eq!(engine.allow_ingest_fixes(key, 1, cap).await, Err(1));
+
+        // Advance 1 ms (t0 + 60s): the 80 hits at t0 expire, leaving 40 at t0 + 20s.
+        // Rejected calls above must not have recorded any hits, so all 80 fit now;
+        // 81 fixes still wait 20s for a t0 + 20s hit to expire.
+        clock.advance(1);
+        assert_eq!(engine.allow_ingest_fixes(key, 81, cap).await, Err(20));
+        assert_eq!(engine.allow_ingest_fixes(key, 80, cap).await, Ok(()));
+
+        // Existing bool wrapper still allows requests under MAX_INGEST_PER_MINUTE.
+        assert!(engine.allow_ingest("legacy-dev").await);
     }
 }

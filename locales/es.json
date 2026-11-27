@@ -95,6 +95,9 @@
     "slugTaken": "Ese nombre corto ya está en uso",
     "unchanged": "El nombre corto no cambió",
     "rateLimited": "Demasiados intentos. Espera un momento e intenta de nuevo.",
+    "emailNotVerified": "Verifica tu correo para compartir vuelos de forma pública.",
+    "clubVisibilityRequiresClub": "La visibilidad de club requiere pertenecer a un club.",
+    "invalidTail": "Matrícula inválida",
     "genericError": "Ocurrió un error. Intenta nuevamente."
   },
   "club": {

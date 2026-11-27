@@ -56,6 +56,9 @@ pub async fn post_ingest(
         .collect();
     if let Some(db) = &state.club {
         if let Some(device_id) = db.resolve_device_token(token).await {
+            if db.device_account_suspended(&device_id).await {
+                return unauthorized().into_response();
+            }
             if let Some(flight_id) = db.open_flight_for_device(&device_id).await {
                 if let Some(club_id) = db.club_id_for_flight(&flight_id).await {
                     if db.club_operational(&club_id).await.is_err() {
@@ -65,6 +68,23 @@ pub async fn post_ingest(
                         )
                             .into_response();
                     }
+                }
+                let rate_key = format!("club-flight:{device_id}");
+                if let Err(retry_after) = state
+                    .live
+                    .allow_ingest_fixes(
+                        &rate_key,
+                        fixes.len(),
+                        crate::live::engine::MAX_CLUB_INGEST_FIXES_PER_MINUTE,
+                    )
+                    .await
+                {
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [(header::RETRY_AFTER, retry_after.to_string())],
+                        Json(json!({ "error": "rate limited" })),
+                    )
+                        .into_response();
                 }
                 let accepted = db
                     .append_fixes(&flight_id, &device_id, &fixes)
@@ -280,6 +300,9 @@ pub async fn osmand_ingest(
     }
     if let Some(db) = &state.club {
         if let Some(device_id) = db.resolve_device_token(&token).await {
+            if db.device_account_suspended(&device_id).await {
+                return unauthorized().into_response();
+            }
             if let Some(flight_id) = db.open_flight_for_device(&device_id).await {
                 if let Some(club_id) = db.club_id_for_flight(&flight_id).await {
                     if db.club_operational(&club_id).await.is_err() {
@@ -289,6 +312,23 @@ pub async fn osmand_ingest(
                         )
                             .into_response();
                     }
+                }
+                let rate_key = format!("club-flight:{device_id}");
+                if let Err(retry_after) = state
+                    .live
+                    .allow_ingest_fixes(
+                        &rate_key,
+                        1,
+                        crate::live::engine::MAX_CLUB_INGEST_FIXES_PER_MINUTE,
+                    )
+                    .await
+                {
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [(header::RETRY_AFTER, retry_after.to_string())],
+                        Json(json!({ "error": "rate limited" })),
+                    )
+                        .into_response();
                 }
                 if db
                     .append_fixes(&flight_id, &device_id, std::slice::from_ref(&fix))

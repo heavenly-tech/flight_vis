@@ -179,7 +179,9 @@ async fn pending_club_rejects_pilot_register_slug() {
         share_lookup_throttle: crate::LoginThrottle::default(),
         account_password_throttle: crate::LoginThrottle::default(),
         account_password_account_throttle: crate::LoginThrottle::default(),
-        public_live_trails_throttle: crate::LoginThrottle::default(),
+        public_live_trails_throttle: crate::LoginThrottle::with_policy(
+            crate::OverflowPolicy::RejectNew,
+        ),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -238,7 +240,9 @@ async fn suspended_club_register_returns_suspended() {
         share_lookup_throttle: crate::LoginThrottle::default(),
         account_password_throttle: crate::LoginThrottle::default(),
         account_password_account_throttle: crate::LoginThrottle::default(),
-        public_live_trails_throttle: crate::LoginThrottle::default(),
+        public_live_trails_throttle: crate::LoginThrottle::with_policy(
+            crate::OverflowPolicy::RejectNew,
+        ),
         mailer: crate::club::mail::Mailer::from_env(crate::club::mail::MailOutbox::default()),
         webauthn: None,
         sse_limiter: std::sync::Arc::new(crate::club::sse_limit::SseLimiter::default()),

@@ -192,7 +192,7 @@ impl ClubDb {
             | Viewer::Pilot {
                 status: PilotStatus::Pending,
                 ..
-            } => self.default_club_id().await,
+            } => Err(sqlx::Error::RowNotFound),
         }
     }
 
@@ -206,37 +206,50 @@ impl ClubDb {
         if !can_view_flight(viewer, &flight.pilot_id, vis) {
             return None;
         }
+        // In E1, club-less flights (aircraft_id IS NULL) are dropped cleanly here.
         let club_id = self.flight_aircraft_club_id(flight_id).await?;
-        let viewing_club = match viewer {
+        let viewing_club: Option<String> = match viewer {
             Viewer::Pilot {
                 id,
                 status: PilotStatus::Approved,
                 ..
-            } => self.pilot_club_id(id).await.unwrap_or(club_id.clone()),
-            Viewer::Anonymous | Viewer::Pilot { .. } => {
-                self.default_club_id().await.unwrap_or(club_id.clone())
+            } => {
+                // Personal pilots (club_id IS NULL) must never fall back to the flight's club
+                // or default_club_id.
+                let vc = self.pilot_club_id_opt(id).await.ok().flatten()?;
+                Some(vc)
             }
-        };
-
-        if self
-            .pilot_is_approved_member(&flight.pilot_id, &viewing_club)
-            .await
-        {
-            if club_id != viewing_club && vis != FlightVisibility::Public {
+            Viewer::Pilot {
+                id,
+                status: PilotStatus::Pending,
+                ..
+            } => {
+                if flight.pilot_id == *id {
+                    return Some(flight);
+                }
                 return None;
             }
-            if vis == FlightVisibility::Private {
-                let viewer_id = match viewer {
-                    Viewer::Pilot { id, .. } => id.as_str(),
-                    _ => "",
-                };
-                if flight.pilot_id != viewer_id
-                    && self.require_club_admin(viewer_id, &club_id).await.is_err()
-                {
+            Viewer::Anonymous => None,
+        };
+
+        if let Some(ref vc) = viewing_club {
+            if self.pilot_is_approved_member(&flight.pilot_id, vc).await {
+                if club_id != *vc && vis != FlightVisibility::Public {
                     return None;
                 }
+                if vis == FlightVisibility::Private {
+                    let viewer_id = match viewer {
+                        Viewer::Pilot { id, .. } => id.as_str(),
+                        _ => "",
+                    };
+                    if flight.pilot_id != viewer_id
+                        && self.require_club_admin(viewer_id, &club_id).await.is_err()
+                    {
+                        return None;
+                    }
+                }
+                return Some(flight);
             }
-            return Some(flight);
         }
 
         if vis != FlightVisibility::Public {
@@ -305,7 +318,10 @@ impl ClubDb {
                 status: PilotStatus::Approved,
                 ..
             } => {
-                let club = self.pilot_club_id(id).await.unwrap_or_default();
+                // Personal pilots (club_id IS NULL) are not club members; never fall back to default_club_id.
+                let Some(club) = self.pilot_club_id_opt(id).await.ok().flatten() else {
+                    return Vec::new();
+                };
                 let f = self.user_map_filter(id, &club).await;
                 (club, f)
             }
@@ -314,9 +330,7 @@ impl ClubDb {
                 status: PilotStatus::Pending,
                 ..
             } => {
-                let club = self.default_club_id().await.unwrap_or_default();
-                let f = self.club_map_filter(&club).await;
-                (club, f)
+                return Vec::new();
             }
         };
         let dem = self.dem_index();
@@ -614,7 +628,7 @@ impl ClubDb {
     }
 
     pub async fn admin_map_scoped(&self, admin_id: &str) -> Vec<TailLivePosition> {
-        let Ok(club_id) = self.pilot_club_id(admin_id).await else {
+        let Ok(Some(club_id)) = self.pilot_club_id_opt(admin_id).await else {
             return Vec::new();
         };
         let own_rows: Vec<DeviceFix> = self

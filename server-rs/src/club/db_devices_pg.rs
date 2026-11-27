@@ -105,14 +105,17 @@ impl ClubDb {
         .await
         .map_err(|_| DeviceRegisterError::Db)?
         {
-            sqlx::query("UPDATE devices SET token_hash = $1, label = $2, model = $3 WHERE id = $4")
-                .bind(&hash)
-                .bind(label)
-                .bind(model)
-                .bind(&existing_id)
-                .execute(&self.pool)
-                .await
-                .map_err(|_| DeviceRegisterError::Db)?;
+            sqlx::query(
+                "UPDATE devices SET token_hash = $1, label = $2, model = $3 WHERE id = $4 AND pilot_id = $5",
+            )
+            .bind(&hash)
+            .bind(label)
+            .bind(model)
+            .bind(&existing_id)
+            .bind(pilot_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|_| DeviceRegisterError::Db)?;
             let _ = sqlx::query("DELETE FROM device_pair_tokens WHERE device_id = $1")
                 .bind(&existing_id)
                 .execute(&self.pool)
@@ -179,6 +182,23 @@ impl ClubDb {
         self.end_active_flights_for_device(pilot_id, &device_id, now)
             .await?;
         self.revoke_device_row(pilot_id, &device_id).await
+    }
+
+    pub async fn device_install_meta(
+        &self,
+        device_id: &str,
+    ) -> Option<(Option<String>, String, Option<String>)> {
+        let row = sqlx::query("SELECT install_id, label, model FROM devices WHERE id = $1")
+            .bind(device_id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()??;
+        use sqlx::Row;
+        Some((
+            row.try_get(0).ok().flatten(),
+            row.try_get(1).ok().unwrap_or_default(),
+            row.try_get(2).ok().flatten(),
+        ))
     }
 
     pub async fn revoke_device_by_id(

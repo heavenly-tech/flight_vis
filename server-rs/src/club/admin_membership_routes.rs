@@ -33,12 +33,21 @@ async fn require_active_club_admin(
             Json(json!({ "error": "admin only" })),
         ));
     };
-    let club_id = db.pilot_club_id(id).await.map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "db error" })),
-        )
-    })?;
+    let club_id = match db.pilot_club_id_opt(id).await {
+        Ok(Some(cid)) => cid,
+        Ok(None) => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "admin only" })),
+            ));
+        }
+        Err(_) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "db error" })),
+            ));
+        }
+    };
     if db
         .require_active_club_admin_role(id, &club_id)
         .await

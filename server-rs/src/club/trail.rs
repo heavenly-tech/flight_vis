@@ -355,13 +355,14 @@ impl ClubDb {
         value: Option<TrailMinutes>,
     ) -> Result<(Option<TrailMinutes>, TrailMinutes), FlightTrailError> {
         let row = sqlx::query(
-            "SELECT f.pilot_id, f.status, c.trail_minutes_default
+            "SELECT f.pilot_id, f.status, COALESCE(c.trail_minutes_default, $2)
              FROM flights f
-             JOIN aircraft a ON a.id = f.aircraft_id
-             JOIN clubs c ON c.id = COALESCE(f.club_id, a.club_id)
+             LEFT JOIN aircraft a ON a.id = f.aircraft_id
+             LEFT JOIN clubs c ON c.id = COALESCE(f.club_id, a.club_id)
              WHERE f.id = $1",
         )
         .bind(flight_id)
+        .bind(DEFAULT_TRAIL_MINUTES)
         .fetch_optional(&self.pool)
         .await
         .map_err(|_| FlightTrailError::Db)?;

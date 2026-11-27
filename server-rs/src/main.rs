@@ -73,7 +73,7 @@ fn app_state(
             share_lookup_throttle: LoginThrottle::default(),
             account_password_throttle: LoginThrottle::default(),
             account_password_account_throttle: LoginThrottle::default(),
-            public_live_trails_throttle: LoginThrottle::default(),
+            public_live_trails_throttle: LoginThrottle::with_policy(OverflowPolicy::RejectNew),
             mailer: club::mail::Mailer::from_env(club::mail::MailOutbox::default()),
             webauthn: club::webauthn::WebauthnState::from_env(),
             sse_limiter: std::sync::Arc::new(club::sse_limit::SseLimiter::default()),
@@ -630,16 +630,38 @@ pub(crate) const SHARE_LOOKUP_MAX_ATTEMPTS: usize = 60;
 pub(crate) const ACCOUNT_PASSWORD_MAX_ATTEMPTS: usize = 10;
 pub(crate) const ACCOUNT_PASSWORD_PER_ACCOUNT_MAX_ATTEMPTS: usize = 5;
 pub(crate) const PUBLIC_LIVE_TRAILS_MAX_REQUESTS: usize = 30;
-/// Hard cap on distinct active keys tracked simultaneously by a [`LoginThrottle`] window.
-/// Protects against memory exhaustion from spoofed / distributed key floods: once at the cap
-/// (after pruning expired entries), new unknown keys are rejected without inserting.
+/// Hard cap on distinct active keys tracked simultaneously by a [`LoginThrottle`] or
+/// [`club::db::WindowThrottle`] window. Protects against memory exhaustion from spoofed or
+/// distributed key floods. Once at the cap (after pruning expired entries), arrival of a new
+/// unknown key follows the throttle's [`OverflowPolicy`]:
+/// - [`OverflowPolicy::EvictSoonestExpiring`] (default for login-adjacent throttles): evicts the
+///   single soonest-to-expire key and admits the new key so a spoofed-key flood cannot lock out
+///   legitimate new clients (M-29).
+/// - [`OverflowPolicy::RejectNew`] (used for anonymous `public_live_trails_throttle`): rejects
+///   the new key with `Retry-After` without inserting so a flood cannot evict and reset per-IP
+///   limits (L-79).
 pub(crate) const THROTTLE_MAX_KEYS: usize = 10_000;
 const LOGIN_WINDOW_SECS: u64 = 60;
+
+/// Behavior when a bounded throttle map is still at `max_keys` after pruning expired entries
+/// and a new unknown key arrives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OverflowPolicy {
+    /// Evict the single soonest-to-expire key (the key whose newest timestamp is oldest, i.e.
+    /// whose window ends first, with deterministic lexicographical key tie-breaking) and admit
+    /// the new key. Default for login-adjacent throttles (M-29).
+    EvictSoonestExpiring,
+    /// Reject the new unknown key with `Retry-After` without inserting it. Used for anonymous
+    /// public endpoints (`public_live_trails_throttle`) where eviction would let a flood reset
+    /// per-IP limits (L-79).
+    RejectNew,
+}
 
 #[derive(Clone)]
 pub(crate) struct LoginThrottle {
     hits: Arc<Mutex<HashMap<String, Vec<u64>>>>,
     max_keys: usize,
+    policy: OverflowPolicy,
 }
 
 impl Default for LoginThrottle {
@@ -650,29 +672,48 @@ impl Default for LoginThrottle {
 
 impl LoginThrottle {
     pub(crate) fn with_max_keys(max_keys: usize) -> Self {
+        Self::with_max_keys_and_policy(max_keys, OverflowPolicy::EvictSoonestExpiring)
+    }
+
+    pub(crate) fn with_policy(policy: OverflowPolicy) -> Self {
+        Self::with_max_keys_and_policy(THROTTLE_MAX_KEYS, policy)
+    }
+
+    pub(crate) fn with_max_keys_and_policy(max_keys: usize, policy: OverflowPolicy) -> Self {
         Self {
             hits: Arc::new(Mutex::new(HashMap::new())),
             max_keys,
+            policy,
         }
     }
 
-    /// Sliding-window check returning `Ok(())` if allowed, or `Err(retry_after_secs)` (`>= 1`)
-    /// when `max_attempts` requests have already been recorded within the last `LOGIN_WINDOW_SECS`,
-    /// or when the throttle is at its `max_keys` capacity (after pruning expired entries) and a
-    /// new unknown key arrives (rejected without inserting so map memory stays bounded).
-    pub(crate) fn check_up_to(&self, ip: &str, now: u64, max_attempts: usize) -> Result<(), u64> {
+    /// Sliding-window check with caller-supplied `window_secs`, returning `Ok(())` if allowed or
+    /// `Err(retry_after_secs)` (`>= 1`) when `max_attempts` requests have already been recorded
+    /// within the last `window_secs`, or when at `max_keys` capacity (after pruning expired
+    /// entries) under [`OverflowPolicy::RejectNew`]. Under
+    /// [`OverflowPolicy::EvictSoonestExpiring`], a new unknown key at capacity evicts the single
+    /// soonest-to-expire key (oldest newest-timestamp, deterministic key tie-break) and is
+    /// admitted without growing the map past `max_keys`.
+    pub(crate) fn check_up_to_window(
+        &self,
+        key: &str,
+        now: u64,
+        max_attempts: usize,
+        window_secs: u64,
+    ) -> Result<(), u64> {
         let mut hits = self.hits.lock().unwrap_or_else(|err| err.into_inner());
-        let cutoff = now.saturating_sub(LOGIN_WINDOW_SECS);
-        let result = if let Some(entry) = hits.get_mut(ip) {
+        let cutoff = now.saturating_sub(window_secs);
+        let mut pruned = false;
+        let result = if let Some(entry) = hits.get_mut(key) {
             entry.retain(|stamp| *stamp > cutoff);
             if entry.len() >= max_attempts {
-                let oldest = entry.first().copied().unwrap_or(now);
+                let oldest = entry.iter().copied().min().unwrap_or(now);
                 let retry_after = oldest
-                    .saturating_add(LOGIN_WINDOW_SECS)
+                    .saturating_add(window_secs)
                     .saturating_sub(now)
                     .max(1);
                 if entry.is_empty() {
-                    hits.remove(ip);
+                    hits.remove(key);
                 }
                 Err(retry_after)
             } else {
@@ -680,39 +721,61 @@ impl LoginThrottle {
                 Ok(())
             }
         } else {
+            if max_attempts == 0 || self.max_keys == 0 {
+                return Err(window_secs.max(1));
+            }
             if hits.len() >= self.max_keys {
                 hits.retain(|_, times| {
                     times.retain(|stamp| *stamp > cutoff);
                     !times.is_empty()
                 });
+                pruned = true;
             }
             if hits.len() >= self.max_keys {
-                let earliest_expiry = hits
-                    .values()
-                    .filter_map(|times| times.iter().copied().max())
-                    .min();
-                let retry_after = earliest_expiry
-                    .map(|t| {
-                        t.saturating_add(LOGIN_WINDOW_SECS)
-                            .saturating_sub(now)
-                            .max(1)
-                    })
-                    .unwrap_or(LOGIN_WINDOW_SECS);
-                return Err(retry_after);
+                match self.policy {
+                    OverflowPolicy::RejectNew => {
+                        let earliest_expiry = hits
+                            .values()
+                            .filter_map(|times| times.iter().copied().max())
+                            .min();
+                        let retry_after = earliest_expiry
+                            .map(|t| t.saturating_add(window_secs).saturating_sub(now).max(1))
+                            .unwrap_or_else(|| window_secs.max(1));
+                        return Err(retry_after);
+                    }
+                    OverflowPolicy::EvictSoonestExpiring => {
+                        if let Some(victim) = hits
+                            .iter()
+                            .filter_map(|(k, times)| {
+                                times
+                                    .iter()
+                                    .copied()
+                                    .max()
+                                    .map(|newest| (newest, k.as_str()))
+                            })
+                            .min_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)))
+                            .map(|(_, k)| k.to_string())
+                        {
+                            hits.remove(&victim);
+                        }
+                    }
+                }
             }
-            if max_attempts == 0 {
-                return Err(LOGIN_WINDOW_SECS);
-            }
-            hits.insert(ip.to_string(), vec![now]);
+            hits.insert(key.to_string(), vec![now]);
             Ok(())
         };
-        if hits.len() > 4096 {
+        if !pruned && hits.len() > 4096 {
             hits.retain(|_, times| {
                 times.retain(|stamp| *stamp > cutoff);
                 !times.is_empty()
             });
         }
         result
+    }
+
+    /// Sliding-window check using `LOGIN_WINDOW_SECS` (60s). See [`Self::check_up_to_window`].
+    pub(crate) fn check_up_to(&self, ip: &str, now: u64, max_attempts: usize) -> Result<(), u64> {
+        self.check_up_to_window(ip, now, max_attempts, LOGIN_WINDOW_SECS)
     }
 
     pub(crate) fn allow_up_to(&self, ip: &str, now: u64, max_attempts: usize) -> bool {
@@ -733,6 +796,16 @@ impl LoginThrottle {
             .lock()
             .unwrap_or_else(|err| err.into_inner())
             .len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn policy(&self) -> OverflowPolicy {
+        self.policy
+    }
+
+    #[cfg(test)]
+    pub(crate) fn max_keys(&self) -> usize {
+        self.max_keys
     }
 
     fn allow(&self, ip: &str, now: u64) -> bool {
@@ -1499,7 +1572,7 @@ mod tests {
     #[test]
     fn login_throttle_caps_distinct_keys_and_recovers_after_window_expiry() {
         let cap = 3;
-        let throttle = LoginThrottle::with_max_keys(cap);
+        let throttle = LoginThrottle::with_max_keys_and_policy(cap, OverflowPolicy::RejectNew);
         let t0 = 10_000_u64;
 
         // Fill cap with N distinct keys.
@@ -1537,5 +1610,151 @@ mod tests {
         let t_all_expired = t_expire + LOGIN_WINDOW_SECS;
         assert_eq!(throttle.check_up_to("ip-fresh", t_all_expired, 2), Ok(()));
         assert_eq!(throttle.len(), 1);
+    }
+
+    #[test]
+    fn login_throttle_evicts_soonest_expiring_key_at_cap_and_preserves_others() {
+        let default_t = LoginThrottle::default();
+        assert_eq!(default_t.max_keys(), THROTTLE_MAX_KEYS);
+        assert_eq!(default_t.policy(), OverflowPolicy::EvictSoonestExpiring);
+        let reject_t = LoginThrottle::with_policy(OverflowPolicy::RejectNew);
+        assert_eq!(reject_t.max_keys(), THROTTLE_MAX_KEYS);
+        assert_eq!(reject_t.policy(), OverflowPolicy::RejectNew);
+
+        let cap = 3;
+        let throttle = LoginThrottle::with_max_keys(cap);
+        assert_eq!(throttle.policy(), OverflowPolicy::EvictSoonestExpiring);
+        let t0 = 20_000_u64;
+
+        // ip-early-then-fresh has the earliest FIRST hit (t0 + 1) but a newer LATEST hit (t0 + 20),
+        // so its window ends LAST. ip-soonest has the oldest NEWEST timestamp (t0 + 6), so its
+        // window ends FIRST and it must be chosen for eviction.
+        assert_eq!(
+            throttle.check_up_to("ip-early-then-fresh", t0 + 1, 3),
+            Ok(())
+        );
+        assert_eq!(throttle.check_up_to("ip-soonest", t0 + 5, 3), Ok(()));
+        assert_eq!(throttle.check_up_to("ip-soonest", t0 + 6, 3), Ok(()));
+        assert_eq!(throttle.check_up_to("ip-mid", t0 + 15, 3), Ok(()));
+        assert_eq!(
+            throttle.check_up_to("ip-early-then-fresh", t0 + 20, 3),
+            Ok(())
+        );
+        assert_eq!(throttle.len(), cap);
+
+        // A new unknown key arrives at cap -> admitted, map stays at cap, ip-soonest is evicted.
+        assert_eq!(throttle.check_up_to("ip-new", t0 + 25, 3), Ok(()));
+        assert_eq!(throttle.len(), cap);
+
+        // Surviving keys retain their exact counters (never reset by another key's eviction).
+        assert_eq!(
+            throttle.check_up_to("ip-early-then-fresh", t0 + 26, 3),
+            Ok(())
+        ); // 3rd hit
+        assert!(throttle
+            .check_up_to("ip-early-then-fresh", t0 + 26, 3)
+            .is_err());
+        assert_eq!(throttle.check_up_to("ip-mid", t0 + 26, 3), Ok(())); // 2nd hit
+        assert_eq!(throttle.check_up_to("ip-mid", t0 + 26, 3), Ok(())); // 3rd hit
+        assert!(throttle.check_up_to("ip-mid", t0 + 26, 3).is_err());
+        assert_eq!(throttle.len(), cap);
+
+        // Evicted key ip-soonest starts a fresh window (full 3 attempts, not 1 remaining),
+        // and admitting it evicts the current soonest-expiring key (ip-new, newest t0 + 25).
+        assert_eq!(throttle.check_up_to("ip-soonest", t0 + 27, 3), Ok(()));
+        assert_eq!(throttle.check_up_to("ip-soonest", t0 + 27, 3), Ok(()));
+        assert_eq!(throttle.check_up_to("ip-soonest", t0 + 27, 3), Ok(()));
+        assert!(throttle.check_up_to("ip-soonest", t0 + 27, 3).is_err());
+        assert_eq!(throttle.len(), cap);
+
+        // ip-early-then-fresh and ip-mid (newest t0 + 26) still retain their saturated counts.
+        assert!(throttle
+            .check_up_to("ip-early-then-fresh", t0 + 27, 3)
+            .is_err());
+        assert!(throttle.check_up_to("ip-mid", t0 + 27, 3).is_err());
+
+        // Deterministic tie-breaking: identical newest timestamps evict lexicographically smallest key.
+        let tie = LoginThrottle::with_max_keys(2);
+        let t1 = 30_000_u64;
+        assert_eq!(tie.check_up_to("ip-z", t1, 2), Ok(()));
+        assert_eq!(tie.check_up_to("ip-z", t1, 2), Ok(()));
+        assert_eq!(tie.check_up_to("ip-a", t1, 2), Ok(()));
+        assert_eq!(tie.check_up_to("ip-a", t1, 2), Ok(()));
+        assert_eq!(tie.len(), 2);
+
+        assert_eq!(tie.check_up_to("ip-m", t1 + 5, 2), Ok(()));
+        assert_eq!(tie.len(), 2);
+        // ip-z must have survived with count=2; ip-a was evicted and starts fresh.
+        assert!(tie.check_up_to("ip-z", t1 + 6, 2).is_err());
+        assert_eq!(tie.check_up_to("ip-a", t1 + 7, 2), Ok(()));
+        assert_eq!(tie.check_up_to("ip-a", t1 + 7, 2), Ok(()));
+        assert!(tie.check_up_to("ip-a", t1 + 7, 2).is_err());
+        assert_eq!(tie.len(), 2);
+
+        // Expired entries are pruned before evicting any active entry.
+        let prune = LoginThrottle::with_max_keys(2);
+        assert_eq!(prune.check_up_to("ip-expired", t0, 2), Ok(()));
+        assert_eq!(prune.check_up_to("ip-active", t0 + 30, 2), Ok(()));
+        assert_eq!(prune.check_up_to("ip-active", t0 + 30, 2), Ok(()));
+        assert_eq!(
+            prune.check_up_to("ip-fresh", t0 + LOGIN_WINDOW_SECS, 2),
+            Ok(())
+        );
+        assert_eq!(prune.len(), 2);
+        assert!(prune
+            .check_up_to("ip-active", t0 + LOGIN_WINDOW_SECS, 2)
+            .is_err());
+
+        // Zero-attempt checks must not evict active keys; zero-cap map never grows.
+        assert!(prune
+            .check_up_to("ip-zero", t0 + LOGIN_WINDOW_SECS + 1, 0)
+            .is_err());
+        assert!(prune
+            .check_up_to("ip-active", t0 + LOGIN_WINDOW_SECS + 1, 2)
+            .is_err());
+        let zero_cap = LoginThrottle::with_max_keys(0);
+        assert!(zero_cap.check_up_to("ip-any", t0, 2).is_err());
+        assert_eq!(zero_cap.len(), 0);
+    }
+
+    #[test]
+    fn app_state_assigns_evict_to_login_adjacent_and_reject_new_to_public_live_trails() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, _rx) = app_state(
+            dir.path().join("dist"),
+            Auth::with_password("x"),
+            DeviceAuth::empty(),
+            Arc::new(LiveEngine::new(dir.path())),
+            Store::new(dir.path()),
+        );
+        assert_eq!(
+            state.login_throttle.policy(),
+            OverflowPolicy::EvictSoonestExpiring
+        );
+        assert_eq!(
+            state.device_register_throttle.policy(),
+            OverflowPolicy::EvictSoonestExpiring
+        );
+        assert_eq!(
+            state.share_lookup_throttle.policy(),
+            OverflowPolicy::EvictSoonestExpiring
+        );
+        assert_eq!(
+            state.account_password_throttle.policy(),
+            OverflowPolicy::EvictSoonestExpiring
+        );
+        assert_eq!(
+            state.account_password_account_throttle.policy(),
+            OverflowPolicy::EvictSoonestExpiring
+        );
+        assert_eq!(
+            state.public_live_trails_throttle.policy(),
+            OverflowPolicy::RejectNew
+        );
+        assert_eq!(state.login_throttle.max_keys(), THROTTLE_MAX_KEYS);
+        assert_eq!(
+            state.public_live_trails_throttle.max_keys(),
+            THROTTLE_MAX_KEYS
+        );
     }
 }
