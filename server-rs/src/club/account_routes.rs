@@ -54,10 +54,12 @@ async fn account_signup(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    if !state
-        .device_register_throttle
-        .allow_up_to(&client_ip.0, now_secs, 20)
-    {
+    if !db.account_signup_throttle.allow(
+        &client_ip.0,
+        now_secs,
+        crate::club::db::ACCOUNT_SIGNUP_MAX_PER_IP,
+        crate::club::db::ACCOUNT_SIGNUP_WINDOW_SECS,
+    ) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(json!({ "error": "rate limited" })),
@@ -190,12 +192,21 @@ struct AccountLoginBody {
     password: String,
     #[serde(default)]
     next: Option<String>,
+    #[serde(rename = "installId", default)]
+    install_id: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 struct AccountLoginFields {
     email: String,
     password: String,
     next: String,
+    install_id: Option<String>,
+    label: Option<String>,
+    model: Option<String>,
 }
 
 fn account_wants_json(headers: &HeaderMap) -> bool {
@@ -221,6 +232,9 @@ fn account_login_fields(headers: &HeaderMap, body: &[u8]) -> AccountLoginFields 
             email: body.email,
             password: body.password,
             next: crate::auth::safe_next(body.next.as_deref().unwrap_or("/")),
+            install_id: body.install_id,
+            label: body.label,
+            model: body.model,
         };
     }
     let parsed: HashMap<String, String> = serde_urlencoded::from_bytes(body).unwrap_or_default();
@@ -228,7 +242,66 @@ fn account_login_fields(headers: &HeaderMap, body: &[u8]) -> AccountLoginFields 
         email: parsed.get("email").cloned().unwrap_or_default(),
         password: parsed.get("password").cloned().unwrap_or_default(),
         next: crate::auth::safe_next(parsed.get("next").map(String::as_str).unwrap_or("/")),
+        install_id: None,
+        label: None,
+        model: None,
     }
+}
+
+async fn account_auth_payload(
+    db: &ClubDb,
+    account: &crate::club::db_account::AccountRow,
+    active_membership_id: Option<&str>,
+    device: Option<crate::club::db_devices_pg::DeviceRegisterResponse>,
+) -> serde_json::Value {
+    let memberships = db.list_account_memberships(&account.id).await;
+    let mut body = json!({
+        "ok": true,
+        "account": {
+            "id": account.id,
+            "email": account.email,
+            "emailVerified": account.email_verified_at.is_some(),
+            "emailVerifiedAt": account.email_verified_at,
+        },
+        "activeMembershipId": active_membership_id,
+        "memberships": memberships.iter().map(|m| json!({
+            "id": m.id,
+            "clubId": m.club_id,
+            "slug": m.club_slug,
+            "name": m.club_name,
+            "role": m.role,
+            "status": m.status,
+        })).collect::<Vec<_>>(),
+    });
+    if let Some(dev) = device {
+        body["device"] = json!(dev);
+    }
+    body
+}
+
+async fn maybe_register_account_login_device(
+    state: &AppState,
+    db: &ClubDb,
+    client_ip: &str,
+    pilot_id: &str,
+    install_id: Option<&str>,
+    label: Option<&str>,
+    model: Option<&str>,
+) -> Option<crate::club::db_devices_pg::DeviceRegisterResponse> {
+    let iid = install_id.map(str::trim).filter(|s| !s.is_empty())?;
+    if !state
+        .device_register_throttle
+        .allow(client_ip, crate::now_secs())
+    {
+        return None;
+    }
+    let label = label
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("Dispositivo");
+    db.register_device_for_install(pilot_id, label, model, iid)
+        .await
+        .ok()
 }
 
 fn account_login_redirect(loc: &str) -> impl IntoResponse {
@@ -367,13 +440,37 @@ async fn account_login(
         .account_login_password(fields.email.trim(), &fields.password, now, &client_ip.0)
         .await
     {
-        Ok((session_id, _account)) => {
+        Ok((session_id, account)) => {
             let cookie = auth::set_account_session_cookie(&session_id, is_secure(&headers));
             if json {
+                let device = if fields
+                    .install_id
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|s| !s.is_empty())
+                {
+                    if let Ok(personal_pid) = db.ensure_personal_pilot(&account.id, now).await {
+                        maybe_register_account_login_device(
+                            &state,
+                            db,
+                            &client_ip.0,
+                            &personal_pid,
+                            fields.install_id.as_deref(),
+                            fields.label.as_deref(),
+                            fields.model.as_deref(),
+                        )
+                        .await
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let payload = account_auth_payload(db, &account, None, device).await;
                 (
                     StatusCode::OK,
                     [(header::SET_COOKIE, cookie)],
-                    Json(json!({ "ok": true })),
+                    Json(payload),
                 )
                     .into_response()
             } else {
@@ -385,6 +482,17 @@ async fn account_login(
                     ],
                 )
                     .into_response()
+            }
+        }
+        Err(crate::club::db::LoginError::Throttled) => {
+            if json {
+                (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    Json(json!({ "error": "too many attempts" })),
+                )
+                    .into_response()
+            } else {
+                account_login_redirect(&fail_loc).into_response()
             }
         }
         Err(_) => {
@@ -454,6 +562,7 @@ async fn account_me(State(state): State<AppState>, headers: HeaderMap) -> impl I
             "account": {
                 "id": account.id,
                 "email": account.email,
+                "emailVerified": account.email_verified_at.is_some(),
                 "emailVerifiedAt": account.email_verified_at,
             },
             "skipCurrentPassword": skip_current_password,
@@ -518,9 +627,21 @@ async fn switch_club(
         .await
     {
         Ok(pilot) => {
+            let club_slug = db.club_slug(&pilot.club_id).await.unwrap_or_default();
+            let club_name = db.club_name(&pilot.club_id).await.unwrap_or_default();
             let mut resp = (
                 StatusCode::OK,
-                Json(json!({ "ok": true, "pilotId": pilot.id, "clubId": pilot.club_id })),
+                Json(json!({
+                    "ok": true,
+                    "pilotId": pilot.id,
+                    "clubId": pilot.club_id,
+                    "activeMembershipId": body.membership_id,
+                    "club": {
+                        "id": pilot.club_id,
+                        "slug": club_slug,
+                        "name": club_name,
+                    },
+                })),
             )
                 .into_response();
             if let Ok(ps) = db.create_pilot_session(&pilot.id, now).await {
@@ -965,6 +1086,202 @@ async fn approve_membership(
     }
 }
 
+#[derive(Deserialize, Default)]
+struct AccountMagicCompleteBody {
+    token: String,
+    #[serde(default)]
+    purpose: Option<String>,
+    #[serde(rename = "installId", default)]
+    install_id: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
+}
+
+async fn account_magic_complete(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    client_ip: crate::ClientIp,
+    Json(body): Json<AccountMagicCompleteBody>,
+) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let token = body.token.trim();
+    if token.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "missing token" })),
+        )
+            .into_response();
+    }
+    let purpose = db
+        .peek_magic_token_purpose(token)
+        .await
+        .or(body.purpose)
+        .unwrap_or_else(|| "account_signup".to_string());
+    let now = now_ms();
+    let secure = is_secure(&headers);
+    if matches!(
+        purpose.as_str(),
+        crate::club::db_memberships_admin::ADMIN_INVITE_PURPOSE
+            | crate::club::db_memberships_admin::PILOT_INVITE_PURPOSE
+    ) {
+        match db.accept_membership_invite(token, now).await {
+            Ok(accept) => {
+                let Ok(session_id) = db
+                    .create_account_session_auth(
+                        &accept.account_id,
+                        Some(&accept.membership_id),
+                        now,
+                        crate::club::db_account::ACCOUNT_SESSION_AUTH_MAGIC,
+                    )
+                    .await
+                else {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "session failed" })),
+                    )
+                        .into_response();
+                };
+                let Some(account) = db.account_by_id(&accept.account_id).await else {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "account missing" })),
+                    )
+                        .into_response();
+                };
+                let device = if body
+                    .install_id
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|s| !s.is_empty())
+                {
+                    let target_pid = if let Some(p) =
+                        db.pilot_for_active_membership(&accept.membership_id).await
+                    {
+                        Some(p.id)
+                    } else {
+                        db.ensure_personal_pilot(&account.id, now).await.ok()
+                    };
+                    if let Some(pid) = target_pid {
+                        maybe_register_account_login_device(
+                            &state,
+                            db,
+                            &client_ip.0,
+                            &pid,
+                            body.install_id.as_deref(),
+                            body.label.as_deref(),
+                            body.model.as_deref(),
+                        )
+                        .await
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let cookie = auth::set_account_session_cookie(&session_id, secure);
+                let payload =
+                    account_auth_payload(db, &account, Some(&accept.membership_id), device).await;
+                (
+                    StatusCode::OK,
+                    [(header::SET_COOKIE, cookie)],
+                    Json(payload),
+                )
+                    .into_response()
+            }
+            Err(
+                crate::club::db_memberships_admin::MembershipAdminError::ClubSuspended
+                | crate::club::db_memberships_admin::MembershipAdminError::ClubClosed,
+            ) => (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "club unavailable" })),
+            )
+                .into_response(),
+            Err(_) => {
+                (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid" }))).into_response()
+            }
+        }
+    } else {
+        let signup_nonce = auth::parse_signup_nonce_cookie(&headers);
+        match db
+            .consume_account_magic(token, signup_nonce.as_deref(), now)
+            .await
+        {
+            Ok(account) => {
+                let Ok(session_id) = db
+                    .create_account_session_auth(
+                        &account.id,
+                        None,
+                        now,
+                        crate::club::db_account::ACCOUNT_SESSION_AUTH_MAGIC,
+                    )
+                    .await
+                else {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "session failed" })),
+                    )
+                        .into_response();
+                };
+                let device = if body
+                    .install_id
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|s| !s.is_empty())
+                {
+                    if let Ok(personal_pid) = db.ensure_personal_pilot(&account.id, now).await {
+                        maybe_register_account_login_device(
+                            &state,
+                            db,
+                            &client_ip.0,
+                            &personal_pid,
+                            body.install_id.as_deref(),
+                            body.label.as_deref(),
+                            body.model.as_deref(),
+                        )
+                        .await
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let cookie = auth::set_account_session_cookie(&session_id, secure);
+                let clear_nonce = auth::clear_signup_nonce_cookie(secure);
+                let payload = account_auth_payload(db, &account, None, device).await;
+                let mut res = (StatusCode::OK, Json(payload)).into_response();
+                res.headers_mut()
+                    .append(header::SET_COOKIE, cookie.parse().expect("cookie"));
+                res.headers_mut()
+                    .append(header::SET_COOKIE, clear_nonce.parse().expect("cookie"));
+                res
+            }
+            Err(crate::club::db::MagicConsumeError::Expired) => {
+                (StatusCode::GONE, Json(json!({ "error": "expired" }))).into_response()
+            }
+            Err(crate::club::db::MagicConsumeError::ClubUnavailable) => (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "club unavailable" })),
+            )
+                .into_response(),
+            Err(
+                crate::club::db::MagicConsumeError::Used
+                | crate::club::db::MagicConsumeError::Invalid,
+            ) => (StatusCode::BAD_REQUEST, Json(json!({ "error": "invalid" }))).into_response(),
+        }
+    }
+}
+
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/signup", get(serve_signup_page))
@@ -978,8 +1295,16 @@ pub fn routes() -> Router<AppState> {
         .route("/api/account/switch-club", post(switch_club))
         .route("/api/account/join", post(join_club))
         .route(
+            "/api/account/devices",
+            get(super::routes::list_account_devices).post(super::routes::create_account_device),
+        )
+        .route(
             "/api/account/auth/magic",
             get(get_account_magic).post(post_account_magic),
+        )
+        .route(
+            "/api/account/auth/magic/complete",
+            post(account_magic_complete),
         )
         .route(
             "/api/account/memberships/{id}/approve",

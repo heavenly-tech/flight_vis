@@ -76,11 +76,16 @@ impl ClubDb {
         if !self.pilot_has_open_checkin(pilot_id, now).await {
             return Err(AccessRequestError::NoCheckin);
         }
-        let club_id: String = sqlx::query_scalar("SELECT club_id FROM pilots WHERE id = $1")
-            .bind(pilot_id)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(|_| AccessRequestError::Db)?;
+        let club_id: Option<String> =
+            sqlx::query_scalar("SELECT club_id FROM pilots WHERE id = $1")
+                .bind(pilot_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|_| AccessRequestError::Db)?
+                .flatten();
+        let Some(club_id) = club_id else {
+            return Err(AccessRequestError::Forbidden);
+        };
         if let Some(tid) = type_id {
             let ok = sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM aircraft_types WHERE club_id = $1 AND id = $2",
@@ -450,7 +455,11 @@ impl ClubDb {
             .bind(pilot_id)
             .fetch_one(&mut *tx)
             .await?;
-        let club_id: String = row.get(0);
+        let club_id: Option<String> = row.try_get(0).ok().flatten();
+        let Some(club_id) = club_id else {
+            tx.rollback().await.ok();
+            return Err(DbError::protocol("forbidden"));
+        };
         let status: String = row.get(1);
         let role: String = row.get(2);
         if status != "pending" {
@@ -555,11 +564,16 @@ impl ClubDb {
         tail: Option<&str>,
         expires_at: Option<i64>,
     ) -> Result<(), CheckoutError> {
-        let club_id: String = sqlx::query_scalar("SELECT club_id FROM pilots WHERE id = $1")
-            .bind(pilot_id)
-            .fetch_one(&self.pool)
-            .await
-            .map_err(CheckoutError::Db)?;
+        let club_id: Option<String> =
+            sqlx::query_scalar("SELECT club_id FROM pilots WHERE id = $1")
+                .bind(pilot_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(CheckoutError::Db)?
+                .flatten();
+        let Some(club_id) = club_id else {
+            return Err(CheckoutError::Db(DbError::protocol("no club")));
+        };
         let (type_id, aircraft_id) = if let Some(tail) = tail {
             let row = sqlx::query(
                 "SELECT a.id, a.type_id FROM aircraft a

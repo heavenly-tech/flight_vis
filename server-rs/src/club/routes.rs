@@ -112,12 +112,21 @@ async fn require_club_admin_scope(
             Json(json!({ "error": "admin only" })),
         ));
     };
-    let club_id = db.pilot_club_id(id).await.map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "db error" })),
-        )
-    })?;
+    let club_id = match db.pilot_club_id_opt(id).await {
+        Ok(Some(cid)) => cid,
+        Ok(None) => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "admin only" })),
+            ));
+        }
+        Err(_) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "db error" })),
+            ));
+        }
+    };
     if db.require_club_admin(id, &club_id).await.is_err() {
         return Err((
             StatusCode::FORBIDDEN,
@@ -132,12 +141,21 @@ async fn admin_may_act_on_pilot(
     admin_id: &str,
     target_pilot_id: &str,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    let admin_club = db.pilot_club_id(admin_id).await.map_err(|_| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "db error" })),
-        )
-    })?;
+    let admin_club = match db.pilot_club_id_opt(admin_id).await {
+        Ok(Some(cid)) => cid,
+        Ok(None) => {
+            return Err((
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "admin only" })),
+            ));
+        }
+        Err(_) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "db error" })),
+            ));
+        }
+    };
     if db
         .require_club_checkin_approver(admin_id, &admin_club)
         .await
@@ -148,10 +166,15 @@ async fn admin_may_act_on_pilot(
             Json(json!({ "error": "admin only" })),
         ));
     }
-    let target_club = db
-        .pilot_club_id(target_pilot_id)
-        .await
-        .map_err(|_| (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))))?;
+    let target_club = match db.pilot_club_id_opt(target_pilot_id).await {
+        Ok(Some(cid)) => cid,
+        Ok(None) => {
+            return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))));
+        }
+        Err(_) => {
+            return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))));
+        }
+    };
     if target_club != admin_club {
         return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))));
     }
@@ -803,12 +826,22 @@ async fn delete_admin_club(
                 .into_response(),
         };
     };
-    let Ok(club_id) = db.pilot_club_id(&actor_pilot_id).await else {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "error": "db error" })),
-        )
-            .into_response();
+    let club_id = match db.pilot_club_id_opt(&actor_pilot_id).await {
+        Ok(Some(cid)) => cid,
+        Ok(None) => {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "admin only" })),
+            )
+                .into_response();
+        }
+        Err(_) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "db error" })),
+            )
+                .into_response();
+        }
     };
     if db
         .require_active_club_admin_role(&actor_pilot_id, &club_id)
@@ -927,21 +960,10 @@ async fn patch_admin_club_locale(
             .into_response();
     };
     let v = viewer(&state, &headers).await;
-    let Viewer::Pilot { id, .. } = v else {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
+    let club_id = match require_club_admin_scope(db, &v).await {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
     };
-    let club_id = db.default_club_id().await.unwrap_or_default();
-    if db.require_club_admin(&id, &club_id).await.is_err() {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({ "error": "admin only" })),
-        )
-            .into_response();
-    }
     match db.set_club_default_locale(&club_id, &body.locale).await {
         Ok(()) => Json(json!({ "locale": body.locale })).into_response(),
         Err(_) => (
@@ -1262,6 +1284,24 @@ struct StartFlightBody {
     show_pilot_name_public: Option<bool>,
     #[serde(rename = "trailMinutes", default)]
     trail_minutes: Option<serde_json::Value>,
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FlightModeParam {
+    Auto,
+    Club,
+    Personal,
+}
+
+fn parse_mode_param(raw: Option<&str>) -> Result<FlightModeParam, &'static str> {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(FlightModeParam::Auto),
+        Some("club") => Ok(FlightModeParam::Club),
+        Some("personal") => Ok(FlightModeParam::Personal),
+        Some(_) => Err("invalid mode"),
+    }
 }
 
 fn parse_visibility(raw: Option<&str>) -> Result<FlightVisibility, &'static str> {
@@ -1281,6 +1321,124 @@ pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<String> {
     }
 }
 
+/// Explicit actor resolution for owner-only flight mutation/listing endpoints that support
+/// both club pilots and club-less (personal) pilots. Kept separate from `viewer()` so
+/// club/admin/kiosk endpoints never implicitly resolve a personal pilot.
+async fn resolve_flight_owner_actor(
+    state: &AppState,
+    db: &ClubDb,
+    headers: &HeaderMap,
+    target_flight_id: Option<&str>,
+    enforce_cookie_csrf: bool,
+) -> Result<String, (StatusCode, Json<serde_json::Value>)> {
+    let now = now_ms();
+    if headers.contains_key(header::AUTHORIZATION) {
+        let Some(token) = bearer_token(headers) else {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            ));
+        };
+        let Some(device_id) = db.resolve_device_token(&token).await else {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            ));
+        };
+        let Some(dev_pilot_id) = db.device_pilot_id(&device_id).await else {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            ));
+        };
+        let Some(ident) = db.pilot_identity(&dev_pilot_id).await else {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            ));
+        };
+        if ident.account_suspended {
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            ));
+        }
+        // If a session cookie is also attached, ensure it belongs to the same pilot or account.
+        if let Some(acct_sess) = auth::parse_account_session_cookie(headers) {
+            if let Some((acct, _)) = db.account_from_session(&acct_sess, now).await {
+                if ident.account_id.as_deref() != Some(acct.id.as_str()) {
+                    return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))));
+                }
+            }
+        } else if let Viewer::Pilot { id: cookie_pid, .. } = viewer(state, headers).await {
+            if cookie_pid != dev_pilot_id {
+                return Err((StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))));
+            }
+        }
+        return Ok(dev_pilot_id);
+    }
+
+    if enforce_cookie_csrf {
+        if let Err(status) = super::csrf::cookie_post_allowed(headers) {
+            return Err((status, Json(json!({ "error": "csrf" }))));
+        }
+    }
+
+    let acct_session = match auth::parse_account_session_cookie(headers) {
+        Some(sess) => db.account_from_session(&sess, now).await,
+        None => None,
+    };
+
+    if let Viewer::Pilot { id, .. } = viewer(state, headers).await {
+        // A club member with an active club session may still manage a personal flight
+        // they started in personal mode.
+        if let (Some(fid), Some((acct, _))) = (target_flight_id, acct_session.as_ref()) {
+            if let Some(personal_pid) = db.personal_pilot_id_for_account(&acct.id).await {
+                if db
+                    .get_flight(fid)
+                    .await
+                    .is_some_and(|f| f.pilot_id == personal_pid)
+                {
+                    return Ok(personal_pid);
+                }
+            }
+        }
+        return Ok(id);
+    }
+
+    if let Some((acct, active_mem)) = acct_session {
+        let personal_pid = db.personal_pilot_id_for_account(&acct.id).await;
+        if active_mem.is_none() {
+            if let Some(pid) = personal_pid {
+                return Ok(pid);
+            }
+            if let Some(fid) = target_flight_id {
+                return if db.get_flight(fid).await.is_some() {
+                    Err((StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))))
+                } else {
+                    Err((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))))
+                };
+            }
+            return Err((
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            ));
+        }
+        // Active club membership exists but is unavailable; only permit managing an existing
+        // personal flight already owned by this account's personal pilot.
+        if let (Some(fid), Some(pid)) = (target_flight_id, personal_pid) {
+            if db.get_flight(fid).await.is_some_and(|f| f.pilot_id == pid) {
+                return Ok(pid);
+            }
+        }
+    }
+
+    Err((
+        StatusCode::UNAUTHORIZED,
+        Json(json!({ "error": "unauthorized" })),
+    ))
+}
+
 pub async fn post_club_flight_start(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1296,22 +1454,10 @@ pub async fn post_club_flight_start(
                 .into_response();
         }
     };
-    let v = viewer(&state, &headers).await;
-    let Viewer::Pilot { id: pilot_id, .. } = v else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized", "reason": "no_device" })),
-        )
-            .into_response();
-    };
-    let token = match bearer_token(&headers) {
-        Some(t) => t,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "device token required", "reason": "no_device" })),
-            )
-                .into_response();
+    let requested_mode = match parse_mode_param(parsed.mode.as_deref()) {
+        Ok(m) => m,
+        Err(msg) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
         }
     };
     let Some(db) = club_db(&state) else {
@@ -1320,6 +1466,29 @@ pub async fn post_club_flight_start(
             Json(json!({ "error": "club disabled" })),
         )
             .into_response();
+    };
+    let now = now_ms();
+    let v = viewer(&state, &headers).await;
+    let acct_session = match auth::parse_account_session_cookie(&headers) {
+        Some(sess) => db.account_from_session(&sess, now).await,
+        None => None,
+    };
+    let token = match bearer_token(&headers) {
+        Some(t) => t,
+        None => {
+            if matches!(v, Viewer::Pilot { .. }) || acct_session.is_some() {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "device token required", "reason": "no_device" })),
+                )
+                    .into_response();
+            }
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized", "reason": "no_device" })),
+            )
+                .into_response();
+        }
     };
     let device_id = match db.resolve_device_token(&token).await {
         Some(id) => id,
@@ -1331,25 +1500,127 @@ pub async fn post_club_flight_start(
                 .into_response();
         }
     };
-    let now = now_ms();
-    if let Some(club_id) = db
-        .club_id_for_start_flight(&pilot_id, &device_id, parsed.tail.trim(), now)
-        .await
-    {
-        if db.club_operational(&club_id).await.is_err() {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "error": "club unavailable" })),
-            )
-                .into_response();
-        }
+    let Some(dev_pilot_id) = db.device_pilot_id(&device_id).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "invalid device token", "reason": "invalid_device" })),
+        )
+            .into_response();
+    };
+    let Some(dev_ident) = db.pilot_identity(&dev_pilot_id).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "invalid device token", "reason": "invalid_device" })),
+        )
+            .into_response();
+    };
+    if dev_ident.account_suspended {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "invalid device token", "reason": "invalid_device" })),
+        )
+            .into_response();
     }
-    let visibility = match parse_visibility(parsed.visibility.as_deref()) {
-        Ok(v) => v,
-        Err(msg) => {
-            return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
+
+    enum StartTarget {
+        Club {
+            pilot_id: String,
+        },
+        Personal {
+            pilot_id: String,
+            account_id: String,
+        },
+    }
+
+    let target = match requested_mode {
+        FlightModeParam::Personal => {
+            if let Some((acct, _)) = &acct_session {
+                let Ok(personal_pid) = db.ensure_personal_pilot(&acct.id, now).await else {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "db error" })),
+                    )
+                        .into_response();
+                };
+                StartTarget::Personal {
+                    pilot_id: personal_pid,
+                    account_id: acct.id.clone(),
+                }
+            } else if dev_ident.is_personal() && matches!(v, Viewer::Anonymous) {
+                StartTarget::Personal {
+                    pilot_id: dev_ident.id.clone(),
+                    account_id: dev_ident.account_id.clone().unwrap_or_default(),
+                }
+            } else {
+                // Either a club session cookie or a non-personal (club/guest) device token was
+                // presented for mode=personal; deny with device mismatch rather than 401.
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({ "error": "device mismatch" })),
+                )
+                    .into_response();
+            }
+        }
+        FlightModeParam::Club => {
+            if let Viewer::Pilot { id: pilot_id, .. } = v {
+                StartTarget::Club { pilot_id }
+            } else if acct_session.as_ref().is_some_and(|(_, m)| m.is_some()) {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({ "error": "club unavailable" })),
+                )
+                    .into_response();
+            } else if acct_session.is_some() || dev_ident.is_personal() {
+                return (
+                    StatusCode::FORBIDDEN,
+                    Json(json!({ "error": "device mismatch" })),
+                )
+                    .into_response();
+            } else {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": "unauthorized", "reason": "no_device" })),
+                )
+                    .into_response();
+            }
+        }
+        FlightModeParam::Auto => {
+            if let Viewer::Pilot { id: pilot_id, .. } = v {
+                StartTarget::Club { pilot_id }
+            } else if let Some((acct, active_mem)) = &acct_session {
+                if active_mem.is_some() {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({ "error": "club unavailable" })),
+                    )
+                        .into_response();
+                }
+                let Ok(personal_pid) = db.ensure_personal_pilot(&acct.id, now).await else {
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "db error" })),
+                    )
+                        .into_response();
+                };
+                StartTarget::Personal {
+                    pilot_id: personal_pid,
+                    account_id: acct.id.clone(),
+                }
+            } else if dev_ident.is_personal() {
+                StartTarget::Personal {
+                    pilot_id: dev_ident.id.clone(),
+                    account_id: dev_ident.account_id.clone().unwrap_or_default(),
+                }
+            } else {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": "unauthorized", "reason": "no_device" })),
+                )
+                    .into_response();
+            }
         }
     };
+
     let trail_minutes = match parsed.trail_minutes.as_ref() {
         None => None,
         Some(raw) => match TrailMinutes::from_optional_json_value(raw) {
@@ -1360,18 +1631,75 @@ pub async fn post_club_flight_start(
         },
     };
     let show_name = parsed.show_pilot_name_public.unwrap_or(false);
-    match db
-        .start_flight_with_trail(
-            &pilot_id,
-            &device_id,
-            parsed.tail.trim(),
-            visibility,
-            show_name,
-            trail_minutes,
-            now,
-        )
-        .await
-    {
+
+    let (visibility, start_res) = match target {
+        StartTarget::Personal {
+            pilot_id,
+            account_id,
+        } => {
+            let visibility = match parsed.visibility.as_deref() {
+                None => FlightVisibility::Private,
+                Some(s) => match FlightVisibility::parse(s) {
+                    Some(v) => v,
+                    None => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({ "error": "invalid visibility" })),
+                        )
+                            .into_response();
+                    }
+                },
+            };
+            let res = db
+                .start_personal_flight_atomic(
+                    &pilot_id,
+                    &account_id,
+                    &device_id,
+                    &parsed.tail,
+                    visibility,
+                    show_name,
+                    trail_minutes,
+                    now,
+                )
+                .await;
+            (visibility, res)
+        }
+        StartTarget::Club { pilot_id } => {
+            if let Some(club_id) = db
+                .club_id_for_start_flight(&pilot_id, &device_id, parsed.tail.trim(), now)
+                .await
+            {
+                if db.club_operational(&club_id).await.is_err() {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({ "error": "club unavailable" })),
+                    )
+                        .into_response();
+                }
+            }
+            let visibility = match parse_visibility(parsed.visibility.as_deref()) {
+                Ok(v) => v,
+                Err(msg) => {
+                    return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg })))
+                        .into_response();
+                }
+            };
+            let res = db
+                .start_flight_with_trail(
+                    &pilot_id,
+                    &device_id,
+                    parsed.tail.trim(),
+                    visibility,
+                    show_name,
+                    trail_minutes,
+                    now,
+                )
+                .await;
+            (visibility, res)
+        }
+    };
+
+    match start_res {
         Ok(flight_id) => {
             let club_default = match db.club_id_for_flight(&flight_id).await {
                 Some(cid) => db
@@ -1400,6 +1728,24 @@ pub async fn post_club_flight_start(
         Err(StartFlightError::NoTail) => (
             StatusCode::BAD_REQUEST,
             Json(json!({ "error": "unknown or inactive tail" })),
+        )
+            .into_response(),
+        Err(StartFlightError::InvalidTail) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "invalid tail" })),
+        )
+            .into_response(),
+        Err(StartFlightError::ClubVisibilityRequiresClub) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "club_visibility_requires_club" })),
+        )
+            .into_response(),
+        Err(StartFlightError::EmailUnverified) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "email_unverified",
+                "reason": "email_unverified",
+            })),
         )
             .into_response(),
         Err(StartFlightError::AlreadyActive) => (
@@ -1432,20 +1778,16 @@ pub async fn patch_club_flight_by_id(
     Path(flight_id): Path<String>,
     Json(body): Json<PatchFlightBody>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers).await;
-    let Viewer::Pilot { id, .. } = v else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
-        )
-            .into_response();
-    };
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "club disabled" })),
         )
             .into_response();
+    };
+    let id = match resolve_flight_owner_actor(&state, db, &headers, Some(&flight_id), false).await {
+        Ok(pid) => pid,
+        Err(e) => return e.into_response(),
     };
     let visibility = match &body.visibility {
         None => None,
@@ -1467,6 +1809,19 @@ pub async fn patch_club_flight_by_id(
         Err(PatchError::Forbidden) => {
             (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
         }
+        Err(PatchError::ClubVisibilityRequiresClub) => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "club_visibility_requires_club" })),
+        )
+            .into_response(),
+        Err(PatchError::EmailUnverified) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "error": "email_unverified",
+                "reason": "email_unverified",
+            })),
+        )
+            .into_response(),
     }
 }
 
@@ -1475,20 +1830,16 @@ async fn end_club_flight(
     headers: HeaderMap,
     Path(flight_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers).await;
-    let Viewer::Pilot { id, .. } = v else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
-        )
-            .into_response();
-    };
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "club disabled" })),
         )
             .into_response();
+    };
+    let id = match resolve_flight_owner_actor(&state, db, &headers, Some(&flight_id), false).await {
+        Ok(pid) => pid,
+        Err(e) => return e.into_response(),
     };
     match db.end_flight(&id, &flight_id, now_ms()).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
@@ -1523,49 +1874,11 @@ async fn patch_club_flight_trail(
 
     // Accept either device Bearer token (Android app) or club/account session cookie (web).
     // When authenticated via cookie alone, enforce same-origin/CSRF checks.
-    let pilot_id = if headers.contains_key(header::AUTHORIZATION) {
-        let Some(token) = bearer_token(&headers) else {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "unauthorized" })),
-            )
-                .into_response();
+    let pilot_id =
+        match resolve_flight_owner_actor(&state, db, &headers, Some(&flight_id), true).await {
+            Ok(pid) => pid,
+            Err(e) => return e.into_response(),
         };
-        let Some(device_id) = db.resolve_device_token(&token).await else {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "unauthorized" })),
-            )
-                .into_response();
-        };
-        let Some(dev_pilot_id) = db.device_pilot_id(&device_id).await else {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "unauthorized" })),
-            )
-                .into_response();
-        };
-        if let Viewer::Pilot { id: cookie_pid, .. } = viewer(&state, &headers).await {
-            if cookie_pid != dev_pilot_id {
-                return (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" })))
-                    .into_response();
-            }
-        }
-        dev_pilot_id
-    } else {
-        if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
-            return (status, Json(json!({ "error": "csrf" }))).into_response();
-        }
-        let v = viewer(&state, &headers).await;
-        let Viewer::Pilot { id, .. } = v else {
-            return (
-                StatusCode::UNAUTHORIZED,
-                Json(json!({ "error": "unauthorized" })),
-            )
-                .into_response();
-        };
-        id
-    };
 
     let parsed: serde_json::Value = match serde_json::from_slice::<serde_json::Value>(&body) {
         Ok(val) => val,
@@ -1632,11 +1945,24 @@ async fn club_map(State(state): State<AppState>, headers: HeaderMap) -> impl Int
         return Json(json!({ "aircraft": [] })).into_response();
     };
     if let Viewer::Pilot { id, .. } = &v {
-        if let Ok(club_id) = db.pilot_club_id(id).await {
-            if db.club_operational(&club_id).await.is_err() {
+        match db.pilot_club_id_opt(id).await {
+            Ok(Some(club_id)) => {
+                if db.club_operational(&club_id).await.is_err() {
+                    return (
+                        StatusCode::FORBIDDEN,
+                        Json(json!({ "error": "club unavailable" })),
+                    )
+                        .into_response();
+                }
+            }
+            Ok(None) => {
+                return (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" })))
+                    .into_response();
+            }
+            Err(_) => {
                 return (
-                    StatusCode::FORBIDDEN,
-                    Json(json!({ "error": "club unavailable" })),
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": "db error" })),
                 )
                     .into_response();
             }
@@ -2089,19 +2415,75 @@ async fn club_flight_stream(
         .into_response()
 }
 
-async fn my_flights(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let v = viewer(&state, &headers).await;
-    let Viewer::Pilot { id, .. } = v else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
-        )
-            .into_response();
-    };
+#[derive(Deserialize, Default)]
+pub(crate) struct ModeQuery {
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+async fn my_flights(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ModeQuery>,
+) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
         return Json(json!({ "flights": [] })).into_response();
     };
-    Json(json!({ "flights": db.list_my_flights(&id).await })).into_response()
+    let mode = match parse_mode_param(q.mode.as_deref()) {
+        Ok(m) => m,
+        Err(msg) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
+        }
+    };
+    if headers.contains_key(header::AUTHORIZATION) {
+        let id = match resolve_flight_owner_actor(&state, db, &headers, None, false).await {
+            Ok(pid) => pid,
+            Err(e) => return e.into_response(),
+        };
+        return Json(json!({ "flights": db.list_my_flights(&id).await })).into_response();
+    }
+    let now = now_ms();
+    if mode == FlightModeParam::Personal {
+        let Some(acct_sess) = auth::parse_account_session_cookie(&headers) else {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            )
+                .into_response();
+        };
+        let Some((acct, _)) = db.account_from_session(&acct_sess, now).await else {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            )
+                .into_response();
+        };
+        let flights = match db.personal_pilot_id_for_account(&acct.id).await {
+            Some(pid) => db.list_my_flights(&pid).await,
+            None => Vec::new(),
+        };
+        return Json(json!({ "flights": flights })).into_response();
+    }
+    let v = viewer(&state, &headers).await;
+    if let Viewer::Pilot { id, .. } = v {
+        return Json(json!({ "flights": db.list_my_flights(&id).await })).into_response();
+    }
+    if mode == FlightModeParam::Auto {
+        if let Some(acct_sess) = auth::parse_account_session_cookie(&headers) {
+            if let Some((acct, None)) = db.account_from_session(&acct_sess, now).await {
+                let flights = match db.personal_pilot_id_for_account(&acct.id).await {
+                    Some(pid) => db.list_my_flights(&pid).await,
+                    None => Vec::new(),
+                };
+                return Json(json!({ "flights": flights })).into_response();
+            }
+        }
+    }
+    (
+        StatusCode::UNAUTHORIZED,
+        Json(json!({ "error": "unauthorized" })),
+    )
+        .into_response()
 }
 
 async fn delete_my_flight(
@@ -2109,20 +2491,16 @@ async fn delete_my_flight(
     headers: HeaderMap,
     Path(flight_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers).await;
-    let Viewer::Pilot { id, .. } = v else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "unauthorized" })),
-        )
-            .into_response();
-    };
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "club disabled" })),
         )
             .into_response();
+    };
+    let id = match resolve_flight_owner_actor(&state, db, &headers, Some(&flight_id), false).await {
+        Ok(pid) => pid,
+        Err(e) => return e.into_response(),
     };
     match db.delete_my_flight(&id, &flight_id).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
@@ -2676,39 +3054,112 @@ async fn admin_reject_access(
 }
 
 #[derive(Deserialize)]
-struct DeviceBody {
+pub(crate) struct DeviceBody {
     #[serde(default)]
     label: String,
     #[serde(default)]
     model: Option<String>,
     #[serde(rename = "installId", default)]
     install_id: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
 }
 
-async fn create_device(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    client_ip: ClientIp,
-    Json(body): Json<DeviceBody>,
-) -> impl IntoResponse {
-    let v = viewer(&state, &headers).await;
-    let Viewer::Pilot { id, .. } = v else {
-        // If no session, return a no-op response (app swallows errors in _restore)
-        crate::club::checkin::log_reason("api/me/devices", "no_session");
-        return (StatusCode::OK, Json(json!({ "ok": true, "ignored": true }))).into_response();
+enum DeviceOwnerResolution {
+    Pilot(String),
+    NoPersonalPilotYet,
+    NoSession,
+}
+
+async fn resolve_device_owner_pilot(
+    state: &AppState,
+    db: &ClubDb,
+    headers: &HeaderMap,
+    mode: FlightModeParam,
+    create_personal: bool,
+) -> Result<DeviceOwnerResolution, (StatusCode, Json<serde_json::Value>)> {
+    let now = now_ms();
+    let acct_session = match auth::parse_account_session_cookie(headers) {
+        Some(sess) => db.account_from_session(&sess, now).await,
+        None => None,
     };
-    let Some(db) = club_db(&state) else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(json!({ "error": "club disabled" })),
-        )
-            .into_response();
-    };
+    match mode {
+        FlightModeParam::Personal => {
+            let Some((acct, _)) = acct_session else {
+                return Ok(DeviceOwnerResolution::NoSession);
+            };
+            if create_personal {
+                let pid = db.ensure_personal_pilot(&acct.id, now).await.map_err(|_| {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": "db error" })),
+                    )
+                })?;
+                Ok(DeviceOwnerResolution::Pilot(pid))
+            } else {
+                match db.personal_pilot_id_for_account(&acct.id).await {
+                    Some(pid) => Ok(DeviceOwnerResolution::Pilot(pid)),
+                    None => Ok(DeviceOwnerResolution::NoPersonalPilotYet),
+                }
+            }
+        }
+        FlightModeParam::Club => {
+            let v = viewer(state, headers).await;
+            if let Viewer::Pilot { id, .. } = v {
+                return Ok(DeviceOwnerResolution::Pilot(id));
+            }
+            if acct_session.as_ref().is_some_and(|(_, m)| m.is_some()) {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    Json(json!({ "error": "club unavailable" })),
+                ));
+            }
+            Ok(DeviceOwnerResolution::NoSession)
+        }
+        FlightModeParam::Auto => {
+            let v = viewer(state, headers).await;
+            if let Viewer::Pilot { id, .. } = v {
+                return Ok(DeviceOwnerResolution::Pilot(id));
+            }
+            if let Some((acct, active_mem)) = acct_session {
+                if active_mem.is_some() {
+                    return Err((
+                        StatusCode::FORBIDDEN,
+                        Json(json!({ "error": "club unavailable" })),
+                    ));
+                }
+                if create_personal {
+                    let pid = db.ensure_personal_pilot(&acct.id, now).await.map_err(|_| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            Json(json!({ "error": "db error" })),
+                        )
+                    })?;
+                    return Ok(DeviceOwnerResolution::Pilot(pid));
+                }
+                return match db.personal_pilot_id_for_account(&acct.id).await {
+                    Some(pid) => Ok(DeviceOwnerResolution::Pilot(pid)),
+                    None => Ok(DeviceOwnerResolution::NoPersonalPilotYet),
+                };
+            }
+            Ok(DeviceOwnerResolution::NoSession)
+        }
+    }
+}
+
+async fn create_device_for_pilot(
+    state: &AppState,
+    db: &ClubDb,
+    client_ip: &ClientIp,
+    pilot_id: &str,
+    body: DeviceBody,
+    log_route: &'static str,
+) -> axum::response::Response {
     if !state
         .device_register_throttle
         .allow(&client_ip.0, crate::now_secs())
     {
-        crate::club::checkin::log_reason("api/me/devices", "rate_limited");
+        crate::club::checkin::log_reason(log_route, "rate_limited");
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(json!({
@@ -2727,12 +3178,12 @@ async fn create_device(
     {
         let label = body.label.trim();
         match db
-            .register_device_for_install(&id, label, body.model.as_deref(), install_id)
+            .register_device_for_install(pilot_id, label, body.model.as_deref(), install_id)
             .await
         {
             Ok(reg) => return Json(reg).into_response(),
             Err(DeviceRegisterError::CapExceeded) => {
-                crate::club::checkin::log_reason("api/me/devices", "device_cap");
+                crate::club::checkin::log_reason(log_route, "device_cap");
                 return (
                     StatusCode::CONFLICT,
                     Json(json!({
@@ -2746,7 +3197,7 @@ async fn create_device(
                     .into_response();
             }
             Err(DeviceRegisterError::InvalidInstallId) => {
-                crate::club::checkin::log_reason("api/me/devices", "invalid_install_id");
+                crate::club::checkin::log_reason(log_route, "invalid_install_id");
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({
@@ -2758,7 +3209,7 @@ async fn create_device(
                     .into_response();
             }
             Err(DeviceRegisterError::Db) => {
-                crate::club::checkin::log_reason("api/me/devices", "db_error");
+                crate::club::checkin::log_reason(log_route, "db_error");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({
@@ -2771,7 +3222,7 @@ async fn create_device(
             }
         }
     }
-    match db.create_device(&id, body.label.trim()).await {
+    match db.create_device(pilot_id, body.label.trim()).await {
         Ok((device_id, token)) => Json(json!({
             "id": device_id,
             "token": token,
@@ -2779,7 +3230,7 @@ async fn create_device(
         }))
         .into_response(),
         Err(_) => {
-            crate::club::checkin::log_reason("api/me/devices", "db_error");
+            crate::club::checkin::log_reason(log_route, "db_error");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(json!({
@@ -2793,28 +3244,17 @@ async fn create_device(
     }
 }
 
-async fn delete_device(
+async fn create_device(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Path(install_or_id): Path<String>,
+    client_ip: ClientIp,
+    Json(body): Json<DeviceBody>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers).await;
-    let Viewer::Pilot {
-        id,
-        status: PilotStatus::Approved,
-        ..
-    } = v
-    else {
-        crate::club::checkin::log_reason("api/me/devices", "not_approved");
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "error": "unauthorized",
-                "reason": "not_approved",
-                "message": "Necesitas que el club apruebe tu cuenta para administrar dispositivos.",
-            })),
-        )
-            .into_response();
+    let mode = match parse_mode_param(body.mode.as_deref()) {
+        Ok(m) => m,
+        Err(msg) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
+        }
     };
     let Some(db) = club_db(&state) else {
         return (
@@ -2822,6 +3262,155 @@ async fn delete_device(
             Json(json!({ "error": "club disabled" })),
         )
             .into_response();
+    };
+    let pilot_id = match resolve_device_owner_pilot(&state, db, &headers, mode, true).await {
+        Ok(DeviceOwnerResolution::Pilot(id)) => id,
+        Ok(DeviceOwnerResolution::NoSession | DeviceOwnerResolution::NoPersonalPilotYet) => {
+            // If no session, return a no-op response (app swallows errors in _restore)
+            crate::club::checkin::log_reason("api/me/devices", "no_session");
+            return (StatusCode::OK, Json(json!({ "ok": true, "ignored": true }))).into_response();
+        }
+        Err(e) => return e.into_response(),
+    };
+    create_device_for_pilot(&state, db, &client_ip, &pilot_id, body, "api/me/devices").await
+}
+
+pub(crate) async fn create_account_device(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    client_ip: ClientIp,
+    Json(body): Json<DeviceBody>,
+) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
+    let mode = match parse_mode_param(body.mode.as_deref()) {
+        Ok(m) => m,
+        Err(msg) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
+        }
+    };
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let pilot_id = match resolve_device_owner_pilot(&state, db, &headers, mode, true).await {
+        Ok(DeviceOwnerResolution::Pilot(id)) => id,
+        Ok(DeviceOwnerResolution::NoSession | DeviceOwnerResolution::NoPersonalPilotYet) => {
+            crate::club::checkin::log_reason("api/account/devices", "no_session");
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            )
+                .into_response();
+        }
+        Err(e) => return e.into_response(),
+    };
+    create_device_for_pilot(
+        &state,
+        db,
+        &client_ip,
+        &pilot_id,
+        body,
+        "api/account/devices",
+    )
+    .await
+}
+
+async fn delete_device(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ModeQuery>,
+    Path(install_or_id): Path<String>,
+) -> impl IntoResponse {
+    let mode = match parse_mode_param(q.mode.as_deref()) {
+        Ok(m) => m,
+        Err(msg) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
+        }
+    };
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let id = if mode == FlightModeParam::Personal {
+        match resolve_device_owner_pilot(&state, db, &headers, mode, false).await {
+            Ok(DeviceOwnerResolution::Pilot(pid)) => pid,
+            Ok(DeviceOwnerResolution::NoPersonalPilotYet) => {
+                return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" })))
+                    .into_response();
+            }
+            Ok(DeviceOwnerResolution::NoSession) => {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({ "error": "unauthorized" })),
+                )
+                    .into_response();
+            }
+            Err(e) => return e.into_response(),
+        }
+    } else {
+        let v = viewer(&state, &headers).await;
+        match v {
+            Viewer::Pilot {
+                id,
+                status: PilotStatus::Approved,
+                ..
+            } => id,
+            Viewer::Pilot { .. } => {
+                crate::club::checkin::log_reason("api/me/devices", "not_approved");
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    Json(json!({
+                        "error": "unauthorized",
+                        "reason": "not_approved",
+                        "message": "Necesitas que el club apruebe tu cuenta para administrar dispositivos.",
+                    })),
+                )
+                    .into_response();
+            }
+            Viewer::Anonymous => {
+                if mode == FlightModeParam::Auto {
+                    match resolve_device_owner_pilot(&state, db, &headers, mode, false).await {
+                        Ok(DeviceOwnerResolution::Pilot(pid)) => pid,
+                        Ok(DeviceOwnerResolution::NoPersonalPilotYet) => {
+                            return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" })))
+                                .into_response();
+                        }
+                        Ok(DeviceOwnerResolution::NoSession) => {
+                            crate::club::checkin::log_reason("api/me/devices", "not_approved");
+                            return (
+                                StatusCode::UNAUTHORIZED,
+                                Json(json!({
+                                    "error": "unauthorized",
+                                    "reason": "not_approved",
+                                    "message": "Necesitas que el club apruebe tu cuenta para administrar dispositivos.",
+                                })),
+                            )
+                                .into_response();
+                        }
+                        Err(e) => return e.into_response(),
+                    }
+                } else {
+                    crate::club::checkin::log_reason("api/me/devices", "not_approved");
+                    return (
+                        StatusCode::UNAUTHORIZED,
+                        Json(json!({
+                            "error": "unauthorized",
+                            "reason": "not_approved",
+                            "message": "Necesitas que el club apruebe tu cuenta para administrar dispositivos.",
+                        })),
+                    )
+                        .into_response();
+                }
+            }
+        }
     };
     let revoked = db
         .revoke_device_by_install(&id, &install_or_id)
@@ -2838,24 +3427,49 @@ async fn delete_device(
     }
 }
 
-async fn list_devices(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
-    let v = viewer(&state, &headers).await;
-    let Viewer::Pilot { id, .. } = v else {
-        crate::club::checkin::log_reason("api/me/devices", "no_session");
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "error": "unauthorized",
-                "reason": "no_session",
-                "message": "Inicia sesión para ver tus dispositivos.",
-            })),
-        )
-            .into_response();
+async fn list_devices(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ModeQuery>,
+) -> impl IntoResponse {
+    let mode = match parse_mode_param(q.mode.as_deref()) {
+        Ok(m) => m,
+        Err(msg) => {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
+        }
     };
     let Some(db) = club_db(&state) else {
         return Json(json!({ "devices": [] })).into_response();
     };
-    Json(json!({ "devices": db.list_my_devices(&id).await })).into_response()
+    match resolve_device_owner_pilot(&state, db, &headers, mode, false).await {
+        Ok(DeviceOwnerResolution::Pilot(id)) => {
+            Json(json!({ "devices": db.list_my_devices(&id).await })).into_response()
+        }
+        Ok(DeviceOwnerResolution::NoPersonalPilotYet) => {
+            Json(json!({ "devices": [] })).into_response()
+        }
+        Ok(DeviceOwnerResolution::NoSession) => {
+            crate::club::checkin::log_reason("api/me/devices", "no_session");
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({
+                    "error": "unauthorized",
+                    "reason": "no_session",
+                    "message": "Inicia sesión para ver tus dispositivos.",
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => e.into_response(),
+    }
+}
+
+pub(crate) async fn list_account_devices(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<ModeQuery>,
+) -> impl IntoResponse {
+    list_devices(State(state), headers, Query(q)).await
 }
 
 fn expires_at_iso_utc(ms: i64) -> Option<String> {
@@ -2930,6 +3544,12 @@ struct CheckinBody {
     token: String,
     #[serde(rename = "deviceId", default)]
     device_id: Option<String>,
+    #[serde(rename = "installId", default)]
+    install_id: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 async fn post_checkin(
@@ -2946,15 +3566,45 @@ async fn post_checkin(
             .into_response();
     };
     let now = now_ms();
+    let token = body.token.trim();
+
+    // Handoff and QR tokens both name their club.
+    let target_club = if crate::club::checkin::is_handoff_token(token) {
+        crate::club::checkin::parse_handoff_token_club_id(token)
+    } else {
+        crate::club::checkin::parse_checkin_token_club_id(token)
+    };
+
+    let acct_session = match auth::parse_account_session_cookie(&headers) {
+        Some(sess) => db.account_from_session(&sess, now).await,
+        None => None,
+    };
+
     let bearer = bearer_token(&headers);
     let mut pilot_id: Option<String> = None;
     let mut device_id: Option<String> = None;
+    let mut bearer_device_id: Option<String> = None;
+    let mut bearer_pilot_id: Option<String> = None;
 
     // Try to get device from bearer token first
-    if let Some(token) = bearer.as_deref() {
-        if let Some(dev) = db.resolve_device_token(token).await {
-            device_id = Some(dev.clone());
-            pilot_id = db.device_pilot_id(&dev).await;
+    if let Some(tok) = bearer.as_deref() {
+        if let Some(dev) = db.resolve_device_token(tok).await {
+            if db.device_account_suspended(&dev).await {
+                return checkin_reason(StatusCode::UNAUTHORIZED, "no_device");
+            }
+            if let Some(dpid) = db.device_pilot_id(&dev).await {
+                if let Some((acct, _)) = &acct_session {
+                    if let Some(ident) = db.pilot_identity(&dpid).await {
+                        if ident.account_id.as_deref() != Some(acct.id.as_str()) {
+                            return checkin_reason(StatusCode::FORBIDDEN, "invalid_device");
+                        }
+                    }
+                }
+                device_id = Some(dev.clone());
+                bearer_device_id = Some(dev);
+                pilot_id = Some(dpid.clone());
+                bearer_pilot_id = Some(dpid);
+            }
         }
     }
 
@@ -2963,6 +3613,24 @@ async fn post_checkin(
         let v = viewer(&state, &headers).await;
         if let Viewer::Pilot { id, .. } = v {
             pilot_id = Some(id);
+        }
+    }
+
+    // Account session with no active club (or whose active club differs): resolve active
+    // membership in the target QR/handoff club explicitly without silent club creation.
+    if pilot_id.is_none() {
+        if let Some((acct, _)) = &acct_session {
+            let Some(club_id) = target_club.as_deref() else {
+                return checkin_reason(StatusCode::BAD_REQUEST, "format");
+            };
+            if db.club_operational(club_id).await.is_err() {
+                return checkin_reason(StatusCode::FORBIDDEN, "club_unavailable");
+            }
+            let Some(target_pilot) = db.active_club_pilot_for_account(&acct.id, club_id).await
+            else {
+                return checkin_reason(StatusCode::FORBIDDEN, "club_mismatch");
+            };
+            pilot_id = Some(target_pilot.id);
         }
     }
 
@@ -2983,15 +3651,6 @@ async fn post_checkin(
 
     let Some(pilot_id) = pilot_id else {
         return checkin_reason(StatusCode::UNAUTHORIZED, "no_device");
-    };
-
-    let token = body.token.trim();
-
-    // Handoff and QR tokens both name their club.
-    let target_club = if crate::club::checkin::is_handoff_token(token) {
-        crate::club::checkin::parse_handoff_token_club_id(token)
-    } else {
-        crate::club::checkin::parse_checkin_token_club_id(token)
     };
 
     if let Some(club_id) = &target_club {
@@ -3020,9 +3679,10 @@ async fn post_checkin(
                     .into_response();
             };
 
-            // Get pilot status to include in response
+            // Get effective pilot status to include in response
+            let effective_pilot_id = &record.pilot_id;
             let pilot_status: String = db
-                .pilot_status(&pilot_id)
+                .pilot_status(effective_pilot_id)
                 .await
                 .unwrap_or_else(|_| "pending".to_string());
             let needs_signup = pilot_status == "guest";
@@ -3032,12 +3692,71 @@ async fn post_checkin(
                 "expiresAt": expires_at,
                 "status": pilot_status,
                 "needsSignup": needs_signup,
+                "pilotId": effective_pilot_id,
+                "clubId": record.club_id,
             });
 
-            // No bearer was sent: rotate an existing device or mint one for this session.
-            if bearer.is_none() {
-                if let Some(dev_id) = &device_id {
-                    // Only rotate when the device really exists; raw tokens are never recoverable.
+            // Mint or reuse a device for `effective_pilot_id` when no bearer was sent OR when
+            // multi-club check-in resolved a different club's pilot row (never rebinding old devices).
+            let switched_pilot = bearer_pilot_id
+                .as_deref()
+                .is_some_and(|bp| bp != effective_pilot_id.as_str());
+            if bearer.is_none() || switched_pilot {
+                let mut install_id = body
+                    .install_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                let mut label = body
+                    .label
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
+                let mut model = body.model.clone();
+                if install_id.is_none() && switched_pilot {
+                    if let Some(ref bdev) = bearer_device_id {
+                        if let Some((iid, lbl, mdl)) = db.device_install_meta(bdev).await {
+                            install_id = iid;
+                            if label.is_none() && !lbl.trim().is_empty() {
+                                label = Some(lbl);
+                            }
+                            if model.is_none() {
+                                model = mdl;
+                            }
+                        }
+                    }
+                }
+
+                if let Some(iid) = install_id {
+                    if state
+                        .device_register_throttle
+                        .allow(&client_ip.0, crate::now_secs())
+                    {
+                        let lbl = label.as_deref().unwrap_or("checkin");
+                        if let Ok(reg) = db
+                            .register_device_for_install(
+                                effective_pilot_id,
+                                lbl,
+                                model.as_deref(),
+                                &iid,
+                            )
+                            .await
+                        {
+                            response["deviceId"] = json!(reg.id);
+                            response["token"] = json!(reg.token);
+                        }
+                    }
+                } else if bearer.is_none()
+                    && device_id.as_deref().is_some()
+                    && db
+                        .device_pilot_id(device_id.as_deref().unwrap())
+                        .await
+                        .as_deref()
+                        == Some(effective_pilot_id.as_str())
+                {
+                    let dev_id = device_id.as_deref().unwrap();
                     if let Some(new_token) = db.rotate_device_token(dev_id).await {
                         response["token"] = json!(new_token);
                     }
@@ -3045,7 +3764,9 @@ async fn post_checkin(
                     .device_register_throttle
                     .allow(&client_ip.0, crate::now_secs())
                 {
-                    if let Ok((dev_id, new_token)) = db.create_device(&pilot_id, "checkin").await {
+                    let lbl = label.as_deref().unwrap_or("checkin");
+                    if let Ok((dev_id, new_token)) = db.create_device(effective_pilot_id, lbl).await
+                    {
                         response["deviceId"] = json!(dev_id);
                         response["token"] = json!(new_token);
                     }

@@ -18,6 +18,12 @@ pub const MAX_FUTURE_MS: i64 = 60 * 1000;
 pub const MIN_FIX_MS: i64 = 1_577_836_800_000; // 2020-01-01 UTC
 pub const MAX_INGEST_BATCH: usize = 120;
 pub const MAX_INGEST_PER_MINUTE: usize = 600;
+/// Sliding window for per-device DB-backed position ingest rate limiting (club and club-less flights).
+pub const CLUB_INGEST_WINDOW_MS: i64 = 60_000;
+/// Maximum fixes accepted per device per `CLUB_INGEST_WINDOW_MS` (120 fixes/min = 2 Hz sustained).
+/// Batches count by fix count (`fixes.len().max(1)`); any request that would exceed the cap
+/// (including a single batch > 120 fixes) is rejected atomically with HTTP 429 without ending the flight.
+pub const MAX_CLUB_INGEST_FIXES_PER_MINUTE: usize = 120;
 
 #[derive(Clone, Debug)]
 pub struct SseFixEvent {
@@ -160,15 +166,31 @@ impl LiveEngine {
     }
 
     pub async fn allow_ingest(&self, device_key: &str) -> bool {
+        self.allow_ingest_fixes(device_key, 1, MAX_INGEST_PER_MINUTE)
+            .await
+    }
+
+    /// Sliding-window per-device fix budget. Counts batches by fix count (`fix_count.max(1)`).
+    /// Rejects atomically (recording no hits) if the batch would push the 60s window above `max_per_minute`.
+    pub async fn allow_ingest_fixes(
+        &self,
+        device_key: &str,
+        fix_count: usize,
+        max_per_minute: usize,
+    ) -> bool {
+        let units = fix_count.max(1);
+        if units > max_per_minute {
+            return false;
+        }
         let now = self.now_ms();
-        let cutoff = now - 60_000;
+        let cutoff = now - CLUB_INGEST_WINDOW_MS;
         let mut hits = self.ingest_hits.write().await;
         let entry = hits.entry(device_key.to_string()).or_default();
         entry.retain(|t| *t > cutoff);
-        if entry.len() >= MAX_INGEST_PER_MINUTE {
+        if entry.len().saturating_add(units) > max_per_minute {
             return false;
         }
-        entry.push(now);
+        entry.resize(entry.len() + units, now);
         if hits.len() > 4096 {
             hits.retain(|_, v| v.last().is_some_and(|t| *t > cutoff));
         }

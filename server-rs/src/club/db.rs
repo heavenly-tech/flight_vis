@@ -18,9 +18,75 @@ struct TestPgLease {
     _guard: tokio::sync::MutexGuard<'static, ()>,
 }
 
+/// Dedicated IP rate-limit window for `POST /api/account/signup` (separate from device registration).
+/// Tightened from the previous shared 20/IP/60s cap to 10 requests per IP per 10 minutes
+/// (per-email / per-IP magic-link email caps remain enforced by `magic_send_allowed`:
+/// 5/email/hour and 20/IP/hour).
+pub const ACCOUNT_SIGNUP_MAX_PER_IP: usize = 10;
+pub const ACCOUNT_SIGNUP_WINDOW_SECS: u64 = 10 * 60;
+
+/// Free-text tail registration limits for club-less (public/personal) flights.
+pub const FREE_TAIL_MIN_LEN: usize = 1;
+pub const FREE_TAIL_MAX_LEN: usize = 16;
+
+/// Normalizes and validates a free-text aircraft registration for club-less flights.
+/// Trimmed, ASCII-uppercased, 1..=16 characters, only `A-Z`, `0-9`, `-`, with at least one
+/// alphanumeric character (matches DB `flights_tail_text_format_check`).
+pub fn normalize_free_tail(raw: &str) -> Result<String, &'static str> {
+    let norm = raw.trim().to_ascii_uppercase();
+    let len = norm.len();
+    if !(FREE_TAIL_MIN_LEN..=FREE_TAIL_MAX_LEN).contains(&len) {
+        return Err("invalid tail");
+    }
+    let valid_chars = norm
+        .bytes()
+        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-');
+    let has_alnum = norm
+        .bytes()
+        .any(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+    if !valid_chars || !has_alnum {
+        return Err("invalid tail");
+    }
+    Ok(norm)
+}
+
+/// Sliding-window rate limiter with caller-supplied window length (seconds).
+#[derive(Clone, Default)]
+pub(crate) struct WindowThrottle {
+    hits: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u64>>>>,
+}
+
+impl WindowThrottle {
+    pub(crate) fn allow(
+        &self,
+        key: &str,
+        now_secs: u64,
+        max_attempts: usize,
+        window_secs: u64,
+    ) -> bool {
+        let mut hits = self.hits.lock().unwrap_or_else(|e| e.into_inner());
+        let cutoff = now_secs.saturating_sub(window_secs);
+        let allowed = {
+            let entry = hits.entry(key.to_string()).or_default();
+            entry.retain(|stamp| *stamp > cutoff);
+            if entry.len() >= max_attempts {
+                false
+            } else {
+                entry.push(now_secs);
+                true
+            }
+        };
+        if hits.len() > 4096 {
+            hits.retain(|_, times| times.last().is_some_and(|stamp| *stamp > cutoff));
+        }
+        allowed
+    }
+}
+
 #[derive(Clone)]
 pub struct ClubDb {
     pub(crate) pool: PgPool,
+    pub(crate) account_signup_throttle: WindowThrottle,
     #[cfg(test)]
     _test_pg_lease: Option<std::sync::Arc<TestPgLease>>,
 }
@@ -73,12 +139,30 @@ pub struct PilotRow {
 }
 
 #[derive(Clone, Debug)]
+pub struct PilotIdentity {
+    pub id: String,
+    pub club_id: Option<String>,
+    pub account_id: Option<String>,
+    #[allow(dead_code)]
+    pub status: String,
+    pub account_suspended: bool,
+}
+
+impl PilotIdentity {
+    pub fn is_personal(&self) -> bool {
+        self.club_id.is_none() && self.account_id.is_some()
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct FlightRow {
     #[allow(dead_code)]
     pub id: String,
     pub pilot_id: String,
     #[allow(dead_code)]
-    pub aircraft_id: String,
+    pub aircraft_id: Option<String>,
+    #[allow(dead_code)]
+    pub club_id: Option<String>,
     #[allow(dead_code)]
     pub status: String,
     #[allow(dead_code)]
@@ -130,6 +214,7 @@ impl ClubDb {
         database::run_migrations(&pool).await?;
         let db = Self {
             pool,
+            account_signup_throttle: WindowThrottle::default(),
             #[cfg(test)]
             _test_pg_lease: None,
         };
@@ -145,6 +230,7 @@ impl ClubDb {
         database::run_migrations(&pool).await?;
         let db = Self {
             pool,
+            account_signup_throttle: WindowThrottle::default(),
             _test_pg_lease: Some(std::sync::Arc::new(TestPgLease { _guard: guard })),
         };
         db.truncate_all().await.map_err(DbConnectError::from)?;
@@ -309,7 +395,7 @@ impl ClubDb {
             "SELECT p.id, p.club_id, p.name, p.email, p.license_no, p.status, p.role, p.locale
              FROM pilot_sessions s
              JOIN pilots p ON p.id = s.pilot_id
-             WHERE s.id = $1 AND s.expires_at > $2",
+             WHERE s.id = $1 AND s.expires_at > $2 AND p.club_id IS NOT NULL",
         )
         .bind(session_db_id)
         .bind(now)
@@ -422,13 +508,12 @@ impl ClubDb {
 
     #[allow(dead_code)]
     pub async fn approve_pilot(&self, pilot_id: &str) -> Result<(), DbError> {
-        sqlx::query("UPDATE pilots SET status = 'approved' WHERE id = $1")
+        let Some(club_id) = self.pilot_club_id_opt(pilot_id).await? else {
+            return Err(DbError::protocol("cannot approve personal pilot"));
+        };
+        sqlx::query("UPDATE pilots SET status = 'approved' WHERE id = $1 AND club_id IS NOT NULL")
             .bind(pilot_id)
             .execute(&self.pool)
-            .await?;
-        let club_id: String = sqlx::query_scalar("SELECT club_id FROM pilots WHERE id = $1")
-            .bind(pilot_id)
-            .fetch_one(&self.pool)
             .await?;
         self.ensure_membership_row(pilot_id, &club_id, "pilot", "active")
             .await?;
@@ -479,11 +564,12 @@ impl ClubDb {
         Ok(count > 0)
     }
 
-    async fn effective_club_for_tails(&self, pilot_id: &str, now: i64) -> Result<String, DbError> {
-        let home: String = sqlx::query_scalar("SELECT club_id FROM pilots WHERE id = $1")
-            .bind(pilot_id)
-            .fetch_one(&self.pool)
-            .await?;
+    async fn effective_club_for_tails(
+        &self,
+        pilot_id: &str,
+        now: i64,
+    ) -> Result<Option<String>, DbError> {
+        let home: Option<String> = self.pilot_club_id_opt(pilot_id).await?;
         let checkin_club: Option<String> = sqlx::query_scalar(
             "SELECT club_id FROM checkins
              WHERE outcome = 'ok' AND pilot_id = $1
@@ -494,11 +580,13 @@ impl ClubDb {
         .bind(now)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(checkin_club.unwrap_or(home))
+        Ok(checkin_club.or(home))
     }
 
     pub async fn me_tails(&self, pilot_id: &str, now: i64) -> Result<Vec<TailInfo>, DbError> {
-        let club_id = self.effective_club_for_tails(pilot_id, now).await?;
+        let Some(club_id) = self.effective_club_for_tails(pilot_id, now).await? else {
+            return Ok(Vec::new());
+        };
         let rows = sqlx::query(
             "SELECT a.id, a.tail, t.code
              FROM aircraft a
@@ -535,6 +623,12 @@ impl ClubDb {
         trail_minutes: Option<crate::club::trail::TrailMinutes>,
         now: i64,
     ) -> Result<String, StartFlightError> {
+        if self.device_pilot_id(device_id).await.as_deref() != Some(pilot_id) {
+            return Err(StartFlightError::DeviceMismatch);
+        }
+        if visibility == FlightVisibility::Public && !self.pilot_email_is_verified(pilot_id).await {
+            return Err(StartFlightError::EmailUnverified);
+        }
         let mut tx = self
             .pool
             .begin()
@@ -707,6 +801,110 @@ impl ClubDb {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub async fn start_personal_flight_atomic(
+        &self,
+        pilot_id: &str,
+        account_id: &str,
+        device_id: &str,
+        tail: &str,
+        visibility: FlightVisibility,
+        show_pilot_name_public: bool,
+        trail_minutes: Option<crate::club::trail::TrailMinutes>,
+        now: i64,
+    ) -> Result<String, StartFlightError> {
+        let Some(ident) = self.pilot_identity(pilot_id).await else {
+            return Err(StartFlightError::DeviceMismatch);
+        };
+        if !ident.is_personal()
+            || ident.account_id.as_deref() != Some(account_id)
+            || ident.account_suspended
+        {
+            return Err(StartFlightError::DeviceMismatch);
+        }
+        if self.device_pilot_id(device_id).await.as_deref() != Some(pilot_id) {
+            return Err(StartFlightError::DeviceMismatch);
+        }
+        if visibility == FlightVisibility::Club {
+            return Err(StartFlightError::ClubVisibilityRequiresClub);
+        }
+        let tail_text = normalize_free_tail(tail).map_err(|_| StartFlightError::InvalidTail)?;
+        if visibility == FlightVisibility::Public && !self.pilot_email_is_verified(pilot_id).await {
+            return Err(StartFlightError::EmailUnverified);
+        }
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| StartFlightError::InvalidTail)?;
+        let result: Result<String, StartFlightError> = {
+            let dev_owner: Option<String> =
+                sqlx::query_scalar("SELECT pilot_id FROM devices WHERE id = $1")
+                    .bind(device_id)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(|_| StartFlightError::DeviceMismatch)?;
+            if dev_owner.as_deref() != Some(pilot_id) {
+                Err(StartFlightError::DeviceMismatch)?;
+            }
+            let pilot_active: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM flights WHERE pilot_id = $1 AND status = 'active'",
+            )
+            .bind(pilot_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| StartFlightError::AlreadyActive)?;
+            if pilot_active > 0 {
+                Err(StartFlightError::AlreadyActive)?;
+            }
+            let device_active: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM flights f
+                 JOIN flight_devices fd ON fd.flight_id = f.id
+                 WHERE fd.device_id = $1 AND f.status = 'active'",
+            )
+            .bind(device_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| StartFlightError::AlreadyActive)?;
+            if device_active > 0 {
+                Err(StartFlightError::AlreadyActive)?;
+            }
+            let flight_id = new_id();
+            sqlx::query(
+                "INSERT INTO flights (id, pilot_id, aircraft_id, club_id, tail_text, owner_account_id, status, started_at, visibility, show_pilot_name_public, trail_minutes)
+                 VALUES ($1, $2, NULL, NULL, $3, $4, 'active', $5, $6, $7, $8)",
+            )
+            .bind(&flight_id)
+            .bind(pilot_id)
+            .bind(&tail_text)
+            .bind(account_id)
+            .bind(now)
+            .bind(visibility.as_str())
+            .bind(show_pilot_name_public)
+            .bind(trail_minutes.map(crate::club::trail::TrailMinutes::as_i16))
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| StartFlightError::InvalidTail)?;
+            sqlx::query("INSERT INTO flight_devices (flight_id, device_id) VALUES ($1, $2)")
+                .bind(&flight_id)
+                .bind(device_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| StartFlightError::InvalidTail)?;
+            Ok(flight_id)
+        };
+        match &result {
+            Ok(_) => tx
+                .commit()
+                .await
+                .map_err(|_| StartFlightError::InvalidTail)?,
+            Err(_) => {
+                let _ = tx.rollback().await;
+            }
+        }
+        result
+    }
+
     pub async fn patch_flight(
         &self,
         pilot_id: &str,
@@ -714,18 +912,26 @@ impl ClubDb {
         visibility: Option<FlightVisibility>,
         show_pilot_name_public: Option<bool>,
     ) -> Result<(), PatchError> {
-        let owner = sqlx::query_scalar::<_, String>("SELECT pilot_id FROM flights WHERE id = $1")
+        let row = sqlx::query("SELECT pilot_id, club_id FROM flights WHERE id = $1")
             .bind(flight_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(|_| PatchError::NotFound)?;
-        let Some(owner) = owner else {
+        let Some(row) = row else {
             return Err(PatchError::NotFound);
         };
+        let owner: String = row.try_get(0).map_err(|_| PatchError::NotFound)?;
+        let club_id: Option<String> = row.try_get(1).ok().flatten();
         if owner != pilot_id {
             return Err(PatchError::Forbidden);
         }
         if let Some(v) = visibility {
+            if v == FlightVisibility::Club && club_id.is_none() {
+                return Err(PatchError::ClubVisibilityRequiresClub);
+            }
+            if v == FlightVisibility::Public && !self.pilot_email_is_verified(pilot_id).await {
+                return Err(PatchError::EmailUnverified);
+            }
             sqlx::query("UPDATE flights SET visibility = $1 WHERE id = $2")
                 .bind(v.as_str())
                 .bind(flight_id)
@@ -796,7 +1002,7 @@ impl ClubDb {
 
     #[allow(dead_code)]
     pub async fn club_id_for_device(&self, device_id: &str) -> Option<String> {
-        sqlx::query_scalar(
+        sqlx::query_scalar::<_, Option<String>>(
             "SELECT p.club_id FROM devices d
              JOIN pilots p ON p.id = d.pilot_id
              WHERE d.id = $1",
@@ -805,6 +1011,7 @@ impl ClubDb {
         .fetch_optional(&self.pool)
         .await
         .ok()
+        .flatten()
         .flatten()
     }
 
@@ -856,11 +1063,12 @@ impl ClubDb {
     }
 
     pub async fn club_id_for_flight(&self, flight_id: &str) -> Option<String> {
-        sqlx::query_scalar("SELECT club_id FROM flights WHERE id = $1")
+        sqlx::query_scalar::<_, Option<String>>("SELECT club_id FROM flights WHERE id = $1")
             .bind(flight_id)
             .fetch_optional(&self.pool)
             .await
             .ok()
+            .flatten()
             .flatten()
     }
 
@@ -1013,10 +1221,10 @@ impl ClubDb {
 
     pub async fn get_flight(&self, flight_id: &str) -> Option<FlightRow> {
         let row = sqlx::query(
-            "SELECT f.id, f.pilot_id, f.aircraft_id, f.status, f.started_at, f.ended_at, f.last_fix_at,
-                        f.visibility, f.show_pilot_name_public, a.tail, p.name
+            "SELECT f.id, f.pilot_id, f.aircraft_id, f.club_id, f.status, f.started_at, f.ended_at, f.last_fix_at,
+                        f.visibility, f.show_pilot_name_public, COALESCE(a.tail, f.tail_text), p.name
                  FROM flights f
-                 JOIN aircraft a ON a.id = f.aircraft_id
+                 LEFT JOIN aircraft a ON a.id = f.aircraft_id
                  JOIN pilots p ON p.id = f.pilot_id
                  WHERE f.id = $1",
         )
@@ -1027,15 +1235,16 @@ impl ClubDb {
         Some(FlightRow {
             id: row.try_get(0).ok()?,
             pilot_id: row.try_get(1).ok()?,
-            aircraft_id: row.try_get(2).ok()?,
-            status: row.try_get(3).ok()?,
-            started_at: row.try_get(4).ok()?,
-            ended_at: row.try_get(5).ok()?,
-            last_fix_at: row.try_get(6).ok()?,
-            visibility: row.try_get(7).ok()?,
-            show_pilot_name_public: row.try_get::<bool, _>(8).ok()?,
-            tail: row.try_get(9).ok()?,
-            pilot_name: row.try_get(10).ok()?,
+            aircraft_id: row.try_get(2).ok().flatten(),
+            club_id: row.try_get(3).ok().flatten(),
+            status: row.try_get(4).ok()?,
+            started_at: row.try_get(5).ok()?,
+            ended_at: row.try_get(6).ok()?,
+            last_fix_at: row.try_get(7).ok()?,
+            visibility: row.try_get(8).ok()?,
+            show_pilot_name_public: row.try_get::<bool, _>(9).ok()?,
+            tail: row.try_get(10).ok()?,
+            pilot_name: row.try_get(11).ok()?,
         })
     }
 
@@ -1258,8 +1467,9 @@ impl ClubDb {
 
     pub async fn list_my_flights(&self, pilot_id: &str) -> Vec<FlightSummary> {
         let rows = sqlx::query(
-            "SELECT f.id, a.tail, f.status, f.started_at, f.ended_at, f.visibility, f.show_pilot_name_public
-             FROM flights f JOIN aircraft a ON a.id = f.aircraft_id
+            "SELECT f.id, COALESCE(a.tail, f.tail_text), f.status, f.started_at, f.ended_at, f.visibility, f.show_pilot_name_public
+             FROM flights f
+             LEFT JOIN aircraft a ON a.id = f.aircraft_id
              WHERE f.pilot_id = $1 ORDER BY f.started_at DESC",
         )
         .bind(pilot_id)
@@ -1488,11 +1698,84 @@ impl ClubDb {
             .collect()
     }
 
+    pub async fn pilot_club_id_opt(&self, pilot_id: &str) -> Result<Option<String>, DbError> {
+        let opt: Option<Option<String>> =
+            sqlx::query_scalar("SELECT club_id FROM pilots WHERE id = $1")
+                .bind(pilot_id)
+                .fetch_optional(&self.pool)
+                .await?;
+        Ok(opt.flatten())
+    }
+
     pub async fn pilot_club_id(&self, pilot_id: &str) -> Result<String, DbError> {
-        sqlx::query_scalar("SELECT club_id FROM pilots WHERE id = $1")
-            .bind(pilot_id)
-            .fetch_one(&self.pool)
-            .await
+        self.pilot_club_id_opt(pilot_id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)
+    }
+
+    pub async fn pilot_identity(&self, pilot_id: &str) -> Option<PilotIdentity> {
+        let row = sqlx::query(
+            "SELECT p.id, p.club_id, p.account_id, p.status, COALESCE(a.suspended_at IS NOT NULL, FALSE)
+             FROM pilots p
+             LEFT JOIN accounts a ON a.id = p.account_id
+             WHERE p.id = $1",
+        )
+        .bind(pilot_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()??;
+        Some(PilotIdentity {
+            id: row.try_get(0).ok()?,
+            club_id: row.try_get(1).ok().flatten(),
+            account_id: row.try_get(2).ok().flatten(),
+            status: row.try_get(3).ok()?,
+            account_suspended: row.try_get::<bool, _>(4).unwrap_or(false),
+        })
+    }
+
+    /// True when the acting pilot's email is verified:
+    /// - Personal (club-less) pilots require `accounts.email_verified_at IS NOT NULL`.
+    /// - Club pilots accept either `accounts.email_verified_at IS NOT NULL` or legacy
+    ///   `pilots.email_verified_at IS NOT NULL`.
+    pub async fn pilot_email_is_verified(&self, pilot_id: &str) -> bool {
+        let row = sqlx::query(
+            "SELECT p.club_id, p.email_verified_at, a.email_verified_at
+             FROM pilots p
+             LEFT JOIN accounts a ON a.id = p.account_id
+             WHERE p.id = $1",
+        )
+        .bind(pilot_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten();
+        let Some(row) = row else {
+            return false;
+        };
+        let club_id: Option<String> = row.try_get(0).ok().flatten();
+        let pilot_verified: Option<i64> = row.try_get(1).ok().flatten();
+        let acct_verified: Option<i64> = row.try_get(2).ok().flatten();
+        if club_id.is_none() {
+            acct_verified.is_some()
+        } else {
+            acct_verified.is_some() || pilot_verified.is_some()
+        }
+    }
+
+    pub async fn device_account_suspended(&self, device_id: &str) -> bool {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT (a.suspended_at IS NOT NULL)
+             FROM devices d
+             JOIN pilots p ON p.id = d.pilot_id
+             JOIN accounts a ON a.id = p.account_id
+             WHERE d.id = $1",
+        )
+        .bind(device_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false)
     }
 
     pub async fn club_checkin_settings(&self, club_id: &str) -> Result<(String, i64), DbError> {
@@ -1620,54 +1903,93 @@ impl ClubDb {
         now: i64,
     ) -> Result<CheckinRecord, CheckinReject> {
         let token = token.trim();
+        let Some(ident) = self.pilot_identity(pilot_id).await else {
+            return Err(CheckinReject::WrongClub);
+        };
+        if ident.account_suspended {
+            return Err(CheckinReject::WrongClub);
+        }
+        // Only unattached, club-scoped guest rows may be re-scoped across clubs;
+        // personal (club_id NULL) and account-bound pilots must never be mutated here.
+        let is_unattached_guest =
+            ident.status == "guest" && ident.account_id.is_none() && ident.club_id.is_some();
 
         // Check if this is a handoff token
         if checkin::is_handoff_token(token) {
             // Validate the handoff token without consuming it so a rejected cross-club
             // check-in leaves the token unconsumed for a legitimate club user.
             let (club_id, _handoff_pilot_id, _) = self.validate_handoff_token(token, now).await?;
-
-            // Non-guest pilots must belong to the handoff token's club; guests may
-            // re-scope to the QR/handoff club (same rule as the plain QR-token path).
-            let pilot_club = self
-                .pilot_club_id(pilot_id)
-                .await
-                .map_err(|_| CheckinReject::WrongClub)?;
-            let pilot_status = self
-                .pilot_status(pilot_id)
-                .await
-                .map_err(|_| CheckinReject::WrongClub)?;
             let digest = checkin::token_digest(token);
 
-            if pilot_club != club_id && pilot_status != "guest" {
-                let _ = self
-                    .insert_checkin_row(
-                        &pilot_club,
-                        Some(pilot_id),
-                        device_id,
-                        0,
-                        &digest,
-                        now,
-                        None,
-                        "fail",
-                        Some("wrong_club"),
-                    )
-                    .await;
-                return Err(CheckinReject::WrongClub);
-            }
+            let (effective_pilot_id, effective_device_id) =
+                if ident.club_id.as_deref() == Some(club_id.as_str()) || is_unattached_guest {
+                    (pilot_id.to_string(), device_id.map(str::to_string))
+                } else if let Some(ref aid) = ident.account_id {
+                    if let Some(target) = self.active_club_pilot_for_account(aid, &club_id).await {
+                        let kept_dev = match device_id {
+                            Some(d)
+                                if self.device_pilot_id(d).await.as_deref()
+                                    == Some(target.id.as_str()) =>
+                            {
+                                Some(d.to_string())
+                            }
+                            _ => None,
+                        };
+                        (target.id, kept_dev)
+                    } else {
+                        if let Some(ref pc) = ident.club_id {
+                            let _ = self
+                                .insert_checkin_row(
+                                    pc,
+                                    Some(pilot_id),
+                                    device_id,
+                                    0,
+                                    &digest,
+                                    now,
+                                    None,
+                                    "fail",
+                                    Some("wrong_club"),
+                                )
+                                .await;
+                        }
+                        return Err(CheckinReject::WrongClub);
+                    }
+                } else {
+                    if let Some(ref pc) = ident.club_id {
+                        let _ = self
+                            .insert_checkin_row(
+                                pc,
+                                Some(pilot_id),
+                                device_id,
+                                0,
+                                &digest,
+                                now,
+                                None,
+                                "fail",
+                                Some("wrong_club"),
+                            )
+                            .await;
+                    }
+                    return Err(CheckinReject::WrongClub);
+                };
 
             let (club_id, _handoff_pilot_id, _) = self.consume_handoff_token(token, now).await?;
 
-            // If the pilot is a guest and the handoff token is for a different club,
-            // we need to reattach the guest to the token's club
-            if pilot_club != club_id {
-                // Update the guest's club_id to match the token's club
-                sqlx::query("UPDATE pilots SET club_id = $1 WHERE id = $2 AND status = 'guest'")
-                    .bind(&club_id)
-                    .bind(pilot_id)
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|_| CheckinReject::WrongClub)?;
+            // If the pilot is an unattached guest and the handoff token is for a different club,
+            // reattach the guest row to the token's club.
+            if is_unattached_guest && ident.club_id.as_deref() != Some(club_id.as_str()) {
+                let updated = sqlx::query(
+                    "UPDATE pilots SET club_id = $1
+                     WHERE id = $2 AND status = 'guest' AND account_id IS NULL AND club_id IS NOT NULL",
+                )
+                .bind(&club_id)
+                .bind(pilot_id)
+                .execute(&self.pool)
+                .await
+                .map_err(|_| CheckinReject::WrongClub)?;
+                if updated.rows_affected() != 1 {
+                    return Err(CheckinReject::WrongClub);
+                }
 
                 // Also update guest_sessions if they exist
                 let _ =
@@ -1688,8 +2010,8 @@ impl ClubDb {
             let id = self
                 .insert_checkin_row(
                     &club_id,
-                    Some(pilot_id),
-                    device_id,
+                    Some(&effective_pilot_id),
+                    effective_device_id.as_deref(),
                     0,
                     &digest,
                     now,
@@ -1704,36 +2026,96 @@ impl ClubDb {
                 id,
                 created_at: now,
                 expires_at: expires,
+                pilot_id: effective_pilot_id,
+                club_id,
             });
         }
 
         // Regular QR token flow
-        let pilot_club = self
-            .pilot_club_id(pilot_id)
-            .await
-            .map_err(|_| CheckinReject::WrongClub)?;
-        let pilot_status = self
-            .pilot_status(pilot_id)
-            .await
-            .map_err(|_| CheckinReject::WrongClub)?;
         let token_club = checkin::parse_checkin_token_club_id(token);
-        let verify_club = if pilot_status == "guest" {
-            token_club.as_deref().unwrap_or(&pilot_club)
+        let digest = checkin::token_digest(token);
+        let (effective_pilot_id, effective_device_id, verify_club) = if is_unattached_guest {
+            let vc = token_club
+                .clone()
+                .or_else(|| ident.club_id.clone())
+                .ok_or(CheckinReject::Format)?;
+            (pilot_id.to_string(), device_id.map(str::to_string), vc)
+        } else if let Some(ref tc) = token_club {
+            if ident.club_id.as_deref() == Some(tc.as_str()) {
+                (
+                    pilot_id.to_string(),
+                    device_id.map(str::to_string),
+                    tc.clone(),
+                )
+            } else if let Some(ref aid) = ident.account_id {
+                if let Some(target) = self.active_club_pilot_for_account(aid, tc).await {
+                    let kept_dev = match device_id {
+                        Some(d)
+                            if self.device_pilot_id(d).await.as_deref()
+                                == Some(target.id.as_str()) =>
+                        {
+                            Some(d.to_string())
+                        }
+                        _ => None,
+                    };
+                    (target.id, kept_dev, target.club_id)
+                } else {
+                    if let Some(ref pc) = ident.club_id {
+                        let _ = self
+                            .insert_checkin_row(
+                                pc,
+                                Some(pilot_id),
+                                device_id,
+                                0,
+                                &digest,
+                                now,
+                                None,
+                                "fail",
+                                Some("wrong_club"),
+                            )
+                            .await;
+                    }
+                    return Err(CheckinReject::WrongClub);
+                }
+            } else {
+                if let Some(ref pc) = ident.club_id {
+                    let _ = self
+                        .insert_checkin_row(
+                            pc,
+                            Some(pilot_id),
+                            device_id,
+                            0,
+                            &digest,
+                            now,
+                            None,
+                            "fail",
+                            Some("wrong_club"),
+                        )
+                        .await;
+                }
+                return Err(CheckinReject::WrongClub);
+            }
+        } else if let Some(ref pc) = ident.club_id {
+            (
+                pilot_id.to_string(),
+                device_id.map(str::to_string),
+                pc.clone(),
+            )
         } else {
-            &pilot_club
+            return Err(CheckinReject::Format);
         };
+
         let (secret, valid_min) = self
-            .club_checkin_settings(verify_club)
+            .club_checkin_settings(&verify_club)
             .await
             .map_err(|_| CheckinReject::ForgedHmac)?;
-        let digest = checkin::token_digest(token);
         macro_rules! fail_checkin {
             ($reason:expr, $err:expr) => {{
                 let _ = self
                     .insert_checkin_row(
-                        &pilot_club,
-                        Some(pilot_id),
-                        device_id,
+                        &verify_club,
+                        Some(&effective_pilot_id),
+                        effective_device_id.as_deref(),
                         0,
                         &digest,
                         now,
@@ -1768,16 +2150,23 @@ impl ClubDb {
             fail_checkin!("replay", CheckinReject::Replay);
         }
 
-        // For guests, allow re-scoping to the QR club
-        if club_id != pilot_club {
-            if pilot_status == "guest" {
-                // Update the guest's club_id to match the token's club
-                sqlx::query("UPDATE pilots SET club_id = $1 WHERE id = $2 AND status = 'guest'")
-                    .bind(&club_id)
-                    .bind(pilot_id)
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|_| CheckinReject::WrongClub)?;
+        // For unattached guests, allow re-scoping to the QR club; non-guest rows must match.
+        if club_id != verify_club
+            || (is_unattached_guest && ident.club_id.as_deref() != Some(club_id.as_str()))
+        {
+            if is_unattached_guest {
+                let updated = sqlx::query(
+                    "UPDATE pilots SET club_id = $1
+                     WHERE id = $2 AND status = 'guest' AND account_id IS NULL AND club_id IS NOT NULL",
+                )
+                .bind(&club_id)
+                .bind(pilot_id)
+                .execute(&self.pool)
+                .await
+                .map_err(|_| CheckinReject::WrongClub)?;
+                if updated.rows_affected() != 1 {
+                    return Err(CheckinReject::WrongClub);
+                }
 
                 // Update guest_sessions if they exist
                 let _ =
@@ -1792,7 +2181,7 @@ impl ClubDb {
         }
 
         if self
-            .checkin_replay(pilot_id, device_id, &digest)
+            .checkin_replay(&effective_pilot_id, effective_device_id.as_deref(), &digest)
             .await
             .unwrap_or(false)
         {
@@ -1802,8 +2191,8 @@ impl ClubDb {
         let id = self
             .insert_checkin_row(
                 &club_id,
-                Some(pilot_id),
-                device_id,
+                Some(&effective_pilot_id),
+                effective_device_id.as_deref(),
                 step,
                 &digest,
                 now,
@@ -1817,6 +2206,8 @@ impl ClubDb {
             id,
             created_at: now,
             expires_at: expires,
+            pilot_id: effective_pilot_id,
+            club_id,
         })
     }
 
@@ -2189,10 +2580,13 @@ pub enum LoginError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StartFlightError {
     NoTail,
+    InvalidTail,
     NotCleared { tail: String, type_code: String },
     NoCheckin,
     AlreadyActive,
     DeviceMismatch,
+    ClubVisibilityRequiresClub,
+    EmailUnverified,
 }
 
 #[derive(Debug)]
@@ -2213,6 +2607,8 @@ pub struct CheckinRecord {
     pub id: String,
     pub created_at: i64,
     pub expires_at: i64,
+    pub pilot_id: String,
+    pub club_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2231,6 +2627,8 @@ pub enum CheckinReject {
 pub enum PatchError {
     NotFound,
     Forbidden,
+    ClubVisibilityRequiresClub,
+    EmailUnverified,
 }
 
 #[derive(Debug)]
@@ -2317,11 +2715,13 @@ mod tests {
             .await
             .unwrap();
         db.approve_pilot(&pilot_a).await.unwrap();
+        db.mark_email_verified(&pilot_a, now_ms()).await.unwrap();
         let pilot_b = db
             .register(&club, "Bob", "b@test", "L2", "password12")
             .await
             .unwrap();
         db.approve_pilot(&pilot_b).await.unwrap();
+        db.mark_email_verified(&pilot_b, now_ms()).await.unwrap();
         db.add_checkout(&pilot_a, "C152", None, None).await.unwrap();
         db.add_checkout(&pilot_b, "C152", None, None).await.unwrap();
         (club, pilot_a, pilot_b, ac)
@@ -2577,6 +2977,7 @@ mod tests {
             .await
             .unwrap();
         db.approve_pilot(&pilot_b).await.unwrap();
+        db.mark_email_verified(&pilot_b, now_ms()).await.unwrap();
         db.add_checkout(&pilot_b, "C152", None, None).await.unwrap();
         let dev = pilot_device_with_checkin(&db, &pilot_b, &club_b).await;
         let fid = db

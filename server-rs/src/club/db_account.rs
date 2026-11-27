@@ -97,6 +97,7 @@ impl ClubDb {
             "SELECT id, club_id, email, password_hash, role, status, created_at, email_verified_at
              FROM pilots
              WHERE account_id IS NULL
+               AND club_id IS NOT NULL
                AND trim(email) <> ''
                AND email NOT LIKE 'guest-%@guest.invalid'
                AND (status <> 'guest' OR email NOT LIKE 'guest-%@guest.invalid')",
@@ -707,9 +708,99 @@ impl ClubDb {
         }
         let row = sqlx::query(
             "SELECT id, club_id, name, email, license_no, status, role, locale
-             FROM pilots WHERE id = $1",
+             FROM pilots WHERE id = $1 AND club_id IS NOT NULL",
         )
         .bind(&pilot_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()??;
+        Some(PilotRow {
+            id: row.try_get(0).ok()?,
+            club_id: row.try_get(1).ok()?,
+            name: row.try_get(2).ok()?,
+            email: row.try_get(3).ok()?,
+            license_no: row.try_get(4).ok()?,
+            status: row.try_get(5).ok()?,
+            role: row.try_get(6).ok()?,
+            locale: row.try_get(7).ok().flatten(),
+        })
+    }
+
+    /// Look up the account's personal (club-less) pilot id without creating one.
+    pub async fn personal_pilot_id_for_account(&self, account_id: &str) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT p.id
+             FROM pilots p
+             JOIN accounts a ON a.id = p.account_id
+             WHERE p.account_id = $1
+               AND p.club_id IS NULL
+               AND a.suspended_at IS NULL",
+        )
+        .bind(account_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+    }
+
+    /// Lazily, idempotently, and race-safely create or return the account's personal pilot row
+    /// (`club_id IS NULL`). Uses the partial unique index `idx_pilots_personal_account`.
+    pub async fn ensure_personal_pilot(
+        &self,
+        account_id: &str,
+        now: i64,
+    ) -> Result<String, DbError> {
+        let acct = self
+            .account_by_id(account_id)
+            .await
+            .ok_or_else(|| DbError::protocol("missing account"))?;
+        if acct.suspended_at.is_some() {
+            return Err(DbError::protocol("account suspended"));
+        }
+        if let Some(existing) = self.personal_pilot_id_for_account(account_id).await {
+            return Ok(existing);
+        }
+        let display = acct.email.split('@').next().unwrap_or("Pilot");
+        let pilot_id = new_id();
+        sqlx::query(
+            "INSERT INTO pilots (id, club_id, account_id, name, email, license_no, status, role, password_hash, email_verified_at, created_at)
+             VALUES ($1, NULL, $2, $3, $4, '', 'personal', 'pilot', '', $5, $6)
+             ON CONFLICT (account_id) WHERE club_id IS NULL DO NOTHING",
+        )
+        .bind(&pilot_id)
+        .bind(account_id)
+        .bind(display)
+        .bind(acct.email.trim().to_ascii_lowercase())
+        .bind(acct.email_verified_at)
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        self.personal_pilot_id_for_account(account_id)
+            .await
+            .ok_or_else(|| DbError::protocol("personal pilot missing"))
+    }
+
+    /// Resolve an account's per-club pilot row if and only if the account is not suspended
+    /// and holds an ACTIVE membership (`club_memberships.status IN ('active','approved')`) in `club_id`.
+    pub async fn active_club_pilot_for_account(
+        &self,
+        account_id: &str,
+        club_id: &str,
+    ) -> Option<PilotRow> {
+        let row = sqlx::query(
+            "SELECT p.id, p.club_id, p.name, p.email, p.license_no, p.status, p.role, p.locale
+             FROM club_memberships m
+             JOIN pilots p ON p.id = m.pilot_id
+             JOIN accounts a ON a.id = p.account_id
+             WHERE p.account_id = $1
+               AND m.club_id = $2
+               AND p.club_id = $2
+               AND m.status IN ('active', 'approved')
+               AND a.suspended_at IS NULL
+             LIMIT 1",
+        )
+        .bind(account_id)
+        .bind(club_id)
         .fetch_optional(&self.pool)
         .await
         .ok()??;

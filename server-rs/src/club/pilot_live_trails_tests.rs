@@ -721,8 +721,10 @@ async fn pilot_live_trails_membership_states_suspended_club_and_null_club_id() {
         &make_fixes(now, -33.47, -70.57, &[2, 0]),
     )
     .await;
-    // Simulate a legacy/club-less row with flights.club_id = NULL
-    sqlx::query("UPDATE flights SET club_id = NULL WHERE id = $1")
+    // Simulate a club-less flight row (club_id NULL, aircraft_id NULL, free-text tail)
+    sqlx::query(
+        "UPDATE flights SET club_id = NULL, aircraft_id = NULL, tail_text = 'CC-NULL' WHERE id = $1",
+    )
         .bind(&fid_null_club)
         .execute(&db.pool)
         .await
