@@ -3,7 +3,7 @@
 use crate::club::{
     auth::{digest_token, new_id, new_share_token},
     db::{ClubDb, DbError},
-    db_account::ACCOUNT_MAGIC_TTL_MS,
+    db_account::{lock_account_for_membership_change, ACCOUNT_MAGIC_TTL_MS},
     membership_status::{membership_role_is_admin, MembershipStatus},
 };
 use sqlx::Row;
@@ -159,11 +159,34 @@ impl ClubDb {
         now: i64,
     ) -> Result<AdminInviteAccept, MembershipAdminError> {
         let token_hash = digest_token(raw_token.trim());
+        // Pre-read token email & account id outside the transaction so we can acquire the
+        // `account-delete:{account_id}` advisory lock BEFORE locking `magic_login_tokens` or
+        // `clubs` (`FOR UPDATE`), preventing deadlocks with `delete_account_in_tx`.
+        let pre_email: Option<String> =
+            sqlx::query_scalar("SELECT email FROM magic_login_tokens WHERE token_hash = $1")
+                .bind(&token_hash)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|_| MembershipAdminError::Db)?;
+        let pre_account_id: Option<String> = match pre_email.as_deref() {
+            Some(email) => self.account_id_for_email(email).await,
+            None => None,
+        };
+
         let mut tx = self
             .pool
             .begin()
             .await
             .map_err(|_| MembershipAdminError::Db)?;
+        if let Some(ref aid) = pre_account_id {
+            if !lock_account_for_membership_change(&mut tx, aid)
+                .await
+                .map_err(|_| MembershipAdminError::Db)?
+            {
+                let _ = tx.rollback().await;
+                return Err(MembershipAdminError::NotFound);
+            }
+        }
         let row = sqlx::query(
             "SELECT id, email, expires_at, used_at, purpose, club_id
              FROM magic_login_tokens WHERE token_hash = $1 FOR UPDATE",
@@ -222,18 +245,37 @@ impl ClubDb {
             .await
             .map_err(|_| MembershipAdminError::Db)?;
 
-        let account_id = if let Some(acct) = self.account_by_email(&email).await {
-            if acct.email_verified_at.is_none() {
+        let existing_acct_row: Option<(String, Option<i64>)> = sqlx::query_as(
+            "SELECT id, email_verified_at FROM accounts WHERE lower(email) = lower($1)",
+        )
+        .bind(email.trim())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| MembershipAdminError::Db)?;
+        let account_id = if let Some((aid, email_verified_at)) = existing_acct_row {
+            if pre_account_id.as_deref() != Some(aid.as_str())
+                && !lock_account_for_membership_change(&mut tx, &aid)
+                    .await
+                    .map_err(|_| MembershipAdminError::Db)?
+            {
+                let _ = tx.rollback().await;
+                return Err(MembershipAdminError::NotFound);
+            }
+            if email_verified_at.is_none() {
                 sqlx::query(
                     "UPDATE accounts SET password_hash = NULL WHERE id = $1 AND email_verified_at IS NULL",
                 )
-                .bind(&acct.id)
+                .bind(&aid)
                 .execute(&mut *tx)
                 .await
                 .map_err(|_| MembershipAdminError::Db)?;
             }
-            acct.id
+            aid
         } else {
+            if pre_account_id.is_some() {
+                let _ = tx.rollback().await;
+                return Err(MembershipAdminError::NotFound);
+            }
             let aid = new_id();
             sqlx::query(
                 "INSERT INTO accounts (id, email, created_at, email_verified_at)
@@ -245,6 +287,13 @@ impl ClubDb {
             .execute(&mut *tx)
             .await
             .map_err(|_| MembershipAdminError::Db)?;
+            if !lock_account_for_membership_change(&mut tx, &aid)
+                .await
+                .map_err(|_| MembershipAdminError::Db)?
+            {
+                let _ = tx.rollback().await;
+                return Err(MembershipAdminError::NotFound);
+            }
             aid
         };
         sqlx::query(

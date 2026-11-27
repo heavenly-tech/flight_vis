@@ -24,6 +24,9 @@ pub const CLUB_INGEST_WINDOW_MS: i64 = 60_000;
 /// Batches count by fix count (`fixes.len().max(1)`); any request that would exceed the cap
 /// (including a single batch > 120 fixes) is rejected atomically with HTTP 429 without ending the flight.
 pub const MAX_CLUB_INGEST_FIXES_PER_MINUTE: usize = 120;
+/// Maximum `409 flight_mismatch` responses allowed per device per 60 s sliding window
+/// before returning `429 Too Many Requests` + `Retry-After` (L-91).
+pub const MAX_INGEST_FLIGHT_MISMATCH_PER_MINUTE: usize = 10;
 
 #[derive(Clone, Debug)]
 pub struct SseFixEvent {
@@ -63,6 +66,7 @@ pub struct LiveEngine {
     sessions: RwLock<HashMap<String, SessionRuntime>>,
     device_active: RwLock<HashMap<String, String>>,
     ingest_hits: RwLock<HashMap<String, Vec<i64>>>,
+    ingest_mismatch_throttle: crate::LoginThrottle,
     clock_ms: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 
@@ -80,6 +84,9 @@ impl LiveEngine {
             sessions: RwLock::new(HashMap::new()),
             device_active: RwLock::new(HashMap::new()),
             ingest_hits: RwLock::new(HashMap::new()),
+            ingest_mismatch_throttle: crate::LoginThrottle::with_policy(
+                crate::OverflowPolicy::RejectNew,
+            ),
             clock_ms,
         }
     }
@@ -169,6 +176,23 @@ impl LiveEngine {
         self.allow_ingest_fixes(device_key, 1, MAX_INGEST_PER_MINUTE)
             .await
             .is_ok()
+    }
+
+    /// Bounded per-device sliding-window throttle for `409 flight_mismatch` attempts (L-91).
+    /// Reuses `LoginThrottle` with `OverflowPolicy::RejectNew` and the engine's clock so
+    /// mismatch probing cannot loop open-flight lookups cheaply.
+    pub fn allow_flight_mismatch(&self, device_key: &str) -> Result<(), u64> {
+        let now_secs = (self.now_ms() / 1000).max(0) as u64;
+        self.ingest_mismatch_throttle.check_up_to(
+            device_key,
+            now_secs,
+            MAX_INGEST_FLIGHT_MISMATCH_PER_MINUTE,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mismatch_throttle_policy(&self) -> crate::OverflowPolicy {
+        self.ingest_mismatch_throttle.policy()
     }
 
     /// Sliding-window per-device fix budget. Counts batches by fix count (`fix_count.max(1)`).

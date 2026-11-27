@@ -30,10 +30,12 @@ pub enum HtmlCspKind {
 ///
 /// Unknown `dist/*.html` files without a table row return HTTP 500 from static file serving (fail closed).
 pub const HTML_CSP_ROUTE_TABLE: &[(&str, HtmlCspKind)] = &[
-    // Globe: Cesium viewer (main SPA, shared flight view)
+    // Globe: Cesium viewer (main SPA, shared flight view, mobile 3D embed)
     ("/index.html", HtmlCspKind::Globe),
     ("/__spa_index__", HtmlCspKind::Globe),
     ("/share-flight.html", HtmlCspKind::Globe),
+    ("/embed/3d", HtmlCspKind::Globe),
+    ("/embed-3d.html", HtmlCspKind::Globe),
     // Map: 2D ArcGIS tile-map pages (kiosk, public map, admin live map)
     ("/club-admin-map.html", HtmlCspKind::Map),
     ("/public-map.html", HtmlCspKind::Map),
@@ -96,6 +98,7 @@ pub const DIST_HTML_FILES: &[&str] = &[
     "club-checkin-landing.html",
     "club-checkin-expired.html",
     "share-flight.html",
+    "embed-3d.html",
     "e2e-live.html",
 ];
 
@@ -264,9 +267,16 @@ mod tests {
 
     #[test]
     fn globe_pages_use_globe_policy() {
-        for path in ["/index.html", "/share-flight.html", "/__spa_index__"] {
+        for path in [
+            "/index.html",
+            "/share-flight.html",
+            "/__spa_index__",
+            "/embed/3d",
+            "/embed-3d.html",
+        ] {
             assert_eq!(policy_for_route(path), Some(HtmlCspKind::Globe));
         }
+        assert_eq!(csp_for_dist_relative("embed-3d.html"), Ok(HTML_GLOBE_CSP));
     }
 
     #[test]

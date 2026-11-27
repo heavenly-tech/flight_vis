@@ -317,42 +317,83 @@ describe("nearby public flights rendering and settings control", () => {
     document.body.appendChild(document.importNode(details!, true));
   }
 
-  it("parses nonClub flag and renders muted non-club marker, badge, and trail metadata", () => {
+  it("parses otherClub and nonClub flags and renders muted markers, badges, and trail metadata", () => {
     initI18n({ stored: "es" });
     const now = 1_700_000_000_000;
     const aircraft = extractPublicAircraft([
       {
         tail: "N101",
+        tailSource: "club",
         flightId: "f-own",
         trailMinutes: 5,
         fix: { t: now, lat: -33.45, lon: -70.54 },
       },
       {
         tail: "CC-EXT",
+        tailSource: "club",
         flightId: "f-ext",
         trailMinutes: 10,
-        nonClub: true,
+        otherClub: true,
         fix: { t: now, lat: -33.42, lon: -70.51 },
+      },
+      {
+        tail: "CC-PIL",
+        tailSource: "pilot",
+        flightId: "f-pil",
+        trailMinutes: 10,
+        nonClub: true,
+        fix: { t: now, lat: -33.44, lon: -70.52 },
       },
     ]);
     expect(aircraft[0].nonClub).toBeUndefined();
-    expect(aircraft[1].nonClub).toBe(true);
+    expect(aircraft[0].otherClub).toBeUndefined();
+    expect(aircraft[1].nonClub).toBeUndefined();
+    expect(aircraft[1].otherClub).toBe(true);
+    expect(aircraft[2].nonClub).toBe(true);
+    expect(aircraft[2].otherClub).toBeUndefined();
 
     const trails = parseTrailsPayload({
       trails: [
         {
+          flightId: "f-own",
+          tail: "N101",
+          tailSource: "club",
+          trailMinutes: 5,
+          points: [
+            [now - 120_000, -33.46, -70.55],
+            [now, -33.45, -70.54],
+          ],
+        },
+        {
           flightId: "f-ext",
           tail: "CC-EXT",
+          tailSource: "club",
           trailMinutes: 10,
-          nonClub: true,
+          otherClub: true,
           points: [
             [now - 120_000, -33.43, -70.52],
             [now, -33.42, -70.51],
           ],
         },
+        {
+          flightId: "f-pil",
+          tail: "CC-PIL",
+          tailSource: "pilot",
+          trailMinutes: 10,
+          nonClub: true,
+          points: [
+            [now - 120_000, -33.45, -70.53],
+            [now, -33.44, -70.52],
+          ],
+        },
       ],
     });
-    expect(trails[0].nonClub).toBe(true);
+    expect(trails[0].nonClub).toBeUndefined();
+    expect(trails[0].otherClub).toBeUndefined();
+    expect(trails[1].nonClub).toBeUndefined();
+    expect(trails[1].otherClub).toBe(true);
+    expect(trails[2].nonClub).toBe(true);
+    expect(trails[2].otherClub).toBeUndefined();
 
     const container = document.createElement("div");
     renderClubTileMap(container, {
@@ -364,16 +405,45 @@ describe("nearby public flights rendering and settings control", () => {
 
     const extMarker = container.querySelector('[data-marker="aircraft"][data-tail="CC-EXT"]');
     expect(extMarker?.getAttribute("data-non-club")).toBe("true");
+    expect(extMarker?.getAttribute("data-other-club")).toBe("true");
     expect(extMarker?.classList.contains("is-non-club")).toBe(true);
+    expect(extMarker?.classList.contains("is-pilot-tail")).toBe(false);
     expect(extMarker?.querySelector('[data-non-club-label="true"]')?.textContent).toBe(
       "Fuera del club",
     );
 
+    const pilMarker = container.querySelector('[data-marker="aircraft"][data-tail="CC-PIL"]');
+    expect(pilMarker?.getAttribute("data-non-club")).toBe("true");
+    expect(pilMarker?.getAttribute("data-other-club")).toBeNull();
+    expect(pilMarker?.classList.contains("is-non-club")).toBe(true);
+    expect(pilMarker?.classList.contains("is-pilot-tail")).toBe(true);
+    expect(pilMarker?.querySelector('[data-non-club-label="true"]')?.textContent).toBe(
+      "Registrada por el piloto",
+    );
+
     const ownMarker = container.querySelector('[data-marker="aircraft"][data-tail="N101"]');
     expect(ownMarker?.getAttribute("data-non-club")).toBeNull();
+    expect(ownMarker?.getAttribute("data-other-club")).toBeNull();
 
     const extTrail = container.querySelector('[data-testid="live-trail"][data-trail-tail="CC-EXT"]');
     expect(extTrail?.getAttribute("data-non-club")).toBe("true");
+    expect(extTrail?.getAttribute("data-other-club")).toBe("true");
+    expect(extTrail?.getAttribute("data-tail-source")).toBe("club");
+
+    const pilTrail = container.querySelector('[data-testid="live-trail"][data-trail-tail="CC-PIL"]');
+    expect(pilTrail?.getAttribute("data-non-club")).toBe("true");
+    expect(pilTrail?.getAttribute("data-other-club")).toBeNull();
+    expect(pilTrail?.getAttribute("data-tail-source")).toBe("pilot");
+
+    const ownTrail = container.querySelector('[data-testid="live-trail"][data-trail-tail="N101"]');
+    expect(ownTrail?.getAttribute("data-non-club")).toBeNull();
+    expect(ownTrail?.getAttribute("data-other-club")).toBeNull();
+
+    // Secondary (nearby) trails render before own-club trails so own-club stays on top.
+    const renderedOrder = Array.from(
+      container.querySelectorAll('[data-testid="live-trail"]'),
+    ).map((el) => el.getAttribute("data-trail-tail"));
+    expect(renderedOrder[renderedOrder.length - 1]).toBe("N101");
   });
 
   it("toggles nearby public setting, changes radius, calls onSaved, and reverts on failure", async () => {

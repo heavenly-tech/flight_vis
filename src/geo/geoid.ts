@@ -83,10 +83,10 @@ function scheduleRetry(): void {
 }
 
 async function fetchGeoidAssets(): Promise<void> {
-  const metaRes = await fetch(geoidAssetUrl("egm96-025deg.json"));
+  const metaRes = await fetch(geoidAssetUrl("egm96-025deg.json"), { credentials: "omit" });
   if (!metaRes.ok) throw new Error("Could not load geoid metadata");
   const nextMeta = (await metaRes.json()) as GeoidMeta;
-  const binRes = await fetch(geoidAssetUrl("egm96-025deg.bin"));
+  const binRes = await fetch(geoidAssetUrl("egm96-025deg.bin"), { credentials: "omit" });
   if (!binRes.ok) throw new Error("Could not load geoid grid");
   const buffer = await binRes.arrayBuffer();
   installGeoidGrid(nextMeta, new Float32Array(buffer));
@@ -165,4 +165,9 @@ export function geoidUndulationM(lat: number, lon: number): number {
 /** Convert WGS84 ellipsoidal height to MSL (EGM96). Requires loaded grid. */
 export function ellipsoidToMsl(lat: number, lon: number, hEllipsoid: number): number {
   return hEllipsoid - geoidUndulationM(lat, lon);
+}
+
+/** Convert MSL (EGM96) height to WGS84 ellipsoidal height. Requires loaded grid. */
+export function mslToEllipsoid(lat: number, lon: number, hMsl: number): number {
+  return hMsl + geoidUndulationM(lat, lon);
 }

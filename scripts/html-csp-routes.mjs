@@ -8,6 +8,8 @@ export const HTML_CSP_ROUTE_TABLE = Object.freeze({
   "/index.html": "globe",
   "/__spa_index__": "globe",
   "/share-flight.html": "globe",
+  "/embed/3d": "globe",
+  "/embed-3d.html": "globe",
   "/club-admin-map.html": "map",
   "/public-map.html": "map",
   "/club-screen.html": "map",

@@ -62,6 +62,7 @@ type AircraftPosition = {
   pilotName?: string | null;
   trailMinutes?: number;
   nonClub?: boolean;
+  otherClub?: boolean;
   fix?: {
     lat: number;
     lon: number;
@@ -296,7 +297,9 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
         const btn = document.createElement("button");
         const key = aircraftFocusKey(row);
         const tailSource = parseTailSource(row.tailSource);
-        const badgeLabel = aircraftSourceBadgeLabel({ tailSource, nonClub: row.nonClub });
+        const nonClub = row.nonClub === true;
+        const otherClub = row.otherClub === true;
+        const badgeLabel = aircraftSourceBadgeLabel({ tailSource, nonClub, otherClub });
         btn.type = "button";
         btn.className = "kiosk-tail-chip";
         btn.dataset.tail = row.tail;
@@ -311,15 +314,17 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
           btn.classList.add("is-non-club");
           if (tailSource === "pilot") btn.classList.add("is-pilot-tail");
           btn.setAttribute("data-non-club", "true");
+          if (otherClub) btn.setAttribute("data-other-club", "true");
           btn.textContent = formatAircraftListLabel({
             tail: row.tail,
             pilotName: row.pilotName,
             tailSource,
-            nonClub: row.nonClub,
+            nonClub,
+            otherClub,
           });
         } else {
           btn.textContent = formatAircraftListLabel(
-            { tail: row.tail, pilotName: row.pilotName, tailSource, nonClub: row.nonClub },
+            { tail: row.tail, pilotName: row.pilotName, tailSource, nonClub, otherClub },
             { fallbackPilotDash: true },
           );
         }
@@ -361,7 +366,8 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     const focusedSource = parseTailSource(focused.tailSource);
     const focusedBadge = aircraftSourceBadgeLabel({
       tailSource: focusedSource,
-      nonClub: focused.nonClub,
+      nonClub: focused.nonClub === true,
+      otherClub: focused.otherClub === true,
     });
     if (focusedBadge) {
       const badgeEl = document.createElement("span");
@@ -514,6 +520,7 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
         focusKey: aircraftFocusKey(a),
         trailMinutes: a.trailMinutes,
         nonClub: a.nonClub === true,
+        otherClub: a.otherClub === true,
         pilotName: a.pilotName ?? null,
       }));
 
@@ -564,18 +571,21 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
         });
         if (pts.length >= 2) {
           const tailSource = ac.tailSource ?? matched.tailSource;
+          const isOtherClub = ac.otherClub || matched.otherClub === true;
           const isNonClub = ac.nonClub || matched.nonClub === true || tailSource === "pilot";
+          const isSecondary = isNonClub || isOtherClub;
           trailItems.push({
             flightId: matched.flightId || ac.flightId || "",
             tail: ac.tail,
             tailSource,
             trailMinutes: effectiveMinutes,
             nonClub: isNonClub || undefined,
+            otherClub: isOtherClub || undefined,
             points: pts,
             rgb:
               focusedKey === ac.focusKey
                 ? FOCUSED_TRAIL_RGB
-                : isNonClub
+                : isSecondary
                   ? NON_CLUB_TRAIL_RGB
                   : DEFAULT_TRAIL_RGB,
           });
@@ -590,8 +600,8 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
       });
     }
 
-    const isSecondary = (ac: { nonClub: boolean; tailSource?: TailSource }) =>
-      ac.nonClub || ac.tailSource === "pilot";
+    const isSecondary = (ac: { nonClub: boolean; otherClub: boolean; tailSource?: TailSource }) =>
+      ac.nonClub || ac.otherClub || ac.tailSource === "pilot";
     const orderedAircraft = [
       ...aircraftPositions.filter(isSecondary),
       ...aircraftPositions.filter((ac) => !isSecondary(ac)),
@@ -671,6 +681,7 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
       focusKey: string;
       pilotName: string | null;
       nonClub: boolean;
+      otherClub: boolean;
     },
     view: ReturnType<typeof computeKioskView>,
     mapPx: { w: number; h: number },
@@ -705,6 +716,9 @@ export function mountClubDisplayScreen(opts: ClubDisplayOpts): void {
     marker.style.cursor = "pointer";
     if (badgeLabel) {
       marker.setAttribute("data-non-club", "true");
+      if (ac.otherClub) {
+        marker.setAttribute("data-other-club", "true");
+      }
       const tailSpan = document.createElement("span");
       tailSpan.className = "marker-tail";
       tailSpan.textContent = ac.tail;

@@ -662,5 +662,12 @@
     "off": "Off",
     "minutes": "{minutes} min",
     "all": "All"
+  },
+  "embed3d": {
+    "title": "3D view",
+    "loading": "Loading 3D…",
+    "webglError": "Your device cannot display the 3D map.",
+    "creditsAria": "Map attribution",
+    "mapAria": "Live 3D map"
   }
 }

@@ -1485,12 +1485,8 @@ pub(crate) async fn resolve_flight_owner_actor(
             if let Some(pid) = personal_pid {
                 return Ok(pid);
             }
-            if let Some(fid) = target_flight_id {
-                return if db.get_flight(fid).await.is_some() {
-                    Err((StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))))
-                } else {
-                    Err((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))))
-                };
+            if target_flight_id.is_some() {
+                return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))));
             }
             return Err((
                 StatusCode::UNAUTHORIZED,
@@ -1878,7 +1874,7 @@ pub async fn patch_club_flight_by_id(
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     };
     if existing.pilot_id != id {
-        return (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response();
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     }
     if visibility == Some(FlightVisibility::Club) && existing.club_id.is_none() {
         return (
@@ -1899,11 +1895,8 @@ pub async fn patch_club_flight_by_id(
         .await
     {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(PatchError::NotFound) => {
+        Err(PatchError::NotFound | PatchError::Forbidden) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
-        }
-        Err(PatchError::Forbidden) => {
-            (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
         }
         Err(PatchError::ClubVisibilityRequiresClub) => (
             StatusCode::BAD_REQUEST,
@@ -1931,11 +1924,8 @@ async fn end_club_flight(
     };
     match db.end_flight(&id, &flight_id, now_ms()).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(EndError::NotFound) => {
+        Err(EndError::NotFound | EndError::Forbidden) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
-        }
-        Err(EndError::Forbidden) => {
-            (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
         }
         Err(EndError::NotActive) => {
             (StatusCode::CONFLICT, Json(json!({ "error": "not active" }))).into_response()
@@ -2003,11 +1993,8 @@ async fn patch_club_flight_trail(
             "effectiveTrailMinutes": effective.as_i16(),
         }))
         .into_response(),
-        Err(FlightTrailError::NotFound) => {
+        Err(FlightTrailError::NotFound | FlightTrailError::Forbidden) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
-        }
-        Err(FlightTrailError::Forbidden) => {
-            (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
         }
         Err(FlightTrailError::NotActive) => {
             (StatusCode::CONFLICT, Json(json!({ "error": "not active" }))).into_response()
@@ -2639,11 +2626,8 @@ async fn delete_my_flight(
     };
     match db.delete_my_flight(&id, &flight_id).await {
         Ok(()) => Json(json!({ "ok": true })).into_response(),
-        Err(DeleteError::NotFound) => {
+        Err(DeleteError::NotFound | DeleteError::Forbidden) => {
             (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
-        }
-        Err(DeleteError::Forbidden) => {
-            (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response()
         }
         Err(DeleteError::Db(_)) => (
             StatusCode::INTERNAL_SERVER_ERROR,

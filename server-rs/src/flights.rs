@@ -132,13 +132,9 @@ async fn patch_flight(
     body: Bytes,
 ) -> axum::response::Response {
     if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&body) {
-        let mut club_patch = false;
-        if value.get("visibility").is_some() || value.get("show_pilot_name_public").is_some() {
-            if let Some(db) = state.club.as_ref() {
-                club_patch = db.get_flight(&raw).await.is_some();
-            }
-        }
-        if club_patch {
+        if state.club.is_some()
+            && (value.get("visibility").is_some() || value.get("show_pilot_name_public").is_some())
+        {
             return crate::club::patch_club_flight_by_id(
                 State(state),
                 headers,

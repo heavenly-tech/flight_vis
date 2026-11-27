@@ -61,6 +61,44 @@ fn flight_mismatch() -> impl IntoResponse {
     )
 }
 
+fn throttled_flight_mismatch(engine: &LiveEngine, device_key: &str) -> axum::response::Response {
+    if let Err(retry_after) = engine.allow_flight_mismatch(device_key) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, retry_after.to_string())],
+            Json(json!({ "error": "rate limited" })),
+        )
+            .into_response();
+    }
+    flight_mismatch().into_response()
+}
+
+/// Effective minimum device timestamp (ms) accepted on an open flight.
+///
+/// - Explicit `flight_id`/`flightId` binding (`omit_flight_id == false`): keeps the standard
+///   `started_at - PRE_START_SKEW_MS` (120 s) skew tolerance unchanged.
+/// - Omit-id path (`omit_flight_id == true`, including `/api/osmand` without `flight_id`):
+///   fails closed against leftovers from a recently ended flight of the same device/pilot/account
+///   (M-32). Any fix `<= previous_flight_ended_at` is dropped; when `previous_flight_ended_at`
+///   falls inside the 120 s pre-start skew window (`>= started_at - PRE_START_SKEW_MS`), omit-id
+///   fixes before `started_at` are also dropped (`max(started_at, previous_flight_ended_at + 1)`)
+///   so inter-flight / prior-flight points cannot attach to the new flight.
+pub(crate) fn effective_pre_start_min_t(
+    started_at: i64,
+    previous_flight_ended_at: Option<i64>,
+    omit_flight_id: bool,
+) -> i64 {
+    let base = started_at.saturating_sub(PRE_START_SKEW_MS);
+    if !omit_flight_id {
+        return base;
+    }
+    match previous_flight_ended_at {
+        Some(prev_end) if prev_end >= base => started_at.max(prev_end.saturating_add(1)),
+        Some(prev_end) => base.max(prev_end.saturating_add(1)),
+        None => base,
+    }
+}
+
 fn validate_ingest_fix(engine: &LiveEngine, fix: &LiveFix) -> Result<(), &'static str> {
     engine.validate_fix(fix)?;
     for v in [fix.alt, fix.speed, fix.course, fix.accuracy]
@@ -211,9 +249,11 @@ pub async fn post_ingest(
     match caller {
         IngestCaller::DbDevice(device_id) => {
             let db = state.club.as_ref().expect("club db present");
+            let mismatch_key = format!("db:{device_id}");
+            let omit_flight_id = requested_flight_ids.is_empty();
             if let Some(open_flight) = db.open_flight_context_for_device(&device_id).await {
                 if !flight_binding_matches(&requested_flight_ids, &open_flight.flight_id) {
-                    return flight_mismatch().into_response();
+                    return throttled_flight_mismatch(&state.live, &mismatch_key);
                 }
                 if let Some(club_id) = &open_flight.club_id {
                     if db.club_operational(club_id).await.is_err() {
@@ -225,7 +265,11 @@ pub async fn post_ingest(
                     }
                 }
                 let input_len = fixes.len();
-                let min_allowed_t = open_flight.started_at.saturating_sub(PRE_START_SKEW_MS);
+                let min_allowed_t = effective_pre_start_min_t(
+                    open_flight.started_at,
+                    open_flight.previous_flight_ended_at,
+                    omit_flight_id,
+                );
                 let mut kept = Vec::with_capacity(input_len);
                 let mut dropped_pre_start = 0usize;
                 for fix in fixes {
@@ -278,7 +322,12 @@ pub async fn post_ingest(
                         .into_response();
                 }
                 return match db
-                    .append_fixes_for_open_flight(&open_flight.flight_id, &device_id, &kept)
+                    .append_fixes_for_open_flight(
+                        &open_flight.flight_id,
+                        &device_id,
+                        &kept,
+                        omit_flight_id,
+                    )
                     .await
                 {
                     Ok(outcome) => (
@@ -287,13 +336,13 @@ pub async fn post_ingest(
                             "ok": true,
                             "accepted": outcome.accepted,
                             "duplicates": outcome.duplicates,
-                            "droppedPreStart": dropped_pre_start,
+                            "droppedPreStart": dropped_pre_start + outcome.dropped_pre_start,
                         })),
                     )
                         .into_response(),
                     Err(AppendOpenFlightError::FlightMismatch) => {
-                        if !requested_flight_ids.is_empty() {
-                            flight_mismatch().into_response()
+                        if !omit_flight_id {
+                            throttled_flight_mismatch(&state.live, &mismatch_key)
                         } else {
                             bad_request("no active flight").into_response()
                         }
@@ -305,8 +354,8 @@ pub async fn post_ingest(
                         .into_response(),
                 };
             }
-            if !requested_flight_ids.is_empty() {
-                return flight_mismatch().into_response();
+            if !omit_flight_id {
+                return throttled_flight_mismatch(&state.live, &mismatch_key);
             }
             // Guest / unverified device with a live check-in: approval gates `cleared`, not sharing.
             if let Some(club_id) = db
@@ -347,7 +396,7 @@ pub async fn post_ingest(
         }
         IngestCaller::LegacyDevice(device) => {
             if !requested_flight_ids.is_empty() {
-                return flight_mismatch().into_response();
+                return throttled_flight_mismatch(&state.live, &format!("legacy:{device}"));
             }
             if !state.live.allow_ingest(device).await {
                 return (
@@ -547,14 +596,16 @@ pub async fn osmand_ingest(
         fix.t = state.live.now_ms();
     }
     let requested_flight_ids = collect_osmand_flight_ids(&q);
+    let omit_flight_id = requested_flight_ids.is_empty();
     if let Some(db) = &state.club {
         if let Some(device_id) = db.resolve_device_token(&token).await {
             if db.device_account_suspended(&device_id).await {
                 return unauthorized().into_response();
             }
+            let mismatch_key = format!("db:{device_id}");
             if let Some(open_flight) = db.open_flight_context_for_device(&device_id).await {
                 if !flight_binding_matches(&requested_flight_ids, &open_flight.flight_id) {
-                    return flight_mismatch().into_response();
+                    return throttled_flight_mismatch(&state.live, &mismatch_key);
                 }
                 if let Some(club_id) = &open_flight.club_id {
                     if db.club_operational(club_id).await.is_err() {
@@ -565,7 +616,11 @@ pub async fn osmand_ingest(
                             .into_response();
                     }
                 }
-                let min_allowed_t = open_flight.started_at.saturating_sub(PRE_START_SKEW_MS);
+                let min_allowed_t = effective_pre_start_min_t(
+                    open_flight.started_at,
+                    open_flight.previous_flight_ended_at,
+                    omit_flight_id,
+                );
                 if fix.t < min_allowed_t {
                     // Drop pre-start leftover without burning rate-limit budget or writing rows;
                     // return 200 OK so OsmAnd/Traccar clients discard stale buffered positions.
@@ -593,13 +648,14 @@ pub async fn osmand_ingest(
                         &open_flight.flight_id,
                         &device_id,
                         std::slice::from_ref(&fix),
+                        omit_flight_id,
                     )
                     .await
                 {
                     Ok(_) => (StatusCode::OK, "OK").into_response(),
                     Err(AppendOpenFlightError::FlightMismatch) => {
-                        if !requested_flight_ids.is_empty() {
-                            flight_mismatch().into_response()
+                        if !omit_flight_id {
+                            throttled_flight_mismatch(&state.live, &mismatch_key)
                         } else {
                             bad_request("no active flight").into_response()
                         }
@@ -611,8 +667,8 @@ pub async fn osmand_ingest(
                         .into_response(),
                 };
             }
-            if !requested_flight_ids.is_empty() {
-                return flight_mismatch().into_response();
+            if !omit_flight_id {
+                return throttled_flight_mismatch(&state.live, &mismatch_key);
             }
             // Guest / unverified device with a live check-in: approval gates `cleared`, not sharing.
             if let Some(club_id) = db
@@ -646,8 +702,8 @@ pub async fn osmand_ingest(
         Some(name) => name,
         None => return unauthorized().into_response(),
     };
-    if !requested_flight_ids.is_empty() {
-        return flight_mismatch().into_response();
+    if !omit_flight_id {
+        return throttled_flight_mismatch(&state.live, &format!("legacy:{device}"));
     }
     if !state.live.allow_ingest(device).await {
         return (
@@ -796,5 +852,41 @@ mod tests {
             br#"{"seq":"1","fixes":[{"t":1700000000000,"lat":-33.4,"lon":-70.6}]}"#,
         )
         .is_err());
+    }
+
+    #[test]
+    fn effective_pre_start_min_t_fails_closed_for_omit_id_and_preserves_explicit_id() {
+        let prev_end = 1_700_000_000_000_i64;
+        let start_t = prev_end + 30_000; // B starts 30s after A ended (inside 120s skew)
+
+        // Omit-id with previous flight ended inside 120s skew: drops T-10s, T, AND T+5s!
+        let min_omit = effective_pre_start_min_t(start_t, Some(prev_end), true);
+        assert_eq!(min_omit, start_t);
+        assert!(prev_end - 10_000 < min_omit);
+        assert!(prev_end < min_omit);
+        assert!(prev_end + 5_000 < min_omit);
+        assert!(prev_end + 40_000 >= min_omit);
+
+        // Explicit flight_id keeps normal 120s pre-start skew tolerance unchanged.
+        let min_bound = effective_pre_start_min_t(start_t, Some(prev_end), false);
+        assert_eq!(min_bound, start_t - PRE_START_SKEW_MS);
+        assert!(prev_end - 10_000 >= min_bound);
+        assert!(prev_end + 5_000 >= min_bound);
+
+        // Omit-id with no previous flight or old previous flight (>120s ago): keeps normal skew.
+        assert_eq!(
+            effective_pre_start_min_t(start_t, None, true),
+            start_t - PRE_START_SKEW_MS
+        );
+        assert_eq!(
+            effective_pre_start_min_t(start_t, Some(start_t - PRE_START_SKEW_MS - 60_000), true),
+            start_t - PRE_START_SKEW_MS
+        );
+
+        // Defensive: if prev_end > start_t (clock skew), still strictly > prev_end.
+        assert_eq!(
+            effective_pre_start_min_t(start_t, Some(start_t + 5_000), true),
+            start_t + 5_001
+        );
     }
 }

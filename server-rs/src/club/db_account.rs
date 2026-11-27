@@ -56,7 +56,51 @@ pub enum AccountJoinError {
     ClubClosed,
     ClubSuspended,
     AccountSuspended,
+    NotFound,
     Db,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccountLeaveError {
+    NotFound,
+    LastAdmin,
+    AccountGone,
+    Db,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountLeaveOutcome {
+    #[allow(dead_code)]
+    pub club_id: String,
+    pub pilot_id: String,
+    #[allow(dead_code)]
+    pub membership_id: String,
+}
+
+/// Acquire the per-account transaction-scoped advisory lock shared between account deletion
+/// (`delete_account_in_tx`) and every membership creation/activation/leave path
+/// (`pg_advisory_xact_lock(hashtext('account-delete:{account_id}'))`), and verify the account
+/// row still exists (`FOR SHARE`).
+///
+/// Lock ordering rule (prevents deadlocks across all membership/delete paths):
+/// 1. `pg_advisory_xact_lock(hashtext('account-delete:{account_id}'))`
+/// 2. `accounts` row lock (`FOR SHARE` / `FOR UPDATE`)
+/// 3. `clubs` row lock (`FOR UPDATE`, when needed for last-admin / invite checks)
+/// 4. `magic_login_tokens` / `pilots` / `club_memberships` row locks
+pub(crate) async fn lock_account_for_membership_change(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    account_id: &str,
+) -> Result<bool, DbError> {
+    let lock_key = format!("account-delete:{account_id}");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(&lock_key)
+        .execute(&mut **tx)
+        .await?;
+    let row: Option<String> = sqlx::query_scalar("SELECT id FROM accounts WHERE id = $1 FOR SHARE")
+        .bind(account_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    Ok(row.is_some())
 }
 
 #[derive(Debug)]
@@ -1057,24 +1101,54 @@ impl ClubDb {
         license_no: &str,
         now: i64,
     ) -> Result<String, AccountJoinError> {
-        let acct = self
-            .account_by_id(account_id)
+        let mut tx = self.pool.begin().await.map_err(|_| AccountJoinError::Db)?;
+        if !lock_account_for_membership_change(&mut tx, account_id)
             .await
-            .ok_or(AccountJoinError::Db)?;
+            .map_err(|_| AccountJoinError::Db)?
+        {
+            let _ = tx.rollback().await;
+            return Err(AccountJoinError::NotFound);
+        }
+        let acct_row = sqlx::query(
+            "SELECT id, email, email_verified_at, global_role, suspended_at, locale
+             FROM accounts WHERE id = $1",
+        )
+        .bind(account_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| AccountJoinError::Db)?;
+        let Some(acct) = acct_row.map(|r| row_to_account(&r)) else {
+            let _ = tx.rollback().await;
+            return Err(AccountJoinError::NotFound);
+        };
         if acct.suspended_at.is_some() {
+            let _ = tx.rollback().await;
             return Err(AccountJoinError::AccountSuspended);
         }
         if acct.email_verified_at.is_none() {
+            let _ = tx.rollback().await;
             return Err(AccountJoinError::Db);
         }
-        if let Some(row) = self.club_public_row(club_id).await {
-            if row.suspended_at.is_some() {
+        let club_row =
+            sqlx::query("SELECT status, email_verified_at, suspended_at FROM clubs WHERE id = $1")
+                .bind(club_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|_| AccountJoinError::Db)?;
+        if let Some(row) = club_row {
+            let status: String = row.try_get(0).unwrap_or_default();
+            let email_verified_at: Option<i64> = row.try_get(1).ok().flatten();
+            let suspended_at: Option<i64> = row.try_get(2).ok().flatten();
+            if suspended_at.is_some() {
+                let _ = tx.rollback().await;
                 return Err(AccountJoinError::ClubSuspended);
             }
-            if !ClubDb::is_public_verified(&row) {
+            if status != "live" || email_verified_at.is_none() {
+                let _ = tx.rollback().await;
                 return Err(AccountJoinError::ClubClosed);
             }
         } else {
+            let _ = tx.rollback().await;
             return Err(AccountJoinError::ClubClosed);
         }
         let existing: Option<String> = sqlx::query_scalar(
@@ -1085,10 +1159,11 @@ impl ClubDb {
         .bind(account_id)
         .bind(club_id)
         .bind(&acct.email)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|_| AccountJoinError::Db)?;
         if existing.is_some() {
+            let _ = tx.rollback().await;
             return Err(AccountJoinError::EmailExists);
         }
         let existing_pilot: Option<String> = sqlx::query_scalar(
@@ -1096,10 +1171,11 @@ impl ClubDb {
         )
         .bind(club_id)
         .bind(&acct.email)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|_| AccountJoinError::Db)?;
         if existing_pilot.is_some() {
+            let _ = tx.rollback().await;
             return Err(AccountJoinError::EmailExists);
         }
         let pilot_id = new_id();
@@ -1110,7 +1186,6 @@ impl ClubDb {
             name.trim()
         };
         let pilot_verified = acct.email_verified_at.unwrap_or(now);
-        let mut tx = self.pool.begin().await.map_err(|_| AccountJoinError::Db)?;
         let ins_pilot = sqlx::query(
             "INSERT INTO pilots (id, club_id, account_id, name, email, license_no, status, role, password_hash, email_verified_at, created_at)
              VALUES ($1, $2, $3, $4, $5, $6, 'pending', 'pilot', '', $7, $8)",
@@ -1186,20 +1261,30 @@ impl ClubDb {
                 auth::hash_password(password).map_err(|_| RegisterError::Hash)?,
             ),
         };
+        let pilot_id = new_id();
+        let member_id = new_id();
+        let mut tx = self.pool.begin().await.map_err(RegisterError::Db)?;
+        if let Some(ref aid) = pilot_account_id {
+            if !lock_account_for_membership_change(&mut tx, aid)
+                .await
+                .map_err(RegisterError::Db)?
+            {
+                let _ = tx.rollback().await;
+                return Err(RegisterError::Db(DbError::protocol("account not found")));
+            }
+        }
         let existing_pilot: Option<String> = sqlx::query_scalar(
             "SELECT id FROM pilots WHERE club_id = $1 AND lower(email) = lower($2)",
         )
         .bind(club_id)
         .bind(&email)
-        .fetch_optional(&self.pool)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(RegisterError::Db)?;
         if existing_pilot.is_some() {
+            let _ = tx.rollback().await;
             return Err(RegisterError::EmailExists);
         }
-        let pilot_id = new_id();
-        let member_id = new_id();
-        let mut tx = self.pool.begin().await.map_err(RegisterError::Db)?;
         sqlx::query(
             "INSERT INTO pilots (id, club_id, account_id, name, email, license_no, status, role, password_hash, created_at)
              VALUES ($1, $2, $3, $4, $5, $6, 'pending', 'pilot', $7, $8)",
@@ -1286,9 +1371,26 @@ impl ClubDb {
     }
 
     pub async fn approve_membership(&self, membership_id: &str, now: i64) -> Result<(), DbError> {
+        let pre_account_id: Option<String> = sqlx::query_scalar(
+            "SELECT p.account_id
+             FROM club_memberships m
+             JOIN pilots p ON p.id = m.pilot_id
+             WHERE m.id = $1",
+        )
+        .bind(membership_id)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
+
         let mut tx = self.pool.begin().await?;
+        if let Some(ref aid) = pre_account_id {
+            if !lock_account_for_membership_change(&mut tx, aid).await? {
+                let _ = tx.rollback().await;
+                return Err(DbError::protocol("missing account"));
+            }
+        }
         let row = sqlx::query(
-            "SELECT m.pilot_id, m.club_id, m.status, a.email_verified_at, p.email_verified_at
+            "SELECT m.pilot_id, m.club_id, m.status, p.account_id, a.email_verified_at, p.email_verified_at
              FROM club_memberships m
              JOIN pilots p ON p.id = m.pilot_id
              LEFT JOIN accounts a ON a.id = p.account_id
@@ -1304,8 +1406,19 @@ impl ClubDb {
         let pilot_id: String = row.try_get(0)?;
         let club_id: String = row.try_get(1)?;
         let cur_status: String = row.try_get(2)?;
-        let account_verified: Option<i64> = row.try_get(3).ok().flatten();
-        let pilot_verified: Option<i64> = row.try_get(4).ok().flatten();
+        let cur_account_id: Option<String> = row.try_get(3).ok().flatten();
+        let account_verified: Option<i64> = row.try_get(4).ok().flatten();
+        let pilot_verified: Option<i64> = row.try_get(5).ok().flatten();
+        if pre_account_id.is_some() && cur_account_id != pre_account_id {
+            return Err(DbError::protocol("missing account"));
+        }
+        if pre_account_id.is_none() {
+            if let Some(ref aid) = cur_account_id {
+                if !lock_account_for_membership_change(&mut tx, aid).await? {
+                    return Err(DbError::protocol("missing account"));
+                }
+            }
+        }
         if cur_status != "pending" {
             return Err(DbError::protocol("membership not pending"));
         }
@@ -1411,19 +1524,20 @@ impl ClubDb {
         }
     }
 
-    async fn delete_account_in_tx(
+    #[cfg_attr(test, allow(dead_code))]
+    pub(crate) async fn delete_account_in_tx(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         account_id: &str,
         session_raw: &str,
         password: Option<&str>,
         now: i64,
     ) -> Result<DeletedAccountArtifacts, AccountDeleteError> {
-        let lock_key = format!("account-delete:{account_id}");
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
-            .bind(&lock_key)
-            .execute(&mut **tx)
+        if !lock_account_for_membership_change(tx, account_id)
             .await
-            .map_err(|_| AccountDeleteError::Db)?;
+            .map_err(|_| AccountDeleteError::Db)?
+        {
+            return Err(AccountDeleteError::NotFound);
+        }
 
         let acct_row = sqlx::query(
             "SELECT email, password_hash, suspended_at FROM accounts WHERE id = $1 FOR UPDATE",
@@ -1482,12 +1596,16 @@ impl ClubDb {
             return Err(AccountDeleteError::AuthRequired);
         }
 
+        // L-95: only active (active/approved) or pending memberships block account deletion;
+        // removed/suspended/rejected/left rows do not block and are cleaned up below while
+        // preserving club-owned pilot/flight history.
         let membership_rows = sqlx::query(
             "SELECT m.id, m.pilot_id, m.club_id, c.slug, c.name, m.role, m.status
              FROM club_memberships m
              JOIN pilots p ON p.id = m.pilot_id
              JOIN clubs c ON c.id = m.club_id
              WHERE p.account_id = $1
+               AND m.status IN ('active', 'approved', 'pending')
              ORDER BY lower(c.name)",
         )
         .bind(account_id)
@@ -1511,6 +1629,18 @@ impl ClubDb {
                 .collect();
             return Err(AccountDeleteError::HasMemberships(memberships));
         }
+
+        // Remove non-blocking historical membership rows (suspended/removed/rejected/left)
+        // for this account before detaching its club pilot rows.
+        sqlx::query(
+            "DELETE FROM club_memberships
+             WHERE pilot_id IN (SELECT id FROM pilots WHERE account_id = $1 AND club_id IS NOT NULL)
+               AND status NOT IN ('active', 'approved', 'pending')",
+        )
+        .bind(account_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| AccountDeleteError::Db)?;
 
         let personal_pilot_ids: Vec<String> =
             sqlx::query_scalar("SELECT id FROM pilots WHERE account_id = $1 AND club_id IS NULL")
@@ -1697,6 +1827,147 @@ impl ClubDb {
         Ok(DeletedAccountArtifacts {
             personal_device_ids,
             clubless_flight_ids,
+        })
+    }
+
+    /// Self-serve club departure (`DELETE /api/account/clubs/{slug}`).
+    ///
+    /// Lock order: advisory `account-delete:{account_id}` -> `accounts FOR SHARE` ->
+    /// `clubs FOR UPDATE` -> `club_memberships FOR UPDATE`.
+    /// - Returns `NotFound` identically for unknown slugs and clubs where the account has no
+    ///   active/pending membership (no existence oracle).
+    /// - Rejects the club's last active admin with `LastAdmin` (`409 {"error":"last_admin"}`).
+    /// - Deletes the membership row, ends that club's `pilot_sessions` and clears
+    ///   `account_sessions` pointers tied to that membership/pilot, marks the club pilot row
+    ///   suspended/non-admin (preserving historical club flights), and records an `audit_log` row.
+    pub async fn leave_club_by_slug(
+        &self,
+        account_id: &str,
+        slug: &str,
+        now: i64,
+    ) -> Result<AccountLeaveOutcome, AccountLeaveError> {
+        let slug = slug.trim();
+        if slug.is_empty() {
+            return Err(AccountLeaveError::NotFound);
+        }
+        let mut tx = self.pool.begin().await.map_err(|_| AccountLeaveError::Db)?;
+        if !lock_account_for_membership_change(&mut tx, account_id)
+            .await
+            .map_err(|_| AccountLeaveError::Db)?
+        {
+            let _ = tx.rollback().await;
+            return Err(AccountLeaveError::AccountGone);
+        }
+        let club_id: Option<String> =
+            sqlx::query_scalar("SELECT id FROM clubs WHERE slug = $1 FOR UPDATE")
+                .bind(slug)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|_| AccountLeaveError::Db)?;
+        let Some(club_id) = club_id else {
+            let _ = tx.rollback().await;
+            return Err(AccountLeaveError::NotFound);
+        };
+        let row = sqlx::query(
+            "SELECT m.id, m.pilot_id, m.role, m.status
+             FROM club_memberships m
+             JOIN pilots p ON p.id = m.pilot_id
+             WHERE p.account_id = $1
+               AND m.club_id = $2
+               AND m.status IN ('active', 'approved', 'pending')
+             LIMIT 1
+             FOR UPDATE OF m",
+        )
+        .bind(account_id)
+        .bind(&club_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| AccountLeaveError::Db)?;
+        let Some(row) = row else {
+            let _ = tx.rollback().await;
+            return Err(AccountLeaveError::NotFound);
+        };
+        let membership_id: String = row.try_get(0).map_err(|_| AccountLeaveError::Db)?;
+        let pilot_id: String = row.try_get(1).map_err(|_| AccountLeaveError::Db)?;
+        let current_role: String = row.try_get(2).map_err(|_| AccountLeaveError::Db)?;
+        let current_status: String = row.try_get(3).map_err(|_| AccountLeaveError::Db)?;
+
+        let admin_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM club_memberships
+             WHERE club_id = $1 AND role = 'admin' AND status IN ('active', 'approved')",
+        )
+        .bind(&club_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| AccountLeaveError::Db)?;
+        if Self::would_violate_last_admin(&current_role, &current_status, None, true, admin_count) {
+            let _ = tx.rollback().await;
+            return Err(AccountLeaveError::LastAdmin);
+        }
+
+        sqlx::query(
+            "UPDATE account_sessions
+             SET active_membership_id = NULL, compat_pilot_session = NULL
+             WHERE account_id = $1 AND active_membership_id = $2",
+        )
+        .bind(account_id)
+        .bind(&membership_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AccountLeaveError::Db)?;
+
+        sqlx::query(
+            "UPDATE account_sessions
+             SET compat_pilot_session = NULL
+             WHERE account_id = $1
+               AND compat_pilot_session IN (SELECT id FROM pilot_sessions WHERE pilot_id = $2)",
+        )
+        .bind(account_id)
+        .bind(&pilot_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AccountLeaveError::Db)?;
+
+        sqlx::query("DELETE FROM pilot_sessions WHERE pilot_id = $1")
+            .bind(&pilot_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AccountLeaveError::Db)?;
+
+        sqlx::query("DELETE FROM club_memberships WHERE id = $1")
+            .bind(&membership_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| AccountLeaveError::Db)?;
+
+        sqlx::query(
+            "UPDATE pilots SET status = 'suspended', role = 'pilot' WHERE id = $1 AND club_id = $2",
+        )
+        .bind(&pilot_id)
+        .bind(&club_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AccountLeaveError::Db)?;
+
+        sqlx::query(
+            "INSERT INTO audit_log (id, club_id, actor_pilot_id, action, entity_type, entity_id, detail, created_at)
+             VALUES ($1, $2, $3, 'leave_club', 'membership', $4, $5, $6)",
+        )
+        .bind(new_id())
+        .bind(&club_id)
+        .bind(&pilot_id)
+        .bind(&membership_id)
+        .bind(&current_role)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| AccountLeaveError::Db)?;
+
+        tx.commit().await.map_err(|_| AccountLeaveError::Db)?;
+        Ok(AccountLeaveOutcome {
+            club_id,
+            pilot_id,
+            membership_id,
         })
     }
 

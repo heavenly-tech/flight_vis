@@ -88,6 +88,8 @@ mod public_live_trails_tests;
 mod public_map_tests;
 #[cfg(test)]
 mod public_visibility_gate_tests;
+#[cfg(test)]
+mod review53_followup_tests;
 
 pub use auth::parse_account_session_cookie;
 pub use auth::parse_session_cookie;

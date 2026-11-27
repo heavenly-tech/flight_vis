@@ -21,7 +21,13 @@ export default defineConfig({
   projects: [
     {
       name: "dev-ui",
-      testIgnore: [/csp-prod\.spec\.ts/, /globe-csp\.spec\.ts/, /auth-csp\.spec\.ts/, /admin-checkin-qr\.spec\.ts/],
+      testIgnore: [
+        /csp-prod\.spec\.ts/,
+        /globe-csp\.spec\.ts/,
+        /auth-csp\.spec\.ts/,
+        /embed-3d\.spec\.ts/,
+        /admin-checkin-qr\.spec\.ts/,
+      ],
       use: {
         baseURL: "http://127.0.0.1:5173",
       },
@@ -36,7 +42,7 @@ export default defineConfig({
     },
     {
       name: "globe-csp",
-      testMatch: /(globe-csp|auth-csp)\.spec\.ts/,
+      testMatch: /(globe-csp|auth-csp|embed-3d)\.spec\.ts/,
       fullyParallel: false,
       workers: 1,
       timeout: 120_000,

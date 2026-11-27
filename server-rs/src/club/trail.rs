@@ -163,6 +163,8 @@ pub struct FlightTrail {
     pub trail_minutes: i16,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub non_club: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub other_club: bool,
     pub points: Vec<(i64, f64, f64)>,
 }
 
@@ -404,7 +406,8 @@ impl ClubDb {
         let mut club_count = 0usize;
         let mut non_club_count = 0usize;
         for pos in positions {
-            if pos.non_club {
+            let is_nearby = pos.non_club || pos.other_club;
+            if is_nearby {
                 if non_club_count < MAX_NEARBY_PUBLIC_FLIGHTS {
                     non_club_count += 1;
                     selected.push(pos);
@@ -473,6 +476,7 @@ impl ClubDb {
                     tail_source: pos.tail_source,
                     trail_minutes: effective.as_i16(),
                     non_club: pos.non_club,
+                    other_club: pos.other_club,
                     points,
                 }
             })

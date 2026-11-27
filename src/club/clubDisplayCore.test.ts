@@ -418,6 +418,157 @@ describe("mountClubDisplayScreen session-authenticated loop", () => {
     expect(focusDetail.hidden).toBe(true);
   });
 
+  it("renders otherClub and nonClub nearby flights distinctly on kiosk markers, chips, focus detail, and trails", async () => {
+    const dom = buildKioskDom();
+    const redirectSpy = vi.fn();
+    const now = 1_700_000_000_000;
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/club/i18n/context") {
+        return new Response(JSON.stringify({ resolvedLocale: "es" }), { status: 200 });
+      }
+      if (url === "/api/display/base") {
+        return new Response(
+          JSON.stringify({ icao: "SCTB", lat: -33.456, lon: -70.548, clubName: "Club Demo" }),
+          { status: 200 },
+        );
+      }
+      if (url === "/api/display/kiosk-layout") {
+        return new Response(
+          JSON.stringify({ x: 0.76, y: 0.76, size: 0.22, checkinQrVisible: true }),
+          { status: 200 },
+        );
+      }
+      if (url === "/api/display/map") {
+        return new Response(
+          JSON.stringify({
+            aircraft: [
+              {
+                tail: "CC-OWN",
+                tailSource: "club",
+                flightId: "f-own",
+                trailMinutes: 5,
+                fix: { t: now, lat: -33.45, lon: -70.54 },
+              },
+              {
+                tail: "CC-EXT",
+                tailSource: "club",
+                flightId: "f-ext",
+                trailMinutes: 15,
+                otherClub: true,
+                clubName: "Club Vecino",
+                clubSlug: "vecino",
+                fix: { t: now, lat: -33.42, lon: -70.51 },
+              },
+              {
+                tail: "CC-PIL",
+                tailSource: "pilot",
+                flightId: "f-pil",
+                trailMinutes: 10,
+                nonClub: true,
+                fix: { t: now, lat: -33.44, lon: -70.52 },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "/api/display/map/trails") {
+        return new Response(
+          JSON.stringify({
+            trails: [
+              {
+                flightId: "f-own",
+                tail: "CC-OWN",
+                tailSource: "club",
+                trailMinutes: 5,
+                points: [
+                  [now - 120_000, -33.46, -70.55],
+                  [now, -33.45, -70.54],
+                ],
+              },
+              {
+                flightId: "f-ext",
+                tail: "CC-EXT",
+                tailSource: "club",
+                trailMinutes: 15,
+                otherClub: true,
+                points: [
+                  [now - 120_000, -33.43, -70.52],
+                  [now, -33.42, -70.51],
+                ],
+              },
+              {
+                flightId: "f-pil",
+                tail: "CC-PIL",
+                tailSource: "pilot",
+                trailMinutes: 10,
+                nonClub: true,
+                points: [
+                  [now - 120_000, -33.45, -70.53],
+                  [now, -33.44, -70.52],
+                ],
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("{}", { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    mountClubDisplayScreen({ ...dom, onRedirectToLogin: redirectSpy });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const kioskMap = dom.mapLayer.querySelector<HTMLElement>('[data-testid="kiosk-map"]')!;
+    const extMarker = kioskMap.querySelector('[data-marker="aircraft"][data-tail="CC-EXT"]');
+    const pilMarker = kioskMap.querySelector('[data-marker="aircraft"][data-tail="CC-PIL"]');
+    const ownMarker = kioskMap.querySelector('[data-marker="aircraft"][data-tail="CC-OWN"]');
+
+    expect(ownMarker?.getAttribute("data-non-club")).toBeNull();
+    expect(ownMarker?.getAttribute("data-other-club")).toBeNull();
+
+    expect(extMarker?.getAttribute("data-non-club")).toBe("true");
+    expect(extMarker?.getAttribute("data-other-club")).toBe("true");
+    expect(extMarker?.classList.contains("is-non-club")).toBe(true);
+    expect(extMarker?.classList.contains("is-pilot-tail")).toBe(false);
+    expect(extMarker?.querySelector('[data-non-club-label="true"]')?.textContent).toBe(
+      "Fuera del club",
+    );
+
+    expect(pilMarker?.getAttribute("data-non-club")).toBe("true");
+    expect(pilMarker?.getAttribute("data-other-club")).toBeNull();
+    expect(pilMarker?.classList.contains("is-pilot-tail")).toBe(true);
+    expect(pilMarker?.querySelector('[data-non-club-label="true"]')?.textContent).toBe(
+      "Registrada por el piloto",
+    );
+
+    const extChip = dom.map.querySelector<HTMLButtonElement>(
+      'button.kiosk-tail-chip[data-tail="CC-EXT"]',
+    )!;
+    expect(extChip.getAttribute("data-non-club")).toBe("true");
+    expect(extChip.getAttribute("data-other-club")).toBe("true");
+    expect(extChip.textContent).toBe("CC-EXT · Fuera del club");
+
+    extChip.click();
+    const focusDetail = dom.viewport.querySelector<HTMLElement>("#focus-detail")!;
+    expect(focusDetail.querySelector('[data-non-club-label="true"]')?.textContent).toBe(
+      "Fuera del club",
+    );
+
+    const extTrail = kioskMap.querySelector('[data-testid="live-trail"][data-trail-tail="CC-EXT"]');
+    expect(extTrail?.getAttribute("data-non-club")).toBe("true");
+    expect(extTrail?.getAttribute("data-other-club")).toBe("true");
+    const pilTrail = kioskMap.querySelector('[data-testid="live-trail"][data-trail-tail="CC-PIL"]');
+    expect(pilTrail?.getAttribute("data-non-club")).toBe("true");
+    expect(pilTrail?.getAttribute("data-other-club")).toBeNull();
+    const ownTrail = kioskMap.querySelector('[data-testid="live-trail"][data-trail-tail="CC-OWN"]');
+    expect(ownTrail?.getAttribute("data-non-club")).toBeNull();
+    expect(ownTrail?.getAttribute("data-other-club")).toBeNull();
+  });
+
   it("club-screen.html has no token activation form and keeps strict CSP markup", () => {
     const root = path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url))));
     const html = fs.readFileSync(path.join(root, "club-screen.html"), "utf8");

@@ -115,10 +115,17 @@ const server = http.createServer((req, res) => {
       }
     }
 
-    let filePath = safeJoin(urlPath);
     const pathOnly = urlPath.split("?")[0];
+    const normalizedPath = pathOnly.replace(/\/+$/, "") || "/";
+    const isEmbed3d = normalizedPath === "/embed/3d" || normalizedPath === "/embed-3d.html";
+    let filePath = isEmbed3d ? path.join(distDir, "embed-3d.html") : safeJoin(urlPath);
     const spaFallback =
       !filePath || !existsSync(filePath) || !statSync(filePath).isFile();
+    if (isEmbed3d && spaFallback) {
+      res.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      res.end("Not found");
+      return;
+    }
     if (spaFallback) {
       filePath = path.join(distDir, "index.html");
     }
@@ -128,11 +135,14 @@ const server = http.createServer((req, res) => {
       "cache-control": "no-cache",
     };
     if (ext === "html") {
-      let policyPath = pathOnly;
+      let policyPath = isEmbed3d ? normalizedPath : pathOnly;
       if (spaFallback && policyKindForPath(pathOnly) === undefined) {
         policyPath = "/__spa_index__";
       }
       headers["content-security-policy"] = cspForPath(policyPath);
+      if (isEmbed3d) {
+        headers["referrer-policy"] = "no-referrer";
+      }
     }
     res.writeHead(200, headers);
     if (ext === "html") {

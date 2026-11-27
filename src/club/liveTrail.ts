@@ -20,6 +20,7 @@ export type FlightTrail = {
   tailSource?: "club" | "pilot";
   trailMinutes: TrailMinutes;
   nonClub?: boolean;
+  otherClub?: boolean;
   points: TrailPoint[];
 };
 
@@ -45,6 +46,7 @@ export type RenderTrailItem = {
   tailSource?: "club" | "pilot";
   trailMinutes: TrailMinutes;
   nonClub?: boolean;
+  otherClub?: boolean;
   points: readonly TrailPoint[];
   rgb: readonly [number, number, number];
 };
@@ -118,6 +120,7 @@ export function parseTrailsPayload(raw: unknown): FlightTrail[] {
       tailSource?: unknown;
       trailMinutes?: unknown;
       nonClub?: unknown;
+      otherClub?: unknown;
       points?: unknown;
     };
     const flightId = typeof rec.flightId === "string" ? rec.flightId.trim() : "";
@@ -140,6 +143,9 @@ export function parseTrailsPayload(raw: unknown): FlightTrail[] {
     }
     if (rec.nonClub === true) {
       entry.nonClub = true;
+    }
+    if (rec.otherClub === true) {
+      entry.otherClub = true;
     }
     out.push(entry);
   }
@@ -294,10 +300,12 @@ export function renderTrailsOverlay(
     ctx.lineJoin = "round";
   }
 
-  // Draw nearby non-club trails underneath own-club trails so club aircraft stay prominent.
+  // Draw nearby non-club / other-club trails underneath own-club trails so club aircraft stay prominent.
+  const isSecondaryTrail = (item: RenderTrailItem): boolean =>
+    item.nonClub === true || item.otherClub === true;
   const ordered = [
-    ...drawable.filter((item) => item.nonClub === true),
-    ...drawable.filter((item) => item.nonClub !== true),
+    ...drawable.filter(isSecondaryTrail),
+    ...drawable.filter((item) => !isSecondaryTrail(item)),
   ];
 
   for (const item of ordered) {
@@ -305,7 +313,8 @@ export function renderTrailsOverlay(
       const p = opts.project(pt[1], pt[2]);
       return { x: p.left, y: p.top };
     });
-    const isNonClub = item.nonClub === true;
+    const isOtherClub = item.otherClub === true;
+    const isNonClub = item.nonClub === true || isOtherClub;
     const segments = isNonClub
       ? buildTrailSegments(projected, 0.14, 0.62)
       : buildTrailSegments(projected);
@@ -354,6 +363,9 @@ export function renderTrailsOverlay(
     meta.setAttribute("data-trail-length-px", String(Math.round(lengthPx)));
     if (isNonClub) {
       meta.setAttribute("data-non-club", "true");
+    }
+    if (isOtherClub) {
+      meta.setAttribute("data-other-club", "true");
     }
     if (item.tailSource) {
       meta.setAttribute("data-tail-source", item.tailSource);

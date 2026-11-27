@@ -483,6 +483,9 @@ function bootAdminMap(): void {
           li.className =
             row.tailSource === "pilot" ? "is-non-club is-pilot-tail" : "is-non-club";
           li.setAttribute("data-non-club", "true");
+          if (row.otherClub === true) {
+            li.setAttribute("data-other-club", "true");
+          }
           li.textContent = formatAircraftListLabel(row);
         } else {
           li.textContent = formatAircraftListLabel(row, { fallbackPilotDash: true });

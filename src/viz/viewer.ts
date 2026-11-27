@@ -1,5 +1,4 @@
 import {
-  ArcGISTiledElevationTerrainProvider,
   BoundingSphere,
   Cartesian2,
   Cartesian3,
@@ -9,14 +8,11 @@ import {
   ConstantPositionProperty,
   ConstantProperty,
   DistanceDisplayCondition,
-  EllipsoidTerrainProvider,
   Entity,
   GeometryInstance,
   HeadingPitchRange,
   HeadingPitchRoll,
   HorizontalOrigin,
-  ImageryLayer,
-  Ion,
   JulianDate,
   LabelStyle,
   Math as CesiumMath,
@@ -26,15 +22,10 @@ import {
   PolylineColorAppearance,
   PolylineGeometry,
   Primitive,
-  RequestScheduler,
-  SceneMode,
   Transforms,
-  UrlTemplateImageryProvider,
   VerticalOrigin,
   ScreenSpaceEventHandler,
   ScreenSpaceEventType,
-  CesiumWidget,
-  createWorldTerrainAsync,
 } from "cesium";
 import type { ColorMode, Flight, FlightTag, Sample, TrackPoint, TrimRange } from "../track/types";
 import { headingRadians } from "../track/geo";
@@ -42,14 +33,9 @@ import { sampleAt } from "../track/parse";
 import { fullRange, pointsInTrim } from "../track/trim";
 import { colorForUnit, normalizeValue, valueForMode } from "./colors";
 import { lerpAngle, wrapAngle, type FollowMode } from "./follow";
-import { QUALITY_LEVELS, resolutionScaleForLevel } from "./resolution";
+import { createGlobeScene } from "./globeScene";
 import { computeTagLabelLayouts } from "./tagLayout";
 import { e2eGlobeHooksEnabled, markGlobePainted } from "../e2eGlobeHooks";
-
-const ESRI_IMAGERY =
-  "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}";
-const ESRI_TERRAIN =
-  "https://elevation3d.arcgis.com/arcgis/rest/services/WorldElevation3D/Terrain3D/ImageServer";
 
 export type FlightViewer = {
   setFlight: (flight: Flight, colorMode: ColorMode, trim?: TrimRange, fly?: boolean) => Promise<void>;
@@ -91,74 +77,11 @@ export type PathMode = "trace" | "draw";
 export type { FollowMode };
 
 export async function createFlightViewer(container: HTMLElement): Promise<FlightViewer> {
-  const ionToken = import.meta.env.VITE_CESIUM_ION_TOKEN as string | undefined;
-  const useIonTerrain = import.meta.env.VITE_USE_CESIUM_ION_TERRAIN === "1";
-  if (useIonTerrain && ionToken) Ion.defaultAccessToken = ionToken;
-
-  const viewer = new CesiumWidget(container, {
+  const globe = await createGlobeScene(container, {
     creditContainer: document.getElementById("credits") ?? undefined,
-    terrainProvider: new EllipsoidTerrainProvider(),
-    baseLayer: new ImageryLayer(
-      new UrlTemplateImageryProvider({
-        url: ESRI_IMAGERY,
-        credit: "Esri, Maxar, Earthstar Geographics",
-        // Level 18 (~0.6 m/px) is plenty from flight altitudes and halves
-        // the deepest tile count vs 19.
-        maximumLevel: 18,
-      }),
-    ),
-    sceneMode: SceneMode.SCENE3D,
-    // Render on demand instead of every frame: the globe idles the GPU while
-    // paused, and every mutation below ends with an explicit requestRender().
-    requestRenderMode: true,
-    useBrowserRecommendedResolution: true,
+    onPostRender: e2eGlobeHooksEnabled() ? markGlobePainted : undefined,
   });
-
-  if (e2eGlobeHooksEnabled()) {
-    viewer.scene.postRender.addEventListener(() => {
-      markGlobePainted();
-    });
-  }
-
-  viewer.scene.globe.enableLighting = true;
-  viewer.scene.globe.depthTestAgainstTerrain = false;
-  viewer.scene.fog.enabled = true;
-  // CesiumWidget adds a default Tycho-2 starfield skybox; with the far plane
-  // clipping the atmosphere in follow mode the sky read as night. Drop the
-  // stars (keep Sun/Moon/lighting) so the sky is always the haze backdrop.
-  const defaultSkyBox = viewer.scene.skyBox;
-  if (defaultSkyBox) {
-    viewer.scene.skyBox = undefined;
-    defaultSkyBox.destroy();
-  }
-  // Untextured/loading tiles show baseColor (default dark navy): keep it haze
-  // so streaming terrain blooms in as fog instead of flashing dark.
-  viewer.scene.globe.baseColor = Color.fromCssColorString("#a3b8c7");
-  if (viewer.scene.skyAtmosphere) viewer.scene.skyAtmosphere.show = true;
-  // Fill-rate and geometry budget: the globe is ~95% of every frame, so cap
-  // pixel and terrain density where flight altitudes make it invisible.
-  // The auto quality governor below steps these down only while fps sags.
-  // (Applied inline: applyQuality() reads closure state declared further down.)
-  viewer.scene.globe.maximumScreenSpaceError = QUALITY_LEVELS[0].sse;
-  // 2x MSAA instead of 4x: lines stay smooth, multisample fill halves.
-  viewer.scene.msaaSamples = 2;
-  // Imagery diet for flaky links: failed tile textures render black, so make
-  // failures rarer — fewer parallel fetches competing (default 18/server)
-  // and a deeper tile cache so rotations reuse instead of refetching.
-  RequestScheduler.maximumRequestsPerServer = 8;
-  viewer.scene.globe.tileCacheSize = 256;
-  viewer.scene.screenSpaceCameraController.minimumZoomDistance = 50;
-  viewer.scene.screenSpaceCameraController.maximumZoomDistance = 2_000_000;
-
-  try {
-    if (useIonTerrain && ionToken) {
-      viewer.terrainProvider = await createWorldTerrainAsync();
-    } else {
-      viewer.terrainProvider = await ArcGISTiledElevationTerrainProvider.fromUrl(ESRI_TERRAIN);
-    }
-  } catch (error) {
-    console.warn("3D terrain unavailable, using ellipsoid", error);
-  }
+  const viewer = globe.widget;
 
   let flight: Flight | null = null;
   let colorMode: ColorMode = "altitude";
@@ -182,11 +105,6 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   // Tag anchor positions, resolved once per setTags/rebuild so the per-frame
   // reveal filter never scans the track.
   let tagAnchors = new Map<string, Cartesian3>();
-  // Adaptive quality: full fidelity while the GPU keeps up, stepped down
-  // only during sustained fps sags (camera motion on weak GPUs).
-  let qualityLevel = 0;
-  let lowStreak = 0;
-  let highStreak = 0;
   let craft: Entity | undefined;
   let tagEntities: Entity[] = [];
   let trackPositions: Cartesian3[] = [];
@@ -209,7 +127,7 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   let accuracyThresholdM = Number.POSITIVE_INFINITY;
 
   function requestRender(): void {
-    viewer.scene.requestRender();
+    globe.requestRender();
   }
 
   // Range limit: keep rendering bounded to ~10 km past the flight path.
@@ -226,7 +144,6 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
   // Near/far live on the frustum (PerspectiveFrustum in 3D mode).
   const frustum = viewer.camera.frustum as unknown as { far: number };
   const farDefault = frustum.far;
-  viewer.scene.backgroundColor = Color.fromCssColorString("#a3b8c7").clone();
   let rangeLimited = false;
   let rangeLimitM = 0;
   const lastTarget = new Cartesian3();
@@ -264,40 +181,9 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
     return Cartesian3.distance(viewer.camera.positionWC, target);
   }
 
-  function applyQuality(): void {
-    const q = QUALITY_LEVELS[qualityLevel];
-    viewer.resolutionScale = resolutionScaleForLevel(q.pixelCap);
-    viewer.scene.globe.maximumScreenSpaceError = q.sse;
-    viewer.resize();
-    requestRender();
-  }
-
   function stepQuality(fps: number): void {
-    if (fps < 50 && qualityLevel < QUALITY_LEVELS.length - 1) {
-      lowStreak += 1;
-      highStreak = 0;
-      if (lowStreak >= 2) {
-        qualityLevel += 1;
-        lowStreak = 0;
-        applyQuality();
-      }
-      return;
-    }
-    if (fps > 57 && qualityLevel > 0) {
-      highStreak += 1;
-      lowStreak = 0;
-      if (highStreak >= 5) {
-        qualityLevel -= 1;
-        highStreak = 0;
-        applyQuality();
-      }
-      return;
-    }
-    lowStreak = 0;
-    highStreak = 0;
+    globe.stepQuality(fps);
   }
-
-  applyQuality();
 
   function trackHeading(sample: Sample): number {
     if (!flight) return 0;
@@ -794,10 +680,10 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       return {
         commands: commands.length,
         triangles: Math.round(triangles),
-        quality: qualityLevel,
+        quality: globe.getQualityLevel(),
         farKm: rangeLimited ? rangeLimitM / 1000 : 0,
         tilesLoaded: viewer.scene.globe.tilesLoaded,
-        resolutionScale: viewer.resolutionScale,
+        resolutionScale: globe.getResolutionScale(),
       };
     },
     stepQuality,
@@ -837,14 +723,12 @@ export async function createFlightViewer(container: HTMLElement): Promise<Flight
       };
     },
     resize: () => {
-      if (viewer.isDestroyed()) return;
-      viewer.resize();
-      requestRender();
+      globe.resize();
     },
     destroy: () => {
       removeCameraMoveEnd();
       pickHandler.destroy();
-      viewer.destroy();
+      globe.destroy();
     },
   };
 }
