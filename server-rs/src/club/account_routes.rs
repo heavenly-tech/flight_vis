@@ -456,6 +456,7 @@ async fn account_me(State(state): State<AppState>, headers: HeaderMap) -> impl I
                 "email": account.email,
                 "emailVerifiedAt": account.email_verified_at,
             },
+            "email_verified": account.email_verified_at.is_some(),
             "skipCurrentPassword": skip_current_password,
             "activeMembershipId": active,
             "memberships": memberships.iter().map(|m| json!({

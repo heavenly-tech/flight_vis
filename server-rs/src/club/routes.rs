@@ -559,7 +559,7 @@ async fn club_logout(
 
 async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let Some(db) = club_db(&state) else {
-        return Json(json!({ "pilot": null })).into_response();
+        return Json(json!({ "pilot": null, "email_verified": false })).into_response();
     };
     let now = now_ms();
     let pilot = session_pilot(db, &headers, now).await;
@@ -572,6 +572,7 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
                 )
                     .into_response();
             }
+            let email_verified = db.pilot_email_verified(&p.id).await;
             let club_default = db
                 .club_default_locale(&p.club_id)
                 .await
@@ -597,6 +598,7 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
                     "licenseNo": p.license_no,
                     "locale": p.locale,
                 },
+                "email_verified": email_verified,
                 "clubDefaultLocale": club_default,
                 "clubTrailMinutesDefault": club_trail_default,
                 "clubShowNearbyPublic": club_nearby_public.show_nearby_public,
@@ -606,7 +608,7 @@ async fn club_me(State(state): State<AppState>, headers: HeaderMap) -> impl Into
             }))
         }
         .into_response(),
-        None => Json(json!({ "pilot": null })).into_response(),
+        None => Json(json!({ "pilot": null, "email_verified": false })).into_response(),
     }
 }
 
@@ -1264,10 +1266,70 @@ struct StartFlightBody {
     trail_minutes: Option<serde_json::Value>,
 }
 
+const EMAIL_NOT_VERIFIED_ERROR: &str = "email_not_verified";
+const EMAIL_NOT_VERIFIED_PUBLIC_MESSAGE: &str = "Verify your email to share flights publicly.";
+
 fn parse_visibility(raw: Option<&str>) -> Result<FlightVisibility, &'static str> {
     match raw {
         None => Ok(FlightVisibility::default_start()),
         Some(s) => FlightVisibility::parse(s).ok_or("invalid visibility"),
+    }
+}
+
+/// Shared gate for every server path that sets or transitions a flight's visibility to `public`.
+/// Rejects unverified pilots and guests with HTTP 403 `email_not_verified`.
+pub(crate) async fn ensure_can_set_public_visibility(
+    db: &ClubDb,
+    pilot_id: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    if db.pilot_email_verified(pilot_id).await {
+        return Ok(());
+    }
+    Err((
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": EMAIL_NOT_VERIFIED_ERROR,
+            "message": EMAIL_NOT_VERIFIED_PUBLIC_MESSAGE,
+        })),
+    ))
+}
+
+/// Clamp an implicit start-flight default that resolves to `Public` down to `Club` when the
+/// acting pilot/guest is not permitted to publish publicly, rather than failing the flight start.
+pub(crate) fn clamp_default_start_visibility(
+    default_vis: FlightVisibility,
+    can_set_public: bool,
+) -> FlightVisibility {
+    if default_vis == FlightVisibility::Public && !can_set_public {
+        FlightVisibility::Club
+    } else {
+        default_vis
+    }
+}
+
+async fn resolve_start_visibility(
+    db: &ClubDb,
+    pilot_id: &str,
+    raw_visibility: Option<&str>,
+) -> Result<FlightVisibility, (StatusCode, Json<serde_json::Value>)> {
+    match raw_visibility {
+        Some(s) => {
+            let vis = parse_visibility(Some(s))
+                .map_err(|msg| (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))))?;
+            if vis == FlightVisibility::Public {
+                ensure_can_set_public_visibility(db, pilot_id).await?;
+            }
+            Ok(vis)
+        }
+        None => {
+            let default_vis = FlightVisibility::default_start();
+            if default_vis == FlightVisibility::Public {
+                let can_public = ensure_can_set_public_visibility(db, pilot_id).await.is_ok();
+                Ok(clamp_default_start_visibility(default_vis, can_public))
+            } else {
+                Ok(default_vis)
+            }
+        }
     }
 }
 
@@ -1344,12 +1406,11 @@ pub async fn post_club_flight_start(
                 .into_response();
         }
     }
-    let visibility = match parse_visibility(parsed.visibility.as_deref()) {
-        Ok(v) => v,
-        Err(msg) => {
+    if let Some(raw_vis) = parsed.visibility.as_deref() {
+        if let Err(msg) = parse_visibility(Some(raw_vis)) {
             return (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response();
         }
-    };
+    }
     let trail_minutes = match parsed.trail_minutes.as_ref() {
         None => None,
         Some(raw) => match TrailMinutes::from_optional_json_value(raw) {
@@ -1359,6 +1420,11 @@ pub async fn post_club_flight_start(
             }
         },
     };
+    let visibility =
+        match resolve_start_visibility(db, &pilot_id, parsed.visibility.as_deref()).await {
+            Ok(v) => v,
+            Err(err) => return err.into_response(),
+        };
     let show_name = parsed.show_pilot_name_public.unwrap_or(false);
     match db
         .start_flight_with_trail(
@@ -1456,6 +1522,19 @@ pub async fn patch_club_flight_by_id(
             }
         },
     };
+    let Some(existing) = db.get_flight(&flight_id).await else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
+    };
+    if existing.pilot_id != id {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "forbidden" }))).into_response();
+    }
+    if visibility == Some(FlightVisibility::Public)
+        && FlightVisibility::parse(&existing.visibility) != Some(FlightVisibility::Public)
+    {
+        if let Err(err) = ensure_can_set_public_visibility(db, &id).await {
+            return err.into_response();
+        }
+    }
     match db
         .patch_flight(&id, &flight_id, visibility, body.show_pilot_name_public)
         .await
@@ -3258,6 +3337,10 @@ pub(crate) async fn sliding_session_renewal(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    let path = req.uri().path();
+    if path == "/api/public/live-trails" || path.starts_with("/api/public/") {
+        return next.run(req).await;
+    }
     let acct_sess = auth::parse_account_session_cookie(req.headers());
     let club_sess = parse_session_cookie(req.headers());
     let secure = is_secure(req.headers());
@@ -3910,6 +3993,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/api/me/live-trails",
             get(crate::club::pilot_live_trails::get_me_live_trails),
+        )
+        .route(
+            "/api/public/live-trails",
+            get(crate::club::pilot_live_trails::get_public_live_trails),
         )
         .route("/api/me/flights", get(my_flights))
         .route(

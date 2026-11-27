@@ -2,6 +2,7 @@ import { startClubPage } from "../club/i18nPage";
 import { applyI18nDocument, apiErrorMessage, t } from "../i18n/index";
 
 type AccountMe = {
+  email_verified?: boolean;
   skipCurrentPassword?: boolean;
   account?: { email?: string };
 };

@@ -44,6 +44,7 @@ pub(crate) struct AppState {
     pub(crate) share_lookup_throttle: LoginThrottle,
     pub(crate) account_password_throttle: LoginThrottle,
     pub(crate) account_password_account_throttle: LoginThrottle,
+    pub(crate) public_live_trails_throttle: LoginThrottle,
     pub(crate) mailer: club::mail::Mailer,
     pub(crate) webauthn: Option<club::webauthn::WebauthnState>,
     pub(crate) sse_limiter: std::sync::Arc<club::sse_limit::SseLimiter>,
@@ -72,6 +73,7 @@ fn app_state(
             share_lookup_throttle: LoginThrottle::default(),
             account_password_throttle: LoginThrottle::default(),
             account_password_account_throttle: LoginThrottle::default(),
+            public_live_trails_throttle: LoginThrottle::default(),
             mailer: club::mail::Mailer::from_env(club::mail::MailOutbox::default()),
             webauthn: club::webauthn::WebauthnState::from_env(),
             sse_limiter: std::sync::Arc::new(club::sse_limit::SseLimiter::default()),
@@ -81,7 +83,7 @@ fn app_state(
     )
 }
 
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -627,6 +629,7 @@ pub(crate) const LOGIN_MAX_ATTEMPTS: usize = 8;
 pub(crate) const SHARE_LOOKUP_MAX_ATTEMPTS: usize = 60;
 pub(crate) const ACCOUNT_PASSWORD_MAX_ATTEMPTS: usize = 10;
 pub(crate) const ACCOUNT_PASSWORD_PER_ACCOUNT_MAX_ATTEMPTS: usize = 5;
+pub(crate) const PUBLIC_LIVE_TRAILS_MAX_REQUESTS: usize = 30;
 const LOGIN_WINDOW_SECS: u64 = 60;
 
 #[derive(Clone, Default)]
@@ -635,42 +638,46 @@ pub(crate) struct LoginThrottle {
 }
 
 impl LoginThrottle {
-    pub(crate) fn allow_up_to(&self, ip: &str, now: u64, max_attempts: usize) -> bool {
+    /// Sliding-window check returning `Ok(())` if allowed, or `Err(retry_after_secs)` (`>= 1`)
+    /// when `max_attempts` requests have already been recorded within the last `LOGIN_WINDOW_SECS`.
+    pub(crate) fn check_up_to(&self, ip: &str, now: u64, max_attempts: usize) -> Result<(), u64> {
         let mut hits = self.hits.lock().unwrap_or_else(|err| err.into_inner());
         let cutoff = now.saturating_sub(LOGIN_WINDOW_SECS);
-        let allowed = {
+        let result = {
             let entry = hits.entry(ip.to_string()).or_default();
             entry.retain(|stamp| *stamp > cutoff);
             if entry.len() >= max_attempts {
-                false
+                let oldest = entry.first().copied().unwrap_or(now);
+                let retry_after = oldest
+                    .saturating_add(LOGIN_WINDOW_SECS)
+                    .saturating_sub(now)
+                    .max(1);
+                Err(retry_after)
             } else {
                 entry.push(now);
-                true
+                Ok(())
             }
         };
         if hits.len() > 4096 {
             hits.retain(|_, times| times.last().is_some_and(|stamp| *stamp > cutoff));
         }
-        allowed
+        result
+    }
+
+    pub(crate) fn allow_up_to(&self, ip: &str, now: u64, max_attempts: usize) -> bool {
+        self.check_up_to(ip, now, max_attempts).is_ok()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset(&self) {
+        self.hits
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clear();
     }
 
     fn allow(&self, ip: &str, now: u64) -> bool {
-        let mut hits = self.hits.lock().unwrap_or_else(|err| err.into_inner());
-        let cutoff = now.saturating_sub(LOGIN_WINDOW_SECS);
-        let allowed = {
-            let entry = hits.entry(ip.to_string()).or_default();
-            entry.retain(|stamp| *stamp > cutoff);
-            if entry.len() >= LOGIN_MAX_ATTEMPTS {
-                false
-            } else {
-                entry.push(now);
-                true
-            }
-        };
-        if hits.len() > 4096 {
-            hits.retain(|_, times| times.last().is_some_and(|stamp| *stamp > cutoff));
-        }
-        allowed
+        self.allow_up_to(ip, now, LOGIN_MAX_ATTEMPTS)
     }
 }
 

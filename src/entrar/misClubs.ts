@@ -17,6 +17,7 @@ export interface AccountMeResponse {
     id?: string;
     email?: string;
   };
+  email_verified?: boolean;
   activeMembershipId?: string | null;
   memberships?: AccountMembership[];
 }
