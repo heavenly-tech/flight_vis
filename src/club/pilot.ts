@@ -50,6 +50,7 @@ async function boot(): Promise<void> {
         email: string;
         licenseNo: string;
       } | null;
+      email_verified?: boolean;
     }>("/api/club/me");
     if (!me.pilot) {
       who.textContent = t("pilot.notSignedIn");

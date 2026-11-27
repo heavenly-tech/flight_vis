@@ -75,6 +75,7 @@ async fn setup_harness() -> TestHarness {
         share_lookup_throttle: crate::LoginThrottle::default(),
         account_password_throttle: crate::LoginThrottle::default(),
         account_password_account_throttle: crate::LoginThrottle::default(),
+        public_live_trails_throttle: crate::LoginThrottle::default(),
         mailer: mailer.clone(),
         webauthn: None,
         sse_limiter: Arc::new(crate::club::sse_limit::SseLimiter::default()),
@@ -418,8 +419,10 @@ async fn clubless_signup_magic_complete_and_idempotent_personal_device() {
 }
 
 // ---------------------------------------------------------------------------
-// 8(b) Email verification gate: private OK unverified; public blocked (403 email_unverified)
-//      until verified; PATCH private->public blocked unverified, OK verified
+// 8(b) Email verification gate: private/default OK unverified; public blocked
+//      (403 email_not_verified) until account email verified; PATCH private->public
+//      blocked unverified, OK verified; ownership check runs before email check;
+//      GET /api/account/me exposes single email_verified boolean (no duplicate key)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -428,6 +431,24 @@ async fn clubless_email_verification_gates_public_start_and_patch() {
     let mut fx = setup_harness().await;
     let email = format!("cl-unv-{}@test.example", &new_id()[..8]);
     let (acct_id, acct_cookie) = create_account_with_session(&fx.db, &email, false, None).await;
+
+    // GET /api/account/me exposes main's top-level email_verified boolean without duplicate account.emailVerified.
+    let (st, _, me_unver) = send_json(
+        &mut fx.router,
+        "GET",
+        "/api/account/me",
+        Some(&acct_cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{me_unver}");
+    assert_eq!(me_unver["email_verified"], json!(false));
+    assert!(me_unver["account"]["emailVerifiedAt"].is_null());
+    assert!(
+        me_unver["account"].get("emailVerified").is_none(),
+        "GET /api/account/me must not emit duplicate account.emailVerified key: {me_unver}"
+    );
 
     // Mint a personal device via POST /api/account/devices.
     let (st, _, dev_body) = send_json(
@@ -442,7 +463,7 @@ async fn clubless_email_verification_gates_public_start_and_patch() {
     assert_eq!(st, StatusCode::OK, "{dev_body}");
     let dev_tok = dev_body["token"].as_str().unwrap().to_string();
 
-    // 1. Public start blocked while email is unverified.
+    // 1. Public start blocked while account email is unverified (main's email_not_verified contract).
     let (st, _, body) = send_json(
         &mut fx.router,
         "POST",
@@ -453,10 +474,62 @@ async fn clubless_email_verification_gates_public_start_and_patch() {
     )
     .await;
     assert_eq!(st, StatusCode::FORBIDDEN, "{body}");
-    assert_eq!(body["error"], "email_unverified");
-    assert_eq!(body["reason"], "email_unverified");
+    assert_eq!(body["error"], "email_not_verified");
+    assert_eq!(
+        body["message"],
+        "Verify your email to share flights publicly."
+    );
+    assert!(body.get("reason").is_none());
 
-    // 2. Private start allowed while email is unverified.
+    // Even if pilots.email_verified_at is manually populated on a personal pilot row while
+    // accounts.email_verified_at IS NULL, personal pilots stay strictly account-bound -> still 403.
+    let personal_pid = fx
+        .db
+        .personal_pilot_id_for_account(&acct_id)
+        .await
+        .expect("personal pilot exists");
+    fx.db
+        .mark_email_verified(&personal_pid, now_ms())
+        .await
+        .unwrap();
+    assert!(!fx.db.pilot_email_verified(&personal_pid).await);
+    let (st, _, body_still) = send_json(
+        &mut fx.router,
+        "POST",
+        "/api/flights",
+        Some(&acct_cookie),
+        Some(&dev_tok),
+        Some(json!({ "tail": "CC-PUB1", "visibility": "public" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{body_still}");
+    assert_eq!(body_still["error"], "email_not_verified");
+
+    // 2. Omitting visibility on personal start defaults safely to private (never 403).
+    let (st, _, def_body) = send_json(
+        &mut fx.router,
+        "POST",
+        "/api/flights",
+        Some(&acct_cookie),
+        Some(&dev_tok),
+        Some(json!({ "tail": "CC-DEF1" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{def_body}");
+    assert_eq!(def_body["visibility"], "private");
+    let def_fid = def_body["id"].as_str().unwrap().to_string();
+    let (st, _, _) = send_json(
+        &mut fx.router,
+        "POST",
+        &format!("/api/flights/{def_fid}/end"),
+        None,
+        Some(&dev_tok),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+
+    // 3. Explicit private start allowed while email is unverified.
     let (st, _, start_body) = send_json(
         &mut fx.router,
         "POST",
@@ -470,7 +543,7 @@ async fn clubless_email_verification_gates_public_start_and_patch() {
     let flight_id = start_body["id"].as_str().unwrap().to_string();
     assert_eq!(start_body["visibility"], "private");
 
-    // 3. PATCH private -> public blocked while unverified.
+    // 4. PATCH private -> public blocked while unverified (main's email_not_verified contract).
     let (st, _, patch_body) = send_json(
         &mut fx.router,
         "PATCH",
@@ -481,16 +554,70 @@ async fn clubless_email_verification_gates_public_start_and_patch() {
     )
     .await;
     assert_eq!(st, StatusCode::FORBIDDEN, "{patch_body}");
-    assert_eq!(patch_body["error"], "email_unverified");
-    assert_eq!(patch_body["reason"], "email_unverified");
+    assert_eq!(patch_body["error"], "email_not_verified");
+    assert_eq!(
+        patch_body["message"],
+        "Verify your email to share flights publicly."
+    );
+    assert!(patch_body.get("reason").is_none());
 
-    // 4. Verify the account email -> PATCH private -> public succeeds.
+    // 5. Ownership check runs BEFORE email_not_verified on PATCH (no cross-pilot oracle).
+    let other_email = format!("cl-oth-{}@test.example", &new_id()[..8]);
+    let (other_acct, _) = create_account_with_session(&fx.db, &other_email, true, None).await;
+    let other_pid = fx
+        .db
+        .ensure_personal_pilot(&other_acct, now_ms())
+        .await
+        .unwrap();
+    let (other_dev, _) = fx.db.create_device(&other_pid, "phone").await.unwrap();
+    let other_fid = fx
+        .db
+        .start_personal_flight_atomic(
+            &other_pid,
+            &other_acct,
+            &other_dev,
+            "CC-OTH1",
+            FlightVisibility::Private,
+            false,
+            None,
+            now_ms(),
+        )
+        .await
+        .unwrap();
+    let (st, _, cross_patch) = send_json(
+        &mut fx.router,
+        "PATCH",
+        &format!("/api/flights/{other_fid}"),
+        Some(&acct_cookie),
+        None,
+        Some(json!({ "visibility": "public" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{cross_patch}");
+    assert_eq!(cross_patch["error"], "forbidden");
+
+    // 6. Verify the account email -> /api/account/me flips true & PATCH private -> public succeeds.
     sqlx::query("UPDATE accounts SET email_verified_at = $1 WHERE id = $2")
         .bind(now_ms())
         .bind(&acct_id)
         .execute(&fx.db.pool)
         .await
         .unwrap();
+    assert!(fx.db.pilot_email_verified(&personal_pid).await);
+
+    let (st, _, me_ver) = send_json(
+        &mut fx.router,
+        "GET",
+        "/api/account/me",
+        Some(&acct_cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{me_ver}");
+    assert_eq!(me_ver["email_verified"], json!(true));
+    assert!(me_ver["account"]["emailVerifiedAt"].is_number());
+    assert!(me_ver["account"].get("emailVerified").is_none());
 
     let (st, _, patch_ok) = send_json(
         &mut fx.router,
@@ -503,7 +630,7 @@ async fn clubless_email_verification_gates_public_start_and_patch() {
     .await;
     assert_eq!(st, StatusCode::OK, "{patch_ok}");
 
-    // 5. /api/me/flights lists the club-less flight with its normalized free-text tail.
+    // 7. /api/me/flights lists the club-less flight with its normalized free-text tail.
     let (st, _, list_body) = send_json(
         &mut fx.router,
         "GET",
@@ -515,12 +642,15 @@ async fn clubless_email_verification_gates_public_start_and_patch() {
     .await;
     assert_eq!(st, StatusCode::OK, "{list_body}");
     let flights = list_body["flights"].as_array().unwrap();
-    assert_eq!(flights.len(), 1);
-    assert_eq!(flights[0]["id"], flight_id);
-    assert_eq!(flights[0]["tail"], "CC-PRIV1");
-    assert_eq!(flights[0]["visibility"], "public");
+    assert_eq!(flights.len(), 2);
+    let active = flights
+        .iter()
+        .find(|f| f["id"] == flight_id)
+        .expect("active flight present");
+    assert_eq!(active["tail"], "CC-PRIV1");
+    assert_eq!(active["visibility"], "public");
 
-    // 6. End the flight via bearer token, then start a new public flight directly (now verified).
+    // 8. End the flight via bearer token, then start a new public flight directly (now verified).
     let (st, _, end_body) = send_json(
         &mut fx.router,
         "POST",
@@ -1594,6 +1724,10 @@ async fn clubless_pilot_denied_on_club_admin_kiosk_and_isolated_on_live_trails()
             Some(admin_cookie.as_str()),
         ),
         (format!("/api/club/map/public?club={club_slug}"), None),
+        (
+            "/api/public/live-trails?lat=-33.456&lon=-70.548&radius_km=20".to_string(),
+            None,
+        ),
     ] {
         let (st, _, body) = send_json(&mut fx.router, "GET", &uri, cookie, None, None).await;
         assert_eq!(st, StatusCode::OK, "{uri} failed: {body}");
@@ -1602,6 +1736,276 @@ async fn clubless_pilot_denied_on_club_admin_kiosk_and_isolated_on_live_trails()
             "club-less flight must not appear on {uri} in E1: {body}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 8(m) Anonymous /api/public/live-trails: never 500s on NULL club_id/aircraft_id,
+//      never leaks club-less flights (including from unverified owners), keeps AGL floor
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[serial]
+async fn public_live_trails_excludes_clubless_and_unverified_without_500_and_keeps_agl_floor() {
+    let mut fx = setup_harness().await;
+    let now = now_ms();
+
+    let (club_id, _) = create_live_club(
+        &fx.db,
+        "pubcl",
+        &format!("own-pubcl-{}@test.example", &new_id()[..6]),
+        "SCTB",
+        -33.456,
+        -70.548,
+    )
+    .await;
+    fx.db.upsert_type(&club_id, "C172").await.unwrap();
+    fx.db
+        .upsert_aircraft(&club_id, "CC-HI01", "C172", true)
+        .await
+        .unwrap();
+    fx.db
+        .upsert_aircraft(&club_id, "CC-LO01", "C172", true)
+        .await
+        .unwrap();
+
+    // High-altitude club public flight (2500 m MSL ~ 8202 ft -> passes 500 ft floor)
+    let hi_email = format!("pubcl-hi-{}@test.example", &new_id()[..6]);
+    let (hi_acct, _) = create_account_with_session(&fx.db, &hi_email, true, None).await;
+    let (hi_pid, _) =
+        add_active_club_membership(&fx.db, &hi_acct, &hi_email, "Hi Pilot", &club_id, "pilot")
+            .await;
+    fx.db
+        .add_checkout(&hi_pid, "C172", None, None)
+        .await
+        .unwrap();
+    let (hi_dev, _) = fx.db.create_device(&hi_pid, "hi-dev").await.unwrap();
+    fx.db
+        .issue_open_checkin(&hi_pid, &hi_dev, &club_id, now)
+        .await
+        .unwrap();
+    let fid_club_high = fx
+        .db
+        .start_flight(
+            &hi_pid,
+            &hi_dev,
+            "CC-HI01",
+            FlightVisibility::Public,
+            false,
+            now - 5_000,
+        )
+        .await
+        .unwrap();
+    fx.db
+        .append_fix(
+            &fid_club_high,
+            &hi_dev,
+            &LiveFix {
+                t: now - 1_000,
+                lat: -33.456,
+                lon: -70.548,
+                alt: Some(2500.0),
+                alt_ref: Some("msl".to_string()),
+                speed: Some(40.0),
+                course: Some(90.0),
+                accuracy: Some(5.0),
+            },
+        )
+        .await
+        .unwrap();
+
+    // Low-altitude club public flight (50 m MSL ~ 164 ft -> excluded by min_agl_ft=500 even on MSL fallback)
+    let lo_email = format!("pubcl-lo-{}@test.example", &new_id()[..6]);
+    let (lo_acct, _) = create_account_with_session(&fx.db, &lo_email, true, None).await;
+    let (lo_pid, _) =
+        add_active_club_membership(&fx.db, &lo_acct, &lo_email, "Lo Pilot", &club_id, "pilot")
+            .await;
+    fx.db
+        .add_checkout(&lo_pid, "C172", None, None)
+        .await
+        .unwrap();
+    let (lo_dev, _) = fx.db.create_device(&lo_pid, "lo-dev").await.unwrap();
+    fx.db
+        .issue_open_checkin(&lo_pid, &lo_dev, &club_id, now)
+        .await
+        .unwrap();
+    let fid_club_low = fx
+        .db
+        .start_flight(
+            &lo_pid,
+            &lo_dev,
+            "CC-LO01",
+            FlightVisibility::Public,
+            false,
+            now - 5_000,
+        )
+        .await
+        .unwrap();
+    fx.db
+        .append_fix(
+            &fid_club_low,
+            &lo_dev,
+            &LiveFix {
+                t: now - 1_000,
+                lat: -33.457,
+                lon: -70.548,
+                alt: Some(50.0),
+                alt_ref: Some("msl".to_string()),
+                speed: Some(5.0),
+                course: Some(90.0),
+                accuracy: Some(5.0),
+            },
+        )
+        .await
+        .unwrap();
+
+    // Public club-less flight from an UNVERIFIED personal pilot (direct DB seed to test read-side defense).
+    let unv_email = format!("pubcl-unv-{}@test.example", &new_id()[..6]);
+    let (unv_acct, unv_cookie) = create_account_with_session(&fx.db, &unv_email, false, None).await;
+    let unv_pid = fx.db.ensure_personal_pilot(&unv_acct, now).await.unwrap();
+    let (unv_dev, _) = fx.db.create_device(&unv_pid, "unv-dev").await.unwrap();
+    let fid_unv_clubless = fx
+        .db
+        .start_personal_flight_atomic(
+            &unv_pid,
+            &unv_acct,
+            &unv_dev,
+            "CC-UNV1",
+            FlightVisibility::Public,
+            true,
+            None,
+            now - 5_000,
+        )
+        .await
+        .unwrap();
+    fx.db
+        .append_fix(
+            &fid_unv_clubless,
+            &unv_dev,
+            &LiveFix {
+                t: now - 1_000,
+                lat: -33.455,
+                lon: -70.548,
+                alt: Some(2500.0),
+                alt_ref: Some("msl".to_string()),
+                speed: Some(40.0),
+                course: Some(180.0),
+                accuracy: Some(5.0),
+            },
+        )
+        .await
+        .unwrap();
+
+    // Public club-less flight from a VERIFIED personal pilot (still excluded from E1 public feed).
+    let ver_email = format!("pubcl-ver-{}@test.example", &new_id()[..6]);
+    let (ver_acct, _) = create_account_with_session(&fx.db, &ver_email, true, None).await;
+    let ver_pid = fx.db.ensure_personal_pilot(&ver_acct, now).await.unwrap();
+    let (ver_dev, _) = fx.db.create_device(&ver_pid, "ver-dev").await.unwrap();
+    let fid_ver_clubless = fx
+        .db
+        .start_personal_flight_atomic(
+            &ver_pid,
+            &ver_acct,
+            &ver_dev,
+            "CC-VER1",
+            FlightVisibility::Public,
+            true,
+            None,
+            now - 5_000,
+        )
+        .await
+        .unwrap();
+    fx.db
+        .append_fix(
+            &fid_ver_clubless,
+            &ver_dev,
+            &LiveFix {
+                t: now - 1_000,
+                lat: -33.454,
+                lon: -70.548,
+                alt: Some(2500.0),
+                alt_ref: Some("msl".to_string()),
+                speed: Some(40.0),
+                course: Some(180.0),
+                accuracy: Some(5.0),
+            },
+        )
+        .await
+        .unwrap();
+
+    // 1. Anonymous GET /api/public/live-trails (no altitude floor) -> 200 OK, no 500,
+    //    returns club public flights only; NEVER returns unverified or verified club-less rows.
+    let (st, _, body) = send_json(
+        &mut fx.router,
+        "GET",
+        "/api/public/live-trails?lat=-33.456&lon=-70.548&radius_km=20",
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let ids: HashSet<&str> = body["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["flightId"].as_str())
+        .collect();
+    assert!(ids.contains(fid_club_high.as_str()));
+    assert!(ids.contains(fid_club_low.as_str()));
+    assert!(
+        !ids.contains(fid_unv_clubless.as_str()),
+        "unverified club-less flight must never appear on /api/public/live-trails"
+    );
+    assert!(
+        !ids.contains(fid_ver_clubless.as_str()),
+        "club-less flight must not appear on /api/public/live-trails in E1"
+    );
+
+    // 2. Anonymous GET /api/public/live-trails with min_agl_ft=500 keeps main's altitude floor
+    //    (drops low-altitude club flight, keeps high-altitude club flight, excludes club-less).
+    let (st_agl, _, body_agl) = send_json(
+        &mut fx.router,
+        "GET",
+        "/api/public/live-trails?lat=-33.456&lon=-70.548&radius_km=20&min_agl_ft=500",
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_agl, StatusCode::OK, "{body_agl}");
+    let ids_agl: HashSet<&str> = body_agl["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["flightId"].as_str())
+        .collect();
+    assert!(ids_agl.contains(fid_club_high.as_str()));
+    assert!(
+        !ids_agl.contains(fid_club_low.as_str()),
+        "min_agl_ft floor must filter low-altitude flight"
+    );
+    assert!(!ids_agl.contains(fid_unv_clubless.as_str()));
+    assert!(!ids_agl.contains(fid_ver_clubless.as_str()));
+
+    // 3. Authenticated GET /api/me/live-trails?layers=public also never leaks unverified club-less flight.
+    let (st_me, _, body_me) = send_json(
+        &mut fx.router,
+        "GET",
+        "/api/me/live-trails?layers=public&lat=-33.456&lon=-70.548&radius_km=20",
+        Some(&unv_cookie),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(st_me, StatusCode::OK, "{body_me}");
+    let ids_me: HashSet<&str> = body_me["flights"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["flightId"].as_str())
+        .collect();
+    assert!(!ids_me.contains(fid_unv_clubless.as_str()));
+    assert!(!ids_me.contains(fid_ver_clubless.as_str()));
 }
 
 // ---------------------------------------------------------------------------

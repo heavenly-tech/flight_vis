@@ -95,7 +95,7 @@
     "slugTaken": "That short name is already in use",
     "unchanged": "Short name unchanged",
     "rateLimited": "Too many attempts. Please wait a moment and try again.",
-    "emailUnverified": "Verify your email before sharing your flight publicly.",
+    "emailNotVerified": "Verify your email to share flights publicly.",
     "clubVisibilityRequiresClub": "Club visibility requires a club.",
     "invalidTail": "Invalid tail",
     "genericError": "Something went wrong. Please try again."

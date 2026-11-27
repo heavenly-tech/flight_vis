@@ -685,6 +685,7 @@ function bootAdminMap(): void {
     try {
       const me = await api<{
         pilot?: { role?: string } | null;
+        email_verified?: boolean;
         clubDefaultLocale?: string;
         clubTrailMinutesDefault?: number;
         clubShowNearbyPublic?: boolean;

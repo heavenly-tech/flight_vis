@@ -626,9 +626,6 @@ impl ClubDb {
         if self.device_pilot_id(device_id).await.as_deref() != Some(pilot_id) {
             return Err(StartFlightError::DeviceMismatch);
         }
-        if visibility == FlightVisibility::Public && !self.pilot_email_is_verified(pilot_id).await {
-            return Err(StartFlightError::EmailUnverified);
-        }
         let mut tx = self
             .pool
             .begin()
@@ -829,9 +826,6 @@ impl ClubDb {
             return Err(StartFlightError::ClubVisibilityRequiresClub);
         }
         let tail_text = normalize_free_tail(tail).map_err(|_| StartFlightError::InvalidTail)?;
-        if visibility == FlightVisibility::Public && !self.pilot_email_is_verified(pilot_id).await {
-            return Err(StartFlightError::EmailUnverified);
-        }
         let mut tx = self
             .pool
             .begin()
@@ -928,9 +922,6 @@ impl ClubDb {
         if let Some(v) = visibility {
             if v == FlightVisibility::Club && club_id.is_none() {
                 return Err(PatchError::ClubVisibilityRequiresClub);
-            }
-            if v == FlightVisibility::Public && !self.pilot_email_is_verified(pilot_id).await {
-                return Err(PatchError::EmailUnverified);
             }
             sqlx::query("UPDATE flights SET visibility = $1 WHERE id = $2")
                 .bind(v.as_str())
@@ -1262,15 +1253,56 @@ impl ClubDb {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    /// Whether `pilot_id` is a non-guest pilot with a verified email.
+    ///
+    /// Returns `true` iff the pilot row exists, is not a guest (`pilots.status <> 'guest'`
+    /// and has no active unclaimed `guest_sessions` row), and:
+    /// - for personal (club-less) pilots (`pilots.club_id IS NULL`): its linked
+    ///   `accounts.email_verified_at` is non-NULL;
+    /// - for club pilots (`pilots.club_id IS NOT NULL`): either `pilots.email_verified_at`
+    ///   or its linked `accounts.email_verified_at` is non-NULL.
     pub async fn pilot_email_verified(&self, pilot_id: &str) -> bool {
-        sqlx::query_scalar::<_, Option<i64>>("SELECT email_verified_at FROM pilots WHERE id = $1")
-            .bind(pilot_id)
-            .fetch_optional(&self.pool)
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|t| t.is_some())
+        let now = now_ms();
+        let row = sqlx::query(
+            "SELECT p.club_id,
+                    p.status,
+                    p.email_verified_at,
+                    a.email_verified_at,
+                    EXISTS(
+                        SELECT 1 FROM guest_sessions gs
+                        WHERE gs.guest_pilot_id = p.id
+                          AND gs.claimed_at IS NULL
+                          AND gs.expires_at > $2
+                    )
+             FROM pilots p
+             LEFT JOIN accounts a ON a.id = p.account_id
+             WHERE p.id = $1",
+        )
+        .bind(pilot_id)
+        .bind(now)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten();
+        let Some(row) = row else {
+            return false;
+        };
+        let status: String = row.try_get(1).ok().unwrap_or_default();
+        if status == "guest" {
+            return false;
+        }
+        let has_active_guest_session: bool = row.try_get(4).ok().unwrap_or(false);
+        if has_active_guest_session {
+            return false;
+        }
+        let club_id: Option<String> = row.try_get(0).ok().flatten();
+        let pilot_verified: Option<i64> = row.try_get(2).ok().flatten();
+        let account_verified: Option<i64> = row.try_get(3).ok().flatten();
+        if club_id.is_none() {
+            account_verified.is_some()
+        } else {
+            pilot_verified.is_some() || account_verified.is_some()
+        }
     }
 
     pub async fn fixes_for_flight(&self, flight_id: &str) -> Vec<LiveFix> {
@@ -1731,35 +1763,6 @@ impl ClubDb {
             status: row.try_get(3).ok()?,
             account_suspended: row.try_get::<bool, _>(4).unwrap_or(false),
         })
-    }
-
-    /// True when the acting pilot's email is verified:
-    /// - Personal (club-less) pilots require `accounts.email_verified_at IS NOT NULL`.
-    /// - Club pilots accept either `accounts.email_verified_at IS NOT NULL` or legacy
-    ///   `pilots.email_verified_at IS NOT NULL`.
-    pub async fn pilot_email_is_verified(&self, pilot_id: &str) -> bool {
-        let row = sqlx::query(
-            "SELECT p.club_id, p.email_verified_at, a.email_verified_at
-             FROM pilots p
-             LEFT JOIN accounts a ON a.id = p.account_id
-             WHERE p.id = $1",
-        )
-        .bind(pilot_id)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()
-        .flatten();
-        let Some(row) = row else {
-            return false;
-        };
-        let club_id: Option<String> = row.try_get(0).ok().flatten();
-        let pilot_verified: Option<i64> = row.try_get(1).ok().flatten();
-        let acct_verified: Option<i64> = row.try_get(2).ok().flatten();
-        if club_id.is_none() {
-            acct_verified.is_some()
-        } else {
-            acct_verified.is_some() || pilot_verified.is_some()
-        }
     }
 
     pub async fn device_account_suspended(&self, device_id: &str) -> bool {
@@ -2586,7 +2589,6 @@ pub enum StartFlightError {
     AlreadyActive,
     DeviceMismatch,
     ClubVisibilityRequiresClub,
-    EmailUnverified,
 }
 
 #[derive(Debug)]
@@ -2628,7 +2630,6 @@ pub enum PatchError {
     NotFound,
     Forbidden,
     ClubVisibilityRequiresClub,
-    EmailUnverified,
 }
 
 #[derive(Debug)]
