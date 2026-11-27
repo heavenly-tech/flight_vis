@@ -159,6 +159,7 @@ pub enum FlightTrailError {
 pub struct FlightTrail {
     pub flight_id: String,
     pub tail: String,
+    pub tail_source: &'static str,
     pub trail_minutes: i16,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub non_club: bool,
@@ -469,6 +470,7 @@ impl ClubDb {
                 FlightTrail {
                     flight_id: pos.flight_id.clone(),
                     tail: pos.tail.clone(),
+                    tail_source: pos.tail_source,
                     trail_minutes: effective.as_i16(),
                     non_club: pos.non_club,
                     points,

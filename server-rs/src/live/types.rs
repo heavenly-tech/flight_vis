@@ -40,9 +40,27 @@ pub struct LiveSessionSummary {
     pub fix_count: usize,
 }
 
+fn deserialize_present<'de, D>(de: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let _ = serde::de::IgnoredAny::deserialize(de)?;
+    Ok(true)
+}
+
+#[derive(Deserialize)]
+struct PeekFixesKey {
+    #[serde(default, rename = "fixes", deserialize_with = "deserialize_present")]
+    has_fixes: bool,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct IngestBatch {
     pub fixes: Vec<IngestFixInput>,
+    #[serde(default, alias = "flightId")]
+    pub flight_id: Option<String>,
+    #[serde(default)]
+    pub seq: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +76,28 @@ pub struct IngestFixInput {
     pub course: Option<f64>,
     #[serde(default)]
     pub accuracy: Option<f64>,
+    #[serde(default, alias = "flightId")]
+    pub flight_id: Option<String>,
+    #[serde(default)]
+    pub seq: Option<i64>,
+}
+
+/// Parse either the batch envelope (`{"fixes":[...], "flight_id"|"flightId"?: ..., "seq"?: ...}`)
+/// or a single-fix object (`{"t":..., "lat":..., "lon":..., "flight_id"|"flightId"?: ..., "seq"?: ...}`).
+/// If the top-level JSON object contains a `"fixes"` key (even malformed or `null`), it is parsed
+/// strictly as a batch rather than falling through to the single-fix form.
+pub fn parse_ingest_payload(body: &[u8]) -> Result<IngestBatch, &'static str> {
+    if let Ok(peek) = serde_json::from_slice::<PeekFixesKey>(body) {
+        if peek.has_fixes {
+            return serde_json::from_slice::<IngestBatch>(body).map_err(|_| "invalid json");
+        }
+    }
+    let single: IngestFixInput = serde_json::from_slice(body).map_err(|_| "invalid json")?;
+    Ok(IngestBatch {
+        fixes: vec![single],
+        flight_id: None,
+        seq: None,
+    })
 }
 
 pub fn knots_to_mps(knots: f64) -> f64 {

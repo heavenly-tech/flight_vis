@@ -1,6 +1,8 @@
 import { startClubPage } from "./i18nPage";
 import { apiErrorMessage, t } from "../i18n/index";
 import {
+  aircraftSourceBadgeLabel,
+  formatAircraftListLabel,
   parsePublicMapPayload,
   renderClubTileMap,
   type PublicMapPayload,
@@ -66,8 +68,17 @@ function paintState(payload: PublicMapPayload): void {
   listEl.replaceChildren(
     ...payload.aircraft.map((row) => {
       const li = document.createElement("li");
-      const name = row.pilotName ? ` · ${row.pilotName}` : "";
-      li.textContent = `${row.tail}${name}`;
+      li.setAttribute("data-tail", row.tail);
+      if (row.tailSource) {
+        li.setAttribute("data-tail-source", row.tailSource);
+      }
+      const badgeLabel = aircraftSourceBadgeLabel(row);
+      if (badgeLabel) {
+        li.className =
+          row.tailSource === "pilot" ? "is-non-club is-pilot-tail" : "is-non-club";
+        li.setAttribute("data-non-club", "true");
+      }
+      li.textContent = formatAircraftListLabel(row);
       return li;
     }),
   );

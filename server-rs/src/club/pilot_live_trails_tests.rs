@@ -361,11 +361,29 @@ fn layers_query_parser_validates_strictly() {
 // public layer opt-in & deduplication, own flight excluded (single & multi-club)
 // ---------------------------------------------------------------------------
 
+fn make_flat_dem(tiles: &[(&str, f64)]) -> (tempfile::TempDir, FlightDataEnvGuard) {
+    let dem_root = tempfile::tempdir().unwrap();
+    let dem_dir = dem_root.path().join("dem");
+    std::fs::create_dir_all(&dem_dir).unwrap();
+    for (tile, elev_m) in tiles {
+        std::fs::write(
+            dem_dir.join(format!("{tile}.asc")),
+            format!(
+                "# {elev_m} m flat terrain\n{elev_m} {elev_m} {elev_m}\n{elev_m} {elev_m} {elev_m}\n{elev_m} {elev_m} {elev_m}\n"
+            ),
+        )
+        .unwrap();
+    }
+    let guard = FlightDataEnvGuard::set(dem_root.path());
+    (dem_root, guard)
+}
+
 #[tokio::test]
 #[serial]
 async fn pilot_live_trails_isolation_visibility_dedup_and_own_exclusion() {
     let db = ClubDb::open_test().await.unwrap();
     let (_tmp, mut router) = http_stack(db.clone()).await;
+    let (_dem_root, _dem_guard) = make_flat_dem(&[("N34W071", 600.0), ("N33W072", 600.0)]);
 
     let (club_a, _) = create_live_club(
         &db,
@@ -632,7 +650,7 @@ async fn pilot_live_trails_isolation_visibility_dedup_and_own_exclusion() {
     assert_eq!(st, StatusCode::OK, "{body}");
     assert_eq!(
         body["publicArea"],
-        json!({ "lat": -33.456, "lon": -70.548, "radiusKm": 150.0 })
+        json!({ "lat": -33.456, "lon": -70.548, "radiusKm": 150.0, "minAglFt": 300.0 })
     );
     let flights = body["flights"].as_array().unwrap();
     let count_a_pub = flights
@@ -674,6 +692,7 @@ async fn pilot_live_trails_isolation_visibility_dedup_and_own_exclusion() {
 async fn pilot_live_trails_membership_states_suspended_club_and_null_club_id() {
     let db = ClubDb::open_test().await.unwrap();
     let (_tmp, mut router) = http_stack(db.clone()).await;
+    let (_dem_root, _dem_guard) = make_flat_dem(&[("N34W071", 600.0)]);
 
     let (club_a, _) = create_live_club(
         &db,
@@ -2505,7 +2524,7 @@ fn live_trails_query_parser_validates_public_location_and_radius() {
         assert!(parsed.public_area.is_none());
     }
 
-    // Default radius = 20 km when omitted
+    // Default radius = 20 km and default fail-closed AGL floor = 300 ft when omitted (L-76)
     let def = LiveTrailsQuery::parse_query(Some("layers=public&lat=-33.456&lon=-70.548")).unwrap();
     assert_eq!(
         def.public_area,
@@ -2513,7 +2532,7 @@ fn live_trails_query_parser_validates_public_location_and_radius() {
             lat: -33.456,
             lon: -70.548,
             radius_km: PILOT_LIVE_TRAILS_DEFAULT_PUBLIC_RADIUS_KM,
-            min_agl_ft: None,
+            min_agl_ft: Some(crate::club::map_filter::DEFAULT_PUBLIC_ALTITUDE_MIN_FT),
         })
     );
 
@@ -2531,7 +2550,7 @@ fn live_trails_query_parser_validates_public_location_and_radius() {
             lat: 0.0,
             lon: 0.0,
             radius_km: PILOT_LIVE_TRAILS_MIN_PUBLIC_RADIUS_KM,
-            min_agl_ft: None,
+            min_agl_ft: Some(crate::club::map_filter::DEFAULT_PUBLIC_ALTITUDE_MIN_FT),
         })
     );
     let high =
@@ -2588,6 +2607,7 @@ fn live_trails_query_parser_validates_public_location_and_radius() {
 async fn pilot_live_trails_public_layer_geo_radius_clamping_validation_and_etag() {
     let db = ClubDb::open_test().await.unwrap();
     let (_tmp, mut router) = http_stack(db.clone()).await;
+    let (_dem_root, _dem_guard) = make_flat_dem(&[("N34W071", 600.0), ("N29W071", 600.0)]);
 
     let center_lat = -33.456;
     let center_lon = -70.548;
@@ -2829,7 +2849,7 @@ async fn pilot_live_trails_public_layer_geo_radius_clamping_validation_and_etag(
     assert_eq!(st, StatusCode::OK, "{body_def}");
     assert_eq!(
         body_def["publicArea"],
-        json!({ "lat": center_lat, "lon": center_lon, "radiusKm": 20.0 })
+        json!({ "lat": center_lat, "lon": center_lon, "radiusKm": 20.0, "minAglFt": 300.0 })
     );
     let ids_def: HashSet<&str> = body_def["flights"]
         .as_array()
@@ -2868,7 +2888,7 @@ async fn pilot_live_trails_public_layer_geo_radius_clamping_validation_and_etag(
     assert_eq!(st, StatusCode::OK, "{body_r1}");
     assert_eq!(
         body_r1["publicArea"],
-        json!({ "lat": center_lat, "lon": center_lon, "radiusKm": 5.0 })
+        json!({ "lat": center_lat, "lon": center_lon, "radiusKm": 5.0, "minAglFt": 300.0 })
     );
     let ids_r1: HashSet<&str> = body_r1["flights"]
         .as_array()
@@ -2895,7 +2915,7 @@ async fn pilot_live_trails_public_layer_geo_radius_clamping_validation_and_etag(
     assert_eq!(st, StatusCode::OK, "{body_r9999}");
     assert_eq!(
         body_r9999["publicArea"],
-        json!({ "lat": center_lat, "lon": center_lon, "radiusKm": 500.0 })
+        json!({ "lat": center_lat, "lon": center_lon, "radiusKm": 500.0, "minAglFt": 300.0 })
     );
     let ids_r9999: HashSet<&str> = body_r9999["flights"]
         .as_array()
@@ -3024,6 +3044,7 @@ async fn pilot_live_trails_public_layer_geo_radius_clamping_validation_and_etag(
 async fn pilot_live_trails_public_layer_handles_antimeridian_wrap() {
     let db = ClubDb::open_test().await.unwrap();
     let (_tmp, mut router) = http_stack(db.clone()).await;
+    let (_dem_root, _dem_guard) = make_flat_dem(&[("N00W180", 0.0), ("N00W179", 0.0)]);
 
     let (club_a, _) = create_live_club(&db, "plt-am-a", "own-ama@test", None).await;
     let (club_b, _) = create_live_club(&db, "plt-am-b", "own-amb@test", None).await;

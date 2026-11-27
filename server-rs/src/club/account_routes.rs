@@ -2,7 +2,7 @@ use super::routes::is_secure;
 use crate::club::{
     auth,
     db::{now_ms, ClubDb},
-    db_account::{AccountJoinError, AccountSignupError},
+    db_account::{AccountDeleteError, AccountJoinError, AccountSignupError},
 };
 use crate::AppState;
 use axum::{
@@ -1035,6 +1035,163 @@ async fn account_set_password(
     }
 }
 
+#[derive(Deserialize, Default)]
+struct DeleteAccountBody {
+    #[serde(default)]
+    password: Option<String>,
+    #[serde(default, alias = "currentPassword")]
+    current_password: Option<String>,
+}
+
+async fn delete_account(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    client_ip: crate::ClientIp,
+    body: Bytes,
+) -> impl IntoResponse {
+    if let Err(status) = super::csrf::cookie_post_allowed(&headers) {
+        return (status, Json(json!({ "error": "csrf" }))).into_response();
+    }
+    if let Err(status) = super::csrf::exact_json_content_type(&headers) {
+        return (status, Json(json!({ "error": "unsupported media type" }))).into_response();
+    }
+    let Some(db) = club_db(&state) else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "club disabled" })),
+        )
+            .into_response();
+    };
+    let Some(sess) = auth::parse_account_session_cookie(&headers) else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    };
+    let now = now_ms();
+    let now_sec = (now / 1000).max(0) as u64;
+    if let Err(retry_after) = state.account_password_throttle.check_up_to(
+        &client_ip.0,
+        now_sec,
+        crate::ACCOUNT_PASSWORD_MAX_ATTEMPTS,
+    ) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, retry_after.to_string())],
+            Json(json!({ "error": "rate limit" })),
+        )
+            .into_response();
+    }
+    let Some((acct, _)) = db.account_from_session(&sess, now).await else {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response();
+    };
+    if let Err(retry_after) = state.account_password_account_throttle.check_up_to(
+        &acct.id,
+        now_sec,
+        crate::ACCOUNT_PASSWORD_PER_ACCOUNT_MAX_ATTEMPTS,
+    ) {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(header::RETRY_AFTER, retry_after.to_string())],
+            Json(json!({ "error": "rate limit" })),
+        )
+            .into_response();
+    }
+    let parsed: DeleteAccountBody = if body.is_empty() {
+        DeleteAccountBody::default()
+    } else {
+        match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(val) if val.is_object() => match serde_json::from_value::<DeleteAccountBody>(val) {
+                Ok(parsed) => parsed,
+                Err(_) => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(json!({ "error": "invalid json" })),
+                    )
+                        .into_response();
+                }
+            },
+            _ => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "invalid json" })),
+                )
+                    .into_response();
+            }
+        }
+    };
+    let password = parsed
+        .password
+        .as_deref()
+        .or(parsed.current_password.as_deref());
+    match db.delete_account(&acct.id, &sess, password, now).await {
+        Ok(artifacts) => {
+            state
+                .live
+                .purge_devices(&artifacts.personal_device_ids)
+                .await;
+            let secure = is_secure(&headers);
+            let clear_account = auth::clear_account_session_cookie(secure);
+            let clear_club = auth::clear_session_cookie(secure);
+            let clear_legacy = crate::auth::clear_cookie_header(secure);
+            let mut res = (
+                StatusCode::OK,
+                [(header::CACHE_CONTROL, "no-store")],
+                Json(json!({ "ok": true })),
+            )
+                .into_response();
+            res.headers_mut()
+                .append(header::SET_COOKIE, clear_account.parse().expect("cookie"));
+            res.headers_mut()
+                .append(header::SET_COOKIE, clear_club.parse().expect("cookie"));
+            res.headers_mut()
+                .append(header::SET_COOKIE, clear_legacy.parse().expect("cookie"));
+            res
+        }
+        Err(AccountDeleteError::HasMemberships(memberships)) => (
+            StatusCode::CONFLICT,
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(json!({
+                "error": "leave_clubs_first",
+                "memberships": memberships.iter().map(|m| json!({
+                    "id": m.id,
+                    "clubId": m.club_id,
+                    "slug": m.club_slug,
+                    "name": m.club_name,
+                    "role": m.role,
+                    "status": m.status,
+                })).collect::<Vec<_>>(),
+            })),
+        )
+            .into_response(),
+        Err(AccountDeleteError::WrongPassword) => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "wrong password" })),
+        )
+            .into_response(),
+        Err(AccountDeleteError::AuthRequired) => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "auth required" })),
+        )
+            .into_response(),
+        Err(AccountDeleteError::NotFound) => (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "unauthorized" })),
+        )
+            .into_response(),
+        Err(AccountDeleteError::Db) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "db error" })),
+        )
+            .into_response(),
+    }
+}
+
 async fn approve_membership(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1285,6 +1442,7 @@ async fn account_magic_complete(
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/signup", get(serve_signup_page))
+        .route("/api/account", axum::routing::delete(delete_account))
         .route("/api/account/signup-available", get(signup_available))
         .route("/api/account/signup", post(account_signup))
         .route("/api/account/login", post(account_login))

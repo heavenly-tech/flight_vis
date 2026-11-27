@@ -59,6 +59,22 @@ pub enum AccountJoinError {
     Db,
 }
 
+#[derive(Debug)]
+pub enum AccountDeleteError {
+    NotFound,
+    WrongPassword,
+    AuthRequired,
+    HasMemberships(Vec<MembershipRow>),
+    Db,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DeletedAccountArtifacts {
+    pub personal_device_ids: Vec<String>,
+    #[allow(dead_code)]
+    pub clubless_flight_ids: Vec<String>,
+}
+
 impl ClubDb {
     pub async fn account_id_for_email(&self, email: &str) -> Option<String> {
         self.account_by_email(email).await.map(|a| a.id)
@@ -1347,6 +1363,341 @@ impl ClubDb {
         .execute(&self.pool)
         .await?;
         Ok(r.rows_affected() > 0)
+    }
+
+    /// Permanently delete an account and all of its personal (club-less) data in one Postgres
+    /// transaction.
+    ///
+    /// Security & retention semantics:
+    /// - Re-authenticates the caller using the exact same rules as `set_account_password`:
+    ///   - Accounts with a password require either a valid password OR a fresh magic-link session
+    ///     (`<= 15 min`, `auth_method = 'magic'`); supplying a non-empty wrong password always
+    ///     fails with `WrongPassword`.
+    ///   - Passwordless accounts require a fresh session (`<= 15 min`).
+    /// - Accounts that still hold ANY `club_memberships` row are rejected cleanly with
+    ///   `HasMemberships(memberships)` (HTTP `409 {"error":"leave_clubs_first", ...}`), leaving
+    ///   all club data and the account intact.
+    /// - Never deletes club-owned records: any historical club `flights.owner_account_id` or
+    ///   `pilots.account_id` (where `club_id IS NOT NULL`) is detached (`SET NULL`) so club flight
+    ///   logs and fleet history stay intact.
+    /// - Deletes in FK-safe child-first order: personal flights' `fixes`, `flight_devices`,
+    ///   `flight_shares`, club-less `flights`, personal `checkins`, `checkin_handoff_tokens`,
+    ///   `checkouts`, `device_pair_tokens`, personal `devices`, `admin_map_prefs`,
+    ///   `access_requests`, `guest_sessions`, `webauthn_credentials`, `pilot_sessions`,
+    ///   `magic_login_tokens`, `account_sessions`, personal `pilots`, and `accounts`.
+    ///   Platform anti-abuse/audit tables (`login_attempts`, `magic_send_log`, `email_suppressions`,
+    ///   `club_delete_tombstones` via `ON DELETE SET NULL`) are preserved.
+    pub async fn delete_account(
+        &self,
+        account_id: &str,
+        session_raw: &str,
+        password: Option<&str>,
+        now: i64,
+    ) -> Result<DeletedAccountArtifacts, AccountDeleteError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+        match Self::delete_account_in_tx(&mut tx, account_id, session_raw, password, now).await {
+            Ok(artifacts) => {
+                tx.commit().await.map_err(|_| AccountDeleteError::Db)?;
+                Ok(artifacts)
+            }
+            Err(err) => {
+                let _ = tx.rollback().await;
+                Err(err)
+            }
+        }
+    }
+
+    async fn delete_account_in_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        account_id: &str,
+        session_raw: &str,
+        password: Option<&str>,
+        now: i64,
+    ) -> Result<DeletedAccountArtifacts, AccountDeleteError> {
+        let lock_key = format!("account-delete:{account_id}");
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(&lock_key)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        let acct_row = sqlx::query(
+            "SELECT email, password_hash, suspended_at FROM accounts WHERE id = $1 FOR UPDATE",
+        )
+        .bind(account_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|_| AccountDeleteError::Db)?;
+        let Some(acct_row) = acct_row else {
+            return Err(AccountDeleteError::NotFound);
+        };
+        let email: String = acct_row.try_get(0).map_err(|_| AccountDeleteError::Db)?;
+        let existing_hash: Option<String> = acct_row.try_get(1).ok().flatten();
+        let suspended_at: Option<i64> = acct_row.try_get(2).ok().flatten();
+        if suspended_at.is_some() {
+            return Err(AccountDeleteError::NotFound);
+        }
+
+        let session_db_id = digest_token(session_raw);
+        let sess_row = sqlx::query(
+            "SELECT created_at, auth_method
+             FROM account_sessions
+             WHERE id = $1 AND account_id = $2 AND expires_at > $3",
+        )
+        .bind(&session_db_id)
+        .bind(account_id)
+        .bind(now)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|_| AccountDeleteError::Db)?;
+        let Some(sess_row) = sess_row else {
+            return Err(AccountDeleteError::NotFound);
+        };
+        let sess_created: i64 = sess_row.try_get(0).unwrap_or(0);
+        let sess_method: String = sess_row.try_get(1).unwrap_or_default();
+        let session_fresh =
+            sess_created > 0 && now.saturating_sub(sess_created) <= ACCOUNT_PASSWORD_RECENT_AUTH_MS;
+        let magic_fresh = session_fresh && sess_method == ACCOUNT_SESSION_AUTH_MAGIC;
+
+        let has_password = existing_hash.as_deref().is_some_and(|h| !h.is_empty());
+        let password_ok = existing_hash
+            .as_deref()
+            .is_some_and(|hash| password.is_some_and(|p| auth::verify_password(p, hash)));
+        if has_password {
+            if password.is_some_and(|p| !p.is_empty()) && !password_ok {
+                return Err(AccountDeleteError::WrongPassword);
+            }
+            if !password_ok && !magic_fresh {
+                return if password.is_some() {
+                    Err(AccountDeleteError::WrongPassword)
+                } else {
+                    Err(AccountDeleteError::AuthRequired)
+                };
+            }
+        } else if !session_fresh {
+            return Err(AccountDeleteError::AuthRequired);
+        }
+
+        let membership_rows = sqlx::query(
+            "SELECT m.id, m.pilot_id, m.club_id, c.slug, c.name, m.role, m.status
+             FROM club_memberships m
+             JOIN pilots p ON p.id = m.pilot_id
+             JOIN clubs c ON c.id = m.club_id
+             WHERE p.account_id = $1
+             ORDER BY lower(c.name)",
+        )
+        .bind(account_id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|_| AccountDeleteError::Db)?;
+        if !membership_rows.is_empty() {
+            let memberships = membership_rows
+                .into_iter()
+                .filter_map(|r| {
+                    Some(MembershipRow {
+                        id: r.try_get(0).ok()?,
+                        pilot_id: r.try_get(1).ok()?,
+                        club_id: r.try_get(2).ok()?,
+                        club_slug: r.try_get(3).ok(),
+                        club_name: r.try_get(4).ok()?,
+                        role: r.try_get(5).ok()?,
+                        status: r.try_get(6).ok()?,
+                    })
+                })
+                .collect();
+            return Err(AccountDeleteError::HasMemberships(memberships));
+        }
+
+        let personal_pilot_ids: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM pilots WHERE account_id = $1 AND club_id IS NULL")
+                .bind(account_id)
+                .fetch_all(&mut **tx)
+                .await
+                .map_err(|_| AccountDeleteError::Db)?;
+
+        let personal_device_ids: Vec<String> = if personal_pilot_ids.is_empty() {
+            Vec::new()
+        } else {
+            sqlx::query_scalar("SELECT id FROM devices WHERE pilot_id = ANY($1)")
+                .bind(&personal_pilot_ids)
+                .fetch_all(&mut **tx)
+                .await
+                .map_err(|_| AccountDeleteError::Db)?
+        };
+
+        let clubless_flight_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM flights
+             WHERE club_id IS NULL
+               AND (owner_account_id = $1 OR pilot_id = ANY($2))",
+        )
+        .bind(account_id)
+        .bind(&personal_pilot_ids)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|_| AccountDeleteError::Db)?;
+
+        // Delete personal telemetry, flight-device links, shares, and club-less flights.
+        sqlx::query("DELETE FROM fixes WHERE flight_id = ANY($1) OR device_id = ANY($2)")
+            .bind(&clubless_flight_ids)
+            .bind(&personal_device_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM flight_devices WHERE flight_id = ANY($1) OR device_id = ANY($2)")
+            .bind(&clubless_flight_ids)
+            .bind(&personal_device_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM flight_shares WHERE flight_id = ANY($1) OR created_by = ANY($2)")
+            .bind(&clubless_flight_ids)
+            .bind(&personal_pilot_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM flights WHERE id = ANY($1)")
+            .bind(&clubless_flight_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        // Retain club-owned flights: detach owner_account_id without deleting club records.
+        sqlx::query(
+            "UPDATE flights SET owner_account_id = NULL WHERE owner_account_id = $1 AND club_id IS NOT NULL",
+        )
+        .bind(account_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| AccountDeleteError::Db)?;
+
+        // Personal pilot child rows (checkins, handoff tokens, checkouts, devices, prefs, auth).
+        sqlx::query("DELETE FROM checkins WHERE pilot_id = ANY($1) OR device_id = ANY($2)")
+            .bind(&personal_pilot_ids)
+            .bind(&personal_device_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM checkin_handoff_tokens WHERE pilot_id = ANY($1)")
+            .bind(&personal_pilot_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM checkouts WHERE pilot_id = ANY($1)")
+            .bind(&personal_pilot_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM device_pair_tokens WHERE device_id = ANY($1)")
+            .bind(&personal_device_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM devices WHERE id = ANY($1)")
+            .bind(&personal_device_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM admin_map_prefs WHERE pilot_id = ANY($1)")
+            .bind(&personal_pilot_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query(
+            "UPDATE access_requests SET decided_by_pilot_id = NULL WHERE decided_by_pilot_id = ANY($1)",
+        )
+        .bind(&personal_pilot_ids)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM access_requests WHERE pilot_id = ANY($1)")
+            .bind(&personal_pilot_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query("UPDATE audit_log SET actor_pilot_id = NULL WHERE actor_pilot_id = ANY($1)")
+            .bind(&personal_pilot_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM guest_sessions WHERE guest_pilot_id = ANY($1)")
+            .bind(&personal_pilot_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM webauthn_credentials WHERE pilot_id = ANY($1)")
+            .bind(&personal_pilot_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        // Revoke any pilot sessions for pilots still linked to this account before detaching them.
+        sqlx::query(
+            "DELETE FROM pilot_sessions WHERE pilot_id IN (SELECT id FROM pilots WHERE account_id = $1)",
+        )
+        .bind(account_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query(
+            "DELETE FROM magic_login_tokens
+             WHERE account_id = $1 OR lower(email) = lower($2) OR pilot_id = ANY($3)",
+        )
+        .bind(account_id)
+        .bind(&email)
+        .bind(&personal_pilot_ids)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM account_sessions WHERE account_id = $1")
+            .bind(account_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        // Detach any historical club pilot rows (never delete club-owned pilot history).
+        sqlx::query(
+            "UPDATE pilots SET account_id = NULL WHERE account_id = $1 AND club_id IS NOT NULL",
+        )
+        .bind(account_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM pilots WHERE id = ANY($1)")
+            .bind(&personal_pilot_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        sqlx::query("DELETE FROM accounts WHERE id = $1")
+            .bind(account_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| AccountDeleteError::Db)?;
+
+        Ok(DeletedAccountArtifacts {
+            personal_device_ids,
+            clubless_flight_ids,
+        })
     }
 
     #[allow(dead_code)]

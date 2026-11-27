@@ -13,6 +13,7 @@
     "language": "Idioma",
     "copied": "Copiado",
     "otherClub": "Fuera del club",
+    "pilotEntered": "Registrada por el piloto",
     "backPilot": "← Piloto",
     "backHome": "← Volver a flight_vis"
   },
@@ -98,6 +99,8 @@
     "emailNotVerified": "Verifica tu correo para compartir vuelos de forma pública.",
     "clubVisibilityRequiresClub": "La visibilidad de club requiere pertenecer a un club.",
     "invalidTail": "Matrícula inválida",
+    "leaveClubsFirst": "Debes salir de tus clubes antes de eliminar tu cuenta.",
+    "batchTooLarge": "El lote de posiciones supera el máximo permitido.",
     "genericError": "Ocurrió un error. Intenta nuevamente."
   },
   "club": {

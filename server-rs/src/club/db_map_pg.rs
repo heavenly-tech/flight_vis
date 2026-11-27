@@ -4,11 +4,15 @@ use crate::club::{
     db::{now_ms, ClubDb, DbError, FlightRow},
     dem::DemIndex,
     geo::{bbox_for_radius_km, haversine_km},
-    map::{dedupe_by_tail, filter_admin_tails, DeviceFix, TailLivePosition},
+    map::{
+        dedupe_by_tail, filter_admin_tails, DeviceFix, TailLivePosition, TAIL_SOURCE_CLUB,
+        TAIL_SOURCE_PILOT,
+    },
     map_filter::{
         apply_public_cap, evaluate_public_altitude, public_track_passes, visibility_is_public,
         AltitudeEval, AltitudeMode, MapViewFilter, DEFAULT_PUBLIC_ALTITUDE_MIN_FT,
     },
+    pilot_live_trails::PUBLIC_LIVE_TRAILS_SQL_CANDIDATE_LIMIT,
     trail::{
         TrailMinutes, DEFAULT_NEARBY_PUBLIC_RADIUS_KM, DEFAULT_TRAIL_MINUTES, LIVE_FIX_MAX_AGE_MS,
         MAX_NEARBY_PUBLIC_FLIGHTS,
@@ -146,6 +150,13 @@ impl ClubDb {
     ) -> Vec<DeviceFix> {
         let mut out = Vec::new();
         for r in rows {
+            // `/api/club/map` is a club reader and must never include club-less flights.
+            let Some(ref row_club_id) = r.club_id else {
+                continue;
+            };
+            if !r.is_club_aircraft {
+                continue;
+            }
             let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
             if self
                 .pilot_is_approved_member(&r.pilot_id, viewing_club_id)
@@ -156,7 +167,7 @@ impl ClubDb {
                         status: PilotStatus::Approved,
                         ..
                     } => {
-                        if r.club_id != viewing_club_id && vis != FlightVisibility::Public {
+                        if row_club_id != viewing_club_id && vis != FlightVisibility::Public {
                             false
                         } else {
                             includes_in_club_map(viewer, &r.pilot_id, vis)
@@ -203,11 +214,22 @@ impl ClubDb {
     ) -> Option<FlightRow> {
         let flight = self.get_flight(flight_id).await?;
         let vis = FlightVisibility::parse(&flight.visibility)?;
+        // Club-less flights (`club_id IS NULL` / `aircraft_id IS NULL`) are strictly owner-only:
+        // never visible to another account, a club admin, or anonymous callers.
+        let club_id: Option<String> = if flight.aircraft_id.is_some() {
+            self.flight_aircraft_club_id(flight_id).await
+        } else {
+            None
+        };
+        let Some(club_id) = club_id else {
+            return match viewer {
+                Viewer::Pilot { id, .. } if *id == flight.pilot_id => Some(flight),
+                _ => None,
+            };
+        };
         if !can_view_flight(viewer, &flight.pilot_id, vis) {
             return None;
         }
-        // In E1, club-less flights (aircraft_id IS NULL) are dropped cleanly here.
-        let club_id = self.flight_aircraft_club_id(flight_id).await?;
         let viewing_club: Option<String> = match viewer {
             Viewer::Pilot {
                 id,
@@ -289,7 +311,10 @@ impl ClubDb {
                 pilot_id: r.try_get(2).ok()?,
                 pilot_name: r.try_get(3).ok()?,
                 visibility: r.try_get(4).ok()?,
-                club_id: r.try_get(5).ok()?,
+                club_id: r.try_get(5).ok(),
+                is_club_aircraft: true,
+                clubless_public_eligible: false,
+                last_fix_at: flight.last_fix_at,
                 trail_minutes: crate::club::trail::DEFAULT_TRAIL_MINUTES,
                 fix: crate::live::LiveFix {
                     t: r.try_get(6).ok()?,
@@ -372,18 +397,41 @@ impl ClubDb {
     pub async fn public_map_scoped(&self, club_id: &str) -> Vec<TailLivePosition> {
         let club = club_id.to_string();
         let filter = self.club_map_filter(&club).await;
+        let club_base: Option<(f64, f64)> = sqlx::query(
+            "SELECT latitude, longitude FROM clubs WHERE id = $1 AND latitude IS NOT NULL AND longitude IS NOT NULL",
+        )
+        .bind(&club)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|r| {
+            let lat: f64 = r.try_get(0).ok()?;
+            let lon: f64 = r.try_get(1).ok()?;
+            if lat.is_finite()
+                && lon.is_finite()
+                && (-90.0..=90.0).contains(&lat)
+                && (-180.0..=180.0).contains(&lon)
+            {
+                Some((lat, lon))
+            } else {
+                None
+            }
+        });
+        let club_meta = self.club_public_row(&club).await;
         let dem = self.dem_index();
+        let live_cutoff_ms = now_ms().saturating_sub(LIVE_FIX_MAX_AGE_MS);
         let rows = self.latest_device_fixes().await;
-        let filtered: Vec<DeviceFix> = {
-            let mut out = Vec::new();
-            for r in rows {
-                if r.club_id != club {
-                    continue;
-                }
+        let mut own_club_rows = Vec::new();
+        let mut clubless_positions = Vec::new();
+        let min_agl_ft = filter.altitude_min_ft.max(DEFAULT_PUBLIC_ALTITUDE_MIN_FT);
+
+        for r in rows {
+            if r.club_id.as_deref() == Some(club.as_str()) && r.is_club_aircraft {
                 let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);
                 if self.pilot_is_approved_member(&r.pilot_id, &club).await {
                     if includes_in_public_map(vis) {
-                        out.push(r);
+                        own_club_rows.push(r);
                     }
                     continue;
                 }
@@ -391,12 +439,60 @@ impl ClubDb {
                     && visibility_is_public(&r.visibility)
                     && public_track_passes(&r, &filter, &dem)
                 {
-                    out.push(r);
+                    own_club_rows.push(r);
                 }
+                continue;
             }
-            out
-        };
-        let mut positions = dedupe_by_tail(filtered);
+            // Club-less public flights (`club_id IS NULL`, verified non-suspended owner):
+            // strictly geo-bounded around the club base and gated by fail-closed 300 ft AGL floor.
+            // Never merged into own-club `dedupe_by_tail` and always emitted with `tailSource = "pilot"`.
+            if r.club_id.is_none()
+                && !r.is_club_aircraft
+                && r.clubless_public_eligible
+                && filter.show_public_tracks
+                && visibility_is_public(&r.visibility)
+                && r.last_fix_at.is_some_and(|t| t >= live_cutoff_ms)
+            {
+                let Some((base_lat, base_lon)) = club_base else {
+                    continue;
+                };
+                if !r.fix.lat.is_finite() || !r.fix.lon.is_finite() {
+                    continue;
+                }
+                if haversine_km(base_lat, base_lon, r.fix.lat, r.fix.lon) > filter.radius_km {
+                    continue;
+                }
+                if !matches!(
+                    evaluate_public_altitude(&r.fix, AltitudeMode::Agl, min_agl_ft, &dem),
+                    AltitudeEval::Pass
+                ) {
+                    continue;
+                }
+                clubless_positions.push(TailLivePosition {
+                    tail: r.tail,
+                    tail_source: TAIL_SOURCE_PILOT,
+                    flight_id: r.flight_id,
+                    pilot_id: None,
+                    pilot_name: None,
+                    fix: r.fix,
+                    visibility: "public".to_string(),
+                    trail_minutes: r.trail_minutes,
+                    non_club: true,
+                    club_name: None,
+                    club_slug: None,
+                });
+            }
+        }
+
+        let mut positions = dedupe_by_tail(own_club_rows);
+        for pos in &mut positions {
+            pos.pilot_id = None;
+            if let Some(ref meta) = club_meta {
+                pos.club_name = Some(meta.name.clone());
+                pos.club_slug = Some(meta.slug.clone());
+            }
+        }
+        positions.extend(clubless_positions);
         for pos in &mut positions {
             if let Some(f) = self.get_flight(&pos.flight_id).await {
                 if show_pilot_name(&Viewer::Anonymous, &f.pilot_id, f.show_pilot_name_public) {
@@ -413,20 +509,21 @@ impl ClubDb {
         )
     }
 
-    /// Returns live `public` flights from OTHER active clubs within the viewing club's configured
-    /// radius of its base aerodrome, strictly when `clubs.show_nearby_public` is `true` and the
-    /// club has valid base coordinates.
+    /// Returns live `public` flights from OTHER active clubs and verified, non-suspended club-less
+    /// pilots within the viewing club's configured radius of its base aerodrome, strictly when
+    /// `clubs.show_nearby_public` is `true` and the club has valid base coordinates.
     ///
     /// - Never uses `default_club_id`.
     /// - Never returns `private` or other clubs' `club`-only flights.
-    /// - Excludes suspended, pending/unverified, and deleted clubs.
+    /// - Excludes suspended, pending/unverified, and deleted clubs, as well as unverified or
+    ///   suspended club-less owners.
     /// - Respects `show_pilot_name_public`; never exposes `pilot_id`.
-    /// - Applies the viewing club's public altitude filter (`public_altitude_mode` /
-    ///   `public_altitude_min_ft`) via `evaluate_public_altitude` before the nearest-30 cap;
-    ///   does not apply legacy `show_public_tracks`, `public_radius_km`, or `public_flights_cap`.
-    /// - Capped at `MAX_NEARBY_PUBLIC_FLIGHTS` (30), nearest first.
-    /// - Structured via a `candidate_public_flights` CTE so future club-less public flights
-    ///   (`f.club_id IS NULL`) can be added by relaxing one predicate.
+    /// - Emits `tailSource = "club"` (with `clubName`/`clubSlug`) for club aircraft and
+    ///   `tailSource = "pilot"` (without club metadata) for club-less flights; free-text
+    ///   `tail_text` is never resolved against `aircraft`.
+    /// - Applies the viewing club's public altitude filter to other-club flights, and ALWAYS
+    ///   applies a fail-closed AGL floor (`>= 300` ft AGL) to club-less flights.
+    /// - Hard SQL candidate `LIMIT 500`, then capped at `MAX_NEARBY_PUBLIC_FLIGHTS` (30), nearest first.
     pub async fn nearby_public_positions_for_club(
         &self,
         own_club_id: &str,
@@ -474,6 +571,7 @@ impl ClubDb {
         let altitude_min_ft: f64 = club_row
             .try_get(5)
             .unwrap_or(DEFAULT_PUBLIC_ALTITUDE_MIN_FT);
+        let clubless_min_agl_ft = altitude_min_ft.max(DEFAULT_PUBLIC_ALTITUDE_MIN_FT);
 
         let (raw_min_lat, raw_max_lat, raw_min_lon, raw_max_lon) =
             bbox_for_radius_km(base_lat, base_lon, radius_km);
@@ -498,8 +596,12 @@ impl ClubDb {
                         f.show_pilot_name_public,
                         f.trail_minutes,
                         c.trail_minutes_default,
-                        a.tail,
+                        COALESCE(a.tail, f.tail_text) AS tail,
+                        (f.club_id IS NOT NULL AND f.aircraft_id IS NOT NULL AND a.tail IS NOT NULL) AS is_club_aircraft,
+                        CASE WHEN f.club_id IS NOT NULL AND f.aircraft_id IS NOT NULL THEN c.name ELSE NULL END AS club_name,
+                        CASE WHEN f.club_id IS NOT NULL AND f.aircraft_id IS NOT NULL THEN c.slug ELSE NULL END AS club_slug,
                         p.name AS pilot_name,
+                        f.last_fix_at,
                         fx.t_ms,
                         fx.lat,
                         fx.lon,
@@ -512,6 +614,7 @@ impl ClubDb {
                  LEFT JOIN clubs c ON c.id = f.club_id
                  LEFT JOIN aircraft a ON a.id = f.aircraft_id
                  JOIN pilots p ON p.id = f.pilot_id
+                 LEFT JOIN accounts owner_acct ON owner_acct.id = f.owner_account_id
                  JOIN LATERAL (
                      SELECT t_ms, lat, lon, alt, alt_ref, speed, course, accuracy
                      FROM fixes
@@ -524,16 +627,33 @@ impl ClubDb {
                    AND f.last_fix_at IS NOT NULL
                    AND f.last_fix_at >= $1
                    AND f.visibility = 'public'
-                   -- Club-less public flights (f.club_id IS NULL) are intentionally excluded;
-                   -- relax this predicate when club-less flight support is introduced.
-                   AND f.club_id IS NOT NULL
-                   AND f.club_id <> $2
-                   AND c.status = 'live'
-                   AND c.email_verified_at IS NOT NULL
-                   AND c.suspended_at IS NULL
-                   AND a.tail IS NOT NULL
+                   AND (
+                       (
+                           f.club_id IS NOT NULL
+                           AND f.aircraft_id IS NOT NULL
+                           AND f.club_id <> $2
+                           AND c.status = 'live'
+                           AND c.email_verified_at IS NOT NULL
+                           AND c.suspended_at IS NULL
+                           AND a.tail IS NOT NULL
+                       )
+                       OR (
+                           f.club_id IS NULL
+                           AND f.aircraft_id IS NULL
+                           AND f.tail_text IS NOT NULL
+                           AND p.club_id IS NULL
+                           AND p.status <> 'guest'
+                           AND p.account_id IS NOT NULL
+                           AND f.owner_account_id = p.account_id
+                           AND owner_acct.id = f.owner_account_id
+                           AND owner_acct.email_verified_at IS NOT NULL
+                           AND owner_acct.suspended_at IS NULL
+                       )
+                   )
                    AND fx.lat BETWEEN $3 AND $4
                    AND fx.lon BETWEEN $5 AND $6
+                 ORDER BY f.last_fix_at DESC, f.id ASC
+                 LIMIT $7
              )
              SELECT flight_id,
                     tail,
@@ -548,7 +668,10 @@ impl ClubDb {
                     alt_ref,
                     speed,
                     course,
-                    accuracy
+                    accuracy,
+                    is_club_aircraft,
+                    club_name,
+                    club_slug
              FROM candidate_public_flights",
         )
         .bind(live_cutoff_ms)
@@ -557,6 +680,7 @@ impl ClubDb {
         .bind(max_lat)
         .bind(min_lon)
         .bind(max_lon)
+        .bind(PUBLIC_LIVE_TRAILS_SQL_CANDIDATE_LIMIT as i64)
         .fetch_all(&self.pool)
         .await
         .unwrap_or_default();
@@ -595,17 +719,46 @@ impl ClubDb {
                     course: r.try_get(12).ok().flatten(),
                     accuracy: r.try_get(13).ok().flatten(),
                 };
-                if !matches!(
-                    evaluate_public_altitude(&fix, altitude_mode, altitude_min_ft, &dem),
-                    AltitudeEval::Pass | AltitudeEval::NoDemFallbackMsl
-                ) {
+                let is_club_aircraft: bool = r.try_get(14).ok().unwrap_or(false);
+                let alt_passes = if is_club_aircraft {
+                    matches!(
+                        evaluate_public_altitude(&fix, altitude_mode, altitude_min_ft, &dem),
+                        AltitudeEval::Pass | AltitudeEval::NoDemFallbackMsl
+                    )
+                } else {
+                    matches!(
+                        evaluate_public_altitude(
+                            &fix,
+                            AltitudeMode::Agl,
+                            clubless_min_agl_ft,
+                            &dem,
+                        ),
+                        AltitudeEval::Pass
+                    )
+                };
+                if !alt_passes {
                     return None;
                 }
+                let club_name: Option<String> = if is_club_aircraft {
+                    r.try_get(15).ok().flatten()
+                } else {
+                    None
+                };
+                let club_slug: Option<String> = if is_club_aircraft {
+                    r.try_get(16).ok().flatten()
+                } else {
+                    None
+                };
                 let effective = TrailMinutes::effective(flight_override, club_default);
                 Some((
                     dist_km,
                     TailLivePosition {
                         tail,
+                        tail_source: if is_club_aircraft {
+                            TAIL_SOURCE_CLUB
+                        } else {
+                            TAIL_SOURCE_PILOT
+                        },
                         flight_id,
                         pilot_id: None,
                         pilot_name,
@@ -613,6 +766,8 @@ impl ClubDb {
                         visibility: "public".to_string(),
                         trail_minutes: effective.as_i16(),
                         non_club: true,
+                        club_name,
+                        club_slug,
                     },
                 ))
             })
@@ -635,7 +790,7 @@ impl ClubDb {
             .latest_device_fixes()
             .await
             .into_iter()
-            .filter(|r| r.club_id == club_id)
+            .filter(|r| r.club_id.as_deref() == Some(club_id.as_str()) && r.is_club_aircraft)
             .collect();
         let own_positions = dedupe_by_tail(own_rows);
         let prefs = self.admin_map_tails(admin_id).await;
@@ -657,7 +812,7 @@ impl ClubDb {
             .await
             .into_iter()
             .filter(|r| {
-                if r.club_id != display_club_id {
+                if r.club_id.as_deref() != Some(display_club_id) || !r.is_club_aircraft {
                     return false;
                 }
                 let vis = FlightVisibility::parse(&r.visibility).unwrap_or(FlightVisibility::Club);

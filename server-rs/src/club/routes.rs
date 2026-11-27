@@ -1397,7 +1397,7 @@ pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<String> {
 /// Explicit actor resolution for owner-only flight mutation/listing endpoints that support
 /// both club pilots and club-less (personal) pilots. Kept separate from `viewer()` so
 /// club/admin/kiosk endpoints never implicitly resolve a personal pilot.
-async fn resolve_flight_owner_actor(
+pub(crate) async fn resolve_flight_owner_actor(
     state: &AppState,
     db: &ClubDb,
     headers: &HeaderMap,
@@ -2250,12 +2250,39 @@ async fn put_admin_map_tails(
     }
 }
 
+/// Resolves the viewer for `/api/flights/{id}/{fixes,gpx,stream}`.
+/// Preserves club `viewer()` semantics for club flights, while also permitting the owner
+/// of a club-less (personal) flight via `fv_account_session` or personal device Bearer token.
+async fn resolve_flight_reader_viewer(
+    state: &AppState,
+    db: &ClubDb,
+    headers: &HeaderMap,
+    flight_id: &str,
+) -> Viewer {
+    if let Ok(actor_pid) =
+        resolve_flight_owner_actor(state, db, headers, Some(flight_id), false).await
+    {
+        if let Some(flight) = db.get_flight(flight_id).await {
+            if flight.club_id.is_none()
+                && flight.aircraft_id.is_none()
+                && flight.pilot_id == actor_pid
+            {
+                return Viewer::Pilot {
+                    id: actor_pid,
+                    status: PilotStatus::Approved,
+                    role: crate::club::visibility::PilotRole::Pilot,
+                };
+            }
+        }
+    }
+    viewer(state, headers).await
+}
+
 async fn club_flight_fixes(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(flight_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers).await;
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2263,6 +2290,7 @@ async fn club_flight_fixes(
         )
             .into_response();
     };
+    let v = resolve_flight_reader_viewer(&state, db, &headers, &flight_id).await;
     if db.flight_visible_to(&v, &flight_id).await.is_none() {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     }
@@ -2275,7 +2303,6 @@ async fn club_flight_gpx(
     headers: HeaderMap,
     Path(flight_id): Path<String>,
 ) -> impl IntoResponse {
-    let v = viewer(&state, &headers).await;
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2283,6 +2310,7 @@ async fn club_flight_gpx(
         )
             .into_response();
     };
+    let v = resolve_flight_reader_viewer(&state, db, &headers, &flight_id).await;
     let Some(flight) = db.flight_visible_to(&v, &flight_id).await else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     };
@@ -2359,7 +2387,6 @@ async fn club_flight_stream(
         )
             .into_response();
     };
-    let v = viewer(&state, &headers).await;
     let Some(db) = club_db(&state) else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -2367,6 +2394,7 @@ async fn club_flight_stream(
         )
             .into_response();
     };
+    let v = resolve_flight_reader_viewer(&state, db, &headers, &flight_id).await;
     if db.flight_visible_to(&v, &flight_id).await.is_none() {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response();
     }
@@ -2376,6 +2404,7 @@ async fn club_flight_stream(
     let flight_club_id = db.club_id_for_flight(&flight_id).await;
     let pilot_sess = parse_session_cookie(&headers);
     let acct_sess = auth::parse_account_session_cookie(&headers);
+    let bearer_tok = bearer_token(&headers);
     let backfill: Vec<_> = db.fixes_for_flight(&flight_id).await;
     let idle_ms = super::sse_limit::SSE_IDLE_MS;
     let stream = stream::iter(backfill.into_iter().enumerate().map(move |(i, fix)| {
@@ -2392,6 +2421,7 @@ async fn club_flight_stream(
             flight_club_id,
             pilot_sess,
             acct_sess,
+            bearer_tok,
             0_u32,
         ),
         #[allow(clippy::question_mark)]
@@ -2405,6 +2435,7 @@ async fn club_flight_stream(
             flight_club,
             pilot_sess,
             acct_sess,
+            bearer_tok,
             mut ticks,
         )| async move {
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -2415,35 +2446,50 @@ async fn club_flight_stream(
                     if db.club_operational(cid).await.is_err() {
                         return None;
                     }
-                }
-                if let Some(ref acct) = acct_sess {
-                    if db.account_from_session(acct, now).await.is_none() {
+                } else if let Viewer::Pilot { ref id, .. } = viewer {
+                    if db
+                        .pilot_identity(id)
+                        .await
+                        .is_none_or(|ident| ident.account_suspended)
+                    {
                         return None;
                     }
-                    let active_mem = db
-                        .account_from_session(acct, now)
-                        .await
-                        .and_then(|(_, m)| m);
-                    if let Some(mem_id) = active_mem {
-                        let Some(pilot) = db.pilot_for_active_membership(&mem_id).await else {
-                            return None;
-                        };
-                        if db.club_operational(&pilot.club_id).await.is_err() {
-                            return None;
-                        }
-                        if let Some((_, mem_status)) =
-                            db.membership_in_club(&pilot.id, &pilot.club_id).await
-                        {
-                            if !crate::club::membership_status::MembershipStatus::parse(&mem_status)
-                                .allows_club_api()
-                            {
+                }
+                if let Some(ref tok) = bearer_tok {
+                    let Some(dev_id) = db.resolve_device_token(tok).await else {
+                        return None;
+                    };
+                    if db.device_account_suspended(&dev_id).await {
+                        return None;
+                    }
+                } else if let Some(ref acct) = acct_sess {
+                    let Some((_, active_mem)) = db.account_from_session(acct, now).await else {
+                        return None;
+                    };
+                    if flight_club.is_some() {
+                        if let Some(mem_id) = active_mem {
+                            let Some(pilot) = db.pilot_for_active_membership(&mem_id).await else {
+                                return None;
+                            };
+                            if db.club_operational(&pilot.club_id).await.is_err() {
                                 return None;
                             }
-                        } else {
+                            if let Some((_, mem_status)) =
+                                db.membership_in_club(&pilot.id, &pilot.club_id).await
+                            {
+                                if !crate::club::membership_status::MembershipStatus::parse(
+                                    &mem_status,
+                                )
+                                .allows_club_api()
+                                {
+                                    return None;
+                                }
+                            } else {
+                                return None;
+                            }
+                        } else if pilot_sess.is_some() {
                             return None;
                         }
-                    } else if pilot_sess.is_some() {
-                        return None;
                     }
                 } else if let Some(ref ps) = pilot_sess {
                     let Some(pilot) = db.pilot_from_session(ps, now).await else {
@@ -2493,6 +2539,7 @@ async fn club_flight_stream(
                     flight_club,
                     pilot_sess,
                     acct_sess,
+                    bearer_tok,
                     ticks,
                 ),
             ))

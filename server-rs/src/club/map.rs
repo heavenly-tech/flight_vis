@@ -5,10 +5,14 @@ use std::collections::HashMap;
 const ACC_GOOD_M: f64 = 50.0;
 const ACC_WINDOW_MS: i64 = 5_000;
 
+pub const TAIL_SOURCE_CLUB: &str = "club";
+pub const TAIL_SOURCE_PILOT: &str = "pilot";
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TailLivePosition {
     pub tail: String,
+    pub tail_source: &'static str,
     pub flight_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pilot_id: Option<String>,
@@ -18,6 +22,10 @@ pub struct TailLivePosition {
     pub trail_minutes: i16,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub non_club: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub club_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub club_slug: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -27,8 +35,10 @@ pub struct DeviceFix {
     pub pilot_id: String,
     pub pilot_name: String,
     pub visibility: String,
-    #[allow(dead_code)]
-    pub club_id: String,
+    pub club_id: Option<String>,
+    pub is_club_aircraft: bool,
+    pub clubless_public_eligible: bool,
+    pub last_fix_at: Option<i64>,
     pub trail_minutes: i16,
     pub fix: LiveFix,
 }
@@ -57,6 +67,11 @@ pub fn dedupe_by_tail(inputs: Vec<DeviceFix>) -> Vec<TailLivePosition> {
         if let Some(row) = pick {
             out.push(TailLivePosition {
                 tail: row.tail.clone(),
+                tail_source: if row.is_club_aircraft {
+                    TAIL_SOURCE_CLUB
+                } else {
+                    TAIL_SOURCE_PILOT
+                },
                 flight_id: row.flight_id.clone(),
                 pilot_id: Some(row.pilot_id.clone()),
                 pilot_name: Some(row.pilot_name.clone()),
@@ -64,6 +79,8 @@ pub fn dedupe_by_tail(inputs: Vec<DeviceFix>) -> Vec<TailLivePosition> {
                 visibility: row.visibility.clone(),
                 trail_minutes: row.trail_minutes,
                 non_club: false,
+                club_name: None,
+                club_slug: None,
             });
         }
     }
@@ -111,7 +128,10 @@ mod tests {
             pilot_id: "p1".to_string(),
             pilot_name: "Pat".to_string(),
             visibility: "club".to_string(),
-            club_id: "c1".to_string(),
+            club_id: Some("c1".to_string()),
+            is_club_aircraft: true,
+            clubless_public_eligible: false,
+            last_fix_at: Some(t),
             trail_minutes: 5,
             fix: fix(t, acc),
         }
@@ -125,6 +145,7 @@ mod tests {
         ]);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].fix.accuracy, Some(10.0));
+        assert_eq!(out[0].tail_source, TAIL_SOURCE_CLUB);
     }
 
     #[test]
@@ -132,6 +153,7 @@ mod tests {
         let all = vec![
             TailLivePosition {
                 tail: "A".to_string(),
+                tail_source: TAIL_SOURCE_CLUB,
                 flight_id: "1".into(),
                 pilot_id: Some("p".into()),
                 pilot_name: None,
@@ -139,9 +161,12 @@ mod tests {
                 visibility: "club".into(),
                 trail_minutes: 5,
                 non_club: false,
+                club_name: None,
+                club_slug: None,
             },
             TailLivePosition {
                 tail: "B".to_string(),
+                tail_source: TAIL_SOURCE_CLUB,
                 flight_id: "2".into(),
                 pilot_id: Some("p".into()),
                 pilot_name: None,
@@ -149,6 +174,8 @@ mod tests {
                 visibility: "club".into(),
                 trail_minutes: 5,
                 non_club: false,
+                club_name: None,
+                club_slug: None,
             },
         ];
         let filtered = filter_admin_tails(all.clone(), &["A".to_string()]);

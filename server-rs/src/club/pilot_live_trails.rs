@@ -15,14 +15,19 @@
 //! - Public layer is queried ONLY when `layers` explicitly includes `public` AND is NEVER a global
 //!   feed: requests including `public` MUST supply finite `lat` (`[-90, 90]`) and `lon`
 //!   (`[-180, 180]`), may supply optional finite `radius_km` (default 20 km, clamped to
-//!   `5..=500` km), and may supply optional finite `min_agl_ft` (clamped `0..=20000`, absent = no
-//!   altitude floor; applied to the public layer only). Public candidates are prefiltered in SQL by
-//!   a spherical-cap bounding box on each flight's latest fix (skipping the longitude prefilter
-//!   when the box crosses the antimeridian or covers a pole) with a hard SQL `LIMIT 500`
-//!   (`PUBLIC_LIVE_TRAILS_SQL_CANDIDATE_LIMIT`), then filtered in Rust by exact great-circle
-//!   distance `haversine_km(lat, lon, latest_lat, latest_lon) <= radius_km` and optional AGL floor
-//!   (`evaluate_public_altitude` with `Pass | NoDemFallbackMsl`) before applying the 50-flight cap.
-//!   Flights with `club_id IS NULL` are excluded for now (club-less support is a separate follow-up).
+//!   `5..=500` km), and enforces the same mandatory fail-closed AGL floor as `/api/public/live-trails`
+//!   (L-76 / M-27: default `300.0` ft AGL, `min_agl_ft` clamped `300..=20000`, `AltitudeEval::Pass`
+//!   only; applied to the public layer only — the `club` layer is unaffected). Public candidates are
+//!   prefiltered in SQL by a spherical-cap bounding box on each flight's latest fix (skipping the
+//!   longitude prefilter when the box crosses the antimeridian or covers a pole) with a hard SQL
+//!   `LIMIT 500` (`PUBLIC_LIVE_TRAILS_SQL_CANDIDATE_LIMIT`), then filtered in Rust by exact
+//!   great-circle distance `haversine_km(lat, lon, latest_lat, latest_lon) <= radius_km` and the
+//!   fail-closed AGL floor before applying the 50-flight cap.
+//! - Includes both operational club `public` flights (`tailSource = "club"`) and club-less `public`
+//!   flights (`tailSource = "pilot"`, `LEFT JOIN aircraft`, `COALESCE(a.tail, f.tail_text)`) whose
+//!   owner account has a verified email (`accounts.email_verified_at IS NOT NULL`) and is not
+//!   suspended (`accounts.suspended_at IS NULL`). Free-text `tail_text` is never resolved or linked
+//!   to any `aircraft` row.
 //! - Flights qualifying for both layers are returned once with `layer = "club"`.
 //! - Caller's own flights (matching any `pilot_id` of the caller's account, or `owner_account_id`)
 //!   are always excluded. `private` flights are never returned.
@@ -36,9 +41,10 @@
 //! - Per-IP rate-limited via `AppState::public_live_trails_throttle` (`LoginThrottle` with
 //!   `OverflowPolicy::RejectNew`) and `ClientIp` (`PUBLIC_LIVE_TRAILS_MAX_REQUESTS = 30` req/min ->
 //!   `429 {"error":"rate_limited"}` with `Retry-After: <seconds>`).
-//! - Returns ONLY live `visibility = 'public'` flights from operational (`live`, verified,
-//!   non-suspended) clubs (`flights.club_id IS NOT NULL`), geo-bounded by `PublicArea` with the
-//!   same SQL `LIMIT 500`, exact haversine, and 50-flight / 300-point / 120-min caps.
+//! - Returns ONLY live `visibility = 'public'` flights from either operational (`live`, verified,
+//!   non-suspended) clubs (`tailSource = "club"`) OR verified, non-suspended personal accounts
+//!   (`tailSource = "pilot"`), geo-bounded by `PublicArea` with the same SQL `LIMIT 500`, exact
+//!   haversine, and 50-flight / 300-point / 120-min caps.
 //! - Mandatory AGL altitude floor (M-27, fail-closed):
 //!   - Default floor is `DEFAULT_PUBLIC_ALTITUDE_MIN_FT` (`300.0` ft AGL).
 //!   - `min_agl_ft` can raise the floor up to `20_000` ft but never lower it below `300` ft:
@@ -64,6 +70,7 @@ use crate::club::{
     auth::{self, parse_session_cookie},
     db::{now_ms, ClubDb},
     geo::{haversine_km, safe_bbox_for_radius_km},
+    map::{TAIL_SOURCE_CLUB, TAIL_SOURCE_PILOT},
     map_filter::{
         evaluate_public_altitude, AltitudeEval, AltitudeMode, DEFAULT_PUBLIC_ALTITUDE_MIN_FT,
     },
@@ -97,10 +104,10 @@ pub const PILOT_LIVE_TRAILS_DEFAULT_PUBLIC_RADIUS_KM: f64 = 20.0;
 pub const PILOT_LIVE_TRAILS_MIN_PUBLIC_RADIUS_KM: f64 = 5.0;
 /// Maximum server-clamped search radius (km) for the `public` layer.
 pub const PILOT_LIVE_TRAILS_MAX_PUBLIC_RADIUS_KM: f64 = 500.0;
-/// Minimum server-clamped altitude floor (ft AGL) for optional `min_agl_ft` on `/api/me/live-trails`.
-/// Anonymous `/api/public/live-trails` enforces `DEFAULT_PUBLIC_ALTITUDE_MIN_FT` (300 ft) as both
-/// its default and minimum floor.
-pub const PUBLIC_LIVE_TRAILS_MIN_AGL_FT_MIN: f64 = 0.0;
+/// Minimum server-clamped altitude floor (ft AGL) for public layers on both
+/// `/api/public/live-trails` (M-27) and `/api/me/live-trails?layers=public` (L-76).
+#[allow(dead_code)]
+pub const PUBLIC_LIVE_TRAILS_MIN_AGL_FT_MIN: f64 = DEFAULT_PUBLIC_ALTITUDE_MIN_FT;
 /// Maximum server-clamped altitude floor (ft AGL) for `min_agl_ft` when supplied.
 pub const PUBLIC_LIVE_TRAILS_MIN_AGL_FT_MAX: f64 = 20_000.0;
 /// Cache-Control header for anonymous `GET /api/public/live-trails` responses (200 and 304).
@@ -283,37 +290,8 @@ impl PublicArea {
     }
 
     /// Parses required finite `lat` (`[-90, 90]`) & `lon` (`[-180, 180]`), optional
-    /// `radius_km` (default `20.0`, clamped `5.0..=500.0`), and optional `min_agl_ft`
-    /// (clamped `0.0..=20000.0`; absent = `None`) for authenticated `/api/me/live-trails`.
-    pub fn parse_query(raw_query: Option<&str>) -> Result<Self, &'static str> {
-        let (lat, lon, radius_km, min_agl_raw) = Self::parse_base_params(raw_query)?;
-
-        let min_agl_ft = match min_agl_raw {
-            None => None,
-            Some(ref a_s) => {
-                let Ok(a) = a_s.parse::<f64>() else {
-                    return Err("invalid min_agl_ft");
-                };
-                if !a.is_finite() {
-                    return Err("invalid min_agl_ft");
-                }
-                Some(normalize_zero(a.clamp(
-                    PUBLIC_LIVE_TRAILS_MIN_AGL_FT_MIN,
-                    PUBLIC_LIVE_TRAILS_MIN_AGL_FT_MAX,
-                )))
-            }
-        };
-
-        Ok(Self {
-            lat,
-            lon,
-            radius_km,
-            min_agl_ft,
-        })
-    }
-
-    /// Parses required finite `lat`/`lon`, optional `radius_km` (`5.0..=500.0`, default `20.0`),
-    /// and `min_agl_ft` for anonymous `GET /api/public/live-trails`.
+    /// `radius_km` (default `20.0`, clamped `5.0..=500.0`), and `min_agl_ft` for public live-trails
+    /// queries (both `/api/me/live-trails?layers=public` (L-76) and `/api/public/live-trails` (M-27)).
     ///
     /// Always resolves `min_agl_ft` to `Some(effective)` with
     /// `effective = clamp(min_agl_ft.unwrap_or(300), 300, 20000)`:
@@ -321,7 +299,7 @@ impl PublicArea {
     /// - `0.0..300.0` -> clamped up to `300.0` (caller cannot lower below the 300 ft floor)
     /// - `> 20_000.0` -> clamped down to `20_000.0`
     /// - Negative (`< 0.0`), non-numeric, `NaN`, `inf`, empty, or repeated -> `Err("invalid min_agl_ft")`
-    pub fn parse_anonymous_query(raw_query: Option<&str>) -> Result<Self, &'static str> {
+    pub fn parse_query(raw_query: Option<&str>) -> Result<Self, &'static str> {
         let (lat, lon, radius_km, min_agl_raw) = Self::parse_base_params(raw_query)?;
 
         let effective_min_agl_ft = match min_agl_raw {
@@ -333,10 +311,10 @@ impl PublicArea {
                 if !a.is_finite() || a < 0.0 {
                     return Err("invalid min_agl_ft");
                 }
-                a.clamp(
+                normalize_zero(a.clamp(
                     DEFAULT_PUBLIC_ALTITUDE_MIN_FT,
                     PUBLIC_LIVE_TRAILS_MIN_AGL_FT_MAX,
-                )
+                ))
             }
         };
 
@@ -346,6 +324,12 @@ impl PublicArea {
             radius_km,
             min_agl_ft: Some(effective_min_agl_ft),
         })
+    }
+
+    /// Alias of [`Self::parse_query`] for anonymous `GET /api/public/live-trails` (both endpoints
+    /// share the exact same mandatory 300 ft AGL default floor contract).
+    pub fn parse_anonymous_query(raw_query: Option<&str>) -> Result<Self, &'static str> {
+        Self::parse_query(raw_query)
     }
 }
 
@@ -399,10 +383,12 @@ impl TrailLayer {
 #[derive(Debug, Clone)]
 pub(crate) struct CandidateLiveFlight {
     pub(crate) flight_id: String,
-    #[allow(dead_code)]
     pub(crate) tail: String,
+    pub(crate) tail_source: &'static str,
     #[allow(dead_code)]
     pub(crate) club_id: Option<String>,
+    club_name: Option<String>,
+    club_slug: Option<String>,
     layer: TrailLayer,
     effective_trail: TrailMinutes,
     last_fix_at: i64,
@@ -419,10 +405,15 @@ pub(crate) struct CandidateLiveFlight {
 struct PilotLiveTrailFlight {
     flight_id: String,
     tail: String,
+    tail_source: &'static str,
     layer: &'static str,
     trail_minutes: i16,
     #[serde(skip_serializing_if = "Option::is_none")]
     pilot_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    club_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    club_slug: Option<String>,
     points: Vec<TrailPointWithAlt>,
 }
 
@@ -471,6 +462,10 @@ fn compute_weak_etag(
     }
     for c in candidates {
         hasher.update(c.flight_id.as_bytes());
+        hasher.update(b"|");
+        hasher.update(c.tail.as_bytes());
+        hasher.update(b"|");
+        hasher.update(c.tail_source.as_bytes());
         hasher.update(b"|");
         hasher.update(c.layer.as_str().as_bytes());
         hasher.update(b"|");
@@ -528,12 +523,10 @@ fn sanitize_point(t: i64, lat: f64, lon: f64, alt: Option<f64>) -> Option<TrailP
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PublicAltitudePolicy {
-    /// Authenticated `/api/me/live-trails` public layer (L-76): optional floor (`area.min_agl_ft`),
-    /// falls back to MSL comparison (`AltitudeEval::NoDemFallbackMsl`) when DEM coverage is absent.
-    OptionalWithMslFallback,
-    /// Anonymous `/api/public/live-trails` (M-27): enforces at least
-    /// `DEFAULT_PUBLIC_ALTITUDE_MIN_FT` (300 ft AGL) and fails closed — only `AltitudeEval::Pass`
-    /// is admitted; missing `alt` or `DemSample::NoCoverage` excludes the flight.
+    /// Mandatory fail-closed AGL floor (`>= DEFAULT_PUBLIC_ALTITUDE_MIN_FT`, 300 ft AGL) used on
+    /// both anonymous `/api/public/live-trails` (M-27) and authenticated
+    /// `/api/me/live-trails?layers=public` (L-76). Only `AltitudeEval::Pass` is admitted; missing
+    /// `alt` or `DemSample::NoCoverage` excludes the flight.
     FailClosedFloor,
 }
 
@@ -675,10 +668,14 @@ impl ClubDb {
                     fx.t_ms,
                     fx.lat,
                     fx.lon,
-                    fx.alt
+                    fx.alt,
+                    NULL::text AS alt_ref,
+                    TRUE AS is_club_aircraft,
+                    c.name AS club_name,
+                    c.slug AS club_slug
              FROM flights f
              JOIN clubs c ON c.id = f.club_id
-             LEFT JOIN aircraft a ON a.id = f.aircraft_id
+             JOIN aircraft a ON a.id = f.aircraft_id
              JOIN LATERAL (
                  SELECT t_ms, lat, lon, alt
                  FROM fixes
@@ -691,6 +688,7 @@ impl ClubDb {
                AND f.last_fix_at IS NOT NULL
                AND f.last_fix_at >= $1
                AND f.club_id IS NOT NULL
+               AND f.aircraft_id IS NOT NULL
                AND f.club_id = ANY($2::text[])
                AND f.visibility IN ('club', 'public')
                AND c.status = 'live'
@@ -711,7 +709,7 @@ impl ClubDb {
         .await
         .unwrap_or_default();
 
-        rows_to_candidates(rows, TrailLayer::Club, false, false)
+        rows_to_candidates(rows, TrailLayer::Club, false)
     }
 
     fn filter_public_candidates(
@@ -721,17 +719,15 @@ impl ClubDb {
         altitude_policy: PublicAltitudePolicy,
     ) -> Vec<CandidateLiveFlight> {
         let effective_min_agl_ft = match altitude_policy {
-            PublicAltitudePolicy::OptionalWithMslFallback => area.min_agl_ft,
-            PublicAltitudePolicy::FailClosedFloor => Some(
-                area.min_agl_ft
-                    .unwrap_or(DEFAULT_PUBLIC_ALTITUDE_MIN_FT)
-                    .clamp(
-                        DEFAULT_PUBLIC_ALTITUDE_MIN_FT,
-                        PUBLIC_LIVE_TRAILS_MIN_AGL_FT_MAX,
-                    ),
-            ),
+            PublicAltitudePolicy::FailClosedFloor => area
+                .min_agl_ft
+                .unwrap_or(DEFAULT_PUBLIC_ALTITUDE_MIN_FT)
+                .clamp(
+                    DEFAULT_PUBLIC_ALTITUDE_MIN_FT,
+                    PUBLIC_LIVE_TRAILS_MIN_AGL_FT_MAX,
+                ),
         };
-        let dem = effective_min_agl_ft.map(|_| self.dem_index());
+        let dem = self.dem_index();
         let mut filtered: Vec<CandidateLiveFlight> = candidates
             .into_iter()
             .filter(|c| {
@@ -741,31 +737,19 @@ impl ClubDb {
                 {
                     return false;
                 }
-                if let (Some(min_agl_ft), Some(dem)) = (effective_min_agl_ft, dem.as_ref()) {
-                    let fix = crate::live::LiveFix {
-                        t: c.latest_t,
-                        lat: c.latest_lat,
-                        lon: c.latest_lon,
-                        alt: c.latest_alt,
-                        alt_ref: c.latest_alt_ref.clone(),
-                        speed: None,
-                        course: None,
-                        accuracy: None,
-                    };
-                    let eval = evaluate_public_altitude(&fix, AltitudeMode::Agl, min_agl_ft, dem);
-                    let passes = match altitude_policy {
-                        PublicAltitudePolicy::OptionalWithMslFallback => {
-                            matches!(eval, AltitudeEval::Pass | AltitudeEval::NoDemFallbackMsl)
-                        }
-                        PublicAltitudePolicy::FailClosedFloor => {
-                            matches!(eval, AltitudeEval::Pass)
-                        }
-                    };
-                    if !passes {
-                        return false;
-                    }
-                }
-                true
+                let fix = crate::live::LiveFix {
+                    t: c.latest_t,
+                    lat: c.latest_lat,
+                    lon: c.latest_lon,
+                    alt: c.latest_alt,
+                    alt_ref: c.latest_alt_ref.clone(),
+                    speed: None,
+                    course: None,
+                    accuracy: None,
+                };
+                let eval =
+                    evaluate_public_altitude(&fix, AltitudeMode::Agl, effective_min_agl_ft, &dem);
+                matches!(eval, AltitudeEval::Pass)
             })
             .collect();
         filtered.truncate(PILOT_LIVE_TRAILS_MAX_FLIGHTS);
@@ -806,7 +790,7 @@ impl ClubDb {
 
         let rows = sqlx::query(
             "SELECT f.id,
-                    a.tail,
+                    COALESCE(a.tail, f.tail_text),
                     f.club_id,
                     f.trail_minutes,
                     c.trail_minutes_default,
@@ -815,10 +799,15 @@ impl ClubDb {
                     fx.lat,
                     fx.lon,
                     fx.alt,
-                    fx.alt_ref
+                    fx.alt_ref,
+                    (f.club_id IS NOT NULL AND f.aircraft_id IS NOT NULL AND a.tail IS NOT NULL) AS is_club_aircraft,
+                    CASE WHEN f.club_id IS NOT NULL AND f.aircraft_id IS NOT NULL THEN c.name ELSE NULL END AS club_name,
+                    CASE WHEN f.club_id IS NOT NULL AND f.aircraft_id IS NOT NULL THEN c.slug ELSE NULL END AS club_slug
              FROM flights f
              LEFT JOIN clubs c ON c.id = f.club_id
              LEFT JOIN aircraft a ON a.id = f.aircraft_id
+             LEFT JOIN pilots p ON p.id = f.pilot_id
+             LEFT JOIN accounts owner_acct ON owner_acct.id = f.owner_account_id
              JOIN LATERAL (
                  SELECT t_ms, lat, lon, alt, alt_ref
                  FROM fixes
@@ -831,14 +820,31 @@ impl ClubDb {
                AND f.last_fix_at IS NOT NULL
                AND f.last_fix_at >= $1
                AND f.visibility = 'public'
-               AND f.club_id IS NOT NULL
-               AND NOT (f.club_id = ANY($2::text[]))
-               AND c.status = 'live'
-               AND c.email_verified_at IS NOT NULL
-               AND c.suspended_at IS NULL
+               AND (
+                   (
+                       f.club_id IS NOT NULL
+                       AND f.aircraft_id IS NOT NULL
+                       AND a.tail IS NOT NULL
+                       AND NOT (f.club_id = ANY($2::text[]))
+                       AND c.status = 'live'
+                       AND c.email_verified_at IS NOT NULL
+                       AND c.suspended_at IS NULL
+                   )
+                   OR (
+                       f.club_id IS NULL
+                       AND f.aircraft_id IS NULL
+                       AND f.tail_text IS NOT NULL
+                       AND p.club_id IS NULL
+                       AND p.status <> 'guest'
+                       AND p.account_id IS NOT NULL
+                       AND f.owner_account_id = p.account_id
+                       AND owner_acct.id = f.owner_account_id
+                       AND owner_acct.email_verified_at IS NOT NULL
+                       AND owner_acct.suspended_at IS NULL
+                   )
+               )
                AND NOT (f.pilot_id = ANY($3::text[]))
                AND ($4::text IS NULL OR f.owner_account_id IS DISTINCT FROM $4)
-               AND a.tail IS NOT NULL
                AND fx.lat BETWEEN $5 AND $6
                AND ($7::double precision IS NULL OR fx.lon BETWEEN $7 AND $8)
              ORDER BY f.last_fix_at DESC, f.id ASC
@@ -857,12 +863,8 @@ impl ClubDb {
         .await
         .unwrap_or_default();
 
-        let candidates = rows_to_candidates(rows, TrailLayer::Public, true, false);
-        self.filter_public_candidates(
-            candidates,
-            area,
-            PublicAltitudePolicy::OptionalWithMslFallback,
-        )
+        let candidates = rows_to_candidates(rows, TrailLayer::Public, false);
+        self.filter_public_candidates(candidates, area, PublicAltitudePolicy::FailClosedFloor)
     }
 
     async fn query_anonymous_public_live_flights(
@@ -893,7 +895,7 @@ impl ClubDb {
 
         let rows = sqlx::query(
             "SELECT f.id,
-                    a.tail,
+                    COALESCE(a.tail, f.tail_text),
                     f.club_id,
                     f.trail_minutes,
                     c.trail_minutes_default,
@@ -903,11 +905,15 @@ impl ClubDb {
                     fx.lon,
                     fx.alt,
                     fx.alt_ref,
+                    (f.club_id IS NOT NULL AND f.aircraft_id IS NOT NULL AND a.tail IS NOT NULL) AS is_club_aircraft,
+                    CASE WHEN f.club_id IS NOT NULL AND f.aircraft_id IS NOT NULL THEN c.name ELSE NULL END AS club_name,
+                    CASE WHEN f.club_id IS NOT NULL AND f.aircraft_id IS NOT NULL THEN c.slug ELSE NULL END AS club_slug,
                     CASE WHEN f.show_pilot_name_public THEN p.name ELSE NULL END AS pilot_name
              FROM flights f
              LEFT JOIN clubs c ON c.id = f.club_id
              LEFT JOIN aircraft a ON a.id = f.aircraft_id
              LEFT JOIN pilots p ON p.id = f.pilot_id
+             LEFT JOIN accounts owner_acct ON owner_acct.id = f.owner_account_id
              JOIN LATERAL (
                  SELECT t_ms, lat, lon, alt, alt_ref
                  FROM fixes
@@ -920,11 +926,28 @@ impl ClubDb {
                AND f.last_fix_at IS NOT NULL
                AND f.last_fix_at >= $1
                AND f.visibility = 'public'
-               AND f.club_id IS NOT NULL
-               AND c.status = 'live'
-               AND c.email_verified_at IS NOT NULL
-               AND c.suspended_at IS NULL
-               AND a.tail IS NOT NULL
+               AND (
+                   (
+                       f.club_id IS NOT NULL
+                       AND f.aircraft_id IS NOT NULL
+                       AND a.tail IS NOT NULL
+                       AND c.status = 'live'
+                       AND c.email_verified_at IS NOT NULL
+                       AND c.suspended_at IS NULL
+                   )
+                   OR (
+                       f.club_id IS NULL
+                       AND f.aircraft_id IS NULL
+                       AND f.tail_text IS NOT NULL
+                       AND p.club_id IS NULL
+                       AND p.status <> 'guest'
+                       AND p.account_id IS NOT NULL
+                       AND f.owner_account_id = p.account_id
+                       AND owner_acct.id = f.owner_account_id
+                       AND owner_acct.email_verified_at IS NOT NULL
+                       AND owner_acct.suspended_at IS NULL
+                   )
+               )
                AND fx.lat BETWEEN $2 AND $3
                AND ($4::double precision IS NULL OR fx.lon BETWEEN $4 AND $5)
              ORDER BY f.last_fix_at DESC, f.id ASC
@@ -940,7 +963,7 @@ impl ClubDb {
         .await
         .unwrap_or_default();
 
-        let candidates = rows_to_candidates(rows, TrailLayer::Public, true, true);
+        let candidates = rows_to_candidates(rows, TrailLayer::Public, true);
         self.filter_public_candidates(candidates, area, PublicAltitudePolicy::FailClosedFloor)
     }
 
@@ -997,7 +1020,6 @@ impl ClubDb {
 fn rows_to_candidates(
     rows: Vec<sqlx::postgres::PgRow>,
     layer: TrailLayer,
-    has_alt_ref: bool,
     has_pilot_name: bool,
 ) -> Vec<CandidateLiveFlight> {
     rows.into_iter()
@@ -1016,13 +1038,25 @@ fn rows_to_candidates(
             let latest_lat: f64 = r.try_get(7).ok()?;
             let latest_lon: f64 = r.try_get(8).ok()?;
             let latest_alt: Option<f64> = r.try_get(9).ok().flatten();
-            let latest_alt_ref: Option<String> = if has_alt_ref {
-                r.try_get(10).ok().flatten()
+            let latest_alt_ref: Option<String> = r.try_get(10).ok().flatten();
+            let is_club_aircraft: bool = r.try_get(11).ok().unwrap_or(false);
+            let tail_source = if is_club_aircraft {
+                TAIL_SOURCE_CLUB
+            } else {
+                TAIL_SOURCE_PILOT
+            };
+            let club_name: Option<String> = if is_club_aircraft {
+                r.try_get(12).ok().flatten()
+            } else {
+                None
+            };
+            let club_slug: Option<String> = if is_club_aircraft {
+                r.try_get(13).ok().flatten()
             } else {
                 None
             };
             let pilot_name: Option<String> = if has_pilot_name {
-                r.try_get(11).ok().flatten()
+                r.try_get(14).ok().flatten()
             } else {
                 None
             };
@@ -1030,7 +1064,10 @@ fn rows_to_candidates(
             Some(CandidateLiveFlight {
                 flight_id,
                 tail,
+                tail_source,
                 club_id,
+                club_name,
+                club_slug,
                 layer,
                 effective_trail,
                 last_fix_at,
@@ -1078,6 +1115,7 @@ async fn build_live_trail_flights(
             PilotLiveTrailFlight {
                 flight_id: c.flight_id,
                 tail: c.tail,
+                tail_source: c.tail_source,
                 layer: c.layer.as_str(),
                 trail_minutes: c.effective_trail.as_i16(),
                 pilot_name: if include_pilot_name {
@@ -1085,6 +1123,8 @@ async fn build_live_trail_flights(
                 } else {
                     None
                 },
+                club_name: c.club_name,
+                club_slug: c.club_slug,
                 points,
             }
         })

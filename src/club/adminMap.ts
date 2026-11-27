@@ -15,7 +15,9 @@ import {
 import { mountOpenKioskLink, type OpenKioskLinkController } from "./openKioskLink";
 import { safeNextPath } from "./safeNext";
 import {
+  aircraftSourceBadgeLabel,
   extractPublicAircraft,
+  formatAircraftListLabel,
   normalizeBaseAerodrome,
   renderClubTileMap,
   type NormalizedBase,
@@ -473,15 +475,17 @@ function bootAdminMap(): void {
     list.replaceChildren(
       ...lastLiveAircraft.map((row) => {
         const li = document.createElement("li");
-        if (row.nonClub) {
-          li.className = "is-non-club";
+        if (row.tailSource) {
+          li.setAttribute("data-tail-source", row.tailSource);
+        }
+        const badgeLabel = aircraftSourceBadgeLabel(row);
+        if (badgeLabel) {
+          li.className =
+            row.tailSource === "pilot" ? "is-non-club is-pilot-tail" : "is-non-club";
           li.setAttribute("data-non-club", "true");
-          const otherLabel = t("common.otherClub");
-          li.textContent = row.pilotName
-            ? `${row.tail} · ${otherLabel} · ${row.pilotName}`
-            : `${row.tail} · ${otherLabel}`;
+          li.textContent = formatAircraftListLabel(row);
         } else {
-          li.textContent = `${row.tail} · ${row.pilotName ?? "—"}`;
+          li.textContent = formatAircraftListLabel(row, { fallbackPilotDash: true });
         }
         return li;
       }),
