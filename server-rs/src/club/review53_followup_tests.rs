@@ -1114,6 +1114,98 @@ async fn item4_l91_flight_mismatch_throttled_per_device_and_other_device_unaffec
     assert_eq!(b_d2["accepted"], json!(1));
 }
 
+#[tokio::test]
+#[serial]
+async fn item4_l98_mismatch_throttle_saturated_skips_open_flight_context_query() {
+    use crate::club::db::TEST_OPEN_FLIGHT_CONTEXT_CALLS;
+    use std::sync::atomic::Ordering as AtomicOrdering;
+
+    let mut fx = setup_fx().await;
+    let t0 = (now_ms() / 1000) * 1000;
+    fx.clock_ms.store(t0, AtomicOrdering::SeqCst);
+    TEST_OPEN_FLIGHT_CONTEXT_CALLS.store(0, AtomicOrdering::Relaxed);
+
+    let (a1, _, _) = create_account_session(
+        &fx.db,
+        &format!("l98-d1-{}@test.example", &new_id()[..6]),
+        true,
+        None,
+        ACCOUNT_SESSION_AUTH_MAGIC,
+        t0,
+    )
+    .await;
+    let p1 = fx.db.ensure_personal_pilot(&a1, t0).await.unwrap();
+    let (d1, tok1) = fx.db.create_device(&p1, "dev-l98").await.unwrap();
+    let open_f1 = fx
+        .db
+        .start_personal_flight_atomic(
+            &p1,
+            &a1,
+            &d1,
+            "CC-L98",
+            FlightVisibility::Private,
+            false,
+            None,
+            t0 - 60_000,
+        )
+        .await
+        .unwrap();
+
+    for i in 0..MAX_INGEST_FLIGHT_MISMATCH_PER_MINUTE {
+        let _ = send_json(
+            &mut fx.router,
+            "POST",
+            "/api/ingest",
+            None,
+            Some(&tok1),
+            &[],
+            Some(json!({
+                "flight_id": format!("wrong-{i}"),
+                "fixes": [{ "t": t0 - 1_000, "lat": -33.45, "lon": -70.55 }]
+            })),
+        )
+        .await;
+    }
+
+    let ctx_calls_before = TEST_OPEN_FLIGHT_CONTEXT_CALLS.load(AtomicOrdering::Relaxed);
+    let (st, _, body) = send_json(
+        &mut fx.router,
+        "POST",
+        "/api/ingest",
+        None,
+        Some(&tok1),
+        &[],
+        Some(json!({
+            "flight_id": "probe-after-cap",
+            "fixes": [{ "t": t0 - 1_000, "lat": -33.45, "lon": -70.55 }]
+        })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::TOO_MANY_REQUESTS, "{body}");
+    assert_eq!(
+        TEST_OPEN_FLIGHT_CONTEXT_CALLS.load(AtomicOrdering::Relaxed),
+        ctx_calls_before,
+        "open_flight_context_for_device must not run once mismatch throttle is saturated"
+    );
+
+    // Legitimate bind to the open flight still works (lightweight id probe + one context load).
+    let (st_ok, _, b_ok) = send_json(
+        &mut fx.router,
+        "POST",
+        "/api/ingest",
+        None,
+        Some(&tok1),
+        &[],
+        Some(json!({
+            "flight_id": open_f1,
+            "fixes": [{ "t": t0 - 500, "lat": -33.45, "lon": -70.55 }]
+        })),
+    )
+    .await;
+    assert_eq!(st_ok, StatusCode::OK, "{b_ok}");
+    assert_eq!(b_ok["accepted"], json!(1));
+}
+
 // ===========================================================================
 // Item 5 (L-92): nearby_public_positions_for_club non_club flag
 // ===========================================================================

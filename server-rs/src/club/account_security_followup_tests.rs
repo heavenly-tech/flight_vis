@@ -28,11 +28,14 @@ async fn first_magic_verify_wipes_precreated_password_and_sessions() {
     .unwrap();
     let sess = db.create_account_session(&id, None, now).await.unwrap();
     let raw = db
-        .issue_account_magic_login(email, now)
+        .issue_account_magic_login(email, None, now)
         .await
         .unwrap()
         .unwrap();
-    let _ = db.consume_account_magic(&raw, None, now).await.unwrap();
+    let _ = db
+        .consume_account_magic(&raw, None, None, now)
+        .await
+        .unwrap();
     let hash_after: Option<String> =
         sqlx::query_scalar("SELECT password_hash FROM accounts WHERE id = $1")
             .bind(&id)
@@ -708,6 +711,75 @@ async fn webauthn_login_finish_rejects_invalid_nonce_via_http() {
 
 #[tokio::test]
 #[serial]
+async fn l81_account_magic_login_nonce_bound_redeems_only_with_matching_nonce() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = "l81-login-nonce@test";
+    let _ = db.ensure_account_for_email(email, None, now).await.unwrap();
+    let nonce = "client-nonce-16ch";
+    let raw = db
+        .issue_account_magic_login(email, Some(nonce), now)
+        .await
+        .unwrap()
+        .unwrap();
+    let redeem = db
+        .consume_account_magic(&raw, None, Some(nonce), now)
+        .await
+        .unwrap();
+    assert!(redeem.nonce_matched);
+    assert_eq!(redeem.account.email, email);
+}
+
+#[tokio::test]
+#[serial]
+async fn l81_account_magic_login_wrong_nonce_invalid_without_consume() {
+    use crate::club::db::MagicConsumeError;
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = "l81-wrong-nonce@test";
+    let _ = db.ensure_account_for_email(email, None, now).await.unwrap();
+    let nonce = "bound-nonce-abcdef";
+    let raw = db
+        .issue_account_magic_login(email, Some(nonce), now)
+        .await
+        .unwrap()
+        .unwrap();
+    let token_hash = crate::club::auth::digest_token(&raw);
+    assert!(matches!(
+        db.consume_account_magic(&raw, None, Some("other-nonce-abcdef"), now)
+            .await,
+        Err(MagicConsumeError::Invalid)
+    ));
+    let used: Option<i64> =
+        sqlx::query_scalar("SELECT used_at FROM magic_login_tokens WHERE token_hash = $1")
+            .bind(&token_hash)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert!(used.is_none(), "wrong nonce must not consume token");
+}
+
+#[tokio::test]
+#[serial]
+async fn l81_account_magic_login_unnonced_token_redeems_without_body_nonce() {
+    let db = ClubDb::open_test().await.unwrap();
+    let now = now_ms();
+    let email = "l81-unnonced@test";
+    let _ = db.ensure_account_for_email(email, None, now).await.unwrap();
+    let raw = db
+        .issue_account_magic_login(email, None, now)
+        .await
+        .unwrap()
+        .unwrap();
+    let redeem = db
+        .consume_account_magic(&raw, None, None, now)
+        .await
+        .unwrap();
+    assert!(!redeem.nonce_matched);
+}
+
+#[tokio::test]
+#[serial]
 async fn account_signup_nonce_same_browser_applies_pending_password() {
     let db = ClubDb::open_test().await.unwrap();
     let now = now_ms();
@@ -720,7 +792,7 @@ async fn account_signup_nonce_same_browser_applies_pending_password() {
         .await
         .unwrap();
     let _ = db
-        .consume_account_magic(&raw, Some(&nonce), now)
+        .consume_account_magic(&raw, Some(&nonce), None, now)
         .await
         .unwrap();
     assert!(db
@@ -744,7 +816,7 @@ async fn account_signup_without_matching_nonce_skips_pending_password() {
         .unwrap();
     let wrong = crate::club::auth::new_session_id();
     let _ = db
-        .consume_account_magic(&raw, Some(&wrong), now)
+        .consume_account_magic(&raw, Some(&wrong), None, now)
         .await
         .unwrap();
     assert!(matches!(
@@ -773,7 +845,7 @@ async fn victim_signup_token_wins_over_attacker_pending_password() {
         .await
         .unwrap();
     let _ = db
-        .consume_account_magic(&victim_raw, Some(&victim_nonce), now)
+        .consume_account_magic(&victim_raw, Some(&victim_nonce), None, now)
         .await
         .unwrap();
     assert!(db
@@ -807,12 +879,12 @@ async fn attacker_signup_victim_login_magic_clears_password() {
         .await
         .unwrap();
     let login_raw = db
-        .issue_account_magic_login(email, now)
+        .issue_account_magic_login(email, None, now)
         .await
         .unwrap()
         .unwrap();
     let _ = db
-        .consume_account_magic(&login_raw, None, now)
+        .consume_account_magic(&login_raw, None, None, now)
         .await
         .unwrap();
     assert!(matches!(
@@ -836,14 +908,14 @@ async fn honest_signup_set_password_after_verify_works() {
         .await
         .unwrap();
     let acct = db
-        .consume_account_magic(&raw, Some(&nonce), now)
+        .consume_account_magic(&raw, Some(&nonce), None, now)
         .await
         .unwrap();
     let sess = db
-        .create_account_session(&acct.id, None, now)
+        .create_account_session(&acct.account.id, None, now)
         .await
         .unwrap();
-    db.set_account_password(&acct.id, pw, now, None, Some(&sess))
+    db.set_account_password(&acct.account.id, pw, now, None, Some(&sess))
         .await
         .unwrap();
     assert!(db
@@ -872,7 +944,7 @@ async fn account_login_magic_http_roundtrip_sets_session_cookie() {
         .await
         .unwrap();
     let raw = db
-        .issue_account_magic_login(email, now)
+        .issue_account_magic_login(email, None, now)
         .await
         .unwrap()
         .unwrap();
@@ -1908,7 +1980,10 @@ async fn legacy_register_backfill_verify_http_approve_blocks_attacker_club_login
         .issue_account_magic_signup(email, None, None, now)
         .await
         .unwrap();
-    let _ = db.consume_account_magic(&raw, None, now).await.unwrap();
+    let _ = db
+        .consume_account_magic(&raw, None, None, now)
+        .await
+        .unwrap();
     let ph_before: String = sqlx::query_scalar("SELECT password_hash FROM pilots WHERE id = $1")
         .bind(&pilot_id)
         .fetch_one(&db.pool)

@@ -61,16 +61,41 @@ fn flight_mismatch() -> impl IntoResponse {
     )
 }
 
+fn mismatch_rate_limited(retry_after: u64) -> axum::response::Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::RETRY_AFTER, retry_after.to_string())],
+        Json(json!({ "error": "rate limited" })),
+    )
+        .into_response()
+}
+
 fn throttled_flight_mismatch(engine: &LiveEngine, device_key: &str) -> axum::response::Response {
     if let Err(retry_after) = engine.allow_flight_mismatch(device_key) {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            [(header::RETRY_AFTER, retry_after.to_string())],
-            Json(json!({ "error": "rate limited" })),
-        )
-            .into_response();
+        return mismatch_rate_limited(retry_after);
     }
     flight_mismatch().into_response()
+}
+
+async fn guard_mismatch_throttle_before_open_flight(
+    engine: &LiveEngine,
+    db: &crate::club::ClubDb,
+    device_id: &str,
+    mismatch_key: &str,
+    requested_flight_ids: &[String],
+) -> Result<(), axum::response::Response> {
+    if requested_flight_ids.is_empty() {
+        return Ok(());
+    }
+    let Err(retry_after) = engine.peek_flight_mismatch_throttle(mismatch_key) else {
+        return Ok(());
+    };
+    if let Some(open_id) = db.open_flight_id_for_device(device_id).await {
+        if flight_binding_matches(requested_flight_ids, &open_id) {
+            return Ok(());
+        }
+    }
+    Err(mismatch_rate_limited(retry_after))
 }
 
 /// Effective minimum device timestamp (ms) accepted on an open flight.
@@ -251,6 +276,17 @@ pub async fn post_ingest(
             let db = state.club.as_ref().expect("club db present");
             let mismatch_key = format!("db:{device_id}");
             let omit_flight_id = requested_flight_ids.is_empty();
+            if let Err(res) = guard_mismatch_throttle_before_open_flight(
+                &state.live,
+                db,
+                &device_id,
+                &mismatch_key,
+                &requested_flight_ids,
+            )
+            .await
+            {
+                return res;
+            }
             if let Some(open_flight) = db.open_flight_context_for_device(&device_id).await {
                 if !flight_binding_matches(&requested_flight_ids, &open_flight.flight_id) {
                     return throttled_flight_mismatch(&state.live, &mismatch_key);
@@ -603,6 +639,17 @@ pub async fn osmand_ingest(
                 return unauthorized().into_response();
             }
             let mismatch_key = format!("db:{device_id}");
+            if let Err(res) = guard_mismatch_throttle_before_open_flight(
+                &state.live,
+                db,
+                &device_id,
+                &mismatch_key,
+                &requested_flight_ids,
+            )
+            .await
+            {
+                return res;
+            }
             if let Some(open_flight) = db.open_flight_context_for_device(&device_id).await {
                 if !flight_binding_matches(&requested_flight_ids, &open_flight.flight_id) {
                     return throttled_flight_mismatch(&state.live, &mismatch_key);

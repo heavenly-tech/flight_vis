@@ -103,6 +103,10 @@ impl WindowThrottle {
     }
 }
 
+#[cfg(test)]
+pub(crate) static TEST_OPEN_FLIGHT_CONTEXT_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 #[derive(Clone)]
 pub struct ClubDb {
     pub(crate) pool: PgPool,
@@ -1238,6 +1242,36 @@ impl ClubDb {
         Ok(ended_at)
     }
 
+    /// Lightweight open-flight id lookup for ingest mismatch throttling (L-98).
+    pub async fn open_flight_id_for_device(&self, device_id: &str) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT f.id
+             FROM flights f
+             JOIN flight_devices fd ON fd.flight_id = f.id
+             JOIN devices d ON d.id = fd.device_id
+             JOIN pilots dp ON dp.id = d.pilot_id
+             WHERE fd.device_id = $1
+               AND f.status = 'active'
+               AND f.ended_at IS NULL
+               AND f.pilot_id = d.pilot_id
+               AND (
+                   f.owner_account_id IS NULL
+                   OR (dp.account_id IS NOT NULL AND f.owner_account_id = dp.account_id)
+               )
+               AND (
+                   f.club_id IS NOT NULL
+                   OR (dp.club_id IS NULL AND dp.account_id IS NOT NULL AND f.owner_account_id = dp.account_id)
+               )
+             ORDER BY f.started_at DESC
+             LIMIT 1",
+        )
+        .bind(device_id)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten()
+    }
+
     /// Resolve the currently open active flight bound to `device_id`, enforcing that
     /// the flight is still open (`status = 'active' AND ended_at IS NULL`) and owned
     /// by the device's pilot/account (both club and club-less flights).
@@ -1245,6 +1279,8 @@ impl ClubDb {
         &self,
         device_id: &str,
     ) -> Option<OpenFlightContext> {
+        #[cfg(test)]
+        TEST_OPEN_FLIGHT_CONTEXT_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let row = sqlx::query(
             "SELECT f.id, f.club_id, f.started_at, f.pilot_id, dp.account_id
              FROM flights f

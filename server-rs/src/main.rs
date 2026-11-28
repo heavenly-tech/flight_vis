@@ -786,6 +786,40 @@ impl LoginThrottle {
         self.check_up_to_window(ip, now, max_attempts, LOGIN_WINDOW_SECS)
     }
 
+    /// Returns `Err(retry_after)` when the key is already at `max_attempts` in the window,
+    /// without recording a new hit (L-98).
+    pub(crate) fn peek_up_to_window(
+        &self,
+        key: &str,
+        now: u64,
+        max_attempts: usize,
+        window_secs: u64,
+    ) -> Result<(), u64> {
+        let hits = self.hits.lock().unwrap_or_else(|err| err.into_inner());
+        let cutoff = now.saturating_sub(window_secs);
+        if let Some(entry) = hits.get(key) {
+            let active: usize = entry.iter().filter(|stamp| **stamp > cutoff).count();
+            if active >= max_attempts {
+                let oldest = entry
+                    .iter()
+                    .copied()
+                    .filter(|stamp| *stamp > cutoff)
+                    .min()
+                    .unwrap_or(now);
+                let retry_after = oldest
+                    .saturating_add(window_secs)
+                    .saturating_sub(now)
+                    .max(1);
+                return Err(retry_after);
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn peek_up_to(&self, key: &str, now: u64, max_attempts: usize) -> Result<(), u64> {
+        self.peek_up_to_window(key, now, max_attempts, LOGIN_WINDOW_SECS)
+    }
+
     pub(crate) fn allow_up_to(&self, ip: &str, now: u64, max_attempts: usize) -> bool {
         self.check_up_to(ip, now, max_attempts).is_ok()
     }
