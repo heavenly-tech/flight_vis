@@ -253,10 +253,12 @@ async fn account_auth_payload(
     account: &crate::club::db_account::AccountRow,
     active_membership_id: Option<&str>,
     device: Option<crate::club::db_devices_pg::DeviceRegisterResponse>,
+    nonce_matched: Option<bool>,
 ) -> serde_json::Value {
     let memberships = db.list_account_memberships(&account.id).await;
     let mut body = json!({
         "ok": true,
+        "email": account.email,
         "account": {
             "id": account.id,
             "email": account.email,
@@ -275,6 +277,9 @@ async fn account_auth_payload(
     });
     if let Some(dev) = device {
         body["device"] = json!(dev);
+    }
+    if let Some(nm) = nonce_matched {
+        body["nonceMatched"] = json!(nm);
     }
     body
 }
@@ -313,12 +318,15 @@ struct AccountMagicBody {
     email: String,
     #[serde(default)]
     locale: Option<String>,
+    #[serde(default)]
+    nonce: Option<String>,
 }
 
 struct AccountMagicFields {
     email: String,
     locale: Option<String>,
     next: String,
+    nonce: Option<String>,
 }
 
 fn account_magic_fields(headers: &HeaderMap, body: &[u8]) -> AccountMagicFields {
@@ -332,6 +340,7 @@ fn account_magic_fields(headers: &HeaderMap, body: &[u8]) -> AccountMagicFields 
             email: body.email,
             locale: body.locale,
             next: "/".to_string(),
+            nonce: body.nonce,
         };
     }
     let parsed: HashMap<String, String> = serde_urlencoded::from_bytes(body).unwrap_or_default();
@@ -339,6 +348,7 @@ fn account_magic_fields(headers: &HeaderMap, body: &[u8]) -> AccountMagicFields 
         email: parsed.get("email").cloned().unwrap_or_default(),
         locale: parsed.get("locale").cloned(),
         next: crate::auth::safe_next(parsed.get("next").map(String::as_str).unwrap_or("/")),
+        nonce: parsed.get("nonce").cloned(),
     }
 }
 
@@ -347,6 +357,7 @@ async fn send_account_magic_link(
     headers: &HeaderMap,
     email: &str,
     locale: Option<&str>,
+    request_nonce: Option<&str>,
     ip: &str,
 ) {
     let _ = auth::verify_password(email, auth::DUMMY_PASSWORD_HASH);
@@ -361,13 +372,17 @@ async fn send_account_magic_link(
         .map(str::to_string)
         .or_else(|| auth::parse_fv_locale_cookie(headers))
         .unwrap_or_else(|| "es".to_string());
+    let request_nonce = request_nonce.map(str::to_string);
     let db = db.clone();
     tokio::spawn(async move {
         let now = now_ms();
         if !db.magic_send_allowed(&email, &ip, now).await || !mailer.allow_send(&email, &ip) {
             return;
         }
-        let Ok(Some(token)) = db.issue_account_magic_login(&email, now).await else {
+        let Ok(Some(token)) = db
+            .issue_account_magic_login(&email, request_nonce.as_deref(), now)
+            .await
+        else {
             return;
         };
         let _ = db.log_magic_send(&email, &ip, now).await;
@@ -395,11 +410,21 @@ async fn account_magic_link(
     let json = account_wants_json(&headers);
     let fields = account_magic_fields(&headers, &body);
     let email = fields.email.trim();
+    if let Some(ref nonce) = fields.nonce {
+        if !auth::valid_magic_request_nonce(nonce) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid nonce" })),
+            )
+                .into_response();
+        }
+    }
     send_account_magic_link(
         &state,
         &headers,
         email,
         fields.locale.as_deref(),
+        fields.nonce.as_deref(),
         &client_ip.0,
     )
     .await;
@@ -466,7 +491,7 @@ async fn account_login(
                 } else {
                     None
                 };
-                let payload = account_auth_payload(db, &account, None, device).await;
+                let payload = account_auth_payload(db, &account, None, device, None).await;
                 (
                     StatusCode::OK,
                     [(header::SET_COOKIE, cookie)],
@@ -897,10 +922,11 @@ async fn account_magic_consume(
     } else {
         let signup_nonce = auth::parse_signup_nonce_cookie(&headers);
         match db
-            .consume_account_magic(&token, signup_nonce.as_deref(), now)
+            .consume_account_magic(&token, signup_nonce.as_deref(), None, now)
             .await
         {
-            Ok(account) => {
+            Ok(redeem) => {
+                let account = &redeem.account;
                 let session_id = db
                     .create_account_session_auth(
                         &account.id,
@@ -1339,6 +1365,8 @@ struct AccountMagicCompleteBody {
     token: String,
     #[serde(default)]
     purpose: Option<String>,
+    #[serde(default)]
+    nonce: Option<String>,
     #[serde(rename = "installId", default)]
     install_id: Option<String>,
     #[serde(default)]
@@ -1364,6 +1392,15 @@ async fn account_magic_complete(
             .into_response();
     };
     let token = body.token.trim();
+    if let Some(ref nonce) = body.nonce {
+        if !auth::valid_magic_request_nonce(nonce) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "invalid nonce" })),
+            )
+                .into_response();
+        }
+    }
     if token.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -1439,7 +1476,8 @@ async fn account_magic_complete(
                 };
                 let cookie = auth::set_account_session_cookie(&session_id, secure);
                 let payload =
-                    account_auth_payload(db, &account, Some(&accept.membership_id), device).await;
+                    account_auth_payload(db, &account, Some(&accept.membership_id), device, None)
+                        .await;
                 (
                     StatusCode::OK,
                     [(header::SET_COOKIE, cookie)],
@@ -1462,10 +1500,11 @@ async fn account_magic_complete(
     } else {
         let signup_nonce = auth::parse_signup_nonce_cookie(&headers);
         match db
-            .consume_account_magic(token, signup_nonce.as_deref(), now)
+            .consume_account_magic(token, signup_nonce.as_deref(), body.nonce.as_deref(), now)
             .await
         {
-            Ok(account) => {
+            Ok(redeem) => {
+                let account = &redeem.account;
                 let Ok(session_id) = db
                     .create_account_session_auth(
                         &account.id,
@@ -1506,7 +1545,9 @@ async fn account_magic_complete(
                 };
                 let cookie = auth::set_account_session_cookie(&session_id, secure);
                 let clear_nonce = auth::clear_signup_nonce_cookie(secure);
-                let payload = account_auth_payload(db, &account, None, device).await;
+                let payload =
+                    account_auth_payload(db, account, None, device, Some(redeem.nonce_matched))
+                        .await;
                 let mut res = (StatusCode::OK, Json(payload)).into_response();
                 res.headers_mut()
                     .append(header::SET_COOKIE, cookie.parse().expect("cookie"));

@@ -1413,7 +1413,7 @@ async fn account_deletion_clubless_cleanup_live_purge_memberships_and_security()
     let (_share_row, share_tok) = fx.db.create_flight_share(&pid, &fid).await.unwrap();
     let _magic_tok = fx
         .db
-        .issue_account_magic_login(&email, now)
+        .issue_account_magic_login(&email, None, now)
         .await
         .unwrap()
         .unwrap();

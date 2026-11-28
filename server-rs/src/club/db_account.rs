@@ -48,6 +48,13 @@ pub const ACCOUNT_PASSWORD_RECENT_AUTH_MS: i64 = 15 * 60 * 1000;
 pub const ACCOUNT_SESSION_AUTH_MAGIC: &str = "magic";
 pub const ACCOUNT_SESSION_AUTH_PASSWORD: &str = "password";
 
+#[derive(Debug, Clone)]
+pub struct AccountMagicRedeem {
+    pub account: AccountRow,
+    /// `true` when the token was issued with a client request nonce and redemption presented it.
+    pub nonce_matched: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountJoinError {
     EmailExists,
@@ -379,6 +386,7 @@ impl ClubDb {
     pub async fn issue_account_magic_login(
         &self,
         email: &str,
+        request_nonce: Option<&str>,
         now: i64,
     ) -> Result<Option<String>, DbError> {
         let Some(acct) = self.account_by_email(email).await else {
@@ -389,11 +397,12 @@ impl ClubDb {
         }
         let raw = auth::new_share_token();
         let token_hash = digest_token(&raw);
+        let request_nonce_hash = request_nonce.map(digest_token);
         let id = new_id();
         let expires = now + ACCOUNT_MAGIC_TTL_MS;
         sqlx::query(
-            "INSERT INTO magic_login_tokens (id, email, token_hash, created_at, expires_at, purpose, account_id)
-             VALUES ($1, $2, $3, $4, $5, 'account_login', $6)",
+            "INSERT INTO magic_login_tokens (id, email, token_hash, created_at, expires_at, purpose, account_id, request_nonce_hash)
+             VALUES ($1, $2, $3, $4, $5, 'account_login', $6, $7)",
         )
         .bind(&id)
         .bind(email.trim().to_ascii_lowercase())
@@ -401,6 +410,7 @@ impl ClubDb {
         .bind(now)
         .bind(expires)
         .bind(&acct.id)
+        .bind(request_nonce_hash.as_deref())
         .execute(&self.pool)
         .await?;
         Ok(Some(raw))
@@ -418,25 +428,28 @@ impl ClubDb {
 
     fn signup_nonce_matches(token_nonce: Option<&str>, cookie_nonce: Option<&str>) -> bool {
         match (token_nonce, cookie_nonce.filter(|s| !s.is_empty())) {
-            (Some(tn), Some(cn)) => {
-                let a = tn.as_bytes();
-                let b = digest_token(cn);
-                a.len() == b.len() && subtle::ConstantTimeEq::ct_eq(a, b.as_bytes()).into()
-            }
+            (Some(tn), Some(cn)) => Self::stored_nonce_hash_matches(tn, cn),
             _ => false,
         }
+    }
+
+    fn stored_nonce_hash_matches(stored_hash: &str, client_nonce: &str) -> bool {
+        let dig = digest_token(client_nonce);
+        stored_hash.len() == dig.len()
+            && subtle::ConstantTimeEq::ct_eq(stored_hash.as_bytes(), dig.as_bytes()).into()
     }
 
     pub async fn consume_account_magic(
         &self,
         raw_token: &str,
         signup_nonce: Option<&str>,
+        client_request_nonce: Option<&str>,
         now: i64,
-    ) -> Result<AccountRow, crate::club::db_auth_pg::MagicConsumeError> {
+    ) -> Result<AccountMagicRedeem, crate::club::db_auth_pg::MagicConsumeError> {
         use crate::club::db_auth_pg::MagicConsumeError;
         let token_hash = digest_token(raw_token.trim());
         let row = sqlx::query(
-            "SELECT id, email, expires_at, used_at, purpose, account_id, pending_password_hash, signup_nonce_hash, club_id
+            "SELECT id, email, expires_at, used_at, purpose, account_id, pending_password_hash, signup_nonce_hash, club_id, request_nonce_hash
              FROM magic_login_tokens WHERE token_hash = $1",
         )
         .bind(&token_hash)
@@ -455,6 +468,7 @@ impl ClubDb {
         let pending_password_hash: Option<String> = row.try_get(6).ok().flatten();
         let token_signup_nonce_hash: Option<String> = row.try_get(7).ok().flatten();
         let token_club_id: Option<String> = row.try_get(8).ok().flatten();
+        let token_request_nonce_hash: Option<String> = row.try_get(9).ok().flatten();
         if purpose != "account_signup" && purpose != "account_login" {
             return Err(MagicConsumeError::Invalid);
         }
@@ -464,6 +478,17 @@ impl ClubDb {
         if now > expires_at {
             return Err(MagicConsumeError::Expired);
         }
+        let nonce_matched = if let Some(ref stored) = token_request_nonce_hash {
+            let Some(cn) = client_request_nonce.filter(|s| !s.is_empty()) else {
+                return Err(MagicConsumeError::Invalid);
+            };
+            if !Self::stored_nonce_hash_matches(stored, cn) {
+                return Err(MagicConsumeError::Invalid);
+            }
+            true
+        } else {
+            false
+        };
         let updated = sqlx::query(
             "UPDATE magic_login_tokens SET used_at = $1 WHERE id = $2 AND used_at IS NULL",
         )
@@ -567,7 +592,10 @@ impl ClubDb {
                 }
             }
         }
-        Ok(acct)
+        Ok(AccountMagicRedeem {
+            account: acct,
+            nonce_matched,
+        })
     }
 
     #[allow(dead_code)]

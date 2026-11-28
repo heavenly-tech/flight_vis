@@ -190,6 +190,16 @@ impl LiveEngine {
         )
     }
 
+    /// Returns `Err(retry_after)` when the device is already at the mismatch cap, without charging.
+    pub fn peek_flight_mismatch_throttle(&self, device_key: &str) -> Result<(), u64> {
+        let now_secs = (self.now_ms() / 1000).max(0) as u64;
+        self.ingest_mismatch_throttle.peek_up_to(
+            device_key,
+            now_secs,
+            MAX_INGEST_FLIGHT_MISMATCH_PER_MINUTE,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn mismatch_throttle_policy(&self) -> crate::OverflowPolicy {
         self.ingest_mismatch_throttle.policy()

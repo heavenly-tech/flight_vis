@@ -189,6 +189,16 @@ pub fn clear_session_cookie(secure: bool) -> String {
     cookie
 }
 
+/// Client-provided magic-link request nonce: 16–64 URL-safe characters (L-81).
+pub fn valid_magic_request_nonce(s: &str) -> bool {
+    let len = s.len();
+    if !(16..=64).contains(&len) {
+        return false;
+    }
+    s.bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -203,5 +213,14 @@ mod tests {
     #[test]
     fn token_digest_stable() {
         assert_eq!(digest_token("abc"), digest_token("abc"));
+    }
+
+    #[test]
+    fn magic_request_nonce_validation() {
+        assert!(valid_magic_request_nonce("abcdefghijklmnop"));
+        assert!(valid_magic_request_nonce("a".repeat(64).as_str()));
+        assert!(!valid_magic_request_nonce("short"));
+        assert!(!valid_magic_request_nonce(&"a".repeat(65)));
+        assert!(!valid_magic_request_nonce("bad+chars"));
     }
 }
